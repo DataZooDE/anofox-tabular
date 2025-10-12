@@ -1,30 +1,70 @@
 cmake_minimum_required(VERSION 3.5)
 
-# Set extension name here
-set(TARGET_NAME quack)
-
-# DuckDB's extension distribution supports vcpkg. As such, dependencies can be added in ./vcpkg.json and then
-# used in cmake with find_package. Feel free to remove or replace with other dependencies.
-# Note that it should also be removed from vcpkg.json to prevent needlessly installing it..
-find_package(OpenSSL REQUIRED)
-
+set(TARGET_NAME anofox_tabular)
 set(EXTENSION_NAME ${TARGET_NAME}_extension)
 set(LOADABLE_EXTENSION_NAME ${TARGET_NAME}_loadable_extension)
 
 project(${TARGET_NAME})
 include_directories(src/include)
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
-set(EXTENSION_SOURCES src/quack_extension.cpp)
+# --- Dependencies ---
+
+# Libs via vcpkg
+include(CMakeFindDependencyMacro)
+find_dependency(Boost REQUIRED COMPONENTS date_time system thread)
+find_package(libphonenumber CONFIG REQUIRED)
+
+# Libpostal via pkg-config
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(LIBPOSTAL REQUIRED libpostal)
+
+
+# --- Build ---
+
+set(EXTENSION_SOURCES src/anofox_tabular_extension.cpp)
 
 build_static_extension(${TARGET_NAME} ${EXTENSION_SOURCES})
 build_loadable_extension(${TARGET_NAME} " " ${EXTENSION_SOURCES})
 
-# Link OpenSSL in both the static library as the loadable extension
-target_link_libraries(${EXTENSION_NAME} OpenSSL::SSL OpenSSL::Crypto)
-target_link_libraries(${LOADABLE_EXTENSION_NAME} OpenSSL::SSL OpenSSL::Crypto)
+
+# --- Linking ---
+
+# Link dependencies
+target_link_libraries(${EXTENSION_NAME} 
+    libphonenumber::phonenumber
+    Boost::date_time
+    Boost::system
+    Boost::thread
+    ${LIBPOSTAL_LIBRARIES}
+)
+target_link_libraries(${LOADABLE_EXTENSION_NAME}
+    libphonenumber::phonenumber
+    Boost::date_time
+    Boost::system
+    Boost::thread
+    ${LIBPOSTAL_LIBRARIES}
+)
+
+# Add include directories from dependencies
+target_include_directories(${EXTENSION_NAME} PRIVATE
+    ${LIBPOSTAL_INCLUDE_DIRS}
+)
+target_include_directories(${LOADABLE_EXTENSION_NAME} PRIVATE
+    ${LIBPOSTAL_INCLUDE_DIRS}
+)
+
+
+# --- Installation ---
 
 install(
   TARGETS ${EXTENSION_NAME}
   EXPORT "${DUCKDB_EXPORT_SET}"
+  LIBRARY DESTINATION "${INSTALL_LIB_DIR}"
+  ARCHIVE DESTINATION "${INSTALL_LIB_DIR}")
+
+install(
+  TARGETS ${LOADABLE_EXTENSION_NAME}
   LIBRARY DESTINATION "${INSTALL_LIB_DIR}"
   ARCHIVE DESTINATION "${INSTALL_LIB_DIR}")

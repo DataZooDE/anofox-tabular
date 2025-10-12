@@ -1,0 +1,13 @@
+require anofox_tabular
+
+statement ok
+SELECT * FROM pragma_anofox_postal_data_status();
+
+statement ok
+PRAGMA anofox_postal_load_data;
+
+statement ok
+SELECT * FROM pragma_anofox_postal_data_status();
+
+statement ok
+SELECT anofox_parse_address('123 Main St, Brooklyn, NY').city;
