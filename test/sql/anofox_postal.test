@@ -1,8 +1,15 @@
-
-
 require anofox_tabular
 
 query TTTTTT
 SELECT (addr).house_number, (addr).road, (addr).city, (addr).state, (addr).postcode, (addr).country FROM (SELECT anofox_parse_address('781 Franklin Ave Crown Heights Brooklyn NYC NY 11216 USA') as addr);
 ----
 781	franklin ave	nyc	ny	11216	usa
+
+query I
+SELECT anofox_expand_address('123 Main St, New York, NY');
+----
+[123 main st new york ny]
+
+query I
+SELECT anofox_expand_address('Friedrichstr. 123, Berlin');
+----

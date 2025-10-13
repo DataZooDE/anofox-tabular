@@ -113,6 +113,49 @@ inline void anofox_parse_address(DataChunk &args, ExpressionState &state, Vector
 	}
 }
 
+inline void anofox_expand_address(DataChunk &args, ExpressionState &state, Vector &result) {
+	// Ensure libpostal is initialized only once
+	std::call_once(postal_init_flag, [&]() { initialize_libpostal(state.GetContext()); });
+
+	auto &input = args.data[0];
+	UnifiedVectorFormat input_data;
+	input.ToUnifiedFormat(args.size(), input_data);
+	auto inputs = (string_t *)input_data.data;
+
+	result.SetVectorType(VectorType::FLAT_VECTOR);
+	auto result_entries = FlatVector::GetData<list_entry_t>(result);
+
+	libpostal_normalize_options_t options = libpostal_get_default_options();
+
+	for (idx_t i = 0; i < args.size(); i++) {
+		auto idx = input_data.sel->get_index(i);
+
+		if (!input_data.validity.RowIsValid(idx)) {
+			FlatVector::SetNull(result, i, true);
+			continue;
+		}
+
+		auto input_address = inputs[idx];
+		auto input_str = input_address.GetString();
+
+		size_t num_expansions;
+		char **expansions = libpostal_expand_address((char *)input_str.c_str(), options, &num_expansions);
+
+		result_entries[i].offset = ListVector::GetListSize(result);
+		result_entries[i].length = num_expansions;
+
+		for (size_t j = 0; j < num_expansions; j++) {
+			ListVector::PushBack(result, Value(expansions[j]));
+		}
+
+		libpostal_expansion_array_destroy(expansions, num_expansions);
+	}
+
+	if (args.AllConstant()) {
+		result.SetVectorType(VectorType::CONSTANT_VECTOR);
+	}
+}
+
 static void AnofoxPostalLoadData(ClientContext &context, const FunctionParameters &parameters) {
 	const char *home_dir = std::getenv("HOME");
 	if (!home_dir) {
@@ -201,6 +244,12 @@ static void LoadInternal(ExtensionLoader &loader) {
 	    LogicalType::STRUCT({{"house_number", LogicalType(LogicalTypeId::VARCHAR)},         {"road", LogicalType(LogicalTypeId::VARCHAR)}, {"city", LogicalType(LogicalTypeId::VARCHAR)},       {"state", LogicalType(LogicalTypeId::VARCHAR)}, {"postcode", LogicalType(LogicalTypeId::VARCHAR)},   {"country", LogicalType(LogicalTypeId::VARCHAR)}}),
 	    anofox_parse_address);
 	loader.RegisterFunction(anofox_parse_address_fun);
+
+	auto anofox_expand_address_fun = ScalarFunction(
+	    "anofox_expand_address", {LogicalTypeId::VARCHAR},
+	    LogicalType::LIST(LogicalType::VARCHAR),
+	    anofox_expand_address);
+	loader.RegisterFunction(anofox_expand_address_fun);
 
 	PragmaFunction load_pragma = PragmaFunction::PragmaCall("anofox_postal_load_data", AnofoxPostalLoadData, {});
 	loader.RegisterFunction(load_pragma);
