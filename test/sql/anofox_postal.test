@@ -13,3 +13,4 @@ SELECT anofox_expand_address('123 Main St, New York, NY');
 query I
 SELECT anofox_expand_address('Friedrichstr. 123, Berlin');
 ----
+[friedrichstr 123 berlin]

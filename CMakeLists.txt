@@ -15,6 +15,8 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 include(CMakeFindDependencyMacro)
 find_dependency(Boost REQUIRED COMPONENTS date_time system thread)
 find_package(libphonenumber CONFIG REQUIRED)
+find_package(absl CONFIG REQUIRED)
+find_package(utf8_range CONFIG REQUIRED)
 
 # Libpostal via pkg-config
 find_package(PkgConfig REQUIRED)
@@ -34,17 +36,25 @@ build_loadable_extension(${TARGET_NAME} " " ${EXTENSION_SOURCES})
 # Link dependencies
 target_link_libraries(${EXTENSION_NAME} 
     libphonenumber::phonenumber
+    absl::log
+    absl::log_internal_check_impl
+    utf8_range::utf8_range
+    utf8_range::utf8_validity
     Boost::date_time
     Boost::system
     Boost::thread
-    ${LIBPOSTAL_LIBRARIES}
+    ${LIBPOSTAL_LDFLAGS}
 )
 target_link_libraries(${LOADABLE_EXTENSION_NAME}
     libphonenumber::phonenumber
+    absl::log
+    absl::log_internal_check_impl
+    utf8_range::utf8_range
+    utf8_range::utf8_validity
     Boost::date_time
     Boost::system
     Boost::thread
-    ${LIBPOSTAL_LIBRARIES}
+    ${LIBPOSTAL_LDFLAGS}
 )
 
 # Add include directories from dependencies
@@ -54,8 +64,6 @@ target_include_directories(${EXTENSION_NAME} PRIVATE
 target_include_directories(${LOADABLE_EXTENSION_NAME} PRIVATE
     ${LIBPOSTAL_INCLUDE_DIRS}
 )
-
-
 # --- Installation ---
 
 install(
