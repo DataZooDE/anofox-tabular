@@ -25,7 +25,11 @@ pkg_check_modules(LIBPOSTAL REQUIRED libpostal)
 
 # --- Build ---
 
-set(EXTENSION_SOURCES src/anofox_tabular_extension.cpp)
+set(EXTENSION_SOURCES
+        src/anofox_tabular_extension.cpp
+        src/postal/postal_functions.cpp
+        src/postal/postal_manager.cpp
+)
 
 build_static_extension(${TARGET_NAME} ${EXTENSION_SOURCES})
 build_loadable_extension(${TARGET_NAME} " " ${EXTENSION_SOURCES})
