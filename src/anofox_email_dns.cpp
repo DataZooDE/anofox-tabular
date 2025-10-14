@@ -4,13 +4,14 @@
 
 #include <algorithm>
 #include <ares.h>
-#include <ares_nameser.h>
 #include <chrono>
 #include <cerrno>
 #include <cstring>
 #include <limits>
 #include <mutex>
 #include <thread>
+#include <unordered_map>
+#include <vector>
 
 #ifdef _WIN32
 #include <winsock2.h>
@@ -19,13 +20,10 @@
 #include <arpa/inet.h>
 #include <netdb.h>
 #include <netinet/in.h>
+#include <sys/socket.h>
 #include <sys/select.h>
 #include <sys/time.h>
 #include <unistd.h>
-#endif
-
-#ifndef ARES_GETSOCK_MAX
-#define ARES_GETSOCK_MAX ARES_GETSOCK_MAXNUM
 #endif
 
 namespace duckdb {
@@ -39,16 +37,25 @@ constexpr uint32_t DEFAULT_TRIES = 1;
 
 struct MxQueryState {
 	int *pending = nullptr;
-	int status = ARES_EDESTRUCTION;
+	ares_status_t status = ARES_EDESTRUCTION;
 	std::string error;
-	std::vector<std::pair<int, std::string>> records;
+	std::vector<std::pair<uint16_t, std::string>> records;
 };
 
-struct HostQueryState {
+struct AddrInfoState {
 	int *pending = nullptr;
 	int status = ARES_EDESTRUCTION;
 	std::string error;
 	std::vector<std::string> addresses;
+};
+
+struct SocketState {
+	bool readable = false;
+	bool writable = false;
+};
+
+struct SocketTracker {
+	std::unordered_map<ares_socket_t, SocketState> sockets;
 };
 
 std::string MapAresStatus(int status) {
@@ -68,58 +75,71 @@ std::string MapAresStatus(int status) {
 	}
 }
 
-int SocketToNfds(ares_socket_t sock) {
-#ifdef _WIN32
-	return static_cast<int>(sock) + 1;
-#else
-	return static_cast<int>(sock) + 1;
-#endif
+void OnSocketState(void *arg, ares_socket_t socket_fd, int readable, int writable) {
+	if (!arg) {
+		return;
+	}
+	auto &tracker = *reinterpret_cast<SocketTracker *>(arg);
+	if (socket_fd == ARES_SOCKET_BAD) {
+		return;
+	}
+	if (!readable && !writable) {
+		tracker.sockets.erase(socket_fd);
+		return;
+	}
+	auto &state = tracker.sockets[socket_fd];
+	state.readable = readable != 0;
+	state.writable = writable != 0;
 }
 
-void OnMxQuery(void *arg, int status, int, unsigned char *abuf, int alen) {
+void OnMxQuery(void *arg, ares_status_t status, size_t timeouts, const ares_dns_record_t *dnsrec) {
+	(void)timeouts;
 	auto &state = *reinterpret_cast<MxQueryState *>(arg);
 	state.status = status;
 	if (status == ARES_SUCCESS) {
-		struct ares_mx_reply *mx_out = nullptr;
-		int parse_status = ares_parse_mx_reply(abuf, alen, &mx_out);
-		if (parse_status == ARES_SUCCESS && mx_out) {
-			for (auto current = mx_out; current; current = current->next) {
-				if (current->host) {
-					state.records.emplace_back(current->priority, current->host);
-				}
-			}
-			ares_free_data(mx_out);
+		if (!dnsrec) {
+			state.status = ARES_ENODATA;
+			state.error = "mx_record_absent";
 		} else {
-			state.status = parse_status;
-			if (parse_status != ARES_SUCCESS) {
-				state.error = ares_strerror(parse_status);
-			}
-			if (mx_out) {
-				ares_free_data(mx_out);
+			size_t answer_count = ares_dns_record_rr_cnt(dnsrec, ARES_SECTION_ANSWER);
+			for (size_t i = 0; i < answer_count; i++) {
+				auto rr = ares_dns_record_rr_get_const(dnsrec, ARES_SECTION_ANSWER, i);
+				if (!rr) {
+					continue;
+				}
+				if (ares_dns_rr_get_type(rr) != ARES_REC_TYPE_MX) {
+					continue;
+				}
+				auto preference = ares_dns_rr_get_u16(rr, ARES_RR_MX_PREFERENCE);
+				auto exchange = ares_dns_rr_get_str(rr, ARES_RR_MX_EXCHANGE);
+				if (exchange) {
+					state.records.emplace_back(preference, exchange);
+				}
 			}
 		}
 	} else {
-		state.error = ares_strerror(status);
+		state.error = ares_strerror(static_cast<int>(status));
 	}
 	if (state.pending) {
 		(*state.pending)--;
 	}
 }
 
-void OnHostQuery(void *arg, int status, int, struct hostent *hostent) {
-	auto &state = *reinterpret_cast<HostQueryState *>(arg);
+void OnAddrInfo(void *arg, int status, int timeouts, struct ares_addrinfo *result) {
+	(void)timeouts;
+	auto &state = *reinterpret_cast<AddrInfoState *>(arg);
 	state.status = status;
-	if (status == ARES_SUCCESS && hostent && hostent->h_addr_list) {
-		char buffer[INET6_ADDRSTRLEN];
-		for (int i = 0; hostent->h_addr_list[i]; i++) {
-			std::memset(buffer, 0, sizeof(buffer));
-			const void *addr = hostent->h_addr_list[i];
-			if (hostent->h_addrtype == AF_INET) {
-				if (inet_ntop(AF_INET, addr, buffer, sizeof(buffer))) {
+	if (status == ARES_SUCCESS && result) {
+		for (auto node = result->nodes; node; node = node->ai_next) {
+			char buffer[INET6_ADDRSTRLEN] = {0};
+			if (node->ai_family == AF_INET) {
+				auto *addr_in = reinterpret_cast<struct sockaddr_in *>(node->ai_addr);
+				if (addr_in && inet_ntop(AF_INET, &addr_in->sin_addr, buffer, sizeof(buffer))) {
 					state.addresses.emplace_back(buffer);
 				}
-			} else if (hostent->h_addrtype == AF_INET6) {
-				if (inet_ntop(AF_INET6, addr, buffer, sizeof(buffer))) {
+			} else if (node->ai_family == AF_INET6) {
+				auto *addr_in6 = reinterpret_cast<struct sockaddr_in6 *>(node->ai_addr);
+				if (addr_in6 && inet_ntop(AF_INET6, &addr_in6->sin6_addr, buffer, sizeof(buffer))) {
 					state.addresses.emplace_back(buffer);
 				}
 			}
@@ -127,51 +147,58 @@ void OnHostQuery(void *arg, int status, int, struct hostent *hostent) {
 	} else if (status != ARES_SUCCESS) {
 		state.error = ares_strerror(status);
 	}
+	if (result) {
+		ares_freeaddrinfo(result);
+	}
 	if (state.pending) {
 		(*state.pending)--;
 	}
 }
 
-bool RunEventLoop(ares_channel channel, int &pending, std::string &error_reason, uint32_t timeout_ms) {
+bool RunEventLoop(ares_channel_t *channel, SocketTracker &tracker, int &pending, std::string &error_reason,
+                  uint32_t timeout_ms) {
 	while (pending > 0) {
 		fd_set read_fds;
 		fd_set write_fds;
 		FD_ZERO(&read_fds);
 		FD_ZERO(&write_fds);
-
-		ares_socket_t sockets[ARES_GETSOCK_MAX];
-		int bitmask = ares_getsock(channel, sockets, ARES_GETSOCK_MAX);
-		if (bitmask == 0) {
-			ares_process_fd(channel, ARES_SOCKET_BAD, ARES_SOCKET_BAD);
-			std::this_thread::sleep_for(std::chrono::milliseconds(timeout_ms));
-			continue;
-		}
-
-		int nfds = 0;
-		for (int i = 0; i < ARES_GETSOCK_MAX; i++) {
-			ares_socket_t sock = sockets[i];
-			if (sock == ARES_SOCKET_BAD) {
-				continue;
-			}
-			if (ARES_GETSOCK_READABLE(bitmask, i)) {
+		ares_socket_t max_fd = ARES_SOCKET_BAD;
+		for (auto &entry : tracker.sockets) {
+			auto sock = entry.first;
+			const auto &state = entry.second;
+			if (state.readable) {
 				FD_SET(sock, &read_fds);
-				nfds = std::max(nfds, SocketToNfds(sock));
 			}
-			if (ARES_GETSOCK_WRITABLE(bitmask, i)) {
+			if (state.writable) {
 				FD_SET(sock, &write_fds);
-				nfds = std::max(nfds, SocketToNfds(sock));
+			}
+			if (state.readable || state.writable) {
+				if (max_fd == ARES_SOCKET_BAD || sock > max_fd) {
+					max_fd = sock;
+				}
 			}
 		}
 
+		struct timeval default_timeout;
 		struct timeval tv;
 		struct timeval *tv_ptr = ares_timeout(channel, nullptr, &tv);
+		if (!tv_ptr) {
+			default_timeout.tv_sec = static_cast<long>(timeout_ms / 1000);
+			default_timeout.tv_usec = static_cast<long>(timeout_ms % 1000) * 1000;
+			tv_ptr = &default_timeout;
+		}
+
 		int select_result = 0;
-		if (nfds > 0) {
+		if (max_fd != ARES_SOCKET_BAD) {
+			int nfds = static_cast<int>(max_fd) + 1;
 			select_result = select(nfds, &read_fds, &write_fds, nullptr, tv_ptr);
 		} else {
-			// No file descriptors, wait briefly before processing timeouts.
-			std::this_thread::sleep_for(std::chrono::milliseconds(timeout_ms));
-			continue;
+			auto sleep_ms =
+			    static_cast<uint32_t>(tv_ptr->tv_sec * 1000 + static_cast<long>(tv_ptr->tv_usec / 1000));
+			if (sleep_ms == 0) {
+				sleep_ms = timeout_ms;
+			}
+			std::this_thread::sleep_for(std::chrono::milliseconds(sleep_ms));
 		}
 		if (select_result < 0) {
 #ifdef _WIN32
@@ -189,22 +216,28 @@ bool RunEventLoop(ares_channel channel, int &pending, std::string &error_reason,
 			return false;
 		}
 
-		if (select_result == 0) {
-			ares_process_fd(channel, ARES_SOCKET_BAD, ARES_SOCKET_BAD);
-			continue;
+		std::vector<ares_fd_events_t> events;
+		if (select_result > 0) {
+			for (auto &entry : tracker.sockets) {
+				auto sock = entry.first;
+				unsigned int event_mask = ARES_FD_EVENT_NONE;
+				if (FD_ISSET(sock, &read_fds)) {
+					event_mask |= ARES_FD_EVENT_READ;
+				}
+				if (FD_ISSET(sock, &write_fds)) {
+					event_mask |= ARES_FD_EVENT_WRITE;
+				}
+				if (event_mask != ARES_FD_EVENT_NONE) {
+					events.push_back({sock, event_mask});
+				}
+			}
 		}
 
-		for (int i = 0; i < ARES_GETSOCK_MAX; i++) {
-			ares_socket_t sock = sockets[i];
-			if (sock == ARES_SOCKET_BAD) {
-				continue;
-			}
-			ares_socket_t read_fd = ARES_GETSOCK_READABLE(bitmask, i) ? sock : ARES_SOCKET_BAD;
-			ares_socket_t write_fd = ARES_GETSOCK_WRITABLE(bitmask, i) ? sock : ARES_SOCKET_BAD;
-			if (read_fd == ARES_SOCKET_BAD && write_fd == ARES_SOCKET_BAD) {
-				continue;
-			}
-			ares_process_fd(channel, read_fd, write_fd);
+		auto process_status = ares_process_fds(channel, events.empty() ? nullptr : events.data(), events.size(),
+		                                       ARES_PROCESS_FLAG_NONE);
+		if (process_status != ARES_SUCCESS && process_status != ARES_EDESTRUCTION) {
+			error_reason = MapAresStatus(process_status);
+			return false;
 		}
 	}
 	return true;
@@ -267,13 +300,18 @@ DnsResult DnsResolver::Resolve(const std::string &domain) {
 		return result;
 	}
 
+	SocketTracker tracker;
+
 	ares_options options;
 	std::memset(&options, 0, sizeof(options));
 	options.timeout = static_cast<int>(timeout_ms);
 	options.tries = static_cast<int>(tries);
+	options.sock_state_cb = OnSocketState;
+	options.sock_state_cb_data = &tracker;
 
-	ares_channel channel;
-	int init_rc = ares_init_options(&channel, &options, ARES_OPT_TIMEOUTMS | ARES_OPT_TRIES);
+	ares_channel_t *channel = nullptr;
+	int init_rc = ares_init_options(&channel, &options,
+	                                ARES_OPT_TIMEOUTMS | ARES_OPT_TRIES | ARES_OPT_SOCK_STATE_CB);
 	if (init_rc != ARES_SUCCESS) {
 		result.reason = MapAresStatus(init_rc);
 		return result;
@@ -283,22 +321,30 @@ DnsResult DnsResolver::Resolve(const std::string &domain) {
 	MxQueryState mx_state;
 	mx_state.pending = &pending;
 
-	pending++;
-	ares_query(channel, domain.c_str(), ns_c_in, ns_t_mx, OnMxQuery, &mx_state);
+	auto mx_rc = ares_query_dnsrec(channel, domain.c_str(), ARES_CLASS_IN, ARES_REC_TYPE_MX, OnMxQuery, &mx_state, nullptr);
+	if (mx_rc == ARES_SUCCESS) {
+		pending++;
+	} else {
+		mx_state.status = mx_rc;
+		mx_state.error = ares_strerror(static_cast<int>(mx_rc));
+	}
 
-	HostQueryState ipv4_state;
-	ipv4_state.pending = &pending;
-	pending++;
-	ares_gethostbyname(channel, domain.c_str(), AF_INET, OnHostQuery, &ipv4_state);
+	AddrInfoState addrinfo_state;
+	addrinfo_state.pending = &pending;
 
-	HostQueryState ipv6_state;
-	ipv6_state.pending = &pending;
+	ares_addrinfo_hints hints;
+	std::memset(&hints, 0, sizeof(hints));
+	hints.ai_family = AF_UNSPEC;
+	hints.ai_socktype = SOCK_STREAM;
+
 	pending++;
-	ares_gethostbyname(channel, domain.c_str(), AF_INET6, OnHostQuery, &ipv6_state);
+	ares_getaddrinfo(channel, domain.c_str(), nullptr, &hints, OnAddrInfo, &addrinfo_state);
 
 	std::string loop_error;
-	bool loop_ok = RunEventLoop(channel, pending, loop_error, timeout_ms);
-	ares_destroy(channel);
+	bool loop_ok = RunEventLoop(channel, tracker, pending, loop_error, timeout_ms);
+	if (channel) {
+		ares_destroy(channel);
+	}
 
 	if (!loop_ok) {
 		result.reason = loop_error.empty() ? "dns_loop_failure" : loop_error;
@@ -312,7 +358,7 @@ DnsResult DnsResolver::Resolve(const std::string &domain) {
 
 	if (mx_state.status == ARES_SUCCESS && !mx_state.records.empty()) {
 		std::sort(mx_state.records.begin(), mx_state.records.end(),
-		          [](const std::pair<int, std::string> &lhs, const std::pair<int, std::string> &rhs) {
+		          [](const std::pair<uint16_t, std::string> &lhs, const std::pair<uint16_t, std::string> &rhs) {
 			          if (lhs.first == rhs.first) {
 				          return lhs.second < rhs.second;
 			          }
@@ -327,17 +373,13 @@ DnsResult DnsResolver::Resolve(const std::string &domain) {
 	}
 
 	// MX lookup failed, attempt to fall back to direct host resolution.
-	bool ipv4_success = ipv4_state.status == ARES_SUCCESS && !ipv4_state.addresses.empty();
-	bool ipv6_success = ipv6_state.status == ARES_SUCCESS && !ipv6_state.addresses.empty();
+	bool addrinfo_success = addrinfo_state.status == ARES_SUCCESS && !addrinfo_state.addresses.empty();
 
-	if (ipv4_success || ipv6_success) {
+	if (addrinfo_success) {
 		result.success = true;
 		result.mx_hosts.emplace_back(domain);
-		if (ipv4_success) {
-			result.mx_hosts.insert(result.mx_hosts.end(), ipv4_state.addresses.begin(), ipv4_state.addresses.end());
-		}
-		if (ipv6_success) {
-			result.mx_hosts.insert(result.mx_hosts.end(), ipv6_state.addresses.begin(), ipv6_state.addresses.end());
+		for (auto &address : addrinfo_state.addresses) {
+			result.mx_hosts.emplace_back(address);
 		}
 		return result;
 	}
@@ -345,12 +387,16 @@ DnsResult DnsResolver::Resolve(const std::string &domain) {
 	// Capture the most relevant failure reason.
 	if (mx_state.status != ARES_SUCCESS) {
 		result.reason = MapAresStatus(mx_state.status);
-	} else if (ipv4_state.status != ARES_SUCCESS && ipv4_state.status != ARES_EDESTRUCTION) {
-		result.reason = MapAresStatus(ipv4_state.status);
-	} else if (ipv6_state.status != ARES_SUCCESS && ipv6_state.status != ARES_EDESTRUCTION) {
-		result.reason = MapAresStatus(ipv6_state.status);
+	} else if (addrinfo_state.status != ARES_SUCCESS && addrinfo_state.status != ARES_EDESTRUCTION) {
+		result.reason = MapAresStatus(static_cast<ares_status_t>(addrinfo_state.status));
 	} else {
-		result.reason = mx_state.error.empty() ? "dns_no_records" : mx_state.error;
+		if (!mx_state.error.empty()) {
+			result.reason = mx_state.error;
+		} else if (!addrinfo_state.error.empty()) {
+			result.reason = addrinfo_state.error;
+		} else {
+			result.reason = "dns_no_records";
+		}
 	}
 	return result;
 }
