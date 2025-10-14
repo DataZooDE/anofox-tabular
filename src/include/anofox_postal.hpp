@@ -1,19 +1,25 @@
 #pragma once
 
-#include "duckdb/common/common.hpp"
+#include "duckdb/main/extension/extension_loader.hpp"
+#include "duckdb/main/client_context.hpp"
 
 #include <atomic>
 #include <mutex>
 #include <string>
-#include <utility>
 #include <vector>
 
 namespace duckdb {
-class ClientContext;
-class FileSystem;
-
 namespace anofox {
+
+void RegisterPostalOptions(ExtensionLoader &loader);
+void RegisterPostalFunctions(ExtensionLoader &loader);
+
 namespace postal {
+
+struct PostalComponent {
+	std::string label;
+	std::string value;
+};
 
 struct PostalStatus {
 	bool initialized = false;
@@ -21,37 +27,31 @@ struct PostalStatus {
 	std::string data_dir;
 };
 
-struct PostalComponent {
-	std::string label;
-	std::string value;
-};
-
 class PostalManager {
 public:
 	static PostalManager &Instance();
 
 	void EnsureInitialized(ClientContext &context);
+	void LoadData(ClientContext &context);
 	std::vector<PostalComponent> ParseAddress(const std::string &input);
 	std::vector<std::string> ExpandAddress(const std::string &input);
-
-	void LoadData(ClientContext &context);
 	PostalStatus GetStatus(ClientContext &context);
 
+	void SetDataDirectory(const std::string &path);
+	std::string GetDataDirectory() const;
+
 private:
-	PostalManager() noexcept = default;
+	PostalManager();
+	~PostalManager();
 
 	void Initialize(ClientContext &context);
-	void Teardown();
-	static void AtExitCallback();
-
-	std::string ResolveDataDir() const;
-	bool DataPresent(FileSystem &fs, const std::string &data_dir) const;
 
 	std::atomic<bool> initialized {false};
-	std::atomic<bool> data_downloaded {false};
-	std::once_flag init_flag;
+	std::mutex init_lock;
+	std::string data_directory;
 };
 
 } // namespace postal
+
 } // namespace anofox
 } // namespace duckdb

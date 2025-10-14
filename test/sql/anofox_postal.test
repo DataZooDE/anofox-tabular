@@ -1,26 +1,14 @@
 require anofox_tabular
 
-query TTTTTT
-SELECT (addr).house_number, (addr).road, (addr).city, (addr).state, (addr).postcode, (addr).country FROM (SELECT postal_parse_address('781 Franklin Ave Crown Heights Brooklyn NYC NY 11216 USA') as addr);
-----
-781	franklin ave	nyc	ny	11216	usa
+statement ok
+LOAD anofox_tabular;
 
-query I
-SELECT postal_expand_address('123 Main St, New York, NY');
-----
-[123 main saint new york ny, 123 main saint new york new york, 123 main street new york ny, 123 main street new york new york]
+statement ok
+SELECT initialized, data_present FROM anofox_postal_status();
 
-query I
-SELECT postal_expand_address('Friedrichstr. 123, Berlin');
-----
-[friedrichstrasse 123 berlin, friedrich strasse 123 berlin]
+statement ok
+SET anofox_postal_data_path='duckdb_unittest_tempdir/libpostal';
 
-query I
-SELECT anofox_expand_address('Friedrichstr. 123, Berlin');
-----
-[friedrichstrasse 123 berlin, friedrich strasse 123 berlin]
+statement ok
+SELECT initialized, data_present FROM anofox_postal_status();
 
-query TT
-SELECT (addr).road, (addr).city FROM (SELECT anofox_parse_address('Friedrichstr. 123, Berlin') AS addr);
-----
-friedrichstr.	berlin

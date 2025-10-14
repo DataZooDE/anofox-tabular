@@ -1,0 +1,38 @@
+require anofox_tabular
+
+statement ok
+SELECT * FROM anofox_phonenumber_status();
+
+statement ok
+SET anofox_phonenumber_default_region='US';
+
+query TTTTT
+SELECT (parsed).valid, (parsed).country_code, (parsed).national_number, (parsed).region, (parsed).type
+FROM (SELECT anofox_phonenumber_parse('+1 650-253-0000', NULL) AS parsed);
+----
+true	1	6502530000	US	fixed_line_or_mobile
+
+query TT
+SELECT * FROM anofox_phonenumber_status();
+----
+true	US
+
+query T
+SELECT anofox_phonenumber_format('6502530000', 'US', 'E164');
+----
++16502530000
+
+query T
+SELECT anofox_phonenumber_region('+44 20 8366 1177', NULL);
+----
+GB
+
+query T
+SELECT anofox_phonenumber_format('2025550179', NULL, 'national');
+----
+(202) 555-0179
+
+query T
+SELECT anofox_phonenumber_parse('2025550179', NULL).valid;
+----
+true

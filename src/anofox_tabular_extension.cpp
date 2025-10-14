@@ -1,12 +1,16 @@
 #define DUCKDB_EXTENSION_MAIN
 
 #include "anofox_tabular_extension.hpp"
-#include "anofox/postal/postal_functions.hpp"
+#include "anofox_postal.hpp"
+#include "anofox_phonenumber.hpp"
 
 namespace duckdb {
 
 void LoadInternal(ExtensionLoader &loader) {
+	anofox::RegisterPostalOptions(loader);
 	anofox::RegisterPostalFunctions(loader);
+	anofox::RegisterPhonenumberOptions(loader);
+	anofox::RegisterPhonenumberFunctions(loader);
 }
 
 void AnofoxTabularExtension::Load(ExtensionLoader &loader) {

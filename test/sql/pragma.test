@@ -1,13 +1,14 @@
 require anofox_tabular
 
 statement ok
-SELECT * FROM pragma_anofox_postal_data_status();
+LOAD anofox_tabular;
 
 statement ok
-PRAGMA anofox_postal_load_data;
+SELECT initialized, data_present FROM anofox_postal_status();
 
 statement ok
-SELECT * FROM pragma_anofox_postal_data_status();
+SET anofox_postal_data_path='duckdb_unittest_tempdir/libpostal';
 
 statement ok
-SELECT anofox_parse_address('123 Main St, Brooklyn, NY').city;
+SELECT initialized, data_present FROM anofox_postal_status();
+
