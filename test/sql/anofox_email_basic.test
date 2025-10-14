@@ -1,0 +1,46 @@
+require anofox_tabular
+
+statement ok
+LOAD anofox_tabular;
+
+query T
+SELECT anofox_email_is_valid('user@example.com');
+----
+true
+
+query TTT
+SELECT (result).valid, (result).stage, COALESCE((result).reason, '')
+FROM (SELECT anofox_email_validate('not-an-email') AS result);
+----
+false	regex	invalid_format
+
+statement ok
+SET anofox_email_regex_pattern='^user@[A-Za-z0-9.-]+$';
+
+query T
+SELECT anofox_email_is_valid('user@example.com');
+----
+true
+
+query T
+SELECT anofox_email_is_valid('person@example.com');
+----
+false
+
+query TTT
+SELECT (result).valid, (result).stage, COALESCE((result).reason, '') <> '' AS has_reason
+FROM (SELECT anofox_email_validate('user@invalid.invalid', 'dns') AS result);
+----
+false	dns	true
+
+query TTT
+SELECT (result).valid, (result).stage, COALESCE((result).reason, '')
+FROM (SELECT anofox_email_validate('user@localhost', 'smtp') AS result);
+----
+false	smtp	smtp_verification_not_implemented
+
+query TTT
+SELECT (result).valid, (result).stage, COALESCE((result).reason, '')
+FROM (SELECT anofox_email_validate('user@example.com', 'unknown') AS result);
+----
+false	unsupported	validation_not_implemented
