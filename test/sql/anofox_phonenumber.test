@@ -36,3 +36,25 @@ query T
 SELECT anofox_phonenumber_parse('2025550179', NULL).valid;
 ----
 true
+
+query T
+SELECT anofox_phonenumber_parse('not a number', NULL).valid;
+----
+false
+
+query T
+SELECT anofox_phonenumber_format('123', 'US', 'foobar');
+----
+123
+
+statement ok
+SET anofox_phonenumber_default_region='GB';
+
+query T
+SELECT (parsed).region
+FROM (SELECT anofox_phonenumber_parse('02083661177', NULL) AS parsed);
+----
+GB
+
+statement ok
+SET anofox_phonenumber_default_region='US';
