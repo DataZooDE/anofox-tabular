@@ -11,6 +11,13 @@ namespace duckdb {
 namespace anofox {
 namespace email {
 
+struct DnsOptions {
+	static constexpr uint32_t MIN_TIMEOUT_MS = 1;
+	static constexpr uint32_t MAX_TIMEOUT_MS = 5000;
+	uint32_t timeout_ms = 1000;
+	uint32_t tries = 1;
+};
+
 struct DnsResult {
 	bool success = false;
 	std::string reason;
@@ -19,15 +26,16 @@ struct DnsResult {
 
 class DnsResolver {
 public:
-	DnsResolver();
-	DnsResolver(uint32_t timeout_ms, uint32_t tries);
+	explicit DnsResolver(const DnsOptions &options = DnsOptions());
 
 	DnsResult Resolve(const std::string &domain);
 
 private:
-	uint32_t timeout_ms;
-	uint32_t tries;
+	DnsOptions options;
 };
+
+std::string DnsStatusToReason(int status);
+bool EnsureAresInitialized(std::string &error_reason);
 
 } // namespace email
 } // namespace anofox

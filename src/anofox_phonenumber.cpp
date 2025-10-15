@@ -11,6 +11,8 @@
 #include "duckdb/main/config.hpp"
 #include "duckdb/parser/parsed_data/create_scalar_function_info.hpp"
 
+#include "anofox_trace.hpp"
+
 #include <mutex>
 #include <string>
 #include <phonenumbers/phonenumber.pb.h>
@@ -83,12 +85,15 @@ PhoneNumberManager::~PhoneNumberManager() {
 
 void PhoneNumberManager::EnsureInitialized() {
 	if (!initialized.load()) {
+		AnofoxTrace(AnofoxLogLevel::Debug, "PhoneNumber EnsureInitialized triggered");
 		Initialize();
 	}
 }
 
 PhoneNumberParts PhoneNumberManager::Parse(const std::string &raw_number, const std::string &region_hint) {
 	EnsureInitialized();
+	AnofoxTrace(AnofoxLogLevel::Debug,
+	           "PhoneNumber parse start number=" + raw_number + " region_hint=" + region_hint);
 	PhoneNumber parsed;
 	auto &util = GetUtil();
 	PhoneNumberParts parts;
@@ -97,6 +102,9 @@ PhoneNumberParts PhoneNumberManager::Parse(const std::string &raw_number, const 
 	auto status = util.Parse(raw_number, region, &parsed);
 	parts.valid = status == PhoneNumberUtil::NO_PARSING_ERROR;
 	if (!parts.valid) {
+		AnofoxTrace(AnofoxLogLevel::Debug,
+		           "PhoneNumber parse failed status=" + std::to_string(status) + " number=" + raw_number +
+		               " region=" + region);
 		return parts;
 	}
 
@@ -106,6 +114,8 @@ PhoneNumberParts PhoneNumberManager::Parse(const std::string &raw_number, const 
 	util.GetRegionCodeForNumber(parsed, &region_code);
 	parts.region_code = region_code;
 	parts.type = ToTypeString(util.GetNumberType(parsed));
+	AnofoxTrace(AnofoxLogLevel::Debug,
+	           "PhoneNumber parse success region=" + parts.region_code + " type=" + parts.type);
 	return parts;
 }
 
@@ -116,27 +126,37 @@ std::string PhoneNumberManager::Format(const std::string &raw_number, const std:
 	auto &util = GetUtil();
 	auto region = region_hint.empty() ? GetDefaultRegion() : StringUtil::Upper(region_hint);
 	if (util.Parse(raw_number, region, &parsed) != PhoneNumberUtil::NO_PARSING_ERROR) {
+		AnofoxTrace(AnofoxLogLevel::Debug,
+		           "PhoneNumber format parse failed number=" + raw_number + " region=" + region);
 		throw InvalidInputException("Invalid phone number: %s", raw_number);
 	}
 
 	std::string formatted;
 	PhoneNumberUtil::PhoneNumberFormat lib_format = PhoneNumberUtil::PhoneNumberFormat::NATIONAL;
+	std::string format_label = "NATIONAL";
 	switch (format_option) {
 	case PhoneNumberFormatOption::E164:
 		lib_format = PhoneNumberUtil::PhoneNumberFormat::E164;
+		format_label = "E164";
 		break;
 	case PhoneNumberFormatOption::INTERNATIONAL:
 		lib_format = PhoneNumberUtil::PhoneNumberFormat::INTERNATIONAL;
+		format_label = "INTERNATIONAL";
 		break;
 	case PhoneNumberFormatOption::RFC3966:
 		lib_format = PhoneNumberUtil::PhoneNumberFormat::RFC3966;
+		format_label = "RFC3966";
 		break;
 	case PhoneNumberFormatOption::NATIONAL:
 	default:
 		lib_format = PhoneNumberUtil::PhoneNumberFormat::NATIONAL;
+		format_label = "NATIONAL";
 		break;
 	}
 	util.Format(parsed, lib_format, &formatted);
+	AnofoxTrace(AnofoxLogLevel::Debug,
+	           "PhoneNumber format success number=" + raw_number + " format=" + format_label + " output=" +
+	               formatted);
 	return formatted;
 }
 
@@ -157,6 +177,7 @@ void PhoneNumberManager::SetDefaultRegion(const std::string &region) {
 	EnsureInitialized();
 	std::lock_guard<std::mutex> lock(RegionMutex());
 	default_region = StringUtil::Upper(region);
+	AnofoxTrace(AnofoxLogLevel::Debug, "PhoneNumber default region set to " + default_region);
 }
 
 std::string PhoneNumberManager::GetDefaultRegion() const {
@@ -174,6 +195,7 @@ PhoneNumberStatus PhoneNumberManager::GetStatus() const {
 void PhoneNumberManager::Initialize() {
 	(void)GetUtil();
 	initialized = true;
+	AnofoxTrace(AnofoxLogLevel::Debug, "PhoneNumber initialization complete");
 }
 
 PhoneNumberFormatOption ParseFormatOption(const std::string &format_str) {

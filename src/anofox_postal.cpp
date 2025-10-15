@@ -11,10 +11,14 @@
 #include "duckdb/main/config.hpp"
 #include "duckdb/parser/parsed_data/create_scalar_function_info.hpp"
 
+#include "anofox_trace.hpp"
+#include "duckdb/common/string_util.hpp"
+
 #include <cstdlib>
 #include <fstream>
 #include <libpostal/libpostal.h>
 #include <mutex>
+#include <string>
 
 namespace duckdb {
 namespace anofox {
@@ -25,6 +29,8 @@ constexpr const char *POSTAL_BASE_URL = "https://public-read-libpostal-data.s3.a
 const std::vector<std::string> POSTAL_ASSETS = {"language_classifier.tar.gz", "libpostal_data.tar.gz",
                                                 "parser.tar.gz"};
 constexpr const char *DEFAULT_POSTAL_DIR = ".duckdb/extensions/libpostal";
+constexpr uint32_t POSTAL_CURL_CONNECT_TIMEOUT_SECONDS = 3;
+constexpr uint32_t POSTAL_CURL_MAX_TIME_SECONDS = 10;
 } // namespace
 
 PostalManager &PostalManager::Instance() {
@@ -43,14 +49,17 @@ PostalManager::~PostalManager() {
 
 void PostalManager::EnsureInitialized(ClientContext &context) {
 	if (!initialized.load()) {
+		AnofoxTrace(AnofoxLogLevel::Debug, "Postal EnsureInitialized triggered");
 		std::lock_guard<std::mutex> lock(init_lock);
 		if (!initialized.load()) {
 			Initialize(context);
 		}
 	}
 	if (!initialized.load()) {
+		AnofoxTrace(AnofoxLogLevel::Error, "Postal initialization failed");
 		throw IOException("Failed to initialize libpostal. Use anofox_postal_load_data() to download assets.");
 	}
+AnofoxTrace(AnofoxLogLevel::Debug, "Postal already initialized");
 }
 
 void PostalManager::SetDataDirectory(const std::string &path) {
@@ -59,6 +68,8 @@ void PostalManager::SetDataDirectory(const std::string &path) {
 		throw InvalidInputException("Cannot change postal data directory after initialization");
 	}
 	data_directory = path.empty() ? DEFAULT_POSTAL_DIR : path;
+	AnofoxTrace(AnofoxLogLevel::Debug,
+           "Postal data directory set to " + data_directory);
 }
 
 std::string PostalManager::GetDataDirectory() const {
@@ -69,8 +80,11 @@ std::vector<PostalComponent> PostalManager::ParseAddress(const std::string &inpu
 	libpostal_address_parser_options_t options = libpostal_get_address_parser_default_options();
 	libpostal_address_parser_response_t *parsed = libpostal_parse_address(const_cast<char *>(input.c_str()), options);
 	if (!parsed) {
+		AnofoxTrace(AnofoxLogLevel::Warn, "Postal parse failed");
 		throw IOException("libpostal_parse_address failed");
 	}
+	AnofoxTrace(AnofoxLogLevel::Debug,
+	           "Postal parsed address components=" + std::to_string(parsed->num_components) + " ");
 
 	std::vector<PostalComponent> components;
 	components.reserve(parsed->num_components);
@@ -86,8 +100,11 @@ std::vector<std::string> PostalManager::ExpandAddress(const std::string &input) 
 	size_t num_expansions = 0;
 	char **expansions = libpostal_expand_address(const_cast<char *>(input.c_str()), options, &num_expansions);
 	if (!expansions) {
+		AnofoxTrace(AnofoxLogLevel::Warn, "Postal expand failed");
 		throw IOException("libpostal_expand_address failed");
 	}
+	AnofoxTrace(AnofoxLogLevel::Debug,
+	           "Postal expand generated " + std::to_string(num_expansions) + " variants");
 
 	std::vector<std::string> result;
 	result.reserve(num_expansions);
@@ -111,18 +128,25 @@ void PostalManager::LoadData(ClientContext &context) {
 	for (const auto &asset : POSTAL_ASSETS) {
 		auto url = std::string(POSTAL_BASE_URL) + asset;
 		auto destination = fs.JoinPath(data_dir, asset);
+		AnofoxTrace(AnofoxLogLevel::Info, "Postal download " + url);
 
-		std::string curl_command = "curl -L \"" + url + "\" -o \"" + destination + "\"";
+		std::string curl_command = "curl -L --fail --silent --show-error"
+		                           " --connect-timeout " + std::to_string(POSTAL_CURL_CONNECT_TIMEOUT_SECONDS) +
+		                           " --max-time " + std::to_string(POSTAL_CURL_MAX_TIME_SECONDS) + " \"" + url +
+		                           "\" -o \"" + destination + "\"";
 		if (std::system(curl_command.c_str()) != 0) {
+			AnofoxTrace(AnofoxLogLevel::Error, "Postal download failed for " + url);
 			throw IOException("Failed to download '" + asset + "' from " + url);
 		}
 
 		std::string extract_command = "tar -xzf \"" + destination + "\" -C \"" + data_dir + "\"";
 		if (std::system(extract_command.c_str()) != 0) {
+			AnofoxTrace(AnofoxLogLevel::Error, "Postal extract failed for " + destination);
 			throw IOException("Failed to extract '" + destination + "'");
 		}
 		fs.RemoveFile(destination);
 	}
+	AnofoxTrace(AnofoxLogLevel::Info, "Postal data download complete");
 }
 
 PostalStatus PostalManager::GetStatus(ClientContext &context) {
@@ -152,15 +176,20 @@ void PostalManager::Initialize(ClientContext &context) {
 	auto data_dir = status.data_dir;
 	auto data_dir_c = const_cast<char *>(data_dir.c_str());
 	if (!libpostal_setup_datadir(data_dir_c) || !libpostal_setup()) {
+		AnofoxTrace(AnofoxLogLevel::Error, "Postal setup core failed path=" + data_dir + " ");
 		throw IOException("Failed to initialize libpostal core data in '" + data_dir + "'");
 	}
 	if (!libpostal_setup_parser_datadir(data_dir_c) || !libpostal_setup_parser()) {
+		AnofoxTrace(AnofoxLogLevel::Error, "Postal setup parser failed path=" + data_dir);
 		throw IOException("Failed to initialize libpostal parser data in '" + data_dir + "'");
 	}
 	if (!libpostal_setup_language_classifier_datadir(data_dir_c) || !libpostal_setup_language_classifier()) {
+		AnofoxTrace(AnofoxLogLevel::Error,
+		           "Postal setup language classifier failed path=" + data_dir);
 		throw IOException("Failed to initialize libpostal language classifier data in '" + data_dir + "'");
 	}
 	initialized = true;
+	AnofoxTrace(AnofoxLogLevel::Info, "Postal initialization complete");
 }
 
 } // namespace postal

@@ -8,11 +8,25 @@ SELECT anofox_email_is_valid('user@example.com');
 ----
 true
 
+query I
+SELECT COUNT(*)
+FROM anofox_email_config()
+WHERE key IN ('dns_timeout_ms', 'dns_tries', 'smtp_port', 'smtp_connect_timeout_ms', 'smtp_read_timeout_ms',
+              'smtp_helo_domain', 'smtp_mail_from', 'trace_enabled', 'trace_level');
+----
+9
+
 query TTT
 SELECT (result).valid, (result).stage, COALESCE((result).reason, '')
 FROM (SELECT anofox_email_validate('not-an-email') AS result);
 ----
 false	regex	invalid_format
+
+statement ok
+SET anofox_trace_enabled=true;
+
+statement ok
+SET anofox_trace_level='debug';
 
 statement ok
 SET anofox_email_regex_pattern='^user@[A-Za-z0-9.-]+$';
@@ -33,11 +47,17 @@ FROM (SELECT anofox_email_validate('user@invalid.invalid', 'dns') AS result);
 ----
 false	dns	true
 
+statement ok
+SET anofox_email_smtp_connect_timeout_ms=50;
+
+statement ok
+SET anofox_email_smtp_read_timeout_ms=50;
+
 query TTT
-SELECT (result).valid, (result).stage, COALESCE((result).reason, '')
+SELECT (result).valid, (result).stage, COALESCE((result).reason, '') <> '' AS has_reason
 FROM (SELECT anofox_email_validate('user@localhost', 'smtp') AS result);
 ----
-false	smtp	smtp_verification_not_implemented
+false	smtp	true
 
 query TTT
 SELECT (result).valid, (result).stage, COALESCE((result).reason, '')

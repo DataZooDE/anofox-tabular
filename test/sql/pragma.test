@@ -6,9 +6,13 @@ LOAD anofox_tabular;
 statement ok
 SELECT initialized, data_present FROM anofox_postal_status();
 
+query T
+SELECT anofox_email_is_valid('user@example.com');
+----
+true
+
 statement ok
 SET anofox_postal_data_path='duckdb_unittest_tempdir/libpostal';
 
 statement ok
 SELECT initialized, data_present FROM anofox_postal_status();
-

@@ -7,11 +7,14 @@
 #include <chrono>
 #include <cerrno>
 #include <cstring>
+#include <string>
 #include <limits>
 #include <mutex>
 #include <thread>
 #include <unordered_map>
 #include <vector>
+#include "anofox_email_logging.hpp"
+#include "duckdb/common/string_util.hpp"
 
 #ifdef _WIN32
 #include <winsock2.h>
@@ -31,6 +34,8 @@ namespace anofox {
 namespace email {
 
 namespace {
+
+using Clock = std::chrono::steady_clock;
 
 constexpr uint32_t DEFAULT_TIMEOUT_MS = 1000;
 constexpr uint32_t DEFAULT_TRIES = 1;
@@ -157,7 +162,21 @@ void OnAddrInfo(void *arg, int status, int timeouts, struct ares_addrinfo *resul
 
 bool RunEventLoop(ares_channel_t *channel, SocketTracker &tracker, int &pending, std::string &error_reason,
                   uint32_t timeout_ms) {
+	if (timeout_ms == 0) {
+		timeout_ms = DnsOptions::MIN_TIMEOUT_MS;
+	}
+	auto deadline = Clock::now() + std::chrono::milliseconds(timeout_ms);
 	while (pending > 0) {
+		auto now = Clock::now();
+		if (now >= deadline) {
+			error_reason = "dns_timeout";
+			return false;
+		}
+		auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now);
+		if (remaining.count() <= 0) {
+			remaining = std::chrono::milliseconds(DnsOptions::MIN_TIMEOUT_MS);
+		}
+
 		fd_set read_fds;
 		fd_set write_fds;
 		FD_ZERO(&read_fds);
@@ -179,13 +198,14 @@ bool RunEventLoop(ares_channel_t *channel, SocketTracker &tracker, int &pending,
 			}
 		}
 
-		struct timeval default_timeout;
+		struct timeval capped_timeout;
+		capped_timeout.tv_sec = static_cast<long>(remaining.count() / 1000);
+		capped_timeout.tv_usec = static_cast<long>((remaining.count() % 1000) * 1000);
+
 		struct timeval tv;
-		struct timeval *tv_ptr = ares_timeout(channel, nullptr, &tv);
+		struct timeval *tv_ptr = ares_timeout(channel, &capped_timeout, &tv);
 		if (!tv_ptr) {
-			default_timeout.tv_sec = static_cast<long>(timeout_ms / 1000);
-			default_timeout.tv_usec = static_cast<long>(timeout_ms % 1000) * 1000;
-			tv_ptr = &default_timeout;
+			tv_ptr = &capped_timeout;
 		}
 
 		int select_result = 0;
@@ -193,10 +213,16 @@ bool RunEventLoop(ares_channel_t *channel, SocketTracker &tracker, int &pending,
 			int nfds = static_cast<int>(max_fd) + 1;
 			select_result = select(nfds, &read_fds, &write_fds, nullptr, tv_ptr);
 		} else {
-			auto sleep_ms =
-			    static_cast<uint32_t>(tv_ptr->tv_sec * 1000 + static_cast<long>(tv_ptr->tv_usec / 1000));
+			auto sleep_ms = static_cast<uint32_t>(tv_ptr->tv_sec * 1000 + static_cast<long>(tv_ptr->tv_usec / 1000));
+			auto capped_ms = static_cast<uint32_t>(remaining.count());
 			if (sleep_ms == 0) {
-				sleep_ms = timeout_ms;
+				sleep_ms = capped_ms;
+			}
+			if (sleep_ms > capped_ms) {
+				sleep_ms = capped_ms;
+			}
+			if (sleep_ms == 0) {
+				sleep_ms = DnsOptions::MIN_TIMEOUT_MS;
 			}
 			std::this_thread::sleep_for(std::chrono::milliseconds(sleep_ms));
 		}
@@ -243,7 +269,7 @@ bool RunEventLoop(ares_channel_t *channel, SocketTracker &tracker, int &pending,
 	return true;
 }
 
-bool EnsureLibraryInitialized(std::string &error_reason) {
+bool EnsureLibraryInitializedInternal(std::string &error_reason) {
 	static std::once_flag init_flag;
 	static int init_status = std::numeric_limits<int>::min();
 	static std::string init_error;
@@ -280,37 +306,63 @@ bool EnsureLibraryInitialized(std::string &error_reason) {
 
 } // namespace
 
-DnsResolver::DnsResolver() : timeout_ms(DEFAULT_TIMEOUT_MS), tries(DEFAULT_TRIES) {
+std::string DnsStatusToReason(int status) {
+	return MapAresStatus(status);
 }
 
-DnsResolver::DnsResolver(uint32_t timeout_ms_p, uint32_t tries_p)
-    : timeout_ms(timeout_ms_p ? timeout_ms_p : DEFAULT_TIMEOUT_MS), tries(tries_p ? tries_p : DEFAULT_TRIES) {
+bool EnsureAresInitialized(std::string &error_reason) {
+	return EnsureLibraryInitializedInternal(error_reason);
+}
+
+DnsResolver::DnsResolver(const DnsOptions &options_p) : options(options_p) {
+	if (options.timeout_ms == 0) {
+		options.timeout_ms = DEFAULT_TIMEOUT_MS;
+	}
+	if (options.timeout_ms < DnsOptions::MIN_TIMEOUT_MS) {
+		options.timeout_ms = DnsOptions::MIN_TIMEOUT_MS;
+	}
+	if (options.timeout_ms > DnsOptions::MAX_TIMEOUT_MS) {
+		options.timeout_ms = DnsOptions::MAX_TIMEOUT_MS;
+	}
+	if (options.tries == 0) {
+		options.tries = DEFAULT_TRIES;
+	}
+	options.timeout_ms = std::min(std::max(options.timeout_ms, DnsOptions::MIN_TIMEOUT_MS), DnsOptions::MAX_TIMEOUT_MS);
 }
 
 DnsResult DnsResolver::Resolve(const std::string &domain) {
 	DnsResult result;
+	EmailTrace(AnofoxLogLevel::Info,
+	           "DNS Resolve begin domain=" + domain + " timeout_ms=" + std::to_string(options.timeout_ms) +
+	               " tries=" + std::to_string(options.tries));
 	if (domain.empty()) {
 		result.reason = "dns_empty_domain";
+		EmailTrace(AnofoxLogLevel::Warn, "DNS early exit: empty domain");
 		return result;
 	}
 
 	std::string init_error;
-	if (!EnsureLibraryInitialized(init_error)) {
+	if (!EnsureAresInitialized(init_error)) {
 		result.reason = init_error.empty() ? "dns_init_failed" : init_error;
+		EmailTrace(AnofoxLogLevel::Warn, "DNS init failure reason=" + result.reason);
 		return result;
 	}
 
 	SocketTracker tracker;
 
-	ares_options options;
-	std::memset(&options, 0, sizeof(options));
-	options.timeout = static_cast<int>(timeout_ms);
-	options.tries = static_cast<int>(tries);
-	options.sock_state_cb = OnSocketState;
-	options.sock_state_cb_data = &tracker;
+	ares_options resolver_options;
+	std::memset(&resolver_options, 0, sizeof(resolver_options));
+	uint32_t per_try_timeout = options.timeout_ms < DnsOptions::MIN_TIMEOUT_MS
+	                               ? DnsOptions::MIN_TIMEOUT_MS
+	                               : std::min(options.timeout_ms, DnsOptions::MAX_TIMEOUT_MS);
+	resolver_options.timeout = static_cast<int>(per_try_timeout);
+	options.timeout_ms = per_try_timeout;
+	resolver_options.tries = static_cast<int>(options.tries);
+	resolver_options.sock_state_cb = OnSocketState;
+	resolver_options.sock_state_cb_data = &tracker;
 
 	ares_channel_t *channel = nullptr;
-	int init_rc = ares_init_options(&channel, &options,
+	int init_rc = ares_init_options(&channel, &resolver_options,
 	                                ARES_OPT_TIMEOUTMS | ARES_OPT_TRIES | ARES_OPT_SOCK_STATE_CB);
 	if (init_rc != ARES_SUCCESS) {
 		result.reason = MapAresStatus(init_rc);
@@ -341,18 +393,30 @@ DnsResult DnsResolver::Resolve(const std::string &domain) {
 	ares_getaddrinfo(channel, domain.c_str(), nullptr, &hints, OnAddrInfo, &addrinfo_state);
 
 	std::string loop_error;
-	bool loop_ok = RunEventLoop(channel, tracker, pending, loop_error, timeout_ms);
+	uint32_t loop_timeout_ms = DnsOptions::MAX_TIMEOUT_MS;
+	auto tries = std::max<uint32_t>(options.tries, 1);
+	auto total_timeout =
+	    static_cast<uint64_t>(per_try_timeout) * static_cast<uint64_t>(tries);
+	if (total_timeout < static_cast<uint64_t>(DnsOptions::MIN_TIMEOUT_MS)) {
+		total_timeout = DnsOptions::MIN_TIMEOUT_MS;
+	}
+	if (total_timeout < loop_timeout_ms) {
+		loop_timeout_ms = static_cast<uint32_t>(total_timeout);
+	}
+	bool loop_ok = RunEventLoop(channel, tracker, pending, loop_error, loop_timeout_ms);
 	if (channel) {
 		ares_destroy(channel);
 	}
 
 	if (!loop_ok) {
 		result.reason = loop_error.empty() ? "dns_loop_failure" : loop_error;
+		EmailTrace(AnofoxLogLevel::Warn, "DNS loop failure reason=" + result.reason);
 		return result;
 	}
 
 	if (pending != 0) {
 		result.reason = "dns_pending_incomplete";
+		EmailTrace(AnofoxLogLevel::Warn, "DNS incomplete pending=" + std::to_string(pending));
 		return result;
 	}
 
@@ -369,6 +433,8 @@ DnsResult DnsResolver::Resolve(const std::string &domain) {
 		for (auto &entry : mx_state.records) {
 			result.mx_hosts.emplace_back(entry.second);
 		}
+		EmailTrace(AnofoxLogLevel::Info,
+		           "DNS MX success records=" + std::to_string(result.mx_hosts.size()));
 		return result;
 	}
 
@@ -377,10 +443,14 @@ DnsResult DnsResolver::Resolve(const std::string &domain) {
 
 	if (addrinfo_success) {
 		result.success = true;
-		result.mx_hosts.emplace_back(domain);
 		for (auto &address : addrinfo_state.addresses) {
 			result.mx_hosts.emplace_back(address);
 		}
+		if (result.mx_hosts.empty()) {
+			result.mx_hosts.emplace_back(domain);
+		}
+		EmailTrace(AnofoxLogLevel::Info,
+		           "DNS addrinfo fallback success count=" + std::to_string(result.mx_hosts.size()));
 		return result;
 	}
 
@@ -388,7 +458,7 @@ DnsResult DnsResolver::Resolve(const std::string &domain) {
 	if (mx_state.status != ARES_SUCCESS) {
 		result.reason = MapAresStatus(mx_state.status);
 	} else if (addrinfo_state.status != ARES_SUCCESS && addrinfo_state.status != ARES_EDESTRUCTION) {
-		result.reason = MapAresStatus(static_cast<ares_status_t>(addrinfo_state.status));
+		result.reason = MapAresStatus(addrinfo_state.status);
 	} else {
 		if (!mx_state.error.empty()) {
 			result.reason = mx_state.error;
@@ -398,6 +468,7 @@ DnsResult DnsResolver::Resolve(const std::string &domain) {
 			result.reason = "dns_no_records";
 		}
 	}
+	EmailTrace(AnofoxLogLevel::Warn, "DNS failure reason=" + result.reason);
 	return result;
 }
 

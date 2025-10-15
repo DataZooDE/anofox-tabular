@@ -1,7 +1,9 @@
 {
         "dependencies": [
                 "openssl",
-                "libphonenumber"
+                "libphonenumber",
+                "c-ares",
+                "spdlog"
         ],
         "vcpkg-configuration": {
                 "overlay-ports": [
