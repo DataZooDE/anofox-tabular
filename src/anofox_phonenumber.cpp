@@ -404,9 +404,9 @@ unique_ptr<GlobalTableFunctionState> PhoneStatusInit(ClientContext &, TableFunct
 unique_ptr<FunctionData> PhoneStatusBind(ClientContext &, TableFunctionBindInput &, vector<LogicalType> &return_types,
                                          vector<string> &names) {
 	names.emplace_back("initialized");
-	return_types.emplace_back(LogicalType::BOOLEAN);
+	return_types.emplace_back(LogicalTypeId::BOOLEAN);
 	names.emplace_back("default_region");
-	return_types.emplace_back(LogicalType::VARCHAR);
+	return_types.emplace_back(LogicalTypeId::VARCHAR);
 	return nullptr;
 }
 
@@ -424,12 +424,12 @@ void PhoneStatusFunction(ClientContext &, TableFunctionInput &input, DataChunk &
 }
 
 ScalarFunction CreateParseScalar(const string &name) {
-	ScalarFunction function(name, {LogicalType::VARCHAR, LogicalType::VARCHAR},
-	                        LogicalType::STRUCT({{"valid", LogicalType::BOOLEAN},
-	                                             {"country_code", LogicalType::INTEGER},
-	                                             {"national_number", LogicalType::VARCHAR},
-	                                             {"region", LogicalType::VARCHAR},
-	                                             {"type", LogicalType::VARCHAR}}),
+	ScalarFunction function(name, {LogicalTypeId::VARCHAR, LogicalTypeId::VARCHAR},
+	                        LogicalType::STRUCT({{"valid", LogicalTypeId::BOOLEAN},
+	                                             {"country_code", LogicalTypeId::INTEGER},
+	                                             {"national_number", LogicalTypeId::VARCHAR},
+	                                             {"region", LogicalTypeId::VARCHAR},
+	                                             {"type", LogicalTypeId::VARCHAR}}),
 	                        PhoneParseFunction);
 	function.stability = FunctionStability::CONSISTENT;
 	function.null_handling = FunctionNullHandling::SPECIAL_HANDLING;
@@ -437,15 +437,15 @@ ScalarFunction CreateParseScalar(const string &name) {
 }
 
 ScalarFunction CreateFormatScalar(const string &name) {
-	ScalarFunction function(name, {LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR},
-	                        LogicalType::VARCHAR, PhoneFormatFunction);
+	ScalarFunction function(name, {LogicalTypeId::VARCHAR, LogicalTypeId::VARCHAR, LogicalTypeId::VARCHAR},
+	                        LogicalTypeId::VARCHAR, PhoneFormatFunction);
 	function.stability = FunctionStability::CONSISTENT;
 	function.null_handling = FunctionNullHandling::SPECIAL_HANDLING;
 	return function;
 }
 
 ScalarFunction CreateRegionScalar(const string &name) {
-	ScalarFunction function(name, {LogicalType::VARCHAR, LogicalType::VARCHAR}, LogicalType::VARCHAR,
+	ScalarFunction function(name, {LogicalTypeId::VARCHAR, LogicalTypeId::VARCHAR}, LogicalTypeId::VARCHAR,
 	                        PhoneRegionFunction);
 	function.stability = FunctionStability::CONSISTENT;
 	function.null_handling = FunctionNullHandling::SPECIAL_HANDLING;
@@ -463,7 +463,7 @@ void RegisterPhonenumberOptions(ExtensionLoader &loader) {
 	auto &config = DBConfig::GetConfig(loader.GetDatabaseInstance());
 	config.AddExtensionOption("anofox_phonenumber_default_region",
 	                          "Default region code used when the region hint is NULL",
-	                          LogicalType::VARCHAR, Value("US"), SetPhonenumberDefaultRegionOption);
+	                          LogicalTypeId::VARCHAR, Value("US"), SetPhonenumberDefaultRegionOption);
 }
 
 void RegisterPhonenumberFunctions(ExtensionLoader &loader) {

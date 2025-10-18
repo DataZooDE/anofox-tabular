@@ -1,42 +1,12 @@
 #include "anofox_trace.hpp"
 
-#ifndef SPDLOG_HEADER_ONLY
-#define SPDLOG_HEADER_ONLY
-#endif
-#ifdef SPDLOG_COMPILED_LIB
-#undef SPDLOG_COMPILED_LIB
-#endif
-#ifdef SPDLOG_FMT_EXTERNAL
-#undef SPDLOG_FMT_EXTERNAL
-#endif
-#include <spdlog/spdlog.h>
+#include <iostream>
 #include <string>
 
 namespace duckdb {
 namespace anofox {
 
 namespace {
-
-spdlog::level::level_enum ToSpdLevel(AnofoxLogLevel level) {
-	switch (level) {
-	case AnofoxLogLevel::Trace:
-		return spdlog::level::trace;
-	case AnofoxLogLevel::Debug:
-		return spdlog::level::debug;
-	case AnofoxLogLevel::Info:
-		return spdlog::level::info;
-	case AnofoxLogLevel::Warn:
-		return spdlog::level::warn;
-	case AnofoxLogLevel::Error:
-		return spdlog::level::err;
-	case AnofoxLogLevel::Critical:
-		return spdlog::level::critical;
-	case AnofoxLogLevel::Off:
-		return spdlog::level::off;
-	default:
-		return spdlog::level::info;
-	}
-}
 
 std::string LevelToString(AnofoxLogLevel level) {
 	switch (level) {
@@ -93,7 +63,7 @@ bool AnofoxTraceConfig::ShouldLog(AnofoxLogLevel target) const {
 	if (current == AnofoxLogLevel::Off) {
 		return false;
 	}
-	return ToSpdLevel(target) >= ToSpdLevel(current);
+	return static_cast<int>(target) >= static_cast<int>(current);
 }
 
 std::string AnofoxTraceConfig::GetLevelString() const {
@@ -108,7 +78,7 @@ void AnofoxTrace(AnofoxLogLevel level, const std::string &message) {
 	if (level == AnofoxLogLevel::Off) {
 		return;
 	}
-	spdlog::log(ToSpdLevel(level), "[anofox] {}", message);
+	std::cerr << "[anofox] " << message << std::endl;
 }
 
 } // namespace anofox

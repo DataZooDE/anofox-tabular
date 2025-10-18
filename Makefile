@@ -10,7 +10,6 @@ endif
 # Configuration of extension
 EXT_NAME=anofox_tabular
 EXT_CONFIG=${PROJ_DIR}extension_config.cmake
-EXTENSION_STATIC_BUILD=0
 
 # Include the Makefile from extension-ci-tools
 include extension-ci-tools/makefiles/duckdb_extension.Makefile

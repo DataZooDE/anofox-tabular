@@ -5,6 +5,7 @@ Anofox Tabular enriches DuckDB with production‑ready validation primitives fo
 - **Email validation** with regex, DNS and SMTP checks, including configurable timeouts and structured results.
 - **Postal parsing & expansion** powered by libpostal, plus helpers to manage the required data bundles.
 - **Phone number parsing/formatting** backed by libphonenumber for international coverage.
+- **Data diffing** for comparing tables and identifying changes, inspired by Datafold's data-diff tool.
 - **Centralised tracing** (via spdlog) that can be toggled and levelled from SQL to aid debugging.
 
 The project builds on DuckDB’s extension template but replaces the placeholder code with a realistic data quality toolkit.
@@ -124,6 +125,56 @@ CALL anofox_postal_load_data(); -- returns true on success
 ```
 
 Ensure the DuckDB process has write permissions in the target directory.
+
+## Data Diffing
+
+Anofox Tabular provides SQL-based data diffing capabilities for comparing tables and identifying differences. This feature is inspired by [Datafold's data-diff](https://www.datafold.com/data-diff) tool.
+
+### Quick Example
+
+```sql
+-- Compare two tables and show differences
+WITH diff_result AS (
+    SELECT
+        CASE
+            WHEN s.id IS NULL THEN 'added'
+            WHEN t.id IS NULL THEN 'removed'
+            WHEN hash(s.id, s.name, s.value) != hash(t.id, t.name, t.value) THEN 'changed'
+            ELSE 'unchanged'
+        END AS diff_type,
+        COALESCE(s.id, t.id) AS id,
+        COALESCE(t.name, s.name) AS name,
+        COALESCE(t.value, s.value) AS value
+    FROM source_table s
+    FULL OUTER JOIN target_table t
+    ON s.id = t.id
+)
+SELECT * FROM diff_result WHERE diff_type != 'unchanged';
+```
+
+### Features
+
+- **Simple SQL Queries**: Uses DuckDB's FULL OUTER JOIN for efficient comparison
+- **Multiple Primary Keys**: Supports both single and compound primary keys
+- **Column Selection**: Compare all columns or just specific ones for better performance
+- **Summary Statistics**: Get counts of added, removed, changed, and unchanged rows
+- **Best Practices**: Documented patterns for migration validation, regression testing, and change detection
+
+### Documentation
+
+For comprehensive examples and best practices, see [`docs/DATA_DIFF_GUIDE.md`](docs/DATA_DIFF_GUIDE.md), which includes:
+- Single and compound primary key comparisons
+- Column-specific diffing for performance
+- Summary statistics queries
+- Data migration validation examples
+- Regression testing patterns
+- Incremental change detection
+- Performance optimization tips
+
+### Roadmap
+
+**Phase 1 (Complete)**: SQL-based implementation with comprehensive examples
+**Phase 2 (Planned)**: C++ table-in-out functions with bisection algorithm for cross-database comparison
 
 ## Development & Testing
 

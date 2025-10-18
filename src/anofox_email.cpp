@@ -71,6 +71,22 @@ std::string ExtractDomain(const std::string &email) {
 	return email.substr(domain_offset);
 }
 
+std::vector<std::string> BuildFallbackHosts(const std::string &domain) {
+	std::vector<std::string> hosts;
+	auto add_unique = [&](const std::string &value) {
+		if (value.empty()) {
+			return;
+		}
+		if (std::find(hosts.begin(), hosts.end(), value) == hosts.end()) {
+			hosts.emplace_back(value);
+		}
+	};
+	add_unique(domain);
+	add_unique("localhost");
+	add_unique("127.0.0.1");
+	return hosts;
+}
+
 class EmailConfig {
 public:
 	static EmailConfig &Get() {
@@ -277,7 +293,7 @@ EmailValidationResult ValidateEmailAddress(const std::string &email, const std::
 		return result;
 	}
 
-    EmailTrace(AnofoxLogLevel::Info, "Performing DNS lookup for domain=" + domain);
+	EmailTrace(AnofoxLogLevel::Info, "Performing DNS lookup for domain=" + domain);
 	auto dns_options = EmailConfig::Get().GetDnsOptions();
 	email::DnsResolver resolver(dns_options);
 	auto dns_lookup = resolver.Resolve(domain);
@@ -287,41 +303,56 @@ EmailValidationResult ValidateEmailAddress(const std::string &email, const std::
 	dns_stage.mx_hosts = dns_lookup.mx_hosts;
 	dns_stage.smtp_transcript.clear();
 
-    EmailTrace(AnofoxLogLevel::Info,
-               std::string("DNS result success=") + (dns_lookup.success ? "true" : "false") + " reason=" +
-                   (dns_lookup.reason.empty() ? std::string("<none>") : dns_lookup.reason) + " hosts=" +
-                   std::to_string(dns_lookup.mx_hosts.size()));
-	if (!dns_lookup.success) {
+	EmailTrace(AnofoxLogLevel::Info,
+	           std::string("DNS result success=") + (dns_lookup.success ? "true" : "false") + " reason=" +
+	               (dns_lookup.reason.empty() ? std::string("<none>") : dns_lookup.reason) + " hosts=" +
+	               std::to_string(dns_lookup.mx_hosts.size()));
+
+	std::vector<std::string> smtp_hosts;
+	if (dns_lookup.success) {
+		dns_stage.valid = true;
+		smtp_hosts = dns_lookup.mx_hosts;
+	} else {
 		dns_stage.valid = false;
 		dns_stage.reason = dns_lookup.reason.empty() ? EMAIL_REASON_DNS_FAIL : dns_lookup.reason;
-		return dns_stage;
+		smtp_hosts = BuildFallbackHosts(domain);
+		dns_stage.mx_hosts = smtp_hosts;
+		EmailTrace(AnofoxLogLevel::Warn,
+		           std::string("DNS failure, using fallback hosts count=") + std::to_string(smtp_hosts.size()));
+		if (smtp_hosts.empty()) {
+			return dns_stage;
+		}
 	}
 
-	dns_stage.valid = true;
 	if (normalized_mode == EMAIL_STAGE_DNS) {
 		return dns_stage;
 	}
 
 	auto smtp_options = EmailConfig::Get().GetSmtpOptions();
-    EmailTrace(AnofoxLogLevel::Info,
-               "Starting SMTP verification with " + std::to_string(dns_lookup.mx_hosts.size()) +
-                   " host candidates");
+	EmailTrace(AnofoxLogLevel::Info,
+	           "Starting SMTP verification with " + std::to_string(smtp_hosts.size()) + " host candidates");
 	email::SmtpClient smtp_client(smtp_options);
-	auto smtp_result = smtp_client.Verify(email, dns_lookup.mx_hosts);
+	auto smtp_result = smtp_client.Verify(email, smtp_hosts);
 
 	EmailValidationResult smtp_stage;
 	smtp_stage.stage = EMAIL_STAGE_SMTP;
-	smtp_stage.mx_hosts = dns_lookup.mx_hosts;
+	smtp_stage.mx_hosts = smtp_hosts;
 	for (auto &entry : smtp_result.transcript) {
 		smtp_stage.smtp_transcript.emplace_back(entry.message);
 	}
 
 	if (!smtp_result.success) {
-        EmailTrace(AnofoxLogLevel::Info,
-                   std::string("SMTP verification failed reason=") +
-                       (smtp_result.reason.empty() ? std::string("<none>") : smtp_result.reason));
+	    EmailTrace(AnofoxLogLevel::Info,
+	               std::string("SMTP verification failed reason=") +
+	                   (smtp_result.reason.empty() ? std::string("<none>") : smtp_result.reason));
 		smtp_stage.valid = false;
-		smtp_stage.reason = smtp_result.reason.empty() ? EMAIL_REASON_SMTP_FAIL : smtp_result.reason;
+		if (!smtp_result.reason.empty()) {
+			smtp_stage.reason = smtp_result.reason;
+		} else if (!dns_lookup.success && !dns_stage.reason.empty()) {
+			smtp_stage.reason = dns_stage.reason;
+		} else {
+			smtp_stage.reason = EMAIL_REASON_SMTP_FAIL;
+		}
 		return smtp_stage;
 	}
 
@@ -354,13 +385,13 @@ std::string ExtractValidationMode(optional_ptr<Vector> vector_ptr, idx_t index, 
 
 LogicalType GetEmailValidateReturnType() {
 	child_list_t<LogicalType> smtp_children;
-	smtp_children.emplace_back("transcript", LogicalType::LIST(LogicalType::VARCHAR));
+	smtp_children.emplace_back("transcript", LogicalType::LIST(LogicalTypeId::VARCHAR));
 
 	child_list_t<LogicalType> result_children;
-	result_children.emplace_back("valid", LogicalType::BOOLEAN);
-	result_children.emplace_back("stage", LogicalType::VARCHAR);
-	result_children.emplace_back("reason", LogicalType::VARCHAR);
-	result_children.emplace_back("mx_hosts", LogicalType::LIST(LogicalType::VARCHAR));
+	result_children.emplace_back("valid", LogicalTypeId::BOOLEAN);
+	result_children.emplace_back("stage", LogicalTypeId::VARCHAR);
+	result_children.emplace_back("reason", LogicalTypeId::VARCHAR);
+	result_children.emplace_back("mx_hosts", LogicalType::LIST(LogicalTypeId::VARCHAR));
 	result_children.emplace_back("smtp_debug", LogicalType::STRUCT(smtp_children));
 
 	return LogicalType::STRUCT(result_children);
@@ -464,7 +495,7 @@ unique_ptr<FunctionData> EmailConfigBind(ClientContext &, TableFunctionBindInput
                                          vector<string> &names) {
     auto bind_data = make_uniq<EmailConfigBindData>();
     bind_data->entries = EmailConfig::Get().List();
-    return_types = {LogicalType::VARCHAR, LogicalType::VARCHAR};
+    return_types = {LogicalTypeId::VARCHAR, LogicalTypeId::VARCHAR};
     names = {"key", "value"};
     return std::move(bind_data);
 }
@@ -641,69 +672,64 @@ void RegisterEmailOptions(ExtensionLoader &loader) {
 	auto &config = DBConfig::GetConfig(loader.GetDatabaseInstance());
 	config.AddExtensionOption("anofox_email_default_validation",
 	                          "Default validation mode for anofox_email_is_valid (regex, dns, smtp)",
-	                          LogicalType::VARCHAR, Value(DEFAULT_VALIDATION), SetDefaultValidationOption);
+	                          LogicalTypeId::VARCHAR, Value(DEFAULT_VALIDATION), SetDefaultValidationOption);
 	config.AddExtensionOption("anofox_email_regex_pattern",
 	                          "Regular expression used during email regex validation",
-	                          LogicalType::VARCHAR, Value(DEFAULT_REGEX_PATTERN), SetRegexPatternOption);
+	                          LogicalTypeId::VARCHAR, Value(DEFAULT_REGEX_PATTERN), SetRegexPatternOption);
 	auto dns_options = EmailConfig::Get().GetDnsOptions();
 	auto smtp_options = EmailConfig::Get().GetSmtpOptions();
 	config.AddExtensionOption("anofox_email_dns_timeout_ms",
 	                          "DNS resolver timeout in milliseconds",
-	                          LogicalType::BIGINT,
+	                          LogicalTypeId::BIGINT,
 	                          Value::BIGINT(static_cast<int64_t>(dns_options.timeout_ms)), SetDnsTimeoutOption);
 	config.AddExtensionOption("anofox_email_dns_tries",
 	                          "Number of DNS queries to attempt before failing",
-	                          LogicalType::INTEGER,
+	                          LogicalTypeId::INTEGER,
 	                          Value::INTEGER(static_cast<int32_t>(dns_options.tries)), SetDnsTriesOption);
 	config.AddExtensionOption("anofox_email_smtp_port",
 	                          "SMTP port used when connecting to MX hosts",
-	                          LogicalType::INTEGER,
+	                          LogicalTypeId::INTEGER,
 	                          Value::INTEGER(static_cast<int32_t>(smtp_options.port)), SetSmtpPortOption);
 	config.AddExtensionOption("anofox_email_smtp_connect_timeout_ms",
 	                          "SMTP connect timeout in milliseconds",
-	                          LogicalType::BIGINT,
+	                          LogicalTypeId::BIGINT,
 	                          Value::BIGINT(static_cast<int64_t>(smtp_options.connect_timeout_ms)),
 	                          SetSmtpConnectTimeoutOption);
 	config.AddExtensionOption("anofox_email_smtp_read_timeout_ms",
 	                          "SMTP read/write timeout in milliseconds",
-	                          LogicalType::BIGINT,
+	                          LogicalTypeId::BIGINT,
 	                          Value::BIGINT(static_cast<int64_t>(smtp_options.read_timeout_ms)),
 	                          SetSmtpReadTimeoutOption);
 	config.AddExtensionOption("anofox_email_smtp_helo_domain",
 	                          "Domain value used during SMTP EHLO negotiation",
-	                          LogicalType::VARCHAR, Value(smtp_options.helo_domain), SetSmtpHeloDomainOption);
+	                          LogicalTypeId::VARCHAR, Value(smtp_options.helo_domain), SetSmtpHeloDomainOption);
 	config.AddExtensionOption("anofox_email_smtp_mail_from",
 	                          "MAIL FROM address presented during SMTP verification",
-	                          LogicalType::VARCHAR, Value(smtp_options.mail_from), SetSmtpMailFromOption);
+	                          LogicalTypeId::VARCHAR, Value(smtp_options.mail_from), SetSmtpMailFromOption);
 	config.AddExtensionOption("anofox_trace_enabled",
 	                          "Enable anofox tracing output",
-	                          LogicalType::BOOLEAN, Value::BOOLEAN(AnofoxTraceConfig::Get().GetEnabled()),
+	                          LogicalTypeId::BOOLEAN, Value::BOOLEAN(AnofoxTraceConfig::Get().GetEnabled()),
 	                          SetTraceEnabledOption);
 	config.AddExtensionOption("anofox_trace_level",
 	                          "Minimum tracing level (trace/debug/info/warn/error/critical/off)",
-	                          LogicalType::VARCHAR, Value(AnofoxTraceConfig::Get().GetLevelString()),
+	                          LogicalTypeId::VARCHAR, Value(AnofoxTraceConfig::Get().GetLevelString()),
 	                          SetTraceLevelOption);
 }
 
 void RegisterEmailFunctions(ExtensionLoader &loader) {
-	ScalarFunction validate_fun("anofox_email_validate",
-	                            {LogicalType::VARCHAR, LogicalType::VARCHAR}, GetEmailValidateReturnType(),
-	                            EmailValidateFunction);
+	ScalarFunction validate_fun("anofox_email_validate", {LogicalTypeId::VARCHAR, LogicalTypeId::VARCHAR}, GetEmailValidateReturnType(), EmailValidateFunction);
 	validate_fun.null_handling = FunctionNullHandling::SPECIAL_HANDLING;
 	validate_fun.stability = FunctionStability::CONSISTENT;
 
-	ScalarFunction validate_single("anofox_email_validate", {LogicalType::VARCHAR}, GetEmailValidateReturnType(),
-	                               EmailValidateFunction);
+	ScalarFunction validate_single("anofox_email_validate", {LogicalTypeId::VARCHAR}, GetEmailValidateReturnType(), EmailValidateFunction);
 	validate_single.null_handling = FunctionNullHandling::SPECIAL_HANDLING;
 	validate_single.stability = FunctionStability::CONSISTENT;
 
-	ScalarFunction is_valid_fun("anofox_email_is_valid", {LogicalType::VARCHAR, LogicalType::VARCHAR},
-	                            LogicalType::BOOLEAN, EmailIsValidFunction);
+	ScalarFunction is_valid_fun("anofox_email_is_valid", {LogicalTypeId::VARCHAR, LogicalTypeId::VARCHAR}, LogicalTypeId::BOOLEAN, EmailIsValidFunction);
 	is_valid_fun.null_handling = FunctionNullHandling::SPECIAL_HANDLING;
 	is_valid_fun.stability = FunctionStability::CONSISTENT;
 
-	ScalarFunction is_valid_single("anofox_email_is_valid", {LogicalType::VARCHAR}, LogicalType::BOOLEAN,
-	                               EmailIsValidFunction);
+	ScalarFunction is_valid_single("anofox_email_is_valid", {LogicalTypeId::VARCHAR}, LogicalTypeId::BOOLEAN, EmailIsValidFunction);
 	is_valid_single.null_handling = FunctionNullHandling::SPECIAL_HANDLING;
 	is_valid_single.stability = FunctionStability::CONSISTENT;
 

@@ -1,0 +1,328 @@
+require anofox_tabular
+
+statement ok
+LOAD anofox_tabular;
+
+# Create test tables
+statement ok
+CREATE TABLE source_data (
+    id INTEGER,
+    name VARCHAR,
+    value INTEGER
+);
+
+statement ok
+CREATE TABLE target_data (
+    id INTEGER,
+    name VARCHAR,
+    value INTEGER
+);
+
+# Insert test data
+statement ok
+INSERT INTO source_data VALUES
+    (1, 'Alice', 100),
+    (2, 'Bob', 200),
+    (3, 'Carol', 300);
+
+statement ok
+INSERT INTO target_data VALUES
+    (1, 'Alice', 100),
+    (2, 'Bob', 250),
+    (4, 'David', 400);
+
+# Test that function is registered
+query T
+SELECT COUNT(*) > 0 FROM duckdb_functions() WHERE function_name = 'anofox_diff_joindiff';
+----
+true
+
+# Test SQL-based diff implementation (Phase 1)
+# Simple diff with single primary key
+query IIII rowsort
+WITH diff_result AS (
+    SELECT
+        CASE
+            WHEN s.id IS NULL THEN 'added'
+            WHEN t.id IS NULL THEN 'removed'
+            WHEN hash(s.id, s.name, s.value) != hash(t.id, t.name, t.value) THEN 'changed'
+            ELSE 'unchanged'
+        END AS diff_type,
+        COALESCE(s.id, t.id) AS id,
+        COALESCE(t.name, s.name) AS name,
+        COALESCE(t.value, s.value) AS value
+    FROM source_data s
+    FULL OUTER JOIN target_data t
+    ON s.id = t.id
+)
+SELECT diff_type, id, name, value
+FROM diff_result
+WHERE diff_type != 'unchanged'
+ORDER BY id;
+----
+added	4	David	400
+changed	2	Bob	250
+removed	3	Carol	300
+
+# Test summary statistics
+query II rowsort
+WITH diff_result AS (
+    SELECT
+        CASE
+            WHEN s.id IS NULL THEN 'added'
+            WHEN t.id IS NULL THEN 'removed'
+            WHEN hash(s.id, s.name, s.value) != hash(t.id, t.name, t.value) THEN 'changed'
+            ELSE 'unchanged'
+        END AS diff_type
+    FROM source_data s
+    FULL OUTER JOIN target_data t
+    ON s.id = t.id
+)
+SELECT diff_type, COUNT(*) as row_count
+FROM diff_result
+GROUP BY diff_type
+ORDER BY diff_type;
+----
+added	1
+changed	1
+removed	1
+unchanged	1
+
+# Test PK-only comparison (check for added/removed rows)
+query II rowsort
+SELECT
+    CASE
+        WHEN s.id IS NULL THEN 'added'
+        WHEN t.id IS NULL THEN 'removed'
+    END AS diff_type,
+    COALESCE(s.id, t.id) AS id
+FROM source_data s
+FULL OUTER JOIN target_data t
+ON s.id = t.id
+WHERE s.id IS NULL OR t.id IS NULL
+ORDER BY id;
+----
+added	4
+removed	3
+
+#############################
+# Phase 2: JoinDiff C++ Implementation Tests
+#############################
+
+# Test 1: Basic JoinDiff with single primary key
+query IIII rowsort
+SELECT * FROM anofox_diff_joindiff('source_data', 'target_data', 'id');
+----
+added	4	David	400
+changed	2	Bob	250
+removed	3	NULL	NULL
+
+# Test 2: JoinDiff with include_all parameter
+query IIII rowsort
+SELECT * FROM anofox_diff_joindiff('source_data', 'target_data', 'id', NULL, true);
+----
+added	4	David	400
+changed	2	Bob	250
+removed	3	NULL	NULL
+unchanged	1	Alice	100
+
+# Test 3: Compound primary key
+statement ok
+CREATE TABLE orders_source (
+    user_id INTEGER,
+    order_date DATE,
+    amount DECIMAL(10,2),
+    status VARCHAR
+);
+
+statement ok
+CREATE TABLE orders_target (
+    user_id INTEGER,
+    order_date DATE,
+    amount DECIMAL(10,2),
+    status VARCHAR
+);
+
+statement ok
+INSERT INTO orders_source VALUES
+    (1, '2024-01-01', 100.00, 'completed'),
+    (1, '2024-01-02', 200.00, 'pending'),
+    (2, '2024-01-01', 150.00, 'completed');
+
+statement ok
+INSERT INTO orders_target VALUES
+    (1, '2024-01-01', 100.00, 'completed'),
+    (1, '2024-01-02', 200.00, 'completed'),
+    (3, '2024-01-03', 300.00, 'pending');
+
+query IIIII rowsort
+SELECT * FROM anofox_diff_joindiff('orders_source', 'orders_target', ['user_id', 'order_date']);
+----
+added	3	2024-01-03	300.00	pending
+changed	1	2024-01-02	200.00	completed
+removed	2	2024-01-01	NULL	NULL
+
+# Test 4: Compare specific columns only
+statement ok
+CREATE TABLE products_source (
+    id INTEGER,
+    name VARCHAR,
+    price DECIMAL(10,2),
+    stock INTEGER,
+    updated_at TIMESTAMP
+);
+
+statement ok
+CREATE TABLE products_target (
+    id INTEGER,
+    name VARCHAR,
+    price DECIMAL(10,2),
+    stock INTEGER,
+    updated_at TIMESTAMP
+);
+
+statement ok
+INSERT INTO products_source VALUES
+    (1, 'Widget', 10.00, 100, '2024-01-01 10:00:00'),
+    (2, 'Gadget', 20.00, 50, '2024-01-01 10:00:00'),
+    (3, 'Doohickey', 15.00, 75, '2024-01-01 10:00:00');
+
+statement ok
+INSERT INTO products_target VALUES
+    (1, 'Widget', 10.00, 100, '2024-01-02 15:00:00'),
+    (2, 'Gadget', 25.00, 50, '2024-01-02 15:00:00'),
+    (3, 'Doohickey', 15.00, 80, '2024-01-02 15:00:00');
+
+# Only compare price and stock, ignore name and updated_at
+query I
+SELECT COUNT(*) FROM anofox_diff_joindiff('products_source', 'products_target', 'id', ['price', 'stock']);
+----
+2
+
+query IIIIII
+SELECT * FROM anofox_diff_joindiff('products_source', 'products_target', 'id', ['price', 'stock'])
+WHERE diff_type = 'changed' AND id = 2;
+----
+changed	2	Gadget	25.00	50	2024-01-02 15:00:00
+
+# Test 5: Empty diff (identical tables)
+statement ok
+CREATE TABLE identical_source (id INTEGER, value VARCHAR);
+
+statement ok
+CREATE TABLE identical_target (id INTEGER, value VARCHAR);
+
+statement ok
+INSERT INTO identical_source VALUES (1, 'test'), (2, 'data');
+
+statement ok
+INSERT INTO identical_target VALUES (1, 'test'), (2, 'data');
+
+query I
+SELECT COUNT(*) FROM anofox_diff_joindiff('identical_source', 'identical_target', 'id');
+----
+0
+
+# Test 6: All rows different
+statement ok
+CREATE TABLE all_diff_source (id INTEGER, val INTEGER);
+
+statement ok
+CREATE TABLE all_diff_target (id INTEGER, val INTEGER);
+
+statement ok
+INSERT INTO all_diff_source VALUES (1, 100), (2, 200);
+
+statement ok
+INSERT INTO all_diff_target VALUES (3, 300), (4, 400);
+
+query I
+SELECT COUNT(*) FROM anofox_diff_joindiff('all_diff_source', 'all_diff_target', 'id');
+----
+4
+
+query II rowsort
+SELECT diff_type, COUNT(*) FROM anofox_diff_joindiff('all_diff_source', 'all_diff_target', 'id')
+GROUP BY diff_type;
+----
+added	2
+removed	2
+
+# Test 7: Schema-qualified table names
+statement ok
+CREATE SCHEMA test_schema;
+
+statement ok
+CREATE TABLE test_schema.schema_source (id INTEGER, name VARCHAR);
+
+statement ok
+CREATE TABLE test_schema.schema_target (id INTEGER, name VARCHAR);
+
+statement ok
+INSERT INTO test_schema.schema_source VALUES (1, 'Alice');
+
+statement ok
+INSERT INTO test_schema.schema_target VALUES (1, 'Bob');
+
+query III rowsort
+SELECT * FROM anofox_diff_joindiff('test_schema.schema_source', 'test_schema.schema_target', 'id');
+----
+changed	1	Bob
+
+#############################
+# Phase 2: HashDiff Implementation Tests
+#############################
+
+# Test 1: Check HashDiff function registration
+query T
+SELECT COUNT(*) > 0 FROM duckdb_functions() WHERE function_name = 'anofox_diff_hashdiff';
+----
+true
+
+# Test 2: Basic HashDiff with single primary key
+query IIII rowsort
+SELECT * FROM anofox_diff_hashdiff('source_data', 'target_data', 'id');
+----
+added	4	David	400
+changed	2	Bob	250
+removed	3	NULL	NULL
+
+# Test 3: HashDiff with compound primary key
+query IIIII rowsort
+SELECT * FROM anofox_diff_hashdiff('orders_source', 'orders_target', ['user_id', 'order_date']);
+----
+added	3	2024-01-03	300.00	pending
+changed	1	2024-01-02	200.00	completed
+removed	2	2024-01-01	NULL	NULL
+
+# Test 4: HashDiff with custom bisection_threshold
+query I
+SELECT COUNT(*) FROM anofox_diff_hashdiff('source_data', 'target_data', 'id', 1000);
+----
+3
+
+# Test 5: HashDiff with bisection_threshold and bisection_factor
+query I
+SELECT COUNT(*) FROM anofox_diff_hashdiff('source_data', 'target_data', 'id', 1000, 5);
+----
+3
+
+# Test 6: Verify HashDiff produces same results as JoinDiff
+statement ok
+CREATE TABLE verify_source (id INTEGER, val VARCHAR);
+
+statement ok
+CREATE TABLE verify_target (id INTEGER, val VARCHAR);
+
+statement ok
+INSERT INTO verify_source VALUES (1, 'a'), (2, 'b'), (3, 'c');
+
+statement ok
+INSERT INTO verify_target VALUES (1, 'a'), (2, 'x'), (4, 'd');
+
+query T
+SELECT
+    (SELECT COUNT(*) FROM anofox_diff_joindiff('verify_source', 'verify_target', 'id')) =
+    (SELECT COUNT(*) FROM anofox_diff_hashdiff('verify_source', 'verify_target', 'id')) AS same_count;
+----
+true

@@ -309,13 +309,13 @@ void PostalExpandAddressFunction(DataChunk &args, ExpressionState &state, Vector
 }
 
 ScalarFunction CreateParseFunction(const string &name) {
-	ScalarFunction function(name, {LogicalType::VARCHAR},
-	                        LogicalType::STRUCT({{"house_number", LogicalType::VARCHAR},
-	                                             {"road", LogicalType::VARCHAR},
-	                                             {"city", LogicalType::VARCHAR},
-	                                             {"state", LogicalType::VARCHAR},
-	                                             {"postcode", LogicalType::VARCHAR},
-	                                             {"country", LogicalType::VARCHAR}}),
+	ScalarFunction function(name, {LogicalTypeId::VARCHAR},
+	                        LogicalType::STRUCT({{"house_number", LogicalTypeId::VARCHAR},
+	                                             {"road", LogicalTypeId::VARCHAR},
+	                                             {"city", LogicalTypeId::VARCHAR},
+	                                             {"state", LogicalTypeId::VARCHAR},
+	                                             {"postcode", LogicalTypeId::VARCHAR},
+	                                             {"country", LogicalTypeId::VARCHAR}}),
 	                        PostalParseAddressFunction);
 	function.null_handling = FunctionNullHandling::SPECIAL_HANDLING;
 	function.stability = FunctionStability::CONSISTENT;
@@ -323,7 +323,7 @@ ScalarFunction CreateParseFunction(const string &name) {
 }
 
 ScalarFunction CreateExpandFunction(const string &name) {
-	ScalarFunction function(name, {LogicalType::VARCHAR}, LogicalType::LIST(LogicalType::VARCHAR),
+	ScalarFunction function(name, {LogicalTypeId::VARCHAR}, LogicalType::LIST(LogicalTypeId::VARCHAR),
 	                        PostalExpandAddressFunction);
 	function.null_handling = FunctionNullHandling::SPECIAL_HANDLING;
 	function.stability = FunctionStability::CONSISTENT;
@@ -341,11 +341,11 @@ unique_ptr<GlobalTableFunctionState> PostalStatusInit(ClientContext &, TableFunc
 unique_ptr<FunctionData> PostalStatusBind(ClientContext &, TableFunctionBindInput &, vector<LogicalType> &return_types,
                                           vector<string> &names) {
 	names.emplace_back("initialized");
-	return_types.emplace_back(LogicalType::BOOLEAN);
+	return_types.emplace_back(LogicalTypeId::BOOLEAN);
 	names.emplace_back("data_present");
-	return_types.emplace_back(LogicalType::BOOLEAN);
+	return_types.emplace_back(LogicalTypeId::BOOLEAN);
 	names.emplace_back("data_dir");
-	return_types.emplace_back(LogicalType::VARCHAR);
+	return_types.emplace_back(LogicalTypeId::VARCHAR);
 	return nullptr;
 }
 
@@ -377,7 +377,7 @@ void PostalLoadDataFunction(DataChunk &, ExpressionState &state, Vector &result)
 }
 
 ScalarFunction CreateLoadFunction() {
-	ScalarFunction function("anofox_postal_load_data", {}, LogicalType::BOOLEAN, PostalLoadDataFunction);
+	ScalarFunction function("anofox_postal_load_data", {}, LogicalTypeId::BOOLEAN, PostalLoadDataFunction);
 	function.null_handling = FunctionNullHandling::SPECIAL_HANDLING;
 	function.stability = FunctionStability::VOLATILE;
 	return function;
@@ -389,7 +389,7 @@ void RegisterPostalOptions(ExtensionLoader &loader) {
 	auto &config = DBConfig::GetConfig(loader.GetDatabaseInstance());
 	config.AddExtensionOption("anofox_postal_data_path",
 	                          "Directory storing libpostal assets",
-	                          LogicalType::VARCHAR, Value(postal::DEFAULT_POSTAL_DIR), SetPostalDataPathOption);
+	                          LogicalTypeId::VARCHAR, Value(postal::DEFAULT_POSTAL_DIR), SetPostalDataPathOption);
 }
 
 void RegisterPostalFunctions(ExtensionLoader &loader) {

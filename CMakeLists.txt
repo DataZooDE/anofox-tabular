@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.5)
+cmake_minimum_required(VERSION 3.10...3.29)
 
 set(TARGET_NAME anofox_tabular)
 set(EXTENSION_NAME ${TARGET_NAME}_extension)
@@ -8,6 +8,11 @@ project(${TARGET_NAME})
 include_directories(src/include)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
+# Set CMake policy to suppress FindBoost warning
+if(POLICY CMP0167)
+  cmake_policy(SET CMP0167 NEW)
+endif()
 
 # --- Dependencies ---
 
@@ -29,6 +34,7 @@ pkg_check_modules(LIBPOSTAL REQUIRED libpostal)
 
 set(EXTENSION_SOURCES
         src/anofox_tabular_extension.cpp
+        src/anofox_diff.cpp
         src/anofox_postal.cpp
         src/anofox_phonenumber.cpp
         src/anofox_email.cpp
