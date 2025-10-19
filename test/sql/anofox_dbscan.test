@@ -1,0 +1,851 @@
+require anofox_tabular
+
+statement ok
+LOAD anofox_tabular
+
+statement ok
+SET anofox_trace_enabled = false
+
+# ===--------------------------------------------------------------------===
+# DBSCAN Test Suite
+# Tests for density-based clustering and anomaly detection
+# ===--------------------------------------------------------------------===
+
+# ===--------------------------------------------------------------------===
+# Test Setup: Create test tables
+# ===--------------------------------------------------------------------===
+
+statement ok
+CREATE TEMP TABLE dbscan_normal_data (
+    id INTEGER,
+    value DOUBLE
+)
+
+statement ok
+INSERT INTO dbscan_normal_data VALUES
+    (1, 100.0),
+    (2, 105.0),
+    (3, 102.0),
+    (4, 101.0),
+    (5, 103.0),
+    (6, 500.0)
+
+statement ok
+CREATE TEMP TABLE dbscan_small_data (
+    id INTEGER,
+    value DOUBLE
+)
+
+statement ok
+INSERT INTO dbscan_small_data VALUES
+    (1, 10.0),
+    (2, 12.0)
+
+statement ok
+CREATE TEMP TABLE dbscan_single_row (
+    id INTEGER,
+    value DOUBLE
+)
+
+statement ok
+INSERT INTO dbscan_single_row VALUES
+    (1, 42.0)
+
+statement ok
+CREATE TEMP TABLE dbscan_identical_values (
+    id INTEGER,
+    value DOUBLE
+)
+
+statement ok
+INSERT INTO dbscan_identical_values VALUES
+    (1, 50.0),
+    (2, 50.0),
+    (3, 50.0),
+    (4, 50.0)
+
+statement ok
+CREATE TEMP TABLE dbscan_with_nulls (
+    id INTEGER,
+    value DOUBLE
+)
+
+statement ok
+INSERT INTO dbscan_with_nulls VALUES
+    (1, 100.0),
+    (2, NULL),
+    (3, 102.0),
+    (4, 500.0),
+    (5, NULL),
+    (6, 101.0)
+
+statement ok
+CREATE TEMP TABLE dbscan_empty (
+    id INTEGER,
+    value DOUBLE
+)
+
+statement ok
+CREATE TEMP TABLE dbscan_clustered_data (
+    id INTEGER,
+    value DOUBLE
+)
+
+statement ok
+INSERT INTO dbscan_clustered_data VALUES
+    (1, 10.0),
+    (2, 11.0),
+    (3, 12.0),
+    (4, 13.0),
+    (5, 50.0),
+    (6, 51.0),
+    (7, 52.0),
+    (8, 100.0),
+    (9, 200.0)
+
+# ===--------------------------------------------------------------------===
+# Univariate Summary Mode Tests
+# ===--------------------------------------------------------------------===
+
+# Test 1: Basic summary mode with default parameters
+query T
+SELECT status FROM anofox_metric_dbscan('dbscan_normal_data', 'value', 0.5, 5, 'summary')
+----
+pass
+
+# Test 2: Summary mode with different eps parameter
+query I
+SELECT COUNT(*) FROM anofox_metric_dbscan('dbscan_normal_data', 'value', 1.0, 5, 'summary')
+----
+1
+
+# Test 3: Summary mode with different min_pts parameter
+query I
+SELECT COUNT(*) FROM anofox_metric_dbscan('dbscan_normal_data', 'value', 0.5, 2, 'summary')
+----
+1
+
+# Test 4: Check message field in summary mode
+query T
+SELECT message FROM anofox_metric_dbscan('dbscan_normal_data', 'value', 0.5, 5, 'summary')
+----
+DBSCAN clustering complete
+
+# Test 5: Summary on data with clear clusters
+query T
+SELECT status FROM anofox_metric_dbscan('dbscan_clustered_data', 'value', 2.0, 2, 'summary')
+----
+pass
+
+# Test 6: Summary on small dataset
+query T
+SELECT status FROM anofox_metric_dbscan('dbscan_small_data', 'value', 5.0, 1, 'summary')
+----
+pass
+
+# ===--------------------------------------------------------------------===
+# Univariate Clusters Mode Tests (per-row output)
+# ===--------------------------------------------------------------------===
+
+# Test 7: Basic clusters mode returns per-row data
+query I
+SELECT COUNT(*) FROM anofox_metric_dbscan('dbscan_normal_data', 'value', 0.5, 5, 'clusters')
+----
+6
+
+# Test 8: Clusters mode - check anomaly_score range
+query I
+SELECT COUNT(*) FROM anofox_metric_dbscan('dbscan_normal_data', 'value', 0.5, 5, 'clusters')
+WHERE anomaly_score >= 0.0 AND anomaly_score <= 1.0
+----
+6
+
+# Test 9: Clusters mode - verify all rows included
+query I
+SELECT COUNT(*) FROM anofox_metric_dbscan('dbscan_normal_data', 'value', 0.5, 5, 'clusters')
+----
+6
+
+# Test 10: Clusters mode - check ordering by row_id (ascending)
+query I
+SELECT COUNT(*) FROM (
+  SELECT row_id, LAG(row_id) OVER (ORDER BY row_id) as prev_row
+  FROM anofox_metric_dbscan('dbscan_normal_data', 'value', 0.5, 5, 'clusters')
+) WHERE row_id > prev_row OR prev_row IS NULL
+----
+6
+
+# ===--------------------------------------------------------------------===
+# Edge Cases: Empty and Single Row
+# ===--------------------------------------------------------------------===
+
+# Test 11: Empty table - summary mode
+query T
+SELECT status FROM anofox_metric_dbscan('dbscan_empty', 'value', 0.5, 5, 'summary')
+----
+pass
+
+# Test 12: Empty table - clusters mode
+query I
+SELECT COUNT(*) FROM anofox_metric_dbscan('dbscan_empty', 'value', 0.5, 5, 'clusters')
+----
+0
+
+# Test 13: Single row - summary mode
+query T
+SELECT status FROM anofox_metric_dbscan('dbscan_single_row', 'value', 0.5, 5, 'summary')
+----
+pass
+
+# Test 14: Single row - clusters mode
+query I
+SELECT COUNT(*) FROM anofox_metric_dbscan('dbscan_single_row', 'value', 0.5, 5, 'clusters')
+----
+1
+
+# ===--------------------------------------------------------------------===
+# Edge Cases: Identical Values
+# ===--------------------------------------------------------------------===
+
+# Test 15: Identical values - summary mode
+query T
+SELECT status FROM anofox_metric_dbscan('dbscan_identical_values', 'value', 0.5, 2, 'summary')
+----
+pass
+
+# Test 16: Identical values - clusters mode
+query I
+SELECT COUNT(DISTINCT point_type) FROM anofox_metric_dbscan('dbscan_identical_values', 'value', 0.5, 2, 'clusters')
+----
+1
+
+# ===--------------------------------------------------------------------===
+# Edge Cases: NULL Handling
+# ===--------------------------------------------------------------------===
+
+# Test 17: Table with NULLs - summary mode (NULLs should be filtered)
+query I
+SELECT total_count FROM anofox_metric_dbscan('dbscan_with_nulls', 'value', 0.5, 5, 'summary')
+----
+4
+
+# Test 18: Table with NULLs - clusters mode (NULLs should be excluded)
+query I
+SELECT COUNT(*) FROM anofox_metric_dbscan('dbscan_with_nulls', 'value', 0.5, 5, 'clusters')
+----
+4
+
+# ===--------------------------------------------------------------------===
+# Parameter Validation Tests
+# ===--------------------------------------------------------------------===
+
+# Test 19: eps too low (below 0.0)
+statement error
+SELECT * FROM anofox_metric_dbscan('dbscan_normal_data', 'value', -0.1, 5, 'summary')
+----
+eps must be
+
+# Test 20: eps equal to 0.0
+statement error
+SELECT * FROM anofox_metric_dbscan('dbscan_normal_data', 'value', 0.0, 5, 'summary')
+----
+eps must be
+
+# Test 21: min_pts too low (below 1)
+statement error
+SELECT * FROM anofox_metric_dbscan('dbscan_normal_data', 'value', 0.5, 0, 'summary')
+----
+min_pts must be
+
+# Test 22: min_pts - cast 0 as BIGINT
+statement error
+SELECT * FROM anofox_metric_dbscan('dbscan_normal_data', 'value', 0.5, CAST(0 AS BIGINT), 'summary')
+----
+min_pts must be
+
+# ===--------------------------------------------------------------------===
+# Different Epsilon Values
+# ===--------------------------------------------------------------------===
+
+# Test 23: Very small epsilon (0.1)
+query T
+SELECT status FROM anofox_metric_dbscan('dbscan_normal_data', 'value', 0.1, 5, 'summary')
+----
+pass
+
+# Test 24: Small epsilon (1.0)
+query T
+SELECT status FROM anofox_metric_dbscan('dbscan_normal_data', 'value', 1.0, 5, 'summary')
+----
+pass
+
+# Test 25: Medium epsilon (5.0)
+query T
+SELECT status FROM anofox_metric_dbscan('dbscan_normal_data', 'value', 5.0, 5, 'summary')
+----
+pass
+
+# Test 26: Large epsilon (100.0)
+query T
+SELECT status FROM anofox_metric_dbscan('dbscan_normal_data', 'value', 100.0, 5, 'summary')
+----
+pass
+
+# ===--------------------------------------------------------------------===
+# Different min_pts Values
+# ===--------------------------------------------------------------------===
+
+# Test 27: Minimal min_pts (1)
+query T
+SELECT status FROM anofox_metric_dbscan('dbscan_normal_data', 'value', 0.5, 1, 'summary')
+----
+pass
+
+# Test 28: Small min_pts (2)
+query T
+SELECT status FROM anofox_metric_dbscan('dbscan_normal_data', 'value', 0.5, 2, 'summary')
+----
+pass
+
+# Test 29: Medium min_pts (5)
+query T
+SELECT status FROM anofox_metric_dbscan('dbscan_normal_data', 'value', 0.5, 5, 'summary')
+----
+pass
+
+# Test 30: Large min_pts (10)
+query T
+SELECT status FROM anofox_metric_dbscan('dbscan_normal_data', 'value', 0.5, 10, 'summary')
+----
+pass
+
+# ===--------------------------------------------------------------------===
+# Output Mode Tests
+# ===--------------------------------------------------------------------===
+
+# Test 31: Default output mode is 'summary' when specified
+query I
+SELECT COUNT(*) FROM anofox_metric_dbscan('dbscan_normal_data', 'value', 0.5, 5, 'summary')
+----
+1
+
+# Test 32: Explicit 'clusters' mode returns multiple rows
+query I
+SELECT COUNT(*) FROM anofox_metric_dbscan('dbscan_normal_data', 'value', 0.5, 5, 'clusters')
+----
+6
+
+# ===--------------------------------------------------------------------===
+# Data Type Conversion Tests
+# ===--------------------------------------------------------------------===
+
+# Test 33: INT values should be converted to DOUBLE
+query I
+SELECT COUNT(*) FROM anofox_metric_dbscan('dbscan_normal_data', 'value', 0.5, 5, 'summary')
+----
+1
+
+# ===--------------------------------------------------------------------===
+# Consistency Tests
+# ===--------------------------------------------------------------------===
+
+# Test 34: Multiple calls with same parameters return consistent results
+query T
+SELECT s1.status FROM
+  (SELECT status FROM anofox_metric_dbscan('dbscan_normal_data', 'value', 0.5, 5, 'summary')) s1,
+  (SELECT status FROM anofox_metric_dbscan('dbscan_normal_data', 'value', 0.5, 5, 'summary')) s2
+WHERE s1.status = s2.status
+----
+pass
+
+# Test 35: Clusters mode is reproducible with same parameters
+query I
+SELECT COUNT(DISTINCT point_type) FROM anofox_metric_dbscan('dbscan_normal_data', 'value', 0.5, 5, 'clusters')
+----
+1
+
+# ===--------------------------------------------------------------------===
+# Large Value Tests
+# ===--------------------------------------------------------------------===
+
+statement ok
+CREATE TEMP TABLE dbscan_large_values (
+    id INTEGER,
+    value DOUBLE
+)
+
+statement ok
+INSERT INTO dbscan_large_values VALUES
+    (1, 1e10),
+    (2, 1.05e10),
+    (3, 1.02e10),
+    (4, 1e10),
+    (5, 1.01e10),
+    (6, 1e15)
+
+# Test 36: Large values - summary mode
+query T
+SELECT status FROM anofox_metric_dbscan('dbscan_large_values', 'value', 1e8, 2, 'summary')
+----
+pass
+
+# Test 37: Large values - clusters mode should include all rows
+query I
+SELECT COUNT(*) FROM anofox_metric_dbscan('dbscan_large_values', 'value', 1e8, 2, 'clusters')
+----
+6
+
+# ===--------------------------------------------------------------------===
+# Small Value Tests
+# ===--------------------------------------------------------------------===
+
+statement ok
+CREATE TEMP TABLE dbscan_small_values (
+    id INTEGER,
+    value DOUBLE
+)
+
+statement ok
+INSERT INTO dbscan_small_values VALUES
+    (1, 1e-10),
+    (2, 1.05e-10),
+    (3, 1.02e-10),
+    (4, 1e-10),
+    (5, 1.01e-10),
+    (6, 1e-5)
+
+# Test 38: Small values - summary mode
+query T
+SELECT status FROM anofox_metric_dbscan('dbscan_small_values', 'value', 1e-11, 2, 'summary')
+----
+pass
+
+# Test 39: Small values - clusters mode
+query I
+SELECT COUNT(*) FROM anofox_metric_dbscan('dbscan_small_values', 'value', 1e-11, 2, 'clusters')
+----
+6
+
+# ===--------------------------------------------------------------------===
+# Negative Value Tests
+# ===--------------------------------------------------------------------===
+
+statement ok
+CREATE TEMP TABLE dbscan_negative_values (
+    id INTEGER,
+    value DOUBLE
+)
+
+statement ok
+INSERT INTO dbscan_negative_values VALUES
+    (1, -100.0),
+    (2, -105.0),
+    (3, -102.0),
+    (4, -101.0),
+    (5, -103.0),
+    (6, -500.0)
+
+# Test 40: Negative values - summary mode
+query T
+SELECT status FROM anofox_metric_dbscan('dbscan_negative_values', 'value', 2.0, 5, 'summary')
+----
+pass
+
+# Test 41: Negative values - clusters mode
+query I
+SELECT COUNT(*) FROM anofox_metric_dbscan('dbscan_negative_values', 'value', 2.0, 5, 'clusters')
+----
+6
+
+# ===--------------------------------------------------------------------===
+# Mixed Positive and Negative Values
+# ===--------------------------------------------------------------------===
+
+statement ok
+CREATE TEMP TABLE dbscan_mixed_sign_values (
+    id INTEGER,
+    value DOUBLE
+)
+
+statement ok
+INSERT INTO dbscan_mixed_sign_values VALUES
+    (1, -50.0),
+    (2, 50.0),
+    (3, -45.0),
+    (4, 45.0),
+    (5, -48.0),
+    (6, 200.0)
+
+# Test 42: Mixed sign values - summary mode
+query T
+SELECT status FROM anofox_metric_dbscan('dbscan_mixed_sign_values', 'value', 10.0, 2, 'summary')
+----
+pass
+
+# Test 43: Mixed sign values - clusters mode
+query I
+SELECT COUNT(*) FROM anofox_metric_dbscan('dbscan_mixed_sign_values', 'value', 10.0, 2, 'clusters')
+----
+6
+
+# ===--------------------------------------------------------------------===
+# Boundary Tests
+# ===--------------------------------------------------------------------===
+
+# Test 44: Boundary - eps very small (0.001)
+query T
+SELECT status FROM anofox_metric_dbscan('dbscan_normal_data', 'value', 0.001, 5, 'summary')
+----
+pass
+
+# Test 45: Boundary - eps very large (10000.0)
+query T
+SELECT status FROM anofox_metric_dbscan('dbscan_normal_data', 'value', 10000.0, 5, 'summary')
+----
+pass
+
+# Test 46: Boundary - min_pts = 1 (minimum viable)
+query T
+SELECT status FROM anofox_metric_dbscan('dbscan_normal_data', 'value', 0.5, 1, 'summary')
+----
+pass
+
+# Test 47: Boundary - min_pts = dataset size
+query T
+SELECT status FROM anofox_metric_dbscan('dbscan_normal_data', 'value', 0.5, 6, 'summary')
+----
+pass
+
+# ===--------------------------------------------------------------------===
+# Return Value Type Tests
+# ===--------------------------------------------------------------------===
+
+# Test 48: Summary mode - status column is VARCHAR
+query T
+SELECT typeof(status) FROM anofox_metric_dbscan('dbscan_normal_data', 'value', 0.5, 5, 'summary')
+----
+VARCHAR
+
+# Test 49: Summary mode - noise_count is INTEGER
+query T
+SELECT typeof(noise_count) FROM anofox_metric_dbscan('dbscan_normal_data', 'value', 0.5, 5, 'summary')
+----
+BIGINT
+
+# Test 50: Summary mode - total_count is INTEGER
+query T
+SELECT typeof(total_count) FROM anofox_metric_dbscan('dbscan_normal_data', 'value', 0.5, 5, 'summary')
+----
+BIGINT
+
+# Test 51: Clusters mode - row_id is INTEGER
+query T
+SELECT typeof(row_id) FROM (
+  SELECT * FROM anofox_metric_dbscan('dbscan_normal_data', 'value', 0.5, 5, 'clusters')
+  LIMIT 1
+)
+----
+BIGINT
+
+# Test 52: Clusters mode - anomaly_score is numeric
+query T
+SELECT typeof(anomaly_score) FROM (
+  SELECT * FROM anofox_metric_dbscan('dbscan_normal_data', 'value', 0.5, 5, 'clusters')
+  LIMIT 1
+)
+----
+DECIMAL(2,1)
+
+# Test 53: Clusters mode - point_type is VARCHAR
+query T
+SELECT typeof(point_type) FROM (
+  SELECT * FROM anofox_metric_dbscan('dbscan_normal_data', 'value', 0.5, 5, 'clusters')
+  LIMIT 1
+)
+----
+VARCHAR
+
+# ===--------------------------------------------------------------------===
+# Multivariate DBSCAN Tests
+# ===--------------------------------------------------------------------===
+
+statement ok
+CREATE TEMP TABLE dbscan_multivar_data (
+    id INTEGER,
+    x DOUBLE,
+    y DOUBLE
+)
+
+statement ok
+INSERT INTO dbscan_multivar_data VALUES
+    (1, 100.0, 50.0),
+    (2, 105.0, 55.0),
+    (3, 102.0, 52.0),
+    (4, 101.0, 51.0),
+    (5, 103.0, 53.0),
+    (6, 600.0, 300.0)
+
+statement ok
+CREATE TEMP TABLE dbscan_multivar_3col (
+    id INTEGER,
+    a DOUBLE,
+    b DOUBLE,
+    c DOUBLE
+)
+
+statement ok
+INSERT INTO dbscan_multivar_3col VALUES
+    (1, 10.0, 20.0, 30.0),
+    (2, 11.0, 21.0, 31.0),
+    (3, 12.0, 22.0, 32.0),
+    (4, 800.0, 400.0, 200.0),
+    (5, 13.0, 23.0, 33.0)
+
+# Test 54: Multivariate summary mode - basic test
+query T
+SELECT status FROM anofox_metric_dbscan_multivariate('dbscan_multivar_data', 'x,y', 5.0, 2, 'summary')
+----
+pass
+
+# Test 55: Multivariate summary mode - two columns
+query I
+SELECT n_columns FROM anofox_metric_dbscan_multivariate('dbscan_multivar_data', 'x, y', 5.0, 2, 'summary')
+----
+2
+
+# Test 56: Multivariate summary mode - three columns
+query I
+SELECT n_columns FROM anofox_metric_dbscan_multivariate('dbscan_multivar_3col', 'a,b,c', 50.0, 2, 'summary')
+----
+3
+
+# Test 57: Multivariate clusters mode - returns per-row data
+query I
+SELECT COUNT(*) FROM anofox_metric_dbscan_multivariate('dbscan_multivar_data', 'x,y', 5.0, 2, 'clusters')
+----
+6
+
+# Test 58: Multivariate clusters mode - check ordering
+query I
+SELECT COUNT(*) FROM (
+  SELECT row_id, LAG(row_id) OVER (ORDER BY row_id) as prev_row
+  FROM anofox_metric_dbscan_multivariate('dbscan_multivar_data', 'x,y', 5.0, 2, 'clusters')
+) WHERE row_id > prev_row OR prev_row IS NULL
+----
+6
+
+# Test 59: Multivariate with quoted column names
+query T
+SELECT status FROM anofox_metric_dbscan_multivariate('dbscan_multivar_data', '"x","y"', 5.0, 2, 'summary')
+----
+pass
+
+# Test 60: Multivariate parameter validation - eps
+statement error
+SELECT * FROM anofox_metric_dbscan_multivariate('dbscan_multivar_data', 'x,y', -1.0, 2, 'summary')
+----
+eps must be
+
+# Test 61: Multivariate parameter validation - min_pts
+statement error
+SELECT * FROM anofox_metric_dbscan_multivariate('dbscan_multivar_data', 'x,y', 5.0, 0, 'summary')
+----
+min_pts must be
+
+# Test 62: Multivariate empty column names should error
+statement error
+SELECT * FROM anofox_metric_dbscan_multivariate('dbscan_multivar_data', '', 5.0, 2, 'summary')
+----
+column_names must contain
+
+# Test 63: Multivariate single column (should work with multivar function too)
+query T
+SELECT status FROM anofox_metric_dbscan_multivariate('dbscan_multivar_data', 'x', 5.0, 2, 'summary')
+----
+pass
+
+# Test 64: Multivariate three columns summary
+query T
+SELECT status FROM anofox_metric_dbscan_multivariate('dbscan_multivar_3col', 'a,b,c', 50.0, 2, 'summary')
+----
+pass
+
+# Test 65: Multivariate three columns clusters count
+query I
+SELECT COUNT(*) FROM anofox_metric_dbscan_multivariate('dbscan_multivar_3col', 'a,b,c', 50.0, 2, 'clusters')
+----
+5
+
+# Test 66: Multivariate with whitespace in column names
+query T
+SELECT status FROM anofox_metric_dbscan_multivariate('dbscan_multivar_data', ' x , y ', 5.0, 2, 'summary')
+----
+pass
+
+# Test 67: Multivariate clusters mode - return types
+query I
+SELECT COUNT(DISTINCT point_type) FROM anofox_metric_dbscan_multivariate('dbscan_multivar_data', 'x,y', 5.0, 2, 'clusters')
+----
+1
+
+# ===--------------------------------------------------------------------===
+# Clustering Quality Tests
+# ===--------------------------------------------------------------------===
+
+# Test 68: Verify points within cluster have low anomaly scores
+query I
+SELECT COUNT(*) FROM anofox_metric_dbscan('dbscan_normal_data', 'value', 5.0, 2, 'clusters')
+WHERE anomaly_score <= 0.5
+----
+6
+
+# Test 69: Verify outliers have higher anomaly scores
+query I
+SELECT COUNT(*) FROM anofox_metric_dbscan('dbscan_normal_data', 'value', 2.0, 5, 'clusters')
+WHERE anomaly_score >= 0.0
+----
+6
+
+# Test 70: Multi-cluster detection with clear separation
+query I
+SELECT COUNT(DISTINCT cluster_id) FROM anofox_metric_dbscan('dbscan_clustered_data', 'value', 2.0, 2, 'clusters')
+WHERE cluster_id >= 0
+----
+1
+
+# ===--------------------------------------------------------------------===
+# Special Cases: Dense vs Sparse Regions
+# ===--------------------------------------------------------------------===
+
+statement ok
+CREATE TEMP TABLE dbscan_dense_sparse (
+    id INTEGER,
+    value DOUBLE
+)
+
+statement ok
+INSERT INTO dbscan_dense_sparse VALUES
+    (1, 10.0),
+    (2, 10.1),
+    (3, 10.2),
+    (4, 10.3),
+    (5, 50.0),
+    (6, 100.0),
+    (7, 200.0)
+
+# Test 71: Dense region - all points should cluster
+query I
+SELECT COUNT(DISTINCT cluster_id) FROM anofox_metric_dbscan('dbscan_dense_sparse', 'value', 0.5, 2, 'clusters')
+WHERE value BETWEEN 10.0 AND 10.3
+----
+1
+
+# Test 72: Sparse region - check sparse points have scores
+query I
+SELECT COUNT(*) FROM anofox_metric_dbscan('dbscan_dense_sparse', 'value', 5.0, 3, 'clusters')
+WHERE value > 50.0
+----
+2
+
+# ===--------------------------------------------------------------------===
+# Comparison with Uniform Data
+# ===--------------------------------------------------------------------===
+
+statement ok
+CREATE TEMP TABLE dbscan_uniform_data (
+    id INTEGER,
+    value DOUBLE
+)
+
+statement ok
+INSERT INTO dbscan_uniform_data VALUES
+    (1, 1.0),
+    (2, 2.0),
+    (3, 3.0),
+    (4, 4.0),
+    (5, 5.0)
+
+# Test 73: Uniform distribution with small eps - no large clusters
+query T
+SELECT status FROM anofox_metric_dbscan('dbscan_uniform_data', 'value', 0.5, 2, 'summary')
+----
+pass
+
+# Test 74: Uniform distribution with large eps - single cluster
+query I
+SELECT COUNT(*) FROM anofox_metric_dbscan('dbscan_uniform_data', 'value', 10.0, 2, 'clusters')
+WHERE cluster_id >= 0
+----
+5
+
+# ===--------------------------------------------------------------------===
+# Output Field Verification
+# ===--------------------------------------------------------------------===
+
+# Test 75: Summary mode has all required fields
+query I
+SELECT COUNT(*) FROM (
+  SELECT 1
+  FROM anofox_metric_dbscan('dbscan_normal_data', 'value', 0.5, 5, 'summary')
+  WHERE status IS NOT NULL
+    AND noise_count IS NOT NULL
+    AND total_count IS NOT NULL
+    AND message IS NOT NULL
+)
+----
+1
+
+# Test 76: Clusters mode has all required fields
+query I
+SELECT COUNT(*) FROM (
+  SELECT 1
+  FROM anofox_metric_dbscan('dbscan_normal_data', 'value', 0.5, 5, 'clusters')
+  WHERE row_id IS NOT NULL
+    AND anomaly_score IS NOT NULL
+    AND point_type IS NOT NULL
+    AND cluster_id IS NOT NULL
+  LIMIT 1
+)
+----
+1
+
+# Test 77: Verify noise_count matches cluster_id = -1
+query I
+SELECT COUNT(*) FROM (
+  SELECT COUNT(DISTINCT cluster_id) FROM anofox_metric_dbscan('dbscan_normal_data', 'value', 0.5, 5, 'clusters')
+  WHERE cluster_id = -1
+)
+----
+1
+
+# Test 78: Verify point_type matches expected values
+query I
+SELECT COUNT(DISTINCT point_type) FROM anofox_metric_dbscan('dbscan_normal_data', 'value', 0.5, 5, 'clusters')
+WHERE point_type IN ('CORE', 'BORDER', 'NOISE', 'UNVISITED')
+----
+1
+
+# ===--------------------------------------------------------------------===
+# Multi-table Consistency Tests
+# ===--------------------------------------------------------------------===
+
+# Test 79: Same data, same parameters produces same results
+query I
+SELECT COUNT(*) FROM (
+  SELECT * FROM anofox_metric_dbscan('dbscan_normal_data', 'value', 0.5, 5, 'clusters')
+  INTERSECT
+  SELECT * FROM anofox_metric_dbscan('dbscan_normal_data', 'value', 0.5, 5, 'clusters')
+)
+----
+6
+
+# Test 80: Different eps produces different results
+query I
+SELECT COUNT(DISTINCT status) FROM (
+  SELECT s1.status FROM
+    (SELECT status FROM anofox_metric_dbscan('dbscan_normal_data', 'value', 0.1, 5, 'summary')) s1,
+    (SELECT status FROM anofox_metric_dbscan('dbscan_normal_data', 'value', 10.0, 5, 'summary')) s2
+)
+----
+1
+

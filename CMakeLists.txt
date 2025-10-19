@@ -40,6 +40,9 @@ set(EXTENSION_SOURCES
         src/anofox_email.cpp
         src/anofox_email_dns.cpp
         src/anofox_email_smtp.cpp
+        src/anofox_metric.cpp
+        src/anofox_isolation_forest.cpp
+        src/anofox_dbscan.cpp
 )
 
 add_library(anofox_trace_obj OBJECT src/anofox_trace.cpp)

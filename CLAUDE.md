@@ -224,6 +224,10 @@ When bumping DuckDB target version:
 3. Test with `SET option_name = value;` in `.test` files
 4. Document in README.md Configuration Options table
 
+### Reuse of existing code and concepts
+If you are adding a new feature, try to reuse existing code and concepts from the project. If you are not sure how to do it, ask.
+Also have a look at duckdb source in `./duckdb` and the cpp tests in `./duckdb/test` wether you can find a similar concept or code to reuse.
+
 ## Git Status
 
 Recent changes tracked in git show:
