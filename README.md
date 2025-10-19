@@ -344,6 +344,62 @@ For comprehensive examples and best practices, see [`docs/DATA_DIFF_GUIDE.md`](d
 **Phase 1 (Complete)**: SQL-based implementation with comprehensive examples
 **Phase 2 (Planned)**: C++ table-in-out functions with bisection algorithm for cross-database comparison
 
+## Examples
+
+### Postal Verification Example
+
+A comprehensive Python example demonstrating postal address validation and parsing using the FEBRL (Freely Extensible Biomedical Record Linkage) address dataset.
+
+**Location**: `examples/postal_verification.py`
+
+**Running the example**:
+
+```bash
+cd examples
+uv run postal_verification.py
+```
+
+**What it demonstrates**:
+
+1. **Loading Address Data** - Import the FEBRL dataset containing 537K Australian addresses
+2. **Postal Library Status** - Check libpostal initialization and data availability
+3. **Address Parsing** - Extract structured components (house number, street, city, postcode) from unstructured addresses using libpostal
+4. **Address Expansion** - Generate normalized address variants for fuzzy matching and deduplication
+5. **Batch Processing** - Analyze address quality metrics across large datasets
+6. **Completeness Analysis** - Generate data quality reports with state/postcode distributions
+
+**Key Features**:
+
+- Automatic libpostal data download and initialization
+- Graceful error handling for missing dependencies
+- Statistics on address component coverage (100% completeness in FEBRL dataset)
+- State distribution analysis showing geographic patterns
+- Postcode uniqueness and coverage metrics by state
+
+**Sample Output**:
+
+```
+Loading dataset from: .../data/febrl_data.parquet
+Dataset contains 537,349 addresses
+
+State Distribution:
+  nsw: 154302 ( 28.72%)
+  vic: 115738 ( 21.54%)
+  qld: 86871 ( 16.17%)
+  ...
+
+Postcode Statistics:
+  Unique postcodes: 4,583
+  Missing postcodes: 0
+  Valid AU postcodes (4 digits): 537,349
+```
+
+**Prerequisites**:
+
+- DuckDB with Anofox Tabular extension built (`make release`)
+- libpostal data (~500MB) - automatically downloaded on first run
+- Python 3.7+ with duckdb package
+
 ## Development & Testing
 
 - `make` – configure and build release binaries with the extension.
