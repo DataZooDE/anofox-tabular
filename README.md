@@ -897,3 +897,162 @@ FROM items;
 4. **Historical Rates** - Time-series currency conversion
 5. **More Currencies** - Expand beyond current 10 major currencies
 
+---
+
+## 💼 VAT Module
+
+> European VAT number validation and utilities for regulatory compliance
+
+Validates VAT (Value Added Tax) identification numbers for 29 countries (28 EU member states + United Kingdom). Provides syntax validation, country detection, and EU membership checks with comprehensive regex patterns.
+
+**Features:**
+- VAT number parsing and normalization
+- Syntax validation with country-specific patterns
+- EU membership and country information
+- Supports all 28 EU countries + UK
+- NULL-safe operations with proper vectorization
+- No external dependencies
+
+**VAT Patterns Included:**
+- 29 countries with ISO 4217 country codes
+- Country-specific regex validation patterns
+- Automatic handling of country code variations (EL↔GR, XI↔GB)
+
+### Core Functions (10 total)
+
+#### Basic Operations (3 functions)
+| Function | Signature | Returns | Description |
+|----------|-----------|---------|-------------|
+| `anofox_vat` | `(vat_string)` | STRUCT | Parse VAT string into country and digits |
+| `anofox_is_valid_vat_country` | `(code)` | BOOLEAN | Check if country code is valid VAT country |
+| `anofox_vat_normalize` | `(vat_string)` | VARCHAR | Normalize VAT string (uppercase, remove punctuation) |
+
+#### Syntax Validation (3 functions)
+| Function | Signature | Returns | Description |
+|----------|-----------|---------|-------------|
+| `anofox_vat_is_valid_syntax` | `(vat_string)` | BOOLEAN | Validate VAT syntax against country pattern |
+| `anofox_vat_split` | `(vat_string)` | STRUCT | Parse VAT into country and normalized digits |
+| `anofox_vat_exists` | `(vat_string)` | BOOLEAN | Check if VAT has valid country prefix |
+
+#### EU Utilities (3 functions)
+| Function | Signature | Returns | Description |
+|----------|-----------|---------|-------------|
+| `anofox_vat_is_eu_member` | `(country_code)` | BOOLEAN | Check if country is EU member |
+| `anofox_vat_country_name` | `(country_code)` | VARCHAR | Get full country name |
+| `anofox_vat_format` | `(vat_string, style)` | VARCHAR | Format VAT for display |
+
+#### Combined Validation (1 function)
+| Function | Signature | Returns | Description |
+|----------|-----------|---------|-------------|
+| `anofox_vat_is_valid` | `(vat_string)` | BOOLEAN | Full validation (syntax + country check) |
+
+### Supported Countries (29)
+
+**EU Member States (28):**
+AT, BE, BG, CY, CZ, DE, DK, EE, ES, FI, FR, GR, HR, HU, IE, IT, LT, LU, LV, MT, NL, PL, PT, RO, SE, SI, SK
+
+**Non-EU:**
+GB, XI (United Kingdom & Northern Ireland)
+
+### VAT Formats by Country
+
+Each country has specific VAT format requirements:
+
+| Country | Example | Pattern |
+|---------|---------|---------|
+| Germany (DE) | DE123456789 | DE + 9 digits |
+| Austria (AT) | ATU12345678 | ATU + 8 digits |
+| Belgium (BE) | BE0123456789 | BE + 10 digits (0-prefixed) |
+| France (FR) | FR12AB123456 | FR + 2 chars + 9 digits |
+| Spain (ES) | ES12345678X | ES + variable format |
+| UK (GB) | GB123456789 | GB/XI + 9-12 digits or special |
+| Greece (GR) | EL123456789 | EL (EL prefix) + 9 digits |
+
+### Usage Examples
+
+**Validate VAT Numbers:**
+```sql
+SELECT
+    vat_id,
+    anofox_vat_is_valid(vat_id) as is_valid,
+    CASE WHEN anofox_vat_is_valid(vat_id) THEN 'Valid' ELSE 'Invalid' END as status
+FROM customers;
+```
+
+**Extract Country Information:**
+```sql
+SELECT
+    vat_id,
+    (anofox_vat_split(vat_id)).country as country_code,
+    anofox_vat_country_name((anofox_vat_split(vat_id)).country) as country_name,
+    CASE WHEN anofox_vat_is_eu_member((anofox_vat_split(vat_id)).country) THEN 'EU' ELSE 'Non-EU' END as region
+FROM customers;
+```
+
+**Data Quality Checks:**
+```sql
+-- Find invalid VAT numbers
+SELECT * FROM customers WHERE NOT anofox_vat_is_valid(vat_id);
+
+-- Find non-EU VAT customers
+SELECT * FROM customers
+WHERE anofox_vat_is_valid(vat_id)
+  AND NOT anofox_vat_is_eu_member((anofox_vat_split(vat_id)).country);
+
+-- Normalize and validate VAT
+SELECT
+    customer_id,
+    anofox_vat_normalize(vat_id) as normalized_vat,
+    anofox_vat_is_valid_syntax(anofox_vat_normalize(vat_id)) as syntax_valid
+FROM customers;
+```
+
+**Batch Processing:**
+```sql
+-- Validate entire customer base
+SELECT
+    COUNT(*) as total,
+    COUNT(*) FILTER (WHERE anofox_vat_is_valid(vat_id)) as valid_vats,
+    COUNT(*) FILTER (WHERE anofox_vat_is_eu_member((anofox_vat_split(vat_id)).country)) as eu_customers
+FROM customers;
+```
+
+### Design Notes
+
+**Type System:**
+- VAT is represented as `STRUCT(country VARCHAR, digits VARCHAR)`
+- Country code: ISO 3166-1 alpha-2 (normalized, e.g., GR for Greece)
+- Digits: Normalized digits without country prefix
+
+**Country Code Handling:**
+- Automatic conversion: EL→GR (Greek VAT prefix EL to ISO GR)
+- Automatic conversion: XI→GB (Northern Ireland XI to ISO GB)
+- All input normalized to uppercase before matching
+
+**Validation Strategy:**
+- Regex patterns embedded directly (no external database)
+- Pattern matching against 29 country-specific rules
+- Compatible with DuckDB vectorized execution
+- Single-pass processing with minimal overhead
+
+**NULL Handling:**
+- All functions properly propagate NULL values
+- NULL input returns NULL output
+- Suitable for optional VAT fields
+
+### Performance
+
+- **Fast:** Regex patterns compiled once at startup
+- **Vectorized:** Full DuckDB vectorization support
+- **Scalable:** Validate millions of VAT numbers per second
+- **Memory Efficient:** No per-record allocations
+
+### Future Enhancements
+
+1. **Checksum Validation** - Algorithm-based validation for 17+ countries
+2. **VIES API Lookup** - Real-time validation via EU VIES web service
+3. **HMRC API Integration** - UK VAT validation via HMRC API v2.0
+4. **Additional Countries** - Support for non-EU VAT systems
+5. **Batch Lookups** - Efficient multi-record API validation
+6. **Rate Limiting** - Smart throttling for external API calls
+

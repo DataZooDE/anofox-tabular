@@ -7,6 +7,7 @@
 #include "anofox_phonenumber.hpp"
 #include "anofox_metric.hpp"
 #include "anofox_money.hpp"
+#include "anofox_vat.hpp"
 
 namespace duckdb {
 
@@ -21,6 +22,8 @@ void LoadInternal(ExtensionLoader &loader) {
 	anofox::RegisterMetricFunctions(loader);
 	anofox::RegisterMoneyOptions(loader);
 	anofox::RegisterMoneyFunctions(loader);
+	RegisterVATOptions(loader);
+	RegisterVATFunctions(loader);
 }
 
 void AnofoxTabularExtension::Load(ExtensionLoader &loader) {

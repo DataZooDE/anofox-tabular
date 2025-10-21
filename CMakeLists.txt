@@ -45,6 +45,8 @@ set(EXTENSION_SOURCES
         src/anofox_dbscan.cpp
         src/anofox_money.cpp
         src/anofox_money_currency.cpp
+        src/anofox_vat.cpp
+        src/anofox_vat_country.cpp
 )
 
 add_library(anofox_trace_obj OBJECT src/anofox_trace.cpp)
