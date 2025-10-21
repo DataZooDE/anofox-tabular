@@ -43,6 +43,8 @@ set(EXTENSION_SOURCES
         src/anofox_metric.cpp
         src/anofox_isolation_forest.cpp
         src/anofox_dbscan.cpp
+        src/anofox_money.cpp
+        src/anofox_money_currency.cpp
 )
 
 add_library(anofox_trace_obj OBJECT src/anofox_trace.cpp)

@@ -720,3 +720,180 @@ This project is licensed under the Business Source License (BSL) 1.1 - see the [
 <p align="center">
   <sub>Built with ❤️ for the DuckDB community</sub>
 </p>
+
+---
+
+## 💰 Money & Currency Operations (NEW)
+
+Advanced monetary value handling with international currency support. Store, validate, format, and perform arithmetic on monetary amounts with full currency awareness.
+
+```sql
+-- Create money values
+SELECT anofox_money(100.50, 'USD') as price;
+-- Returns: {'amount': 100.5, 'currency': USD}
+
+-- Format for display
+SELECT anofox_money_format(anofox_money(99.99, 'EUR'), 'symbol');
+-- Returns: 99,99 €
+
+-- Arithmetic operations with currency safety
+SELECT anofox_money_add(
+    anofox_money(10.00, 'USD'),
+    anofox_money(5.50, 'USD')
+);
+-- Returns: {'amount': 15.5, 'currency': USD}
+
+-- Quality validation
+SELECT * FROM transactions 
+WHERE anofox_money_in_range(amount, 0.01, 10000.00)
+  AND anofox_money_is_positive(amount);
+```
+
+### Core Functions (17 total)
+
+#### Basic Operations
+| Function | Signature | Returns | Description |
+|----------|-----------|---------|-------------|
+| `anofox_money` | `(amount, currency_code)` | STRUCT | Create a money value from amount and currency code |
+| `anofox_money_from_cents` | `(cents, currency_code)` | STRUCT | Create a money value from integer cents |
+| `anofox_money_amount` | `(money)` | DOUBLE | Extract amount from money struct |
+| `anofox_money_currency` | `(money)` | VARCHAR | Extract currency code from money struct |
+
+#### Currency Information
+| Function | Signature | Returns | Description |
+|----------|-----------|---------|-------------|
+| `anofox_is_valid_currency` | `(code)` | BOOLEAN | Check if currency code is valid |
+| `anofox_currency_symbol` | `(code)` | VARCHAR | Get currency symbol (e.g., '$', '€') |
+| `anofox_currency_name` | `(code)` | VARCHAR | Get currency name (e.g., 'United States Dollar') |
+
+#### Formatting
+| Function | Signature | Returns | Description |
+|----------|-----------|---------|-------------|
+| `anofox_money_format` | `(money, style)` | VARCHAR | Format money for display (3 styles) |
+
+**Format Styles:**
+- `'symbol'`: Uses currency symbol (e.g., "$100.50", "100,50 €")
+- `'code'`: ISO 4217 code (e.g., "100.50 USD")
+- `'long'`: Full currency name (e.g., "100.50 United States Dollar")
+
+#### Validation & Properties
+| Function | Signature | Returns | Description |
+|----------|-----------|---------|-------------|
+| `anofox_money_is_positive` | `(money)` | BOOLEAN | Check if amount > 0 |
+| `anofox_money_is_negative` | `(money)` | BOOLEAN | Check if amount < 0 |
+| `anofox_money_is_zero` | `(money)` | BOOLEAN | Check if amount == 0 |
+| `anofox_money_abs` | `(money)` | STRUCT | Get absolute value (sign removed) |
+
+#### Arithmetic Operations
+| Function | Signature | Returns | Description |
+|----------|-----------|---------|-------------|
+| `anofox_money_add` | `(money1, money2)` | STRUCT | Add two money values (same currency required) |
+| `anofox_money_subtract` | `(money1, money2)` | STRUCT | Subtract money2 from money1 (same currency) |
+| `anofox_money_multiply` | `(money, factor)` | STRUCT | Multiply money by a scalar factor |
+
+#### Quality & Data Validation
+| Function | Signature | Returns | Description |
+|----------|-----------|---------|-------------|
+| `anofox_money_in_range` | `(money, min, max)` | BOOLEAN | Check if amount is within range |
+| `anofox_money_same_currency` | `(money1, money2)` | BOOLEAN | Check if two money values have same currency |
+
+### Supported Currencies (10)
+
+| Code | Name | Symbol | Region |
+|------|------|--------|--------|
+| USD | United States Dollar | $ | US |
+| EUR | Euro | € | Europe |
+| GBP | British Pound | £ | UK |
+| JPY | Japanese Yen | ¥ | Japan |
+| CAD | Canadian Dollar | $ | Canada |
+| AUD | Australian Dollar | $ | Australia |
+| CHF | Swiss Franc | CHF | Switzerland |
+| CNY | Chinese Yuan | ¥ | China |
+| INR | Indian Rupee | ₹ | India |
+| BRL | Brazilian Real | R$ | Brazil |
+
+### Usage Examples
+
+**Financial Reporting:**
+```sql
+SELECT 
+    transaction_id,
+    anofox_money_format(amount, 'symbol') as display_amount,
+    anofox_money_format(amount, 'code') as iso_amount
+FROM transactions;
+```
+
+**Data Quality Checks:**
+```sql
+-- Find unusual transactions
+SELECT * FROM transactions WHERE NOT anofox_money_in_range(amount, 0.01, 99999.99);
+
+-- Ensure all transactions in same currency for reconciliation
+SELECT * FROM invoice_line_items il1
+JOIN invoice_line_items il2 ON il1.invoice_id = il2.invoice_id
+WHERE NOT anofox_money_same_currency(il1.amount, il2.amount);
+```
+
+**Calculations:**
+```sql
+-- Calculate total invoice amount
+SELECT 
+    invoice_id,
+    anofox_money_format(
+        anofox_money_add(
+            anofox_money_add(subtotal, tax),
+            shipping
+        ),
+        'symbol'
+    ) as total_amount
+FROM invoices;
+
+-- Apply discount
+SELECT 
+    item_id,
+    anofox_money_format(
+        anofox_money_multiply(price, 0.9),  -- 10% discount
+        'symbol'
+    ) as discounted_price
+FROM items;
+```
+
+### Design Notes
+
+**Type System:**
+- Money is represented as `STRUCT(amount DOUBLE, currency VARCHAR)`
+- Uses IEEE 754 DOUBLE for amounts (standard floating-point)
+- Currency code validated against ISO 4217 codes
+
+**Precision Considerations:**
+- DOUBLE provides ~15-17 significant decimal digits
+- Suitable for most business applications
+- For systems requiring exact decimal precision (e.g., accounting ledgers), consider:
+  - Using BIGINT for cents-based storage
+  - Storing amounts separately as DECIMAL(38,10)
+  - Planned future: DECIMAL(38,10) variant functions
+
+**Currency Safety:**
+- All arithmetic operations enforce matching currencies
+- Invalid currency codes throw errors at runtime
+- NULL values properly propagate through all functions
+
+**Locale-Aware Formatting:**
+- Decimal marks respect currency settings (e.g., "," for EUR)
+- Symbol placement varies by currency (leading "$" vs trailing "€")
+- Thousands separators configured per currency
+
+### Performance
+
+- **Fast:** Functions optimized for DuckDB's vectorized execution
+- **Scalable:** Arithmetic on millions of rows in seconds
+- **Efficient:** Minimal memory overhead, single-pass processing
+
+### Future Enhancements
+
+1. **DECIMAL(38,10) Support** - High-precision financial variant
+2. **Exchange Rate Functions** - Currency conversion with rate tables
+3. **Tax Calculations** - VAT/GST-aware formatting and calculations
+4. **Historical Rates** - Time-series currency conversion
+5. **More Currencies** - Expand beyond current 10 major currencies
+

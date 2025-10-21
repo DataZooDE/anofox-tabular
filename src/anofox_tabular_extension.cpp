@@ -6,6 +6,7 @@
 #include "anofox_postal.hpp"
 #include "anofox_phonenumber.hpp"
 #include "anofox_metric.hpp"
+#include "anofox_money.hpp"
 
 namespace duckdb {
 
@@ -18,6 +19,8 @@ void LoadInternal(ExtensionLoader &loader) {
 	anofox::RegisterEmailFunctions(loader);
 	anofox::RegisterDiffFunctions(loader);
 	anofox::RegisterMetricFunctions(loader);
+	anofox::RegisterMoneyOptions(loader);
+	anofox::RegisterMoneyFunctions(loader);
 }
 
 void AnofoxTabularExtension::Load(ExtensionLoader &loader) {
