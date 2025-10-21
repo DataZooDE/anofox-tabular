@@ -10,6 +10,7 @@
                         "./extension-ci-tools/vcpkg_ports"
                 ],
                 "overlay-triplets": [
+                        "./toolchains",
                         "./extension-ci-tools/toolchains"
                 ]
         }
