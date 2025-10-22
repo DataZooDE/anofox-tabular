@@ -5,7 +5,7 @@
 [![DuckDB](https://img.shields.io/badge/DuckDB-1.4.1-yellow)](https://duckdb.org/)
 [![C++17](https://img.shields.io/badge/C++-17-blue.svg)](https://isocpp.org/)
 [![License](https://img.shields.io/badge/license-BSL%201.1-blue.svg)](LICENSE)
-[![Functions](https://img.shields.io/badge/Functions-52-green)]()
+[![Functions](https://img.shields.io/badge/Functions-57-green)]()
 [![Modules](https://img.shields.io/badge/Modules-8-blue)]()
 
 SQL-native validation, anomaly detection, and data diffing—all without leaving your database.
@@ -74,14 +74,14 @@ WHERE anofox_vat_is_valid(vat_id)
 |--------|-----------|----------|--------|
 | 📧 **Email Validation** | 3 | RFC 5322, DNS, SMTP verification | Stable |
 | 📮 **Address Parsing** | 4 | International address normalization | Stable |
-| 📞 **Phone Numbers** | 4 | Google libphonenumber integration | Stable |
+| 📞 **Phone Numbers** | 9 | Google libphonenumber integration | Stable |
 | 💰 **Money & Currency** | 17 | Multi-currency operations, 10 currencies | ✨ New |
 | 💼 **VAT Validation** | 10 | European VAT compliance, 29 countries | ✨ New |
 | 🔍 **Quality Metrics** | 8 | Volume, nulls, freshness, schema checks | Stable |
 | 🤖 **Anomaly Detection** | 4 | Isolation Forest, DBSCAN, outliers | Stable |
 | 🔄 **Data Diffing** | 2 | Table comparison, migration validation | Stable |
 
-**Total: 52 SQL Functions** | **Zero Required Dependencies*** | **Production Ready**
+**Total: 57 SQL Functions** | **Zero Required Dependencies*** | **Production Ready**
 
 <sub>*Except libpostal (address parsing) and optional DNS/SMTP for email</sub>
 
@@ -593,6 +593,11 @@ WHERE anofox_money_in_range(amount, 0.01, 99999.99)
 | `anofox_phonenumber_parse` | `(number VARCHAR, region VARCHAR) → STRUCT` | Parse and validate (returns validity, country_code, national_number, region, type) |
 | `anofox_phonenumber_format` | `(number VARCHAR, region VARCHAR, format VARCHAR) → VARCHAR` | Format number (E164, INTERNATIONAL, NATIONAL, RFC3966) |
 | `anofox_phonenumber_region` | `(number VARCHAR, region VARCHAR) → VARCHAR` | Extract ISO region code |
+| `anofox_phonenumber_is_valid` | `(number VARCHAR, region VARCHAR) → BOOLEAN` | Full validation using length and prefix information |
+| `anofox_phonenumber_is_possible` | `(number VARCHAR, region VARCHAR) → BOOLEAN` | Quick possibility check using length-only analysis |
+| `anofox_phonenumber_is_valid_for_region` | `(number VARCHAR, region VARCHAR) → BOOLEAN` | Region-specific validation |
+| `anofox_phonenumber_match` | `(number1 VARCHAR, number2 VARCHAR, region VARCHAR) → VARCHAR` | Fuzzy matching returns (EXACT_MATCH, NSN_MATCH, SHORT_NSN_MATCH, NO_MATCH) |
+| `anofox_phonenumber_example` | `(region VARCHAR) → VARCHAR` | Generate example phone number for region |
 | `anofox_phonenumber_status` | `() → TABLE` | Library status and default region |
 
 ### Money & Currency Functions

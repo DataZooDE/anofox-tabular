@@ -43,6 +43,11 @@ public:
 	PhoneNumberParts Parse(const std::string &raw_number, const std::string &region_hint);
 	std::string Format(const std::string &raw_number, const std::string &region_hint, PhoneNumberFormatOption format);
 	std::string GetRegion(const std::string &raw_number, const std::string &region_hint);
+	bool IsValid(const std::string &raw_number, const std::string &region_hint);
+	bool IsPossible(const std::string &raw_number, const std::string &region_hint);
+	bool IsValidForRegion(const std::string &raw_number, const std::string &region_hint);
+	std::string Match(const std::string &number1, const std::string &number2, const std::string &region_hint);
+	std::string GetExampleNumber(const std::string &region_hint);
 
 	void SetDefaultRegion(const std::string &region);
 	std::string GetDefaultRegion() const;
