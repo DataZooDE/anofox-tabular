@@ -27,7 +27,7 @@ The extension is implemented entirely in C++17 with dependencies managed through
 GEN=ninja make release                   # Build the extension (requires vcpkg)
 ```
 
-Always use ninja for faster builds. Seldomly use `make clean`.
+Always use ninja for faster builds. Seldomly use `make clean` to clean the build directory.
 
 ### Build Artifacts
 

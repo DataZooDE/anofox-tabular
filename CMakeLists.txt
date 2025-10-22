@@ -76,10 +76,8 @@ target_link_libraries(${EXTENSION_NAME}
     Boost::thread
     ${LIBPOSTAL_LDFLAGS}
 )
-target_compile_definitions(anofox_trace_obj PRIVATE SPDLOG_HEADER_ONLY=1 SPDLOG_FMT_EXTERNAL=0 SPDLOG_COMPILED_LIB=0)
-target_compile_options(anofox_trace_obj PRIVATE -USPDLOG_FMT_EXTERNAL -USPDLOG_COMPILED_LIB)
-target_compile_definitions(${EXTENSION_NAME} PRIVATE SPDLOG_HEADER_ONLY=1 SPDLOG_FMT_EXTERNAL=0 SPDLOG_COMPILED_LIB=0)
-target_compile_options(${EXTENSION_NAME} PRIVATE -USPDLOG_FMT_EXTERNAL -USPDLOG_COMPILED_LIB)
+# spdlog configuration is handled by the header-only target
+# No need to manually define SPDLOG_* flags; spdlog_header_only sets them correctly
 get_target_property(SPDLOG_INTERFACE_INCLUDES spdlog::spdlog_header_only INTERFACE_INCLUDE_DIRECTORIES)
 if(SPDLOG_INTERFACE_INCLUDES)
     list(GET SPDLOG_INTERFACE_INCLUDES 0 SPDLOG_PRIMARY_INCLUDE)
@@ -102,8 +100,8 @@ target_link_libraries(${LOADABLE_EXTENSION_NAME}
     Boost::thread
     ${LIBPOSTAL_LDFLAGS}
 )
-target_compile_definitions(${LOADABLE_EXTENSION_NAME} PRIVATE SPDLOG_HEADER_ONLY=1 SPDLOG_FMT_EXTERNAL=0 SPDLOG_COMPILED_LIB=0)
-target_compile_options(${LOADABLE_EXTENSION_NAME} PRIVATE -USPDLOG_FMT_EXTERNAL -USPDLOG_COMPILED_LIB)
+# spdlog configuration is handled by the header-only target
+# No need to manually define SPDLOG_* flags; spdlog_header_only sets them correctly
 
 # Add include directories from dependencies
 target_include_directories(${EXTENSION_NAME} PRIVATE
