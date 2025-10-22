@@ -1,4 +1,5 @@
 #include "anofox_vat.hpp"
+#include "anofox_vat_helpers.hpp"
 #include "duckdb/function/scalar_function.hpp"
 #include "duckdb/parser/parsed_expression.hpp"
 #include "duckdb/common/string_util.hpp"
@@ -11,20 +12,9 @@ namespace duckdb {
 // ============================================================================
 static LogicalType GetVATType() {
   child_list_t<LogicalType> struct_children;
-  struct_children.push_back(make_pair("country", LogicalType::VARCHAR));
-  struct_children.push_back(make_pair("digits", LogicalType::VARCHAR));
+  struct_children.push_back(make_pair("country", LogicalTypeId::VARCHAR));
+  struct_children.push_back(make_pair("digits", LogicalTypeId::VARCHAR));
   return LogicalType::STRUCT(struct_children);
-}
-
-// ============================================================================
-// Helper: Create VAT struct value
-// ============================================================================
-static Value CreateVATValue(const std::string& country,
-                           const std::string& digits) {
-  child_list_t<Value> children;
-  children.push_back(make_pair("country", Value(country)));
-  children.push_back(make_pair("digits", Value(digits)));
-  return Value::STRUCT(children);
 }
 
 // ============================================================================
@@ -35,93 +25,33 @@ static Value CreateVATValue(const std::string& country,
 static void VATParseFunc(DataChunk& args, ExpressionState& state,
                         Vector& result) {
   auto& registry = VATRegistry::Instance();
-  auto& input_vec = args.data[0];
-  size_t count = args.size();
-
-  UnifiedVectorFormat idata;
-  input_vec.ToUnifiedFormat(count, idata);
-  auto input_strings = (string_t*)idata.data;
-
-  auto& struct_entries = StructVector::GetEntries(result);
-  auto& country_vec = *struct_entries[0];
-  auto& digits_vec = *struct_entries[1];
-  auto country_strings = FlatVector::GetData<string_t>(country_vec);
-  auto digits_strings = FlatVector::GetData<string_t>(digits_vec);
-
-  for (size_t i = 0; i < count; i++) {
-    size_t idx = idata.sel->get_index(i);
-    if (!idata.validity.RowIsValid(idx)) {
-      FlatVector::SetNull(result, i, true);
-      continue;
-    }
-
-    std::string input = input_strings[idx].GetString();
+  IterateSingleStringInput(args, result, [&](const std::string& input, size_t idx) {
     auto split_result = registry.SplitVAT(input);
-
     if (!split_result.has_value()) {
-      FlatVector::SetNull(result, i, true);
-      continue;
+      FlatVector::SetNull(result, idx, true);
+      return;
     }
-
     auto [country, digits] = split_result.value();
-    country_strings[i] = StringVector::AddString(country_vec, country);
-    digits_strings[i] = StringVector::AddString(digits_vec, digits);
-  }
-
-  result.Verify(count);
+    SetVATStructResult(result, idx, country, digits);
+  });
 }
 
 // anofox_is_valid_vat_country(code) -> BOOLEAN
 static void IsValidVATCountryFunc(DataChunk& args, ExpressionState& state,
                                  Vector& result) {
   auto& registry = VATRegistry::Instance();
-  auto& input_vec = args.data[0];
-  size_t count = args.size();
-  auto result_data = FlatVector::GetData<bool>(result);
-
-  UnifiedVectorFormat idata;
-  input_vec.ToUnifiedFormat(count, idata);
-  auto input_strings = (string_t*)idata.data;
-
-  for (size_t i = 0; i < count; i++) {
-    size_t idx = idata.sel->get_index(i);
-    if (!idata.validity.RowIsValid(idx)) {
-      FlatVector::SetNull(result, i, true);
-      continue;
-    }
-
-    std::string country = input_strings[idx].GetString();
-    result_data[i] = registry.IsValidCountry(country);
-  }
-
-  result.Verify(count);
+  IterateSingleStringInput(args, result, [&](const std::string& country, size_t idx) {
+    SetBoolResult(result, idx, registry.IsValidCountry(country));
+  });
 }
 
 // anofox_vat_normalize(number) -> VARCHAR
 static void VATNormalizeFunc(DataChunk& args, ExpressionState& state,
                             Vector& result) {
   auto& registry = VATRegistry::Instance();
-  auto& input_vec = args.data[0];
-  size_t count = args.size();
-  auto result_strings = FlatVector::GetData<string_t>(result);
-
-  UnifiedVectorFormat idata;
-  input_vec.ToUnifiedFormat(count, idata);
-  auto input_strings = (string_t*)idata.data;
-
-  for (size_t i = 0; i < count; i++) {
-    size_t idx = idata.sel->get_index(i);
-    if (!idata.validity.RowIsValid(idx)) {
-      FlatVector::SetNull(result, i, true);
-      continue;
-    }
-
-    std::string input = input_strings[idx].GetString();
-    std::string normalized = registry.NormalizeVAT(input);
-    result_strings[i] = StringVector::AddString(result, normalized);
-  }
-
-  result.Verify(count);
+  IterateSingleStringInput(args, result, [&](const std::string& input, size_t idx) {
+    SetStringResult(result, idx, registry.NormalizeVAT(input));
+  });
 }
 
 // ============================================================================
@@ -132,101 +62,39 @@ static void VATNormalizeFunc(DataChunk& args, ExpressionState& state,
 static void VATIsValidSyntaxFunc(DataChunk& args, ExpressionState& state,
                                 Vector& result) {
   auto& registry = VATRegistry::Instance();
-  auto& input_vec = args.data[0];
-  size_t count = args.size();
-  auto result_data = FlatVector::GetData<bool>(result);
-
-  UnifiedVectorFormat idata;
-  input_vec.ToUnifiedFormat(count, idata);
-  auto input_strings = (string_t*)idata.data;
-
-  for (size_t i = 0; i < count; i++) {
-    size_t idx = idata.sel->get_index(i);
-    if (!idata.validity.RowIsValid(idx)) {
-      FlatVector::SetNull(result, i, true);
-      continue;
-    }
-
-    std::string input = input_strings[idx].GetString();
+  IterateSingleStringInput(args, result, [&](const std::string& input, size_t idx) {
     auto split_result = registry.SplitVAT(input);
-
     if (!split_result.has_value()) {
-      result_data[i] = false;
-      continue;
+      SetBoolResult(result, idx, false);
+      return;
     }
-
     auto [country, digits] = split_result.value();
-    result_data[i] = registry.IsValidSyntax(country, digits);
-  }
-
-  result.Verify(count);
+    SetBoolResult(result, idx, registry.IsValidSyntax(country, digits));
+  });
 }
 
 // anofox_vat_split(number) -> STRUCT(country, digits)
 static void VATSplitFunc(DataChunk& args, ExpressionState& state,
                         Vector& result) {
   auto& registry = VATRegistry::Instance();
-  auto& input_vec = args.data[0];
-  size_t count = args.size();
-
-  UnifiedVectorFormat idata;
-  input_vec.ToUnifiedFormat(count, idata);
-  auto input_strings = (string_t*)idata.data;
-
-  auto& struct_entries = StructVector::GetEntries(result);
-  auto& country_vec = *struct_entries[0];
-  auto& digits_vec = *struct_entries[1];
-  auto country_strings = FlatVector::GetData<string_t>(country_vec);
-  auto digits_strings = FlatVector::GetData<string_t>(digits_vec);
-
-  for (size_t i = 0; i < count; i++) {
-    size_t idx = idata.sel->get_index(i);
-    if (!idata.validity.RowIsValid(idx)) {
-      FlatVector::SetNull(result, i, true);
-      continue;
-    }
-
-    std::string input = input_strings[idx].GetString();
+  IterateSingleStringInput(args, result, [&](const std::string& input, size_t idx) {
     auto split_result = registry.SplitVAT(input);
-
     if (!split_result.has_value()) {
-      FlatVector::SetNull(result, i, true);
-      continue;
+      FlatVector::SetNull(result, idx, true);
+      return;
     }
-
     auto [country, digits] = split_result.value();
-    country_strings[i] = StringVector::AddString(country_vec, country);
-    digits_strings[i] = StringVector::AddString(digits_vec, digits);
-  }
-
-  result.Verify(count);
+    SetVATStructResult(result, idx, country, digits);
+  });
 }
 
 // anofox_vat_exists(number) -> BOOLEAN
 static void VATExistsFunc(DataChunk& args, ExpressionState& state,
                          Vector& result) {
   auto& registry = VATRegistry::Instance();
-  auto& input_vec = args.data[0];
-  size_t count = args.size();
-  auto result_data = FlatVector::GetData<bool>(result);
-
-  UnifiedVectorFormat idata;
-  input_vec.ToUnifiedFormat(count, idata);
-  auto input_strings = (string_t*)idata.data;
-
-  for (size_t i = 0; i < count; i++) {
-    size_t idx = idata.sel->get_index(i);
-    if (!idata.validity.RowIsValid(idx)) {
-      FlatVector::SetNull(result, i, true);
-      continue;
-    }
-
-    std::string input = input_strings[idx].GetString();
-    auto split_result = registry.SplitVAT(input);
-    result_data[i] = split_result.has_value();
-  }
-
-  result.Verify(count);
+  IterateSingleStringInput(args, result, [&](const std::string& input, size_t idx) {
+    SetBoolResult(result, idx, registry.SplitVAT(input).has_value());
+  });
 }
 
 // ============================================================================
@@ -237,59 +105,23 @@ static void VATExistsFunc(DataChunk& args, ExpressionState& state,
 static void VATIsEUMemberFunc(DataChunk& args, ExpressionState& state,
                              Vector& result) {
   auto& registry = VATRegistry::Instance();
-  auto& input_vec = args.data[0];
-  size_t count = args.size();
-  auto result_data = FlatVector::GetData<bool>(result);
-
-  UnifiedVectorFormat idata;
-  input_vec.ToUnifiedFormat(count, idata);
-  auto input_strings = (string_t*)idata.data;
-
-  for (size_t i = 0; i < count; i++) {
-    size_t idx = idata.sel->get_index(i);
-    if (!idata.validity.RowIsValid(idx)) {
-      FlatVector::SetNull(result, i, true);
-      continue;
-    }
-
-    std::string country = input_strings[idx].GetString();
-    result_data[i] = registry.IsEUMember(country);
-  }
-
-  result.Verify(count);
+  IterateSingleStringInput(args, result, [&](const std::string& country, size_t idx) {
+    SetBoolResult(result, idx, registry.IsEUMember(country));
+  });
 }
 
 // anofox_vat_country_name(country_code) -> VARCHAR
 static void VATCountryNameFunc(DataChunk& args, ExpressionState& state,
                               Vector& result) {
   auto& registry = VATRegistry::Instance();
-  auto& input_vec = args.data[0];
-  size_t count = args.size();
-  auto result_strings = FlatVector::GetData<string_t>(result);
-
-  UnifiedVectorFormat idata;
-  input_vec.ToUnifiedFormat(count, idata);
-  auto input_strings = (string_t*)idata.data;
-
-  for (size_t i = 0; i < count; i++) {
-    size_t idx = idata.sel->get_index(i);
-    if (!idata.validity.RowIsValid(idx)) {
-      FlatVector::SetNull(result, i, true);
-      continue;
-    }
-
-    std::string country = input_strings[idx].GetString();
+  IterateSingleStringInput(args, result, [&](const std::string& country, size_t idx) {
     std::string name = registry.GetCountryName(country);
-
     if (name.empty()) {
-      FlatVector::SetNull(result, i, true);
-      continue;
+      FlatVector::SetNull(result, idx, true);
+      return;
     }
-
-    result_strings[i] = StringVector::AddString(result, name);
-  }
-
-  result.Verify(count);
+    SetStringResult(result, idx, name);
+  });
 }
 
 // anofox_vat_format(vat, style) -> VARCHAR
@@ -299,7 +131,6 @@ static void VATFormatFunc(DataChunk& args, ExpressionState& state,
   auto& vat_vec = args.data[0];
   auto& style_vec = args.data[1];
   size_t count = args.size();
-  auto result_strings = FlatVector::GetData<string_t>(result);
 
   UnifiedVectorFormat vat_data, style_data;
   vat_vec.ToUnifiedFormat(count, vat_data);
@@ -330,34 +161,15 @@ static void VATFormatFunc(DataChunk& args, ExpressionState& state,
 static void VATIsValidFunc(DataChunk& args, ExpressionState& state,
                           Vector& result) {
   auto& registry = VATRegistry::Instance();
-  auto& input_vec = args.data[0];
-  size_t count = args.size();
-  auto result_data = FlatVector::GetData<bool>(result);
-
-  UnifiedVectorFormat idata;
-  input_vec.ToUnifiedFormat(count, idata);
-  auto input_strings = (string_t*)idata.data;
-
-  for (size_t i = 0; i < count; i++) {
-    size_t idx = idata.sel->get_index(i);
-    if (!idata.validity.RowIsValid(idx)) {
-      FlatVector::SetNull(result, i, true);
-      continue;
-    }
-
-    std::string input = input_strings[idx].GetString();
+  IterateSingleStringInput(args, result, [&](const std::string& input, size_t idx) {
     auto split_result = registry.SplitVAT(input);
-
     if (!split_result.has_value()) {
-      result_data[i] = false;
-      continue;
+      SetBoolResult(result, idx, false);
+      return;
     }
-
     auto [country, digits] = split_result.value();
-    result_data[i] = registry.IsValidSyntax(country, digits);
-  }
-
-  result.Verify(count);
+    SetBoolResult(result, idx, registry.IsValidSyntax(country, digits));
+  });
 }
 
 // ============================================================================
