@@ -37,33 +37,17 @@ static void AnofoxMoneyFunction(DataChunk &args, ExpressionState &state, Vector 
 
     auto amount_values = reinterpret_cast<double *>(amount_data.data);
     auto currency_values = reinterpret_cast<string_t *>(currency_data.data);
-
-    // Get struct entries from result
-    auto &children = StructVector::GetEntries(result);
-    if (children.size() != 2) {
-        throw InvalidInputException("Money struct must have exactly 2 fields");
-    }
-
-    auto &amount_child = *children[0];
-    auto &currency_child = *children[1];
+    auto builder = PrepareMoneyResult(result);
 
     auto &registry = CurrencyRegistry::GetInstance();
-
-    amount_child.SetVectorType(VectorType::FLAT_VECTOR);
-    currency_child.SetVectorType(VectorType::FLAT_VECTOR);
-
-    auto amount_ptr = FlatVector::GetData<double>(amount_child);
-    auto currency_ptr = FlatVector::GetData<string_t>(currency_child);
-    auto &amount_validity = FlatVector::Validity(amount_child);
-    auto &currency_validity = FlatVector::Validity(currency_child);
 
     for (idx_t i = 0; i < count; i++) {
         auto amount_idx = amount_data.sel->get_index(i);
         auto currency_idx = currency_data.sel->get_index(i);
 
         if (!amount_data.validity.RowIsValid(amount_idx) || !currency_data.validity.RowIsValid(currency_idx)) {
-            amount_validity.SetInvalid(i);
-            currency_validity.SetInvalid(i);
+            builder.amount_validity.SetInvalid(i);
+            builder.currency_validity.SetInvalid(i);
         } else {
             auto currency_code = currency_values[currency_idx].GetString();
 
@@ -72,8 +56,7 @@ static void AnofoxMoneyFunction(DataChunk &args, ExpressionState &state, Vector 
                 throw InvalidInputException("Invalid currency code: %s", currency_code);
             }
 
-            amount_ptr[i] = amount_values[amount_idx];
-            currency_ptr[i] = StringVector::AddString(currency_child, currency_code);
+            SetMoneyResult(builder, i, amount_values[amount_idx], currency_code, result);
         }
     }
 }
@@ -94,33 +77,17 @@ static void AnofoxMoneyFromCentsFunction(DataChunk &args, ExpressionState &state
 
     auto cents_values = reinterpret_cast<int64_t *>(cents_data.data);
     auto currency_values = reinterpret_cast<string_t *>(currency_data.data);
-
-    // Get struct entries from result
-    auto &children = StructVector::GetEntries(result);
-    if (children.size() != 2) {
-        throw InvalidInputException("Money struct must have exactly 2 fields");
-    }
-
-    auto &amount_child = *children[0];
-    auto &currency_child = *children[1];
+    auto builder = PrepareMoneyResult(result);
 
     auto &registry = CurrencyRegistry::GetInstance();
-
-    amount_child.SetVectorType(VectorType::FLAT_VECTOR);
-    currency_child.SetVectorType(VectorType::FLAT_VECTOR);
-
-    auto amount_ptr = FlatVector::GetData<double>(amount_child);
-    auto currency_ptr = FlatVector::GetData<string_t>(currency_child);
-    auto &amount_validity = FlatVector::Validity(amount_child);
-    auto &currency_validity = FlatVector::Validity(currency_child);
 
     for (idx_t i = 0; i < count; i++) {
         auto cents_idx = cents_data.sel->get_index(i);
         auto currency_idx = currency_data.sel->get_index(i);
 
         if (!cents_data.validity.RowIsValid(cents_idx) || !currency_data.validity.RowIsValid(currency_idx)) {
-            amount_validity.SetInvalid(i);
-            currency_validity.SetInvalid(i);
+            builder.amount_validity.SetInvalid(i);
+            builder.currency_validity.SetInvalid(i);
         } else {
             auto currency_code = currency_values[currency_idx].GetString();
 
@@ -136,8 +103,8 @@ static void AnofoxMoneyFromCentsFunction(DataChunk &args, ExpressionState &state
 
             // Store amount as cents converted to decimal representation
             // For now, just store the cents value as double
-            amount_ptr[i] = static_cast<double>(cents_values[cents_idx]);
-            currency_ptr[i] = StringVector::AddString(currency_child, currency_code);
+            double amount = static_cast<double>(cents_values[cents_idx]);
+            SetMoneyResult(builder, i, amount, currency_code, result);
         }
     }
 }
@@ -179,25 +146,11 @@ static void AnofoxMoneyCurrencyFunction(DataChunk &args, ExpressionState &state,
 //----------------------------------------------------------------------------------------------------------------------
 
 static void AnofoxIsValidCurrencyFunction(DataChunk &args, ExpressionState &state, Vector &result) {
-    auto &code_vec = args.data[0];
-    idx_t count = args.size();
-
-    UnifiedVectorFormat code_data;
-    code_vec.ToUnifiedFormat(count, code_data);
-    auto code_values = reinterpret_cast<string_t *>(code_data.data);
-    auto result_data = FlatVector::GetData<bool>(result);
-
     auto &registry = CurrencyRegistry::GetInstance();
-
-    for (idx_t i = 0; i < count; i++) {
-        auto idx = code_data.sel->get_index(i);
-        if (!code_data.validity.RowIsValid(idx)) {
-            FlatVector::SetNull(result, i, true);
-        } else {
-            auto currency_code = code_values[idx].GetString();
-            result_data[i] = registry.CurrencyExists(currency_code);
-        }
-    }
+    IterateCurrencyCode(args, result, [&](const std::string& code, idx_t i) {
+        auto result_data = FlatVector::GetData<bool>(result);
+        result_data[i] = registry.CurrencyExists(code);
+    });
 }
 
 //----------------------------------------------------------------------------------------------------------------------
@@ -205,31 +158,15 @@ static void AnofoxIsValidCurrencyFunction(DataChunk &args, ExpressionState &stat
 //----------------------------------------------------------------------------------------------------------------------
 
 static void AnofoxCurrencySymbolFunction(DataChunk &args, ExpressionState &state, Vector &result) {
-    auto &code_vec = args.data[0];
-    idx_t count = args.size();
-
-    UnifiedVectorFormat code_data;
-    code_vec.ToUnifiedFormat(count, code_data);
-    auto code_values = reinterpret_cast<string_t *>(code_data.data);
-    auto result_data = FlatVector::GetData<string_t>(result);
-
     auto &registry = CurrencyRegistry::GetInstance();
-
-    for (idx_t i = 0; i < count; i++) {
-        auto idx = code_data.sel->get_index(i);
-        if (!code_data.validity.RowIsValid(idx)) {
-            FlatVector::SetNull(result, i, true);
-        } else {
-            auto currency_code = code_values[idx].GetString();
-            auto currency = registry.GetCurrency(currency_code);
-
-            if (!currency) {
-                throw InvalidInputException("Currency not found: %s", currency_code);
-            }
-
-            result_data[i] = StringVector::AddString(result, currency->symbol);
+    IterateCurrencyCode(args, result, [&](const std::string& code, idx_t i) {
+        auto currency = registry.GetCurrency(code);
+        if (!currency) {
+            throw InvalidInputException("Currency not found: %s", code.c_str());
         }
-    }
+        auto result_data = FlatVector::GetData<string_t>(result);
+        result_data[i] = StringVector::AddString(result, currency->symbol);
+    });
 }
 
 //----------------------------------------------------------------------------------------------------------------------
@@ -331,29 +268,9 @@ static void AnofoxMoneyFormatFunction(DataChunk &args, ExpressionState &state, V
 //----------------------------------------------------------------------------------------------------------------------
 
 static void AnofoxMoneyIsPositiveFunction(DataChunk &args, ExpressionState &state, Vector &result) {
-    auto &money_vec = args.data[0];
-    auto &children = StructVector::GetEntries(money_vec);
-
-    if (children.size() != 2) {
-        throw InvalidInputException("Money struct must have exactly 2 fields");
-    }
-
-    auto &amount_vec = *children[0];
-    idx_t count = args.size();
-
-    UnifiedVectorFormat amount_data;
-    amount_vec.ToUnifiedFormat(count, amount_data);
-    auto amount_values = reinterpret_cast<double *>(amount_data.data);
-    auto result_data = FlatVector::GetData<bool>(result);
-
-    for (idx_t i = 0; i < count; i++) {
-        auto amount_idx = amount_data.sel->get_index(i);
-        if (!amount_data.validity.RowIsValid(amount_idx)) {
-            FlatVector::SetNull(result, i, true);
-        } else {
-            result_data[i] = amount_values[amount_idx] > 0.0;
-        }
-    }
+    IterateMoneyComparison(args, result, [](double amount) {
+        return amount > 0.0;
+    });
 }
 
 //----------------------------------------------------------------------------------------------------------------------
@@ -361,29 +278,9 @@ static void AnofoxMoneyIsPositiveFunction(DataChunk &args, ExpressionState &stat
 //----------------------------------------------------------------------------------------------------------------------
 
 static void AnofoxMoneyIsNegativeFunction(DataChunk &args, ExpressionState &state, Vector &result) {
-    auto &money_vec = args.data[0];
-    auto &children = StructVector::GetEntries(money_vec);
-
-    if (children.size() != 2) {
-        throw InvalidInputException("Money struct must have exactly 2 fields");
-    }
-
-    auto &amount_vec = *children[0];
-    idx_t count = args.size();
-
-    UnifiedVectorFormat amount_data;
-    amount_vec.ToUnifiedFormat(count, amount_data);
-    auto amount_values = reinterpret_cast<double *>(amount_data.data);
-    auto result_data = FlatVector::GetData<bool>(result);
-
-    for (idx_t i = 0; i < count; i++) {
-        auto amount_idx = amount_data.sel->get_index(i);
-        if (!amount_data.validity.RowIsValid(amount_idx)) {
-            FlatVector::SetNull(result, i, true);
-        } else {
-            result_data[i] = amount_values[amount_idx] < 0.0;
-        }
-    }
+    IterateMoneyComparison(args, result, [](double amount) {
+        return amount < 0.0;
+    });
 }
 
 //----------------------------------------------------------------------------------------------------------------------
@@ -391,29 +288,9 @@ static void AnofoxMoneyIsNegativeFunction(DataChunk &args, ExpressionState &stat
 //----------------------------------------------------------------------------------------------------------------------
 
 static void AnofoxMoneyIsZeroFunction(DataChunk &args, ExpressionState &state, Vector &result) {
-    auto &money_vec = args.data[0];
-    auto &children = StructVector::GetEntries(money_vec);
-
-    if (children.size() != 2) {
-        throw InvalidInputException("Money struct must have exactly 2 fields");
-    }
-
-    auto &amount_vec = *children[0];
-    idx_t count = args.size();
-
-    UnifiedVectorFormat amount_data;
-    amount_vec.ToUnifiedFormat(count, amount_data);
-    auto amount_values = reinterpret_cast<double *>(amount_data.data);
-    auto result_data = FlatVector::GetData<bool>(result);
-
-    for (idx_t i = 0; i < count; i++) {
-        auto amount_idx = amount_data.sel->get_index(i);
-        if (!amount_data.validity.RowIsValid(amount_idx)) {
-            FlatVector::SetNull(result, i, true);
-        } else {
-            result_data[i] = amount_values[amount_idx] == 0.0;
-        }
-    }
+    IterateMoneyComparison(args, result, [](double amount) {
+        return amount == 0.0;
+    });
 }
 
 //----------------------------------------------------------------------------------------------------------------------
@@ -479,75 +356,13 @@ static void AnofoxMoneyAbsFunction(DataChunk &args, ExpressionState &state, Vect
 //----------------------------------------------------------------------------------------------------------------------
 
 static void AnofoxMoneyAddFunction(DataChunk &args, ExpressionState &state, Vector &result) {
-    auto &money1_vec = args.data[0];
-    auto &money2_vec = args.data[1];
-    idx_t count = args.size();
-
-    auto &children1 = StructVector::GetEntries(money1_vec);
-    auto &children2 = StructVector::GetEntries(money2_vec);
-
-    if (children1.size() != 2 || children2.size() != 2) {
-        throw InvalidInputException("Money struct must have exactly 2 fields");
-    }
-
-    auto &amount1_vec = *children1[0];
-    auto &currency1_vec = *children1[1];
-    auto &amount2_vec = *children2[0];
-    auto &currency2_vec = *children2[1];
-
-    UnifiedVectorFormat amount1_data, currency1_data, amount2_data, currency2_data;
-    amount1_vec.ToUnifiedFormat(count, amount1_data);
-    currency1_vec.ToUnifiedFormat(count, currency1_data);
-    amount2_vec.ToUnifiedFormat(count, amount2_data);
-    currency2_vec.ToUnifiedFormat(count, currency2_data);
-
-    auto amount1_values = reinterpret_cast<double *>(amount1_data.data);
-    auto currency1_values = reinterpret_cast<string_t *>(currency1_data.data);
-    auto amount2_values = reinterpret_cast<double *>(amount2_data.data);
-    auto currency2_values = reinterpret_cast<string_t *>(currency2_data.data);
-
-    auto &result_children = StructVector::GetEntries(result);
-    if (result_children.size() != 2) {
-        throw InvalidInputException("Money struct must have exactly 2 fields");
-    }
-
-    auto &result_amount = *result_children[0];
-    auto &result_currency = *result_children[1];
-
-    result_amount.SetVectorType(VectorType::FLAT_VECTOR);
-    result_currency.SetVectorType(VectorType::FLAT_VECTOR);
-
-    auto result_amount_ptr = FlatVector::GetData<double>(result_amount);
-    auto result_currency_ptr = FlatVector::GetData<string_t>(result_currency);
-    auto &result_amount_validity = FlatVector::Validity(result_amount);
-    auto &result_currency_validity = FlatVector::Validity(result_currency);
-
-    for (idx_t i = 0; i < count; i++) {
-        auto amount1_idx = amount1_data.sel->get_index(i);
-        auto currency1_idx = currency1_data.sel->get_index(i);
-        auto amount2_idx = amount2_data.sel->get_index(i);
-        auto currency2_idx = currency2_data.sel->get_index(i);
-
-        if (!amount1_data.validity.RowIsValid(amount1_idx) || !currency1_data.validity.RowIsValid(currency1_idx) ||
-            !amount2_data.validity.RowIsValid(amount2_idx) || !currency2_data.validity.RowIsValid(currency2_idx)) {
-            result_amount_validity.SetInvalid(i);
-            result_currency_validity.SetInvalid(i);
-        } else {
-            auto currency1 = currency1_values[currency1_idx].GetString();
-            auto currency2 = currency2_values[currency2_idx].GetString();
-
-            if (currency1 != currency2) {
-                throw InvalidInputException("Cannot add money with different currencies: %s and %s",
-                                          currency1.c_str(), currency2.c_str());
-            }
-
-            double amount1 = amount1_values[amount1_idx];
-            double amount2 = amount2_values[amount2_idx];
-
-            result_amount_ptr[i] = amount1 + amount2;
-            result_currency_ptr[i] = StringVector::AddString(result_currency, currency1);
-        }
-    }
+    IterateBinaryMoneyOp(args, result, true, [](MoneyResultBuilder& builder, idx_t i,
+                                                double amount1, double amount2,
+                                                const std::string& currency, Vector& result) {
+        builder.amount_ptr[i] = amount1 + amount2;
+        builder.currency_ptr[i] = StringVector::AddString(
+            *StructVector::GetEntries(result)[1], currency);
+    });
 }
 
 //----------------------------------------------------------------------------------------------------------------------
@@ -555,71 +370,13 @@ static void AnofoxMoneyAddFunction(DataChunk &args, ExpressionState &state, Vect
 //----------------------------------------------------------------------------------------------------------------------
 
 static void AnofoxMoneySubtractFunction(DataChunk &args, ExpressionState &state, Vector &result) {
-    auto &money1_vec = args.data[0];
-    auto &money2_vec = args.data[1];
-    idx_t count = args.size();
-
-    auto &children1 = StructVector::GetEntries(money1_vec);
-    auto &children2 = StructVector::GetEntries(money2_vec);
-
-    if (children1.size() != 2 || children2.size() != 2) {
-        throw InvalidInputException("Money struct must have exactly 2 fields");
-    }
-
-    auto &amount1_vec = *children1[0];
-    auto &currency1_vec = *children1[1];
-    auto &amount2_vec = *children2[0];
-    auto &currency2_vec = *children2[1];
-
-    UnifiedVectorFormat amount1_data, currency1_data, amount2_data, currency2_data;
-    amount1_vec.ToUnifiedFormat(count, amount1_data);
-    currency1_vec.ToUnifiedFormat(count, currency1_data);
-    amount2_vec.ToUnifiedFormat(count, amount2_data);
-    currency2_vec.ToUnifiedFormat(count, currency2_data);
-
-    auto amount1_values = reinterpret_cast<double *>(amount1_data.data);
-    auto currency1_values = reinterpret_cast<string_t *>(currency1_data.data);
-    auto amount2_values = reinterpret_cast<double *>(amount2_data.data);
-    auto currency2_values = reinterpret_cast<string_t *>(currency2_data.data);
-
-    auto &result_children = StructVector::GetEntries(result);
-    auto &result_amount = *result_children[0];
-    auto &result_currency = *result_children[1];
-
-    result_amount.SetVectorType(VectorType::FLAT_VECTOR);
-    result_currency.SetVectorType(VectorType::FLAT_VECTOR);
-
-    auto result_amount_ptr = FlatVector::GetData<double>(result_amount);
-    auto result_currency_ptr = FlatVector::GetData<string_t>(result_currency);
-    auto &result_amount_validity = FlatVector::Validity(result_amount);
-    auto &result_currency_validity = FlatVector::Validity(result_currency);
-
-    for (idx_t i = 0; i < count; i++) {
-        auto amount1_idx = amount1_data.sel->get_index(i);
-        auto currency1_idx = currency1_data.sel->get_index(i);
-        auto amount2_idx = amount2_data.sel->get_index(i);
-        auto currency2_idx = currency2_data.sel->get_index(i);
-
-        if (!amount1_data.validity.RowIsValid(amount1_idx) || !currency1_data.validity.RowIsValid(currency1_idx) ||
-            !amount2_data.validity.RowIsValid(amount2_idx) || !currency2_data.validity.RowIsValid(currency2_idx)) {
-            result_amount_validity.SetInvalid(i);
-            result_currency_validity.SetInvalid(i);
-        } else {
-            auto currency1 = currency1_values[currency1_idx].GetString();
-            auto currency2 = currency2_values[currency2_idx].GetString();
-
-            if (currency1 != currency2) {
-                throw InvalidInputException("Cannot subtract money with different currencies: %s and %s",
-                                          currency1.c_str(), currency2.c_str());
-            }
-
-            double amount1 = amount1_values[amount1_idx];
-            double amount2 = amount2_values[amount2_idx];
-
-            result_amount_ptr[i] = amount1 - amount2;
-            result_currency_ptr[i] = StringVector::AddString(result_currency, currency1);
-        }
-    }
+    IterateBinaryMoneyOp(args, result, true, [](MoneyResultBuilder& builder, idx_t i,
+                                                double amount1, double amount2,
+                                                const std::string& currency, Vector& result) {
+        builder.amount_ptr[i] = amount1 - amount2;
+        builder.currency_ptr[i] = StringVector::AddString(
+            *StructVector::GetEntries(result)[1], currency);
+    });
 }
 
 //----------------------------------------------------------------------------------------------------------------------
@@ -631,51 +388,31 @@ static void AnofoxMoneyMultiplyFunction(DataChunk &args, ExpressionState &state,
     auto &factor_vec = args.data[1];
     idx_t count = args.size();
 
-    auto &children = StructVector::GetEntries(money_vec);
-    if (children.size() != 2) {
-        throw InvalidInputException("Money struct must have exactly 2 fields");
-    }
+    auto data = ExtractMoneyStruct(money_vec, count);
+    auto builder = PrepareMoneyResult(result);
 
-    auto &amount_vec = *children[0];
-    auto &currency_vec = *children[1];
-
-    UnifiedVectorFormat amount_data, currency_data, factor_data;
-    amount_vec.ToUnifiedFormat(count, amount_data);
-    currency_vec.ToUnifiedFormat(count, currency_data);
+    UnifiedVectorFormat factor_data;
     factor_vec.ToUnifiedFormat(count, factor_data);
-
-    auto amount_values = reinterpret_cast<double *>(amount_data.data);
-    auto currency_values = reinterpret_cast<string_t *>(currency_data.data);
     auto factor_values = reinterpret_cast<double *>(factor_data.data);
 
-    auto &result_children = StructVector::GetEntries(result);
-    auto &result_amount = *result_children[0];
-    auto &result_currency = *result_children[1];
-
-    result_amount.SetVectorType(VectorType::FLAT_VECTOR);
-    result_currency.SetVectorType(VectorType::FLAT_VECTOR);
-
-    auto result_amount_ptr = FlatVector::GetData<double>(result_amount);
-    auto result_currency_ptr = FlatVector::GetData<string_t>(result_currency);
-    auto &result_amount_validity = FlatVector::Validity(result_amount);
-    auto &result_currency_validity = FlatVector::Validity(result_currency);
-
     for (idx_t i = 0; i < count; i++) {
-        auto amount_idx = amount_data.sel->get_index(i);
-        auto currency_idx = currency_data.sel->get_index(i);
+        auto amount_idx = data.amount_data.sel->get_index(i);
+        auto currency_idx = data.currency_data.sel->get_index(i);
         auto factor_idx = factor_data.sel->get_index(i);
 
-        if (!amount_data.validity.RowIsValid(amount_idx) || !currency_data.validity.RowIsValid(currency_idx) ||
+        if (!data.amount_data.validity.RowIsValid(amount_idx) ||
+            !data.currency_data.validity.RowIsValid(currency_idx) ||
             !factor_data.validity.RowIsValid(factor_idx)) {
-            result_amount_validity.SetInvalid(i);
-            result_currency_validity.SetInvalid(i);
+            builder.amount_validity.SetInvalid(i);
+            builder.currency_validity.SetInvalid(i);
         } else {
-            auto currency = currency_values[currency_idx].GetString();
-            double amount = amount_values[amount_idx];
+            double amount = data.amount_values[amount_idx];
+            auto currency = data.currency_values[currency_idx].GetString();
             double factor = factor_values[factor_idx];
 
-            result_amount_ptr[i] = amount * factor;
-            result_currency_ptr[i] = StringVector::AddString(result_currency, currency);
+            builder.amount_ptr[i] = amount * factor;
+            auto& currency_vec = *StructVector::GetEntries(result)[1];
+            builder.currency_ptr[i] = StringVector::AddString(currency_vec, currency);
         }
     }
 }
@@ -770,31 +507,15 @@ static void AnofoxMoneySameCurrencyFunction(DataChunk &args, ExpressionState &st
 //----------------------------------------------------------------------------------------------------------------------
 
 static void AnofoxCurrencyNameFunction(DataChunk &args, ExpressionState &state, Vector &result) {
-    auto &code_vec = args.data[0];
-    idx_t count = args.size();
-
-    UnifiedVectorFormat code_data;
-    code_vec.ToUnifiedFormat(count, code_data);
-    auto code_values = reinterpret_cast<string_t *>(code_data.data);
-    auto result_data = FlatVector::GetData<string_t>(result);
-
     auto &registry = CurrencyRegistry::GetInstance();
-
-    for (idx_t i = 0; i < count; i++) {
-        auto idx = code_data.sel->get_index(i);
-        if (!code_data.validity.RowIsValid(idx)) {
-            FlatVector::SetNull(result, i, true);
-        } else {
-            auto currency_code = code_values[idx].GetString();
-            auto currency = registry.GetCurrency(currency_code);
-
-            if (!currency) {
-                throw InvalidInputException("Currency not found: %s", currency_code);
-            }
-
-            result_data[i] = StringVector::AddString(result, currency->name);
+    IterateCurrencyCode(args, result, [&](const std::string& code, idx_t i) {
+        auto currency = registry.GetCurrency(code);
+        if (!currency) {
+            throw InvalidInputException("Currency not found: %s", code.c_str());
         }
-    }
+        auto result_data = FlatVector::GetData<string_t>(result);
+        result_data[i] = StringVector::AddString(result, currency->name);
+    });
 }
 
 //----------------------------------------------------------------------------------------------------------------------

@@ -1,5 +1,4 @@
 #include "anofox_vat.hpp"
-#include "anofox_vat_helpers.hpp"
 #include "duckdb/function/scalar_function.hpp"
 #include "duckdb/parser/parsed_expression.hpp"
 #include "duckdb/common/string_util.hpp"
