@@ -234,6 +234,8 @@ Recent changes tracked in git show:
 - `Makefile`, `src/anofox_*.cpp`, `test/sql/anofox_quality.test` modified
 - `src/include/anofox_quality.hpp`, `src/anofox_quality.cpp` added (new quality module)
 
+Don't forget to remove the note for claude code when you do a git commit.
+
 See `docs/UPDATING.md` for version bump procedures.
 
 ## General C++ Development Rules

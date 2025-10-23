@@ -26,7 +26,7 @@ include extension-ci-tools/makefiles/duckdb_extension.Makefile
 # Only runs if apk is available (inside Alpine Docker container)
 # Skipped on Ubuntu host (no apk available) to avoid permission errors with apt-get
 configure_ci:
-	@if command -v apk >/dev/null 2>&1; then \
+	@if test -x /sbin/apk || test -x /bin/apk; then \
 		echo "Setting up CI dependencies (Alpine environment)..."; \
 		bash $(PROJ_DIR)/scripts/install-deps-ci.sh; \
 		echo "configure_ci completed successfully"; \
