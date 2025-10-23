@@ -13,7 +13,12 @@ echo "Install prefix: $INSTALL_PREFIX"
 echo "Build directory: $BUILD_DIR"
 
 # Detect package manager
-if command -v yum &> /dev/null; then
+if command -v apk &> /dev/null; then
+    PKG_MANAGER="apk"
+    INSTALL_CMD="apk add -q"
+    # Update package list for apk
+    apk update
+elif command -v yum &> /dev/null; then
     PKG_MANAGER="yum"
     INSTALL_CMD="yum install -y"
 elif command -v apt-get &> /dev/null; then
@@ -22,7 +27,7 @@ elif command -v apt-get &> /dev/null; then
     # Update package lists for apt
     apt-get update
 else
-    echo "ERROR: No supported package manager found (yum or apt-get)"
+    echo "ERROR: No supported package manager found (apk, yum, or apt-get)"
     exit 1
 fi
 
@@ -30,7 +35,21 @@ echo "Using package manager: $PKG_MANAGER"
 
 # Install build dependencies
 echo "Installing build dependencies..."
-if [ "$PKG_MANAGER" = "yum" ]; then
+if [ "$PKG_MANAGER" = "apk" ]; then
+    apk add -q \
+        cmake \
+        git \
+        make \
+        g++ \
+        protobuf-dev \
+        libprotobuf \
+        icu-dev \
+        boost-dev \
+        re2-dev \
+        openssl-dev \
+        curl \
+        pkgconfig
+elif [ "$PKG_MANAGER" = "yum" ]; then
     yum install -y \
         cmake \
         git \
