@@ -4,7 +4,7 @@ set(TARGET_NAME anofox_tabular)
 set(EXTENSION_NAME ${TARGET_NAME}_extension)
 set(LOADABLE_EXTENSION_NAME ${TARGET_NAME}_loadable_extension)
 
-project(${TARGET_NAME})
+project(${TARGET_NAME} LANGUAGES C CXX)
 include_directories(src/include)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
@@ -16,18 +16,38 @@ endif()
 
 # --- Dependencies ---
 
-# Libs via vcpkg
+# Lightweight deps via vcpkg
 include(CMakeFindDependencyMacro)
-find_dependency(Boost REQUIRED COMPONENTS date_time system thread)
-find_package(libphonenumber CONFIG REQUIRED)
-find_package(absl CONFIG REQUIRED)
-find_package(utf8_range CONFIG REQUIRED)
 find_package(spdlog CONFIG REQUIRED)
 find_package(c-ares CONFIG REQUIRED)
 
-# Libpostal via pkg-config
+# Libphonenumber and libpostal via pkg-config (system-installed, CI preferred)
 find_package(PkgConfig REQUIRED)
-pkg_check_modules(LIBPOSTAL REQUIRED libpostal)
+
+# Try pkg-config first (CI preferred method)
+pkg_check_modules(LIBPHONENUMBER libphonenumber)
+pkg_check_modules(LIBPOSTAL libpostal)
+
+# Fallback: Try to find libphonenumber via library search
+if(NOT LIBPHONENUMBER_FOUND)
+    find_library(LIBPHONENUMBER_LIB phonenumber)
+    find_path(LIBPHONENUMBER_INCLUDE_DIR phonenumbers/phonenumberutil.h)
+
+    if(LIBPHONENUMBER_LIB AND LIBPHONENUMBER_INCLUDE_DIR)
+        message(STATUS "Found libphonenumber via library search")
+        set(LIBPHONENUMBER_STATIC_LDFLAGS "${LIBPHONENUMBER_LIB}")
+        set(LIBPHONENUMBER_INCLUDE_DIRS "${LIBPHONENUMBER_INCLUDE_DIR}")
+        set(LIBPHONENUMBER_FOUND TRUE)
+    endif()
+endif()
+
+if(NOT LIBPOSTAL_FOUND)
+    message(FATAL_ERROR "libpostal not found. Install libpostal-dev (Debian/Ubuntu) or libpostal-devel (RHEL/CentOS)")
+endif()
+
+if(NOT LIBPHONENUMBER_FOUND)
+    message(FATAL_ERROR "libphonenumber not found. Install libphonenumber-dev or run scripts/install-deps-ci.sh")
+endif()
 
 
 # --- Build ---
@@ -63,18 +83,17 @@ target_sources(${LOADABLE_EXTENSION_NAME} PRIVATE $<TARGET_OBJECTS:anofox_trace_
 # --- Linking ---
 
 # Link dependencies
-target_link_libraries(${EXTENSION_NAME} 
-    libphonenumber::phonenumber
+target_link_libraries(${EXTENSION_NAME}
+    ${LIBPHONENUMBER_STATIC_LDFLAGS}
     c-ares::cares
-    absl::log
-    absl::log_internal_check_impl
-    utf8_range::utf8_range
     spdlog::spdlog_header_only
-    utf8_range::utf8_validity
-    Boost::date_time
-    Boost::system
-    Boost::thread
     ${LIBPOSTAL_LDFLAGS}
+)
+
+# Add include directories from dependencies
+target_include_directories(${EXTENSION_NAME} PRIVATE
+    ${LIBPHONENUMBER_INCLUDE_DIRS}
+    ${LIBPOSTAL_INCLUDE_DIRS}
 )
 # spdlog configuration is handled by the header-only target
 # No need to manually define SPDLOG_* flags; spdlog_header_only sets them correctly
@@ -88,26 +107,15 @@ if(SPDLOG_INTERFACE_INCLUDES)
     endif()
 endif()
 target_link_libraries(${LOADABLE_EXTENSION_NAME}
-    libphonenumber::phonenumber
+    ${LIBPHONENUMBER_STATIC_LDFLAGS}
     c-ares::cares
-    absl::log
-    absl::log_internal_check_impl
-    utf8_range::utf8_range
     spdlog::spdlog_header_only
-    utf8_range::utf8_validity
-    Boost::date_time
-    Boost::system
-    Boost::thread
     ${LIBPOSTAL_LDFLAGS}
 )
-# spdlog configuration is handled by the header-only target
-# No need to manually define SPDLOG_* flags; spdlog_header_only sets them correctly
 
 # Add include directories from dependencies
-target_include_directories(${EXTENSION_NAME} PRIVATE
-    ${LIBPOSTAL_INCLUDE_DIRS}
-)
 target_include_directories(${LOADABLE_EXTENSION_NAME} PRIVATE
+    ${LIBPHONENUMBER_INCLUDE_DIRS}
     ${LIBPOSTAL_INCLUDE_DIRS}
 )
 # --- Installation ---

@@ -1,7 +1,6 @@
 {
         "dependencies": [
                 "openssl",
-                "libphonenumber",
                 "c-ares",
                 "spdlog"
         ],

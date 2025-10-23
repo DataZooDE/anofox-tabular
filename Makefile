@@ -7,6 +7,14 @@ else
 	export VCPKG_TOOLCHAIN_PATH ?= $(VCPKG_ROOT)/scripts/buildsystems/vcpkg.cmake
 endif
 
+# Setup environment for libphonenumber and libpostal from system packages
+# This is set if the install-deps-ci.sh script has run
+ifneq ("$(wildcard /opt/anofox-deps/setup-env.sh)","")
+	$(shell source /opt/anofox-deps/setup-env.sh)
+	export PKG_CONFIG_PATH=/opt/anofox-deps/lib/pkgconfig:$(PKG_CONFIG_PATH)
+	export LD_LIBRARY_PATH=/opt/anofox-deps/lib:$(LD_LIBRARY_PATH)
+endif
+
 # Configuration of extension
 EXT_NAME=anofox_tabular
 EXT_CONFIG=${PROJ_DIR}extension_config.cmake
@@ -14,17 +22,9 @@ EXT_CONFIG=${PROJ_DIR}extension_config.cmake
 # Include the Makefile from extension-ci-tools
 include extension-ci-tools/makefiles/duckdb_extension.Makefile
 
-# Override configure_ci to install missing dependencies in Docker
+# Override configure_ci to build and install libphonenumber and libpostal
 # This is called inside the Docker container before the build starts
 configure_ci:
-	@echo "Installing missing dependencies for ICU build..."
-	@if command -v yum > /dev/null 2>&1; then \
-		echo "Installing autoconf-archive via yum..."; \
-		yum install -y autoconf-archive || true; \
-	elif command -v apt-get > /dev/null 2>&1; then \
-		echo "Installing autoconf-archive via apt..."; \
-		apt-get update && apt-get install -y autoconf-archive || true; \
-	else \
-		echo "Warning: Neither yum nor apt-get found, skipping dependency installation"; \
-	fi
+	@echo "Setting up CI dependencies..."
+	@bash $(PROJ_DIR)/scripts/install-deps-ci.sh
 	@echo "configure_ci completed successfully"
