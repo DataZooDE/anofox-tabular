@@ -48,7 +48,10 @@ if [ "$PKG_MANAGER" = "apk" ]; then
         re2-dev \
         openssl-dev \
         curl \
-        pkgconfig
+        pkgconfig \
+        autoconf \
+        automake \
+        libtool
 elif [ "$PKG_MANAGER" = "yum" ]; then
     yum install -y \
         cmake \
@@ -114,6 +117,8 @@ cmake \
     -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
     -DCMAKE_VISIBILITY_INLINES_HIDDEN=ON \
     -DUSE_BOOST=ON \
+    -DUSE_GTEST=OFF \
+    -DUSE_ICU=ON \
     ..
 
 echo "Building libphonenumber..."
@@ -123,22 +128,44 @@ echo "Installing libphonenumber..."
 make install
 
 echo ""
-echo "=== Checking for libpostal ==="
+echo "=== Building libpostal ==="
 
-# Check if libpostal is available as a system package
-if pkg-config --exists libpostal; then
-    echo "libpostal found via pkg-config (system package)"
-    LIBPOSTAL_PC=$(pkg-config --variable=pcfiledir libpostal)/libpostal.pc
-    echo "  Location: $LIBPOSTAL_PC"
+# Download and build libpostal
+LIBPOSTAL_VERSION="1.1"
+LIBPOSTAL_URL="https://github.com/openvenues/libpostal/archive/v${LIBPOSTAL_VERSION}.tar.gz"
+LIBPOSTAL_SRC="$BUILD_DIR/libpostal-${LIBPOSTAL_VERSION}"
+
+if [ ! -d "$LIBPOSTAL_SRC" ]; then
+    echo "Downloading libpostal v${LIBPOSTAL_VERSION}..."
+    cd "$BUILD_DIR"
+    curl -L "$LIBPOSTAL_URL" | tar xz
+fi
+
+# Build libpostal
+cd "$LIBPOSTAL_SRC"
+if [ ! -f "configure" ]; then
+    echo "Running ./bootstrap.sh for libpostal..."
+    bash bootstrap.sh
+fi
+
+echo "Configuring libpostal..."
+./configure \
+    --prefix="$INSTALL_PREFIX" \
+    --disable-shared \
+    --enable-static
+
+echo "Building libpostal..."
+make -j$(nproc)
+
+echo "Installing libpostal..."
+make install
+
+# Verify libpostal installation
+if [ -f "$INSTALL_PREFIX/lib/libpostal.a" ]; then
+    echo "✓ libpostal built successfully"
 else
-    echo "WARNING: libpostal not found via pkg-config"
-    echo "  Attempting to install libpostal development package..."
-
-    if [ "$PKG_MANAGER" = "yum" ]; then
-        yum install -y libpostal-devel || echo "WARNING: Could not install libpostal-devel via yum"
-    elif [ "$PKG_MANAGER" = "apt" ]; then
-        apt-get install -y libpostal-dev || echo "WARNING: Could not install libpostal-dev via apt"
-    fi
+    echo "✗ ERROR: libpostal build failed or install path incorrect"
+    exit 1
 fi
 
 # Export environment variables for CMake
