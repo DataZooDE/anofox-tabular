@@ -22,9 +22,14 @@ EXT_CONFIG=${PROJ_DIR}extension_config.cmake
 # Include the Makefile from extension-ci-tools
 include extension-ci-tools/makefiles/duckdb_extension.Makefile
 
-# Override configure_ci to build and install libphonenumber and libpostal
-# This is called inside the Docker container before the build starts
+# Override configure_ci to build and install libphonenumber from source
+# Only runs if apk is available (inside Alpine Docker container)
+# Skipped on Ubuntu host (no apk available) to avoid permission errors with apt-get
 configure_ci:
-	@echo "Setting up CI dependencies..."
-	@bash $(PROJ_DIR)/scripts/install-deps-ci.sh
-	@echo "configure_ci completed successfully"
+	@if command -v apk >/dev/null 2>&1; then \
+		echo "Setting up CI dependencies (Alpine environment)..."; \
+		bash $(PROJ_DIR)/scripts/install-deps-ci.sh; \
+		echo "configure_ci completed successfully"; \
+	else \
+		echo "Skipping configure_ci (not in Alpine environment, libphonenumber should be pre-installed)"; \
+	fi
