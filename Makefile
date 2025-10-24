@@ -15,6 +15,7 @@ EXT_CONFIG=${PROJ_DIR}extension_config.cmake
 include extension-ci-tools/makefiles/duckdb_extension.Makefile
 
 # Override configure_ci to install system packages for libphonenumber and libpostal
-# Installs from Alpine edge/community or Ubuntu/Debian packages
+# For musl: installs in Alpine Docker container via apk
+# For glibc: installs on Ubuntu/Debian host via apt
 configure_ci:
 	bash $(PROJ_DIR)/scripts/install-deps-ci.sh
