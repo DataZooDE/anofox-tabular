@@ -21,87 +21,41 @@ include(CMakeFindDependencyMacro)
 find_package(spdlog CONFIG REQUIRED)
 find_package(c-ares CONFIG REQUIRED)
 
-# Libphonenumber and libpostal via pkg-config (system-installed, CI preferred)
+# Libphonenumber via vcpkg (standard method)
+find_package(Phonenumber CONFIG REQUIRED)
+set(LIBPHONENUMBER_STATIC_LDFLAGS phonenumber)
+set(LIBPHONENUMBER_FOUND TRUE)
+
+# Libpostal via pkg-config (system-installed, CI preferred)
 find_package(PkgConfig REQUIRED)
 
-# Add system paths for Alpine/Ubuntu packages (vcpkg may restrict search paths)
-list(APPEND CMAKE_PREFIX_PATH "/usr" "/usr/local")
-
-# Try pkg-config first (CI preferred method)
-pkg_check_modules(LIBPHONENUMBER libphonenumber)
+# Try pkg-config for libpostal (Alpine has .pc file at /usr/lib/pkgconfig/libpostal.pc)
 pkg_check_modules(LIBPOSTAL libpostal)
 
-# If pkg-config failed but we're on Alpine/musl, manually set paths (Alpine packages exist but may not have .pc files)
-if(NOT LIBPHONENUMBER_FOUND)
-    if(EXISTS "/usr/lib/libphonenumber.so")
-        message(STATUS "Manually setting libphonenumber paths for Alpine")
-        set(LIBPHONENUMBER_STATIC_LDFLAGS "/usr/lib/libphonenumber.so")
-        set(LIBPHONENUMBER_INCLUDE_DIRS "/usr/include")
-        set(LIBPHONENUMBER_FOUND TRUE)
-    endif()
-endif()
-
-if(NOT LIBPOSTAL_FOUND)
-    if(EXISTS "/usr/lib/libpostal.so")
-        message(STATUS "Manually setting libpostal paths for Alpine")
+# If pkg-config found it, we're done
+if(LIBPOSTAL_FOUND)
+    message(STATUS "Found libpostal via pkg-config")
+else()
+    # Fallback: Check for Alpine package installation
+    # Alpine libpostal-dev package contents:
+    #   /usr/include/libpostal/libpostal.h
+    #   /usr/lib/libpostal.a
+    #   /usr/lib/libpostal.so -> libpostal.so.1
+    #   /usr/lib/pkgconfig/libpostal.pc
+    if(EXISTS "/usr/lib/libpostal.so" AND EXISTS "/usr/include/libpostal/libpostal.h")
+        message(STATUS "Found libpostal via Alpine package (manual detection)")
         set(LIBPOSTAL_LDFLAGS "/usr/lib/libpostal.so")
         set(LIBPOSTAL_INCLUDE_DIRS "/usr/include")
         set(LIBPOSTAL_FOUND TRUE)
-    endif()
-endif()
-
-# Fallback: Try to find libphonenumber via library search
-if(NOT LIBPHONENUMBER_FOUND)
-    find_library(LIBPHONENUMBER_LIB
-        NAMES phonenumber
-        PATHS /usr/lib /usr/local/lib /usr/lib/x86_64-linux-gnu
-    )
-    find_path(LIBPHONENUMBER_INCLUDE_DIR
-        NAMES phonenumbers/phonenumberutil.h
-        PATHS /usr/include /usr/local/include
-    )
-
-    if(LIBPHONENUMBER_LIB AND LIBPHONENUMBER_INCLUDE_DIR)
-        message(STATUS "Found libphonenumber via library search: ${LIBPHONENUMBER_LIB}")
-        set(LIBPHONENUMBER_STATIC_LDFLAGS "${LIBPHONENUMBER_LIB}")
-        set(LIBPHONENUMBER_INCLUDE_DIRS "${LIBPHONENUMBER_INCLUDE_DIR}")
-        set(LIBPHONENUMBER_FOUND TRUE)
-    else()
-        message(STATUS "libphonenumber library search failed:")
-        message(STATUS "  LIBPHONENUMBER_LIB: ${LIBPHONENUMBER_LIB}")
-        message(STATUS "  LIBPHONENUMBER_INCLUDE_DIR: ${LIBPHONENUMBER_INCLUDE_DIR}")
-    endif()
-endif()
-
-# Fallback: Try to find libpostal via library search
-if(NOT LIBPOSTAL_FOUND)
-    find_library(LIBPOSTAL_LIB
-        NAMES postal libpostal
-        PATHS /usr/lib /usr/local/lib /usr/lib/x86_64-linux-gnu
-    )
-    find_path(LIBPOSTAL_INCLUDE_DIR
-        NAMES libpostal/libpostal.h
-        PATHS /usr/include /usr/local/include
-    )
-
-    if(LIBPOSTAL_LIB AND LIBPOSTAL_INCLUDE_DIR)
-        message(STATUS "Found libpostal via library search: ${LIBPOSTAL_LIB}")
-        set(LIBPOSTAL_LDFLAGS "${LIBPOSTAL_LIB}")
-        set(LIBPOSTAL_INCLUDE_DIRS "${LIBPOSTAL_INCLUDE_DIR}")
+    # Fallback: Check for source build in /usr/local (Ubuntu CI builds from source)
+    elseif(EXISTS "/usr/local/lib/libpostal.so" AND EXISTS "/usr/local/include/libpostal/libpostal.h")
+        message(STATUS "Found libpostal in /usr/local (built from source)")
+        set(LIBPOSTAL_LDFLAGS "/usr/local/lib/libpostal.so")
+        set(LIBPOSTAL_INCLUDE_DIRS "/usr/local/include")
         set(LIBPOSTAL_FOUND TRUE)
     else()
-        message(STATUS "libpostal library search failed:")
-        message(STATUS "  LIBPOSTAL_LIB: ${LIBPOSTAL_LIB}")
-        message(STATUS "  LIBPOSTAL_INCLUDE_DIR: ${LIBPOSTAL_INCLUDE_DIR}")
+        message(FATAL_ERROR "libpostal not found. Install libpostal-dev (Alpine) or run scripts/install-deps-ci.sh to build from source")
     endif()
-endif()
-
-if(NOT LIBPOSTAL_FOUND)
-    message(FATAL_ERROR "libpostal not found. Install libpostal-dev (Debian/Ubuntu/Alpine) or libpostal-devel (RHEL/CentOS)")
-endif()
-
-if(NOT LIBPHONENUMBER_FOUND)
-    message(FATAL_ERROR "libphonenumber not found. Install libphonenumber-dev or run scripts/install-deps-ci.sh")
 endif()
 
 

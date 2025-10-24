@@ -33,11 +33,9 @@ if command -v apk &> /dev/null; then
         apk update
     fi
 
-    # Install libphonenumber-dev and libpostal-dev
-    echo "Installing libphonenumber-dev and libpostal-dev..."
-    apk add --no-cache \
-        libphonenumber-dev \
-        libpostal-dev
+    # Install libpostal-dev (libphonenumber comes from vcpkg)
+    echo "Installing libpostal-dev..."
+    apk add --no-cache libpostal-dev
 
 elif command -v apt-get &> /dev/null; then
     PKG_MANAGER="apt"
