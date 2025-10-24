@@ -24,6 +24,9 @@ find_package(c-ares CONFIG REQUIRED)
 # Libphonenumber and libpostal via pkg-config (system-installed, CI preferred)
 find_package(PkgConfig REQUIRED)
 
+# Add system paths for Alpine/Ubuntu packages (vcpkg may restrict search paths)
+list(APPEND CMAKE_PREFIX_PATH "/usr" "/usr/local")
+
 # Try pkg-config first (CI preferred method)
 pkg_check_modules(LIBPHONENUMBER libphonenumber)
 pkg_check_modules(LIBPOSTAL libpostal)

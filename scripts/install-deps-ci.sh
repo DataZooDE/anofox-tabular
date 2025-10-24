@@ -146,6 +146,20 @@ if [ -d "/usr/include/phonenumbers" ]; then
     ls -la /usr/include/phonenumbers/ | head -5
 fi
 
+# Check for pkg-config files
+echo ""
+echo "=== Checking for .pc files ==="
+for pcfile in /usr/lib/pkgconfig/libpostal.pc /usr/lib/pkgconfig/libphonenumber.pc /usr/local/lib/pkgconfig/libpostal.pc /usr/local/lib/pkgconfig/libphonenumber.pc; do
+    if [ -e "$pcfile" ]; then
+        echo "Found: $pcfile"
+    fi
+done
+
+# List all .pc files that might be related
+echo ""
+echo "=== All pkgconfig files containing 'postal' or 'phone' ==="
+find /usr -name "*.pc" 2>/dev/null | grep -E "(postal|phone)" || echo "None found"
+
 echo ""
 echo "=== Setup Complete ==="
 echo "System packages installed successfully!"
