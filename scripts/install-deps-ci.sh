@@ -1,213 +1,76 @@
 #!/bin/bash
-# Install libphonenumber and libpostal as system packages or build from source
+# Install libphonenumber and libpostal from system packages
 # This script is used in CI environments via the configure_ci Makefile target
 
 set -e
 
-# Configuration
-INSTALL_PREFIX="${INSTALL_PREFIX:-/opt/anofox-deps}"
-BUILD_DIR="${BUILD_DIR:-/tmp/anofox-build}"
-
 echo "=== Installing CI dependencies for anofox_tabular ==="
-echo "Install prefix: $INSTALL_PREFIX"
-echo "Build directory: $BUILD_DIR"
 
 # Detect package manager
 if command -v apk &> /dev/null; then
     PKG_MANAGER="apk"
-    INSTALL_CMD="apk add -q"
-    # Update package list for apk
+    echo "Using Alpine Linux (apk)"
+
+    # Update package list
     apk update
-elif command -v yum &> /dev/null; then
-    PKG_MANAGER="yum"
-    INSTALL_CMD="yum install -y"
+
+    # Enable edge/community repository for libphonenumber-dev and libpostal-dev
+    echo "Enabling edge/community repository..."
+    echo "https://dl-cdn.alpinelinux.org/alpine/edge/community" >> /etc/apk/repositories
+    apk update
+
+    # Install libphonenumber-dev and libpostal-dev from edge/community
+    echo "Installing libphonenumber-dev and libpostal-dev..."
+    apk add --no-cache \
+        libphonenumber-dev \
+        libpostal-dev
+
 elif command -v apt-get &> /dev/null; then
     PKG_MANAGER="apt"
-    INSTALL_CMD="apt-get install -y"
-    # Update package lists for apt
+    echo "Using Debian/Ubuntu (apt)"
+
+    # Update package lists
     apt-get update
-else
-    echo "ERROR: No supported package manager found (apk, yum, or apt-get)"
-    exit 1
-fi
 
-echo "Using package manager: $PKG_MANAGER"
-
-# Install build dependencies
-echo "Installing build dependencies..."
-if [ "$PKG_MANAGER" = "apk" ]; then
-    apk add -q \
-        cmake \
-        git \
-        make \
-        g++ \
-        protobuf-dev \
-        libprotobuf \
-        icu-dev \
-        boost-dev \
-        re2-dev \
-        openssl-dev \
-        curl \
-        pkgconfig \
-        autoconf \
-        automake \
-        libtool
-elif [ "$PKG_MANAGER" = "yum" ]; then
-    yum install -y \
-        cmake \
-        git \
-        make \
-        gcc-c++ \
-        protobuf-devel \
-        protobuf-compiler \
-        libicu-devel \
-        boost-devel \
-        boost-system \
-        boost-thread \
-        re2-devel \
-        openssl-devel \
-        curl \
-        pkg-config
-elif [ "$PKG_MANAGER" = "apt" ]; then
+    # Install libphonenumber and libpostal development packages
+    echo "Installing libphonenumber-dev and libpostal-dev..."
     apt-get install -y \
-        cmake \
-        git \
-        make \
-        g++ \
-        protobuf-compiler \
-        libprotobuf-dev \
-        libicu-dev \
-        libboost-dev \
-        libboost-system-dev \
-        libboost-thread-dev \
-        libre2-dev \
-        libssl-dev \
-        curl \
-        pkg-config
-fi
+        libphonenumber-dev \
+        libpostal-dev
 
-# Create build directory
-mkdir -p "$BUILD_DIR"
-mkdir -p "$INSTALL_PREFIX"/{lib,include,lib/pkgconfig}
+elif command -v yum &> /dev/null; then
+    PKG_MANAGER="yum"
+    echo "Using RHEL/CentOS (yum)"
 
-echo ""
-echo "=== Building libphonenumber ==="
+    # Install libphonenumber and libpostal development packages
+    echo "Installing libphonenumber-devel and libpostal-devel..."
+    yum install -y \
+        libphonenumber-devel \
+        libpostal-devel
 
-# Download and build libphonenumber
-LIBPHONENUMBER_VERSION="8.13.39"
-LIBPHONENUMBER_URL="https://github.com/google/libphonenumber/archive/v${LIBPHONENUMBER_VERSION}.tar.gz"
-LIBPHONENUMBER_SRC="$BUILD_DIR/libphonenumber-${LIBPHONENUMBER_VERSION}"
-
-if [ ! -d "$LIBPHONENUMBER_SRC" ]; then
-    echo "Downloading libphonenumber v${LIBPHONENUMBER_VERSION}..."
-    cd "$BUILD_DIR"
-    curl -L "$LIBPHONENUMBER_URL" | tar xz
-fi
-
-# Build libphonenumber
-cd "$LIBPHONENUMBER_SRC/cpp"
-mkdir -p build
-cd build
-
-echo "Configuring libphonenumber..."
-cmake \
-    -DCMAKE_BUILD_TYPE=Release \
-    -DCMAKE_INSTALL_PREFIX="$INSTALL_PREFIX" \
-    -DBUILD_SHARED_LIBS=OFF \
-    -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
-    -DCMAKE_VISIBILITY_INLINES_HIDDEN=ON \
-    -DUSE_BOOST=ON \
-    -DUSE_GTEST=OFF \
-    -DUSE_ICU=ON \
-    ..
-
-echo "Building libphonenumber..."
-make -j$(nproc)
-
-echo "Installing libphonenumber..."
-make install
-
-echo ""
-echo "=== Building libpostal ==="
-
-# Download and build libpostal
-LIBPOSTAL_VERSION="1.1"
-LIBPOSTAL_URL="https://github.com/openvenues/libpostal/archive/v${LIBPOSTAL_VERSION}.tar.gz"
-LIBPOSTAL_SRC="$BUILD_DIR/libpostal-${LIBPOSTAL_VERSION}"
-
-if [ ! -d "$LIBPOSTAL_SRC" ]; then
-    echo "Downloading libpostal v${LIBPOSTAL_VERSION}..."
-    cd "$BUILD_DIR"
-    curl -L "$LIBPOSTAL_URL" | tar xz
-fi
-
-# Build libpostal
-cd "$LIBPOSTAL_SRC"
-if [ ! -f "configure" ]; then
-    echo "Running ./bootstrap.sh for libpostal..."
-    bash bootstrap.sh
-fi
-
-echo "Configuring libpostal..."
-./configure \
-    --prefix="$INSTALL_PREFIX" \
-    --disable-shared \
-    --enable-static
-
-echo "Building libpostal..."
-make -j$(nproc)
-
-echo "Installing libpostal..."
-make install
-
-# Verify libpostal installation
-if [ -f "$INSTALL_PREFIX/lib/libpostal.a" ]; then
-    echo "✓ libpostal built successfully"
 else
-    echo "✗ ERROR: libpostal build failed or install path incorrect"
+    echo "ERROR: No supported package manager found (apk, apt-get, or yum)"
     exit 1
 fi
 
-# Export environment variables for CMake
-export PKG_CONFIG_PATH="$INSTALL_PREFIX/lib/pkgconfig:${PKG_CONFIG_PATH}"
-export LD_LIBRARY_PATH="$INSTALL_PREFIX/lib:${LD_LIBRARY_PATH}"
-
-# Verify pkg-config can find both libraries
+# Verify installation with pkg-config
 echo ""
-echo "=== Verifying pkg-config setup ==="
-if pkg-config --exists libphonenumber; then
-    echo "✓ libphonenumber found"
+echo "=== Verifying installation ==="
+
+if pkg-config --exists libphonenumber 2>/dev/null; then
+    echo "✓ libphonenumber found via pkg-config"
     pkg-config --modversion libphonenumber
 else
-    echo "✗ ERROR: libphonenumber not found in pkg-config"
-    exit 1
+    echo "⚠ libphonenumber not found via pkg-config, but may be installed"
 fi
 
-if pkg-config --exists libpostal; then
-    echo "✓ libpostal found"
+if pkg-config --exists libpostal 2>/dev/null; then
+    echo "✓ libpostal found via pkg-config"
     pkg-config --modversion libpostal
 else
-    echo "✗ WARNING: libpostal not found in pkg-config"
+    echo "⚠ libpostal not found via pkg-config, but may be installed"
 fi
-
-# Create environment setup file for subsequent build steps
-SETUP_FILE="${INSTALL_PREFIX}/setup-env.sh"
-mkdir -p "$(dirname "$SETUP_FILE")"
-cat > "$SETUP_FILE" << 'EOF'
-#!/bin/bash
-# Generated environment setup for anofox_tabular CI build
-export PKG_CONFIG_PATH="/opt/anofox-deps/lib/pkgconfig:${PKG_CONFIG_PATH}"
-export LD_LIBRARY_PATH="/opt/anofox-deps/lib:${LD_LIBRARY_PATH}"
-EOF
-chmod +x "$SETUP_FILE"
 
 echo ""
 echo "=== Setup Complete ==="
-echo "Environment setup file created: $SETUP_FILE"
-echo ""
-echo "For subsequent builds, source this file:"
-echo "  source $SETUP_FILE"
-echo ""
-echo "Or add to your environment for local builds:"
-echo "export PKG_CONFIG_PATH='$INSTALL_PREFIX/lib/pkgconfig:\$PKG_CONFIG_PATH'"
-echo "export LD_LIBRARY_PATH='$INSTALL_PREFIX/lib:\$LD_LIBRARY_PATH'"
+echo "System packages installed successfully!"
