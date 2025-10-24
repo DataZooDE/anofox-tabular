@@ -46,18 +46,44 @@ elif command -v apt-get &> /dev/null; then
     # Use sudo if not root
     if [ "$EUID" -ne 0 ]; then
         APT_CMD="sudo apt-get"
+        SUDO_CMD="sudo"
     else
         APT_CMD="apt-get"
+        SUDO_CMD=""
     fi
 
     # Update package lists
     $APT_CMD update
 
-    # Install libphonenumber and libpostal development packages
-    echo "Installing libphonenumber-dev and libpostal-dev..."
-    $APT_CMD install -y \
-        libphonenumber-dev \
-        libpostal-dev
+    # Install libphonenumber-dev from repositories
+    echo "Installing libphonenumber-dev..."
+    $APT_CMD install -y libphonenumber-dev
+
+    # Install build dependencies for libpostal
+    echo "Installing build dependencies for libpostal..."
+    $APT_CMD install -y curl autoconf automake libtool pkg-config git
+
+    # Build and install libpostal from source
+    echo "Building libpostal from source..."
+    LIBPOSTAL_DIR="/tmp/libpostal-build"
+    rm -rf "$LIBPOSTAL_DIR"
+    git clone https://github.com/openvenues/libpostal "$LIBPOSTAL_DIR"
+    cd "$LIBPOSTAL_DIR"
+
+    ./bootstrap.sh
+    # Install to /usr/local with data in /usr/local/share/libpostal
+    ./configure --datadir=/usr/local/share/libpostal
+    make -j$(nproc)
+    $SUDO_CMD make install
+
+    # Update library cache
+    $SUDO_CMD ldconfig
+
+    # Clean up
+    cd /
+    rm -rf "$LIBPOSTAL_DIR"
+
+    echo "libpostal built and installed successfully"
 
 elif command -v yum &> /dev/null; then
     PKG_MANAGER="yum"
