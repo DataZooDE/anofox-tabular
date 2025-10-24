@@ -125,6 +125,27 @@ else
     echo "⚠ libpostal not found via pkg-config, but may be installed"
 fi
 
+# Check if library files exist
+echo ""
+echo "=== Checking for library files ==="
+for lib in /usr/lib/libpostal.* /usr/lib/libphonenumber.* /usr/local/lib/libpostal.* /usr/local/lib/libphonenumber.*; do
+    if [ -e "$lib" ]; then
+        echo "Found: $lib"
+    fi
+done
+
+# Check for header files
+echo ""
+echo "=== Checking for header files ==="
+if [ -d "/usr/include/libpostal" ]; then
+    echo "Found: /usr/include/libpostal"
+    ls -la /usr/include/libpostal/ | head -5
+fi
+if [ -d "/usr/include/phonenumbers" ]; then
+    echo "Found: /usr/include/phonenumbers"
+    ls -la /usr/include/phonenumbers/ | head -5
+fi
+
 echo ""
 echo "=== Setup Complete ==="
 echo "System packages installed successfully!"
