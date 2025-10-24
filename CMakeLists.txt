@@ -30,27 +30,47 @@ pkg_check_modules(LIBPOSTAL libpostal)
 
 # Fallback: Try to find libphonenumber via library search
 if(NOT LIBPHONENUMBER_FOUND)
-    find_library(LIBPHONENUMBER_LIB phonenumber)
-    find_path(LIBPHONENUMBER_INCLUDE_DIR phonenumbers/phonenumberutil.h)
+    find_library(LIBPHONENUMBER_LIB
+        NAMES phonenumber
+        PATHS /usr/lib /usr/local/lib /usr/lib/x86_64-linux-gnu
+    )
+    find_path(LIBPHONENUMBER_INCLUDE_DIR
+        NAMES phonenumbers/phonenumberutil.h
+        PATHS /usr/include /usr/local/include
+    )
 
     if(LIBPHONENUMBER_LIB AND LIBPHONENUMBER_INCLUDE_DIR)
-        message(STATUS "Found libphonenumber via library search")
+        message(STATUS "Found libphonenumber via library search: ${LIBPHONENUMBER_LIB}")
         set(LIBPHONENUMBER_STATIC_LDFLAGS "${LIBPHONENUMBER_LIB}")
         set(LIBPHONENUMBER_INCLUDE_DIRS "${LIBPHONENUMBER_INCLUDE_DIR}")
         set(LIBPHONENUMBER_FOUND TRUE)
+    else()
+        message(STATUS "libphonenumber library search failed:")
+        message(STATUS "  LIBPHONENUMBER_LIB: ${LIBPHONENUMBER_LIB}")
+        message(STATUS "  LIBPHONENUMBER_INCLUDE_DIR: ${LIBPHONENUMBER_INCLUDE_DIR}")
     endif()
 endif()
 
 # Fallback: Try to find libpostal via library search
 if(NOT LIBPOSTAL_FOUND)
-    find_library(LIBPOSTAL_LIB postal)
-    find_path(LIBPOSTAL_INCLUDE_DIR libpostal/libpostal.h)
+    find_library(LIBPOSTAL_LIB
+        NAMES postal libpostal
+        PATHS /usr/lib /usr/local/lib /usr/lib/x86_64-linux-gnu
+    )
+    find_path(LIBPOSTAL_INCLUDE_DIR
+        NAMES libpostal/libpostal.h
+        PATHS /usr/include /usr/local/include
+    )
 
     if(LIBPOSTAL_LIB AND LIBPOSTAL_INCLUDE_DIR)
-        message(STATUS "Found libpostal via library search")
+        message(STATUS "Found libpostal via library search: ${LIBPOSTAL_LIB}")
         set(LIBPOSTAL_LDFLAGS "${LIBPOSTAL_LIB}")
         set(LIBPOSTAL_INCLUDE_DIRS "${LIBPOSTAL_INCLUDE_DIR}")
         set(LIBPOSTAL_FOUND TRUE)
+    else()
+        message(STATUS "libpostal library search failed:")
+        message(STATUS "  LIBPOSTAL_LIB: ${LIBPOSTAL_LIB}")
+        message(STATUS "  LIBPOSTAL_INCLUDE_DIR: ${LIBPOSTAL_INCLUDE_DIR}")
     endif()
 endif()
 
