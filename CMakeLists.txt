@@ -41,8 +41,21 @@ if(NOT LIBPHONENUMBER_FOUND)
     endif()
 endif()
 
+# Fallback: Try to find libpostal via library search
 if(NOT LIBPOSTAL_FOUND)
-    message(FATAL_ERROR "libpostal not found. Install libpostal-dev (Debian/Ubuntu) or libpostal-devel (RHEL/CentOS)")
+    find_library(LIBPOSTAL_LIB postal)
+    find_path(LIBPOSTAL_INCLUDE_DIR libpostal/libpostal.h)
+
+    if(LIBPOSTAL_LIB AND LIBPOSTAL_INCLUDE_DIR)
+        message(STATUS "Found libpostal via library search")
+        set(LIBPOSTAL_LDFLAGS "${LIBPOSTAL_LIB}")
+        set(LIBPOSTAL_INCLUDE_DIRS "${LIBPOSTAL_INCLUDE_DIR}")
+        set(LIBPOSTAL_FOUND TRUE)
+    endif()
+endif()
+
+if(NOT LIBPOSTAL_FOUND)
+    message(FATAL_ERROR "libpostal not found. Install libpostal-dev (Debian/Ubuntu/Alpine) or libpostal-devel (RHEL/CentOS)")
 endif()
 
 if(NOT LIBPHONENUMBER_FOUND)
