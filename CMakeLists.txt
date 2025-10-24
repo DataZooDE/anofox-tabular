@@ -31,6 +31,25 @@ list(APPEND CMAKE_PREFIX_PATH "/usr" "/usr/local")
 pkg_check_modules(LIBPHONENUMBER libphonenumber)
 pkg_check_modules(LIBPOSTAL libpostal)
 
+# If pkg-config failed but we're on Alpine/musl, manually set paths (Alpine packages exist but may not have .pc files)
+if(NOT LIBPHONENUMBER_FOUND)
+    if(EXISTS "/usr/lib/libphonenumber.so")
+        message(STATUS "Manually setting libphonenumber paths for Alpine")
+        set(LIBPHONENUMBER_STATIC_LDFLAGS "/usr/lib/libphonenumber.so")
+        set(LIBPHONENUMBER_INCLUDE_DIRS "/usr/include")
+        set(LIBPHONENUMBER_FOUND TRUE)
+    endif()
+endif()
+
+if(NOT LIBPOSTAL_FOUND)
+    if(EXISTS "/usr/lib/libpostal.so")
+        message(STATUS "Manually setting libpostal paths for Alpine")
+        set(LIBPOSTAL_LDFLAGS "/usr/lib/libpostal.so")
+        set(LIBPOSTAL_INCLUDE_DIRS "/usr/include")
+        set(LIBPOSTAL_FOUND TRUE)
+    endif()
+endif()
+
 # Fallback: Try to find libphonenumber via library search
 if(NOT LIBPHONENUMBER_FOUND)
     find_library(LIBPHONENUMBER_LIB
