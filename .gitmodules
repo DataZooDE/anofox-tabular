@@ -6,9 +6,3 @@
 	path = extension-ci-tools
 	url = https://github.com/duckdb/extension-ci-tools
 	branch = main
-[submodule "third_party/libpostal"]
-	path = third_party/libpostal
-	url = https://github.com/openvenues/libpostal.git
-[submodule "third_party/libphonenumber"]
-	path = third_party/libphonenumber
-	url = https://github.com/google/libphonenumber.git
