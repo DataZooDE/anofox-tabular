@@ -793,14 +793,16 @@ void PhoneIsValidForRegionFunction(DataChunk& args, ExpressionState&, Vector& re
 		auto nr_idx = number_data.sel->get_index(i);
 		auto reg_idx = region_data.sel->get_index(i);
 
-		if (!number_data.validity.RowIsValid(nr_idx) ||
-		    !region_data.validity.RowIsValid(reg_idx)) {
+		if (!number_data.validity.RowIsValid(nr_idx)) {
 			FlatVector::SetNull(result, i, true);
 			continue;
 		}
 
 		auto raw_number = reinterpret_cast<string_t*>(number_data.data)[nr_idx].GetString();
-		auto region_hint = reinterpret_cast<string_t*>(region_data.data)[reg_idx].GetString();
+		// When region is NULL, pass empty string to use default region (US)
+		auto region_hint = region_data.validity.RowIsValid(reg_idx)
+		                     ? reinterpret_cast<string_t*>(region_data.data)[reg_idx].GetString()
+		                     : std::string();
 
 		result_data[i] = PhoneNumberManager::Instance().IsValidForRegion(raw_number, region_hint);
 		FlatVector::SetNull(result, i, false);
