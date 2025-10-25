@@ -22,18 +22,38 @@ if command -v apk &> /dev/null; then
     # Update package list
     apk update
 
-    # Check if packages are available in current repos first
-    if ! apk search libphonenumber-dev | grep -q libphonenumber-dev; then
-        # Enable edge/community repository for libphonenumber-dev and libpostal-dev
-        echo "Enabling edge/community repository..."
-        echo "https://dl-cdn.alpinelinux.org/alpine/edge/community" >> /etc/apk/repositories
-        apk update
+    # Install build dependencies for libpostal
+    # NOTE: libphonenumber is now implemented internally (no external dependency)
+    # NOTE: Alpine's libpostal-dev static library is not compiled with -fPIC,
+    #       which is required for linking into shared libraries (DuckDB extensions).
+    #       We must build libpostal from source with CFLAGS=-fPIC.
+    echo "Installing build dependencies..."
+    apk add --no-cache curl autoconf automake libtool pkgconf git
+
+    # Build and install libpostal from source with -fPIC
+    echo "Building libpostal from source with -fPIC..."
+    LIBPOSTAL_DIR="/tmp/libpostal-build"
+    rm -rf "$LIBPOSTAL_DIR"
+    git clone https://github.com/openvenues/libpostal "$LIBPOSTAL_DIR"
+    cd "$LIBPOSTAL_DIR"
+
+    ./bootstrap.sh
+    # Install to /usr/local with data in /usr/local/share/libpostal
+    # CRITICAL: Use CFLAGS=-fPIC to enable linking into shared libraries
+    CFLAGS="-fPIC" ./configure --datadir=/usr/local/share/libpostal
+    make -j$(nproc)
+    make install
+
+    # Update library cache (if ldconfig is available)
+    if command -v ldconfig &> /dev/null; then
+        ldconfig
     fi
 
-    # Install libpostal-dev
-    # NOTE: libphonenumber is now implemented internally (no external dependency)
-    echo "Installing libpostal-dev..."
-    apk add --no-cache libpostal-dev
+    # Clean up
+    cd /
+    rm -rf "$LIBPOSTAL_DIR"
+
+    echo "libpostal built and installed successfully with -fPIC"
 
 elif command -v apt-get &> /dev/null; then
     PKG_MANAGER="apt"
@@ -65,7 +85,8 @@ elif command -v apt-get &> /dev/null; then
 
     ./bootstrap.sh
     # Install to /usr/local with data in /usr/local/share/libpostal
-    ./configure --datadir=/usr/local/share/libpostal
+    # CRITICAL: Use CFLAGS=-fPIC to enable linking into shared libraries
+    CFLAGS="-fPIC" ./configure --datadir=/usr/local/share/libpostal
     make -j$(nproc)
     $SUDO_CMD make install
 
@@ -105,7 +126,8 @@ elif command -v yum &> /dev/null; then
 
     ./bootstrap.sh
     # Install to /usr/local with data in /usr/local/share/libpostal
-    ./configure --datadir=/usr/local/share/libpostal
+    # CRITICAL: Use CFLAGS=-fPIC to enable linking into shared libraries
+    CFLAGS="-fPIC" ./configure --datadir=/usr/local/share/libpostal
     make -j$(nproc)
     $SUDO_CMD make install
 
