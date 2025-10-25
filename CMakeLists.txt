@@ -21,32 +21,7 @@ include(CMakeFindDependencyMacro)
 find_package(spdlog CONFIG REQUIRED)
 find_package(c-ares CONFIG REQUIRED)
 
-# Libphonenumber: System-installed only (NOT managed by vcpkg)
-# Alpine/musl: Installed via apk (libphonenumber-dev)
-# Ubuntu/glibc: Built from source to /usr/local
-find_package(PkgConfig REQUIRED)
-pkg_check_modules(LIBPHONENUMBER libphonenumber)
-
-if(LIBPHONENUMBER_FOUND)
-    message(STATUS "Found libphonenumber via pkg-config")
-    set(LIBPHONENUMBER_STATIC_LDFLAGS ${LIBPHONENUMBER_LDFLAGS})
-else()
-    # Check for Alpine apk installation (no .pc file, manual detection)
-    if(EXISTS "/usr/lib/libphonenumber.so" AND EXISTS "/usr/include/phonenumbers/phonenumberutil.h")
-        message(STATUS "Found libphonenumber via Alpine package (manual detection)")
-        set(LIBPHONENUMBER_STATIC_LDFLAGS "/usr/lib/libphonenumber.so")
-        set(LIBPHONENUMBER_INCLUDE_DIRS "/usr/include")
-        set(LIBPHONENUMBER_FOUND TRUE)
-    # Check for source build in /usr/local (Ubuntu CI builds from source)
-    elseif(EXISTS "/usr/local/lib/libphonenumber.so" AND EXISTS "/usr/local/include/phonenumbers/phonenumberutil.h")
-        message(STATUS "Found libphonenumber in /usr/local (built from source)")
-        set(LIBPHONENUMBER_STATIC_LDFLAGS "/usr/local/lib/libphonenumber.so")
-        set(LIBPHONENUMBER_INCLUDE_DIRS "/usr/local/include")
-        set(LIBPHONENUMBER_FOUND TRUE)
-    else()
-        message(FATAL_ERROR "libphonenumber not found. Install libphonenumber-dev (Alpine) or run scripts/install-deps-ci.sh to build from source")
-    endif()
-endif()
+# Libphonenumber: Custom implementation (no external dependency)
 
 # Libpostal via pkg-config (system-installed, CI preferred)
 find_package(PkgConfig REQUIRED)
@@ -88,6 +63,7 @@ set(EXTENSION_SOURCES
         src/anofox_diff.cpp
         src/anofox_postal.cpp
         src/anofox_phonenumber.cpp
+        src/anofox_phonenumber_metadata.cpp
         src/anofox_email.cpp
         src/anofox_email_dns.cpp
         src/anofox_email_smtp.cpp
@@ -115,7 +91,6 @@ target_sources(${LOADABLE_EXTENSION_NAME} PRIVATE $<TARGET_OBJECTS:anofox_trace_
 
 # Link dependencies
 target_link_libraries(${EXTENSION_NAME}
-    ${LIBPHONENUMBER_STATIC_LDFLAGS}
     c-ares::cares
     spdlog::spdlog_header_only
     ${LIBPOSTAL_LDFLAGS}
@@ -123,7 +98,6 @@ target_link_libraries(${EXTENSION_NAME}
 
 # Add include directories from dependencies
 target_include_directories(${EXTENSION_NAME} PRIVATE
-    ${LIBPHONENUMBER_INCLUDE_DIRS}
     ${LIBPOSTAL_INCLUDE_DIRS}
 )
 # spdlog configuration is handled by the header-only target
@@ -138,7 +112,6 @@ if(SPDLOG_INTERFACE_INCLUDES)
     endif()
 endif()
 target_link_libraries(${LOADABLE_EXTENSION_NAME}
-    ${LIBPHONENUMBER_STATIC_LDFLAGS}
     c-ares::cares
     spdlog::spdlog_header_only
     ${LIBPOSTAL_LDFLAGS}
@@ -146,7 +119,6 @@ target_link_libraries(${LOADABLE_EXTENSION_NAME}
 
 # Add include directories from dependencies
 target_include_directories(${LOADABLE_EXTENSION_NAME} PRIVATE
-    ${LIBPHONENUMBER_INCLUDE_DIRS}
     ${LIBPOSTAL_INCLUDE_DIRS}
 )
 # --- Installation ---

@@ -1,4 +1,5 @@
 #include "anofox_phonenumber.hpp"
+#include "anofox_phonenumber_metadata.hpp"
 
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/string_util.hpp"
@@ -15,64 +16,118 @@
 
 #include <mutex>
 #include <string>
-#include <phonenumbers/phonenumber.pb.h>
-#include <phonenumbers/phonenumberutil.h>
+#include <regex>
+#include <cctype>
+#include <algorithm>
 
 namespace duckdb {
 namespace anofox {
 namespace phonenumber {
 
-using i18n::phonenumbers::PhoneNumber;
-using i18n::phonenumbers::PhoneNumberUtil;
-
 namespace {
 
-PhoneNumberUtil &GetUtil() {
-	auto *util = PhoneNumberUtil::GetInstance();
-	if (!util) {
-		throw IOException("Failed to initialize libphonenumber");
+// Helper to normalize phone number string (remove spaces, hyphens, parentheses, etc.)
+std::string NormalizePhoneNumber(const std::string& input) {
+	std::string normalized;
+	normalized.reserve(input.size());
+
+	for (char c : input) {
+		if (c >= '0' && c <= '9') {
+			normalized += c;
+		} else if (c == '+') {
+			// Keep + sign only at the beginning
+			if (normalized.empty()) {
+				normalized += c;
+			}
+		}
 	}
-	return *util;
+
+	return normalized;
 }
 
-std::string ToTypeString(PhoneNumberUtil::PhoneNumberType type) {
-	switch (type) {
-	case PhoneNumberUtil::PhoneNumberType::FIXED_LINE:
-		return "fixed_line";
-	case PhoneNumberUtil::PhoneNumberType::MOBILE:
-		return "mobile";
-	case PhoneNumberUtil::PhoneNumberType::FIXED_LINE_OR_MOBILE:
-		return "fixed_line_or_mobile";
-	case PhoneNumberUtil::PhoneNumberType::TOLL_FREE:
-		return "toll_free";
-	case PhoneNumberUtil::PhoneNumberType::PREMIUM_RATE:
-		return "premium_rate";
-	case PhoneNumberUtil::PhoneNumberType::SHARED_COST:
-		return "shared_cost";
-	case PhoneNumberUtil::PhoneNumberType::VOIP:
-		return "voip";
-	case PhoneNumberUtil::PhoneNumberType::PERSONAL_NUMBER:
-		return "personal_number";
-	case PhoneNumberUtil::PhoneNumberType::PAGER:
-		return "pager";
-	case PhoneNumberUtil::PhoneNumberType::UAN:
-		return "uan";
-	case PhoneNumberUtil::PhoneNumberType::VOICEMAIL:
-		return "voicemail";
-	case PhoneNumberUtil::PhoneNumberType::UNKNOWN:
-	default:
-		return "unknown";
+// Extract country code from E.164/international format
+// Returns {country_code, remaining_national_number}
+std::pair<int, std::string> ExtractCountryCode(const std::string& normalized) {
+	if (normalized.empty()) {
+		return {0, ""};
 	}
+
+	// Check if starts with +
+	size_t start_pos = 0;
+	if (normalized[0] == '+') {
+		start_pos = 1;
+	}
+
+	// Try to match country codes (1-3 digits)
+	// Try 3 digits first, then 2, then 1
+	for (int len = 3; len >= 1; len--) {
+		if (normalized.size() < start_pos + len) {
+			continue;
+		}
+
+		std::string code_str = normalized.substr(start_pos, len);
+		try {
+			int code = std::stoi(code_str);
+
+			// Check if this country code exists in our metadata
+			if (COUNTRY_CODE_TO_REGIONS.find(code) != COUNTRY_CODE_TO_REGIONS.end()) {
+				std::string national_number = normalized.substr(start_pos + len);
+				return {code, national_number};
+			}
+		} catch (...) {
+			continue;
+		}
+	}
+
+	// No country code found
+	return {0, normalized.substr(start_pos)};
 }
 
-std::mutex &RegionMutex() {
+// Determine phone number type based on regex patterns
+std::string DeterminePhoneNumberType(const std::string& national_number, const CountryMetadata* metadata) {
+	if (!metadata) {
+		return PhoneNumberType::UNKNOWN;
+	}
+
+	try {
+		// Try toll_free pattern first
+		if (!metadata->toll_free_pattern.empty()) {
+			std::regex toll_free_regex(metadata->toll_free_pattern);
+			if (std::regex_match(national_number, toll_free_regex)) {
+				return PhoneNumberType::TOLL_FREE;
+			}
+		}
+
+		// Try mobile pattern
+		if (!metadata->mobile_pattern.empty()) {
+			std::regex mobile_regex(metadata->mobile_pattern);
+			if (std::regex_match(national_number, mobile_regex)) {
+				return PhoneNumberType::MOBILE;
+			}
+		}
+
+		// Try fixed_line pattern
+		if (!metadata->fixed_line_pattern.empty()) {
+			std::regex fixed_line_regex(metadata->fixed_line_pattern);
+			if (std::regex_match(national_number, fixed_line_regex)) {
+				return PhoneNumberType::FIXED_LINE;
+			}
+		}
+	} catch (const std::regex_error& e) {
+		AnofoxTrace(AnofoxLogLevel::Warn, "Regex error in DeterminePhoneNumberType: " + std::string(e.what()));
+	}
+
+	return PhoneNumberType::UNKNOWN;
+}
+
+std::mutex& RegionMutex() {
 	static std::mutex region_mutex;
 	return region_mutex;
 }
 
 } // namespace
 
-PhoneNumberManager &PhoneNumberManager::Instance() {
+PhoneNumberManager& PhoneNumberManager::Instance() {
 	static PhoneNumberManager instance;
 	return instance;
 }
@@ -90,175 +145,315 @@ void PhoneNumberManager::EnsureInitialized() {
 	}
 }
 
-PhoneNumberParts PhoneNumberManager::Parse(const std::string &raw_number, const std::string &region_hint) {
+PhoneNumberParts PhoneNumberManager::Parse(const std::string& raw_number, const std::string& region_hint) {
 	EnsureInitialized();
 	AnofoxTrace(AnofoxLogLevel::Debug,
 	           "PhoneNumber parse start number=" + raw_number + " region_hint=" + region_hint);
-	PhoneNumber parsed;
-	auto &util = GetUtil();
+
 	PhoneNumberParts parts;
 
-	auto region = region_hint.empty() ? GetDefaultRegion() : StringUtil::Upper(region_hint);
-	auto status = util.Parse(raw_number, region, &parsed);
-	parts.valid = status == PhoneNumberUtil::NO_PARSING_ERROR;
-	if (!parts.valid) {
-		AnofoxTrace(AnofoxLogLevel::Debug,
-		           "PhoneNumber parse failed status=" + std::to_string(status) + " number=" + raw_number +
-		               " region=" + region);
+	// Normalize the input
+	std::string normalized = NormalizePhoneNumber(raw_number);
+	if (normalized.empty()) {
+		AnofoxTrace(AnofoxLogLevel::Debug, "PhoneNumber parse failed: empty number");
 		return parts;
 	}
 
-	parts.country_code = parsed.country_code();
-	parts.national_number = std::to_string(parsed.national_number());
-	std::string region_code;
-	util.GetRegionCodeForNumber(parsed, &region_code);
+	// Extract country code
+	auto [country_code, national_number] = ExtractCountryCode(normalized);
+
+	// If no country code found and we have a region hint, use that region's country code
+	if (country_code == 0 && !region_hint.empty()) {
+		std::string region = StringUtil::Upper(region_hint);
+		const CountryMetadata* metadata = GetMetadataForRegion(region);
+		if (metadata) {
+			country_code = metadata->country_code;
+			national_number = normalized;
+			// Remove national prefix if present
+			if (!metadata->national_prefix.empty() &&
+			    national_number.find(metadata->national_prefix) == 0) {
+				national_number = national_number.substr(metadata->national_prefix.size());
+			}
+		}
+	}
+
+	// If still no country code, try default region
+	if (country_code == 0) {
+		std::string default_reg = GetDefaultRegion();
+		const CountryMetadata* metadata = GetMetadataForRegion(default_reg);
+		if (metadata) {
+			country_code = metadata->country_code;
+			national_number = normalized;
+			if (!metadata->national_prefix.empty() &&
+			    national_number.find(metadata->national_prefix) == 0) {
+				national_number = national_number.substr(metadata->national_prefix.size());
+			}
+		}
+	}
+
+	if (country_code == 0) {
+		AnofoxTrace(AnofoxLogLevel::Debug, "PhoneNumber parse failed: could not determine country code");
+		return parts;
+	}
+
+	// Get region code for this country code
+	std::string region_code = GetMainRegionForCountryCode(country_code);
+	if (region_code.empty()) {
+		AnofoxTrace(AnofoxLogLevel::Debug,
+		           "PhoneNumber parse failed: no region found for country_code=" + std::to_string(country_code));
+		return parts;
+	}
+
+	const CountryMetadata* metadata = GetMetadataForRegion(region_code);
+	if (!metadata) {
+		AnofoxTrace(AnofoxLogLevel::Debug, "PhoneNumber parse failed: no metadata for region=" + region_code);
+		return parts;
+	}
+
+	// Validate length
+	if (!metadata->IsValidLength(national_number.size())) {
+		AnofoxTrace(AnofoxLogLevel::Debug,
+		           "PhoneNumber parse failed: invalid length=" + std::to_string(national_number.size()) +
+		           " for region=" + region_code);
+		return parts;
+	}
+
+	// Successful parse
+	parts.valid = true;
+	parts.country_code = country_code;
+	parts.national_number = national_number;
 	parts.region_code = region_code;
-	parts.type = ToTypeString(util.GetNumberType(parsed));
+	parts.type = DeterminePhoneNumberType(national_number, metadata);
+
 	AnofoxTrace(AnofoxLogLevel::Debug,
 	           "PhoneNumber parse success region=" + parts.region_code + " type=" + parts.type);
 	return parts;
 }
 
-std::string PhoneNumberManager::Format(const std::string &raw_number, const std::string &region_hint,
+std::string PhoneNumberManager::Format(const std::string& raw_number, const std::string& region_hint,
                                        PhoneNumberFormatOption format_option) {
 	EnsureInitialized();
-	PhoneNumber parsed;
-	auto &util = GetUtil();
-	auto region = region_hint.empty() ? GetDefaultRegion() : StringUtil::Upper(region_hint);
-	if (util.Parse(raw_number, region, &parsed) != PhoneNumberUtil::NO_PARSING_ERROR) {
+
+	// Parse the number first
+	auto parts = Parse(raw_number, region_hint);
+	if (!parts.valid) {
 		AnofoxTrace(AnofoxLogLevel::Debug,
-		           "PhoneNumber format parse failed number=" + raw_number + " region=" + region);
+		           "PhoneNumber format parse failed number=" + raw_number);
 		throw InvalidInputException("Invalid phone number: %s", raw_number);
+	}
+
+	const CountryMetadata* metadata = GetMetadataForRegion(parts.region_code);
+	if (!metadata) {
+		throw InvalidInputException("No metadata for region: %s", parts.region_code);
 	}
 
 	std::string formatted;
-	PhoneNumberUtil::PhoneNumberFormat lib_format = PhoneNumberUtil::PhoneNumberFormat::NATIONAL;
-	std::string format_label = "NATIONAL";
+	std::string format_label;
+
 	switch (format_option) {
 	case PhoneNumberFormatOption::E164:
-		lib_format = PhoneNumberUtil::PhoneNumberFormat::E164;
+		// E164: +<country_code><national_number>
+		formatted = "+" + std::to_string(parts.country_code) + parts.national_number;
 		format_label = "E164";
 		break;
+
 	case PhoneNumberFormatOption::INTERNATIONAL:
-		lib_format = PhoneNumberUtil::PhoneNumberFormat::INTERNATIONAL;
+		// INTERNATIONAL: +<country_code> <formatted_national>
+		formatted = "+" + std::to_string(parts.country_code) + " ";
+		// Simple formatting: insert space every 3-4 digits
+		if (parts.national_number.size() == 10) {
+			// US/CA format: XXX XXX XXXX
+			formatted += parts.national_number.substr(0, 3) + " " +
+			            parts.national_number.substr(3, 3) + " " +
+			            parts.national_number.substr(6);
+		} else {
+			// Generic: just add spaces every 3 digits
+			for (size_t i = 0; i < parts.national_number.size(); i++) {
+				if (i > 0 && i % 3 == 0) {
+					formatted += " ";
+				}
+				formatted += parts.national_number[i];
+			}
+		}
 		format_label = "INTERNATIONAL";
 		break;
-	case PhoneNumberFormatOption::RFC3966:
-		lib_format = PhoneNumberUtil::PhoneNumberFormat::RFC3966;
-		format_label = "RFC3966";
-		break;
+
 	case PhoneNumberFormatOption::NATIONAL:
-	default:
-		lib_format = PhoneNumberUtil::PhoneNumberFormat::NATIONAL;
+		// NATIONAL: Regional formatting
+		if (parts.national_number.size() == 10) {
+			// US/CA format: (XXX) XXX-XXXX
+			formatted = "(" + parts.national_number.substr(0, 3) + ") " +
+			           parts.national_number.substr(3, 3) + "-" +
+			           parts.national_number.substr(6);
+		} else {
+			// Generic: prepend national prefix if exists
+			if (!metadata->national_prefix.empty()) {
+				formatted = metadata->national_prefix;
+			}
+			// Add spaces every 3 digits
+			for (size_t i = 0; i < parts.national_number.size(); i++) {
+				if (i > 0 && i % 3 == 0) {
+					formatted += " ";
+				}
+				formatted += parts.national_number[i];
+			}
+		}
 		format_label = "NATIONAL";
 		break;
+
+	case PhoneNumberFormatOption::RFC3966:
+		// RFC3966: tel:+<country_code>-<formatted>
+		formatted = "tel:+" + std::to_string(parts.country_code) + "-";
+		// Simple formatting with hyphens every 3-4 digits
+		if (parts.national_number.size() == 10) {
+			formatted += parts.national_number.substr(0, 3) + "-" +
+			            parts.national_number.substr(3, 3) + "-" +
+			            parts.national_number.substr(6);
+		} else {
+			for (size_t i = 0; i < parts.national_number.size(); i++) {
+				if (i > 0 && i % 3 == 0) {
+					formatted += "-";
+				}
+				formatted += parts.national_number[i];
+			}
+		}
+		format_label = "RFC3966";
+		break;
 	}
-	util.Format(parsed, lib_format, &formatted);
+
 	AnofoxTrace(AnofoxLogLevel::Debug,
-	           "PhoneNumber format success number=" + raw_number + " format=" + format_label + " output=" +
-	               formatted);
+	           "PhoneNumber format success number=" + raw_number + " format=" + format_label + " output=" + formatted);
 	return formatted;
 }
 
-std::string PhoneNumberManager::GetRegion(const std::string &raw_number, const std::string &region_hint) {
+std::string PhoneNumberManager::GetRegion(const std::string& raw_number, const std::string& region_hint) {
 	EnsureInitialized();
-	PhoneNumber parsed;
-	auto &util = GetUtil();
-	auto region = region_hint.empty() ? GetDefaultRegion() : StringUtil::Upper(region_hint);
-	if (util.Parse(raw_number, region, &parsed) != PhoneNumberUtil::NO_PARSING_ERROR) {
+	auto parts = Parse(raw_number, region_hint);
+	if (!parts.valid) {
 		throw InvalidInputException("Invalid phone number: %s", raw_number);
 	}
-	std::string region_code;
-	util.GetRegionCodeForNumber(parsed, &region_code);
-	return region_code;
+	return parts.region_code;
 }
 
-bool PhoneNumberManager::IsValid(const std::string &raw_number, const std::string &region_hint) {
+bool PhoneNumberManager::IsValid(const std::string& raw_number, const std::string& region_hint) {
 	EnsureInitialized();
-	PhoneNumber parsed;
-	auto &util = GetUtil();
-	auto region = region_hint.empty() ? GetDefaultRegion() : StringUtil::Upper(region_hint);
-	if (util.Parse(raw_number, region, &parsed) != PhoneNumberUtil::NO_PARSING_ERROR) {
+
+	auto parts = Parse(raw_number, region_hint);
+	if (!parts.valid) {
 		AnofoxTrace(AnofoxLogLevel::Debug,
-		           "PhoneNumber IsValid parse failed number=" + raw_number + " region=" + region);
+		           "PhoneNumber IsValid parse failed number=" + raw_number);
 		return false;
 	}
-	bool is_valid = util.IsValidNumber(parsed);
-	AnofoxTrace(AnofoxLogLevel::Debug,
-	           "PhoneNumber IsValid result=" + std::string(is_valid ? "true" : "false") + " number=" + raw_number);
-	return is_valid;
+
+	// For valid, we need to match the pattern
+	const CountryMetadata* metadata = GetMetadataForRegion(parts.region_code);
+	if (!metadata) {
+		return false;
+	}
+
+	try {
+		// Check against fixed_line or mobile pattern
+		bool matches_fixed = false;
+		bool matches_mobile = false;
+
+		if (!metadata->fixed_line_pattern.empty()) {
+			std::regex fixed_regex(metadata->fixed_line_pattern);
+			matches_fixed = std::regex_match(parts.national_number, fixed_regex);
+		}
+
+		if (!metadata->mobile_pattern.empty()) {
+			std::regex mobile_regex(metadata->mobile_pattern);
+			matches_mobile = std::regex_match(parts.national_number, mobile_regex);
+		}
+
+		bool is_valid = matches_fixed || matches_mobile;
+		AnofoxTrace(AnofoxLogLevel::Debug,
+		           "PhoneNumber IsValid result=" + std::string(is_valid ? "true" : "false") +
+		           " number=" + raw_number);
+		return is_valid;
+	} catch (const std::regex_error& e) {
+		AnofoxTrace(AnofoxLogLevel::Warn, "Regex error in IsValid: " + std::string(e.what()));
+		return false;
+	}
 }
 
-bool PhoneNumberManager::IsPossible(const std::string &raw_number, const std::string &region_hint) {
+bool PhoneNumberManager::IsPossible(const std::string& raw_number, const std::string& region_hint) {
 	EnsureInitialized();
-	PhoneNumber parsed;
-	auto &util = GetUtil();
-	auto region = region_hint.empty() ? GetDefaultRegion() : StringUtil::Upper(region_hint);
-	if (util.Parse(raw_number, region, &parsed) != PhoneNumberUtil::NO_PARSING_ERROR) {
+
+	auto parts = Parse(raw_number, region_hint);
+	if (!parts.valid) {
 		AnofoxTrace(AnofoxLogLevel::Debug,
-		           "PhoneNumber IsPossible parse failed number=" + raw_number + " region=" + region);
+		           "PhoneNumber IsPossible parse failed number=" + raw_number);
 		return false;
 	}
-	bool is_possible = util.IsPossibleNumber(parsed);
+
+	// IsPossible only checks length, not patterns
+	bool is_possible = parts.valid;  // If parse succeeded, it's already length-checked
 	AnofoxTrace(AnofoxLogLevel::Debug,
-	           "PhoneNumber IsPossible result=" + std::string(is_possible ? "true" : "false") + " number=" + raw_number);
+	           "PhoneNumber IsPossible result=" + std::string(is_possible ? "true" : "false") +
+	           " number=" + raw_number);
 	return is_possible;
 }
 
-bool PhoneNumberManager::IsValidForRegion(const std::string &raw_number, const std::string &region_hint) {
+bool PhoneNumberManager::IsValidForRegion(const std::string& raw_number, const std::string& region_hint) {
 	EnsureInitialized();
-	PhoneNumber parsed;
-	auto &util = GetUtil();
-	auto region = region_hint.empty() ? GetDefaultRegion() : StringUtil::Upper(region_hint);
-	if (util.Parse(raw_number, region, &parsed) != PhoneNumberUtil::NO_PARSING_ERROR) {
-		AnofoxTrace(AnofoxLogLevel::Debug,
-		           "PhoneNumber IsValidForRegion parse failed number=" + raw_number + " region=" + region);
+
+	auto parts = Parse(raw_number, region_hint);
+	if (!parts.valid) {
 		return false;
 	}
-	bool is_valid = util.IsValidNumberForRegion(parsed, region);
-	AnofoxTrace(AnofoxLogLevel::Debug,
-	           "PhoneNumber IsValidForRegion result=" + std::string(is_valid ? "true" : "false") + " number=" + raw_number +
-	           " region=" + region);
-	return is_valid;
+
+	// Check if the parsed region matches the requested region
+	std::string requested_region = StringUtil::Upper(region_hint.empty() ? GetDefaultRegion() : region_hint);
+	if (parts.region_code != requested_region) {
+		AnofoxTrace(AnofoxLogLevel::Debug,
+		           "PhoneNumber IsValidForRegion failed: parsed_region=" + parts.region_code +
+		           " != requested_region=" + requested_region);
+		return false;
+	}
+
+	// Also validate against patterns
+	return IsValid(raw_number, region_hint);
 }
 
-std::string PhoneNumberManager::Match(const std::string &number1, const std::string &number2, const std::string &region_hint) {
+std::string PhoneNumberManager::Match(const std::string& number1, const std::string& number2,
+                                      const std::string& region_hint) {
 	EnsureInitialized();
-	PhoneNumber parsed1, parsed2;
-	auto &util = GetUtil();
-	auto region = region_hint.empty() ? GetDefaultRegion() : StringUtil::Upper(region_hint);
 
-	// Parse both numbers
-	if (util.Parse(number1, region, &parsed1) != PhoneNumberUtil::NO_PARSING_ERROR) {
+	auto parts1 = Parse(number1, region_hint);
+	auto parts2 = Parse(number2, region_hint);
+
+	// If either parse failed, it's NO_MATCH
+	if (!parts1.valid || !parts2.valid) {
 		AnofoxTrace(AnofoxLogLevel::Debug,
-		           "PhoneNumber Match parse failed for number1=" + number1 + " region=" + region);
+		           "PhoneNumber Match result=NO_MATCH (parse failed) number1=" + number1 + " number2=" + number2);
 		return "NO_MATCH";
 	}
 
-	if (util.Parse(number2, region, &parsed2) != PhoneNumberUtil::NO_PARSING_ERROR) {
-		AnofoxTrace(AnofoxLogLevel::Debug,
-		           "PhoneNumber Match parse failed for number2=" + number2 + " region=" + region);
-		return "NO_MATCH";
-	}
-
-	// Check match type
-	auto match_type = util.IsNumberMatch(parsed1, parsed2);
 	std::string result;
 
-	switch (match_type) {
-	case PhoneNumberUtil::MatchType::EXACT_MATCH:
+	// EXACT_MATCH: country code and national number both match
+	if (parts1.country_code == parts2.country_code &&
+	    parts1.national_number == parts2.national_number) {
 		result = "EXACT_MATCH";
-		break;
-	case PhoneNumberUtil::MatchType::NSN_MATCH:
+	}
+	// NSN_MATCH: national numbers match (country codes may differ or be missing)
+	else if (parts1.national_number == parts2.national_number) {
 		result = "NSN_MATCH";
-		break;
-	case PhoneNumberUtil::MatchType::SHORT_NSN_MATCH:
-		result = "SHORT_NSN_MATCH";
-		break;
-	case PhoneNumberUtil::MatchType::NO_MATCH:
-	default:
-		result = "NO_MATCH";
-		break;
+	}
+	// SHORT_NSN_MATCH: one national number is a suffix of the other
+	else {
+		const std::string& longer = parts1.national_number.size() > parts2.national_number.size() ?
+		                            parts1.national_number : parts2.national_number;
+		const std::string& shorter = parts1.national_number.size() <= parts2.national_number.size() ?
+		                             parts1.national_number : parts2.national_number;
+
+		if (longer.size() >= shorter.size() &&
+		    longer.substr(longer.size() - shorter.size()) == shorter) {
+			result = "SHORT_NSN_MATCH";
+		} else {
+			result = "NO_MATCH";
+		}
 	}
 
 	AnofoxTrace(AnofoxLogLevel::Debug,
@@ -266,26 +461,26 @@ std::string PhoneNumberManager::Match(const std::string &number1, const std::str
 	return result;
 }
 
-std::string PhoneNumberManager::GetExampleNumber(const std::string &region_hint) {
+std::string PhoneNumberManager::GetExampleNumber(const std::string& region_hint) {
 	EnsureInitialized();
-	auto &util = GetUtil();
-	auto region = region_hint.empty() ? GetDefaultRegion() : StringUtil::Upper(region_hint);
 
-	PhoneNumber example;
-	if (!util.GetExampleNumber(region, &example)) {
+	std::string region = StringUtil::Upper(region_hint.empty() ? GetDefaultRegion() : region_hint);
+	const CountryMetadata* metadata = GetMetadataForRegion(region);
+
+	if (!metadata) {
 		AnofoxTrace(AnofoxLogLevel::Debug,
 		           "PhoneNumber GetExampleNumber failed for region=" + region);
 		return "";
 	}
 
-	std::string formatted;
-	util.Format(example, PhoneNumberUtil::PhoneNumberFormat::E164, &formatted);
+	// Return E164 format of example number
+	std::string formatted = "+" + std::to_string(metadata->country_code) + metadata->example_number;
 	AnofoxTrace(AnofoxLogLevel::Debug,
 	           "PhoneNumber GetExampleNumber result=" + formatted + " region=" + region);
 	return formatted;
 }
 
-void PhoneNumberManager::SetDefaultRegion(const std::string &region) {
+void PhoneNumberManager::SetDefaultRegion(const std::string& region) {
 	EnsureInitialized();
 	std::lock_guard<std::mutex> lock(RegionMutex());
 	default_region = StringUtil::Upper(region);
@@ -305,12 +500,12 @@ PhoneNumberStatus PhoneNumberManager::GetStatus() const {
 }
 
 void PhoneNumberManager::Initialize() {
-	(void)GetUtil();
+	// No external library initialization needed anymore
 	initialized = true;
-	AnofoxTrace(AnofoxLogLevel::Debug, "PhoneNumber initialization complete");
+	AnofoxTrace(AnofoxLogLevel::Debug, "PhoneNumber initialization complete (custom implementation)");
 }
 
-PhoneNumberFormatOption ParseFormatOption(const std::string &format_str) {
+PhoneNumberFormatOption ParseFormatOption(const std::string& format_str) {
 	auto upper = StringUtil::Upper(format_str);
 	if (upper == "E164") {
 		return PhoneNumberFormatOption::E164;
@@ -328,6 +523,7 @@ PhoneNumberFormatOption ParseFormatOption(const std::string &format_str) {
 } // namespace anofox
 } // namespace duckdb
 
+// SQL Function registrations (keeping existing structure)
 #include "duckdb/common/types/value.hpp"
 
 namespace duckdb {
@@ -340,18 +536,18 @@ using phonenumber::PhoneNumberStatus;
 
 namespace {
 
-static void SetPhonenumberDefaultRegionOption(ClientContext &, SetScope, Value &parameter) {
+static void SetPhonenumberDefaultRegionOption(ClientContext&, SetScope, Value& parameter) {
 	if (parameter.IsNull()) {
 		throw InvalidInputException("anofox_phonenumber_default_region cannot be NULL");
 	}
 	PhoneNumberManager::Instance().SetDefaultRegion(parameter.ToString());
 }
 
-void PhoneParseFunction(DataChunk &args, ExpressionState &, Vector &result) {
+void PhoneParseFunction(DataChunk& args, ExpressionState&, Vector& result) {
 	PhoneNumberManager::Instance().EnsureInitialized();
 
-	auto &numbers = args.data[0];
-	auto &regions = args.data[1];
+	auto& numbers = args.data[0];
+	auto& regions = args.data[1];
 
 	UnifiedVectorFormat number_data;
 	UnifiedVectorFormat region_data;
@@ -359,13 +555,13 @@ void PhoneParseFunction(DataChunk &args, ExpressionState &, Vector &result) {
 	regions.ToUnifiedFormat(args.size(), region_data);
 
 	result.SetVectorType(VectorType::FLAT_VECTOR);
-	auto &children = StructVector::GetEntries(result);
+	auto& children = StructVector::GetEntries(result);
 
-	auto &valid_vec = *children[0];
-	auto &country_code_vec = *children[1];
-	auto &national_number_vec = *children[2];
-	auto &region_vec = *children[3];
-	auto &type_vec = *children[4];
+	auto& valid_vec = *children[0];
+	auto& country_code_vec = *children[1];
+	auto& national_number_vec = *children[2];
+	auto& region_vec = *children[3];
+	auto& type_vec = *children[4];
 
 	auto valid_data = FlatVector::GetData<bool>(valid_vec);
 	auto country_data = FlatVector::GetData<int32_t>(country_code_vec);
@@ -379,15 +575,15 @@ void PhoneParseFunction(DataChunk &args, ExpressionState &, Vector &result) {
 
 		if (!number_data.validity.RowIsValid(nr_idx)) {
 			FlatVector::SetNull(result, i, true);
-			for (auto &child : children) {
+			for (auto& child : children) {
 				FlatVector::SetNull(*child, i, true);
 			}
 			continue;
 		}
 
-		auto raw_number = reinterpret_cast<string_t *>(number_data.data)[nr_idx].GetString();
+		auto raw_number = reinterpret_cast<string_t*>(number_data.data)[nr_idx].GetString();
 		auto region_hint = region_data.validity.RowIsValid(reg_idx)
-		                     ? reinterpret_cast<string_t *>(region_data.data)[reg_idx].GetString()
+		                     ? reinterpret_cast<string_t*>(region_data.data)[reg_idx].GetString()
 		                     : std::string();
 
 		auto parts = PhoneNumberManager::Instance().Parse(raw_number, region_hint);
@@ -398,15 +594,13 @@ void PhoneParseFunction(DataChunk &args, ExpressionState &, Vector &result) {
 
 		if (parts.valid) {
 			FlatVector::SetNull(country_code_vec, i, false);
-			country_data[i] = parts.country_code;
-
 			FlatVector::SetNull(national_number_vec, i, false);
-			national_data[i] = StringVector::AddString(national_number_vec, parts.national_number);
-
 			FlatVector::SetNull(region_vec, i, false);
-			region_data_out[i] = StringVector::AddString(region_vec, parts.region_code);
-
 			FlatVector::SetNull(type_vec, i, false);
+
+			country_data[i] = parts.country_code;
+			national_data[i] = StringVector::AddString(national_number_vec, parts.national_number);
+			region_data_out[i] = StringVector::AddString(region_vec, parts.region_code);
 			type_data[i] = StringVector::AddString(type_vec, parts.type);
 		} else {
 			FlatVector::SetNull(country_code_vec, i, true);
@@ -415,18 +609,14 @@ void PhoneParseFunction(DataChunk &args, ExpressionState &, Vector &result) {
 			FlatVector::SetNull(type_vec, i, true);
 		}
 	}
-
-	if (args.AllConstant()) {
-		result.SetVectorType(VectorType::CONSTANT_VECTOR);
-	}
 }
 
-void PhoneFormatFunction(DataChunk &args, ExpressionState &, Vector &result) {
+void PhoneFormatFunction(DataChunk& args, ExpressionState&, Vector& result) {
 	PhoneNumberManager::Instance().EnsureInitialized();
 
-	auto &numbers = args.data[0];
-	auto &regions = args.data[1];
-	auto &formats = args.data[2];
+	auto& numbers = args.data[0];
+	auto& regions = args.data[1];
+	auto& formats = args.data[2];
 
 	UnifiedVectorFormat number_data;
 	UnifiedVectorFormat region_data;
@@ -443,35 +633,34 @@ void PhoneFormatFunction(DataChunk &args, ExpressionState &, Vector &result) {
 		auto reg_idx = region_data.sel->get_index(i);
 		auto fmt_idx = format_data.sel->get_index(i);
 
-		if (!number_data.validity.RowIsValid(nr_idx)) {
+		if (!number_data.validity.RowIsValid(nr_idx) ||
+		    !format_data.validity.RowIsValid(fmt_idx)) {
 			FlatVector::SetNull(result, i, true);
 			continue;
 		}
 
-		auto raw_number = reinterpret_cast<string_t *>(number_data.data)[nr_idx].GetString();
+		auto raw_number = reinterpret_cast<string_t*>(number_data.data)[nr_idx].GetString();
 		auto region_hint = region_data.validity.RowIsValid(reg_idx)
-		                     ? reinterpret_cast<string_t *>(region_data.data)[reg_idx].GetString()
+		                     ? reinterpret_cast<string_t*>(region_data.data)[reg_idx].GetString()
 		                     : std::string();
-		auto format_hint = format_data.validity.RowIsValid(fmt_idx)
-		                     ? reinterpret_cast<string_t *>(format_data.data)[fmt_idx].GetString()
-		                     : std::string();
+		auto format_str = reinterpret_cast<string_t*>(format_data.data)[fmt_idx].GetString();
 
-		auto format = ParseFormatOption(format_hint);
-		auto formatted = PhoneNumberManager::Instance().Format(raw_number, region_hint, format);
-		FlatVector::SetNull(result, i, false);
-		result_data[i] = StringVector::AddString(result, formatted);
-	}
-
-	if (args.AllConstant()) {
-		result.SetVectorType(VectorType::CONSTANT_VECTOR);
+		try {
+			auto format_option = ParseFormatOption(format_str);
+			auto formatted = PhoneNumberManager::Instance().Format(raw_number, region_hint, format_option);
+			result_data[i] = StringVector::AddString(result, formatted);
+			FlatVector::SetNull(result, i, false);
+		} catch (const std::exception& e) {
+			FlatVector::SetNull(result, i, true);
+		}
 	}
 }
 
-void PhoneRegionFunction(DataChunk &args, ExpressionState &, Vector &result) {
+void PhoneRegionFunction(DataChunk& args, ExpressionState&, Vector& result) {
 	PhoneNumberManager::Instance().EnsureInitialized();
 
-	auto &numbers = args.data[0];
-	auto &regions = args.data[1];
+	auto& numbers = args.data[0];
+	auto& regions = args.data[1];
 
 	UnifiedVectorFormat number_data;
 	UnifiedVectorFormat region_data;
@@ -490,26 +679,26 @@ void PhoneRegionFunction(DataChunk &args, ExpressionState &, Vector &result) {
 			continue;
 		}
 
-		auto raw_number = reinterpret_cast<string_t *>(number_data.data)[nr_idx].GetString();
+		auto raw_number = reinterpret_cast<string_t*>(number_data.data)[nr_idx].GetString();
 		auto region_hint = region_data.validity.RowIsValid(reg_idx)
-		                     ? reinterpret_cast<string_t *>(region_data.data)[reg_idx].GetString()
+		                     ? reinterpret_cast<string_t*>(region_data.data)[reg_idx].GetString()
 		                     : std::string();
 
-		auto region_code = PhoneNumberManager::Instance().GetRegion(raw_number, region_hint);
-		FlatVector::SetNull(result, i, false);
-		result_data[i] = StringVector::AddString(result, region_code);
-	}
-
-	if (args.AllConstant()) {
-		result.SetVectorType(VectorType::CONSTANT_VECTOR);
+		try {
+			auto region = PhoneNumberManager::Instance().GetRegion(raw_number, region_hint);
+			result_data[i] = StringVector::AddString(result, region);
+			FlatVector::SetNull(result, i, false);
+		} catch (const std::exception& e) {
+			FlatVector::SetNull(result, i, true);
+		}
 	}
 }
 
-void PhoneIsValidFunction(DataChunk &args, ExpressionState &, Vector &result) {
+void PhoneIsValidFunction(DataChunk& args, ExpressionState&, Vector& result) {
 	PhoneNumberManager::Instance().EnsureInitialized();
 
-	auto &numbers = args.data[0];
-	auto &regions = args.data[1];
+	auto& numbers = args.data[0];
+	auto& regions = args.data[1];
 
 	UnifiedVectorFormat number_data;
 	UnifiedVectorFormat region_data;
@@ -528,26 +717,21 @@ void PhoneIsValidFunction(DataChunk &args, ExpressionState &, Vector &result) {
 			continue;
 		}
 
-		auto raw_number = reinterpret_cast<string_t *>(number_data.data)[nr_idx].GetString();
+		auto raw_number = reinterpret_cast<string_t*>(number_data.data)[nr_idx].GetString();
 		auto region_hint = region_data.validity.RowIsValid(reg_idx)
-		                     ? reinterpret_cast<string_t *>(region_data.data)[reg_idx].GetString()
+		                     ? reinterpret_cast<string_t*>(region_data.data)[reg_idx].GetString()
 		                     : std::string();
 
-		bool is_valid = PhoneNumberManager::Instance().IsValid(raw_number, region_hint);
+		result_data[i] = PhoneNumberManager::Instance().IsValid(raw_number, region_hint);
 		FlatVector::SetNull(result, i, false);
-		result_data[i] = is_valid;
-	}
-
-	if (args.AllConstant()) {
-		result.SetVectorType(VectorType::CONSTANT_VECTOR);
 	}
 }
 
-void PhoneIsPossibleFunction(DataChunk &args, ExpressionState &, Vector &result) {
+void PhoneIsPossibleFunction(DataChunk& args, ExpressionState&, Vector& result) {
 	PhoneNumberManager::Instance().EnsureInitialized();
 
-	auto &numbers = args.data[0];
-	auto &regions = args.data[1];
+	auto& numbers = args.data[0];
+	auto& regions = args.data[1];
 
 	UnifiedVectorFormat number_data;
 	UnifiedVectorFormat region_data;
@@ -566,26 +750,21 @@ void PhoneIsPossibleFunction(DataChunk &args, ExpressionState &, Vector &result)
 			continue;
 		}
 
-		auto raw_number = reinterpret_cast<string_t *>(number_data.data)[nr_idx].GetString();
+		auto raw_number = reinterpret_cast<string_t*>(number_data.data)[nr_idx].GetString();
 		auto region_hint = region_data.validity.RowIsValid(reg_idx)
-		                     ? reinterpret_cast<string_t *>(region_data.data)[reg_idx].GetString()
+		                     ? reinterpret_cast<string_t*>(region_data.data)[reg_idx].GetString()
 		                     : std::string();
 
-		bool is_possible = PhoneNumberManager::Instance().IsPossible(raw_number, region_hint);
+		result_data[i] = PhoneNumberManager::Instance().IsPossible(raw_number, region_hint);
 		FlatVector::SetNull(result, i, false);
-		result_data[i] = is_possible;
-	}
-
-	if (args.AllConstant()) {
-		result.SetVectorType(VectorType::CONSTANT_VECTOR);
 	}
 }
 
-void PhoneIsValidForRegionFunction(DataChunk &args, ExpressionState &, Vector &result) {
+void PhoneIsValidForRegionFunction(DataChunk& args, ExpressionState&, Vector& result) {
 	PhoneNumberManager::Instance().EnsureInitialized();
 
-	auto &numbers = args.data[0];
-	auto &regions = args.data[1];
+	auto& numbers = args.data[0];
+	auto& regions = args.data[1];
 
 	UnifiedVectorFormat number_data;
 	UnifiedVectorFormat region_data;
@@ -599,32 +778,26 @@ void PhoneIsValidForRegionFunction(DataChunk &args, ExpressionState &, Vector &r
 		auto nr_idx = number_data.sel->get_index(i);
 		auto reg_idx = region_data.sel->get_index(i);
 
-		if (!number_data.validity.RowIsValid(nr_idx)) {
+		if (!number_data.validity.RowIsValid(nr_idx) ||
+		    !region_data.validity.RowIsValid(reg_idx)) {
 			FlatVector::SetNull(result, i, true);
 			continue;
 		}
 
-		auto raw_number = reinterpret_cast<string_t *>(number_data.data)[nr_idx].GetString();
-		auto region_hint = region_data.validity.RowIsValid(reg_idx)
-		                     ? reinterpret_cast<string_t *>(region_data.data)[reg_idx].GetString()
-		                     : std::string();
+		auto raw_number = reinterpret_cast<string_t*>(number_data.data)[nr_idx].GetString();
+		auto region_hint = reinterpret_cast<string_t*>(region_data.data)[reg_idx].GetString();
 
-		bool is_valid = PhoneNumberManager::Instance().IsValidForRegion(raw_number, region_hint);
+		result_data[i] = PhoneNumberManager::Instance().IsValidForRegion(raw_number, region_hint);
 		FlatVector::SetNull(result, i, false);
-		result_data[i] = is_valid;
-	}
-
-	if (args.AllConstant()) {
-		result.SetVectorType(VectorType::CONSTANT_VECTOR);
 	}
 }
 
-void PhoneMatchFunction(DataChunk &args, ExpressionState &, Vector &result) {
+void PhoneMatchFunction(DataChunk& args, ExpressionState&, Vector& result) {
 	PhoneNumberManager::Instance().EnsureInitialized();
 
-	auto &numbers1 = args.data[0];
-	auto &numbers2 = args.data[1];
-	auto &regions = args.data[2];
+	auto& numbers1 = args.data[0];
+	auto& numbers2 = args.data[1];
+	auto& regions = args.data[2];
 
 	UnifiedVectorFormat number1_data;
 	UnifiedVectorFormat number2_data;
@@ -641,31 +814,28 @@ void PhoneMatchFunction(DataChunk &args, ExpressionState &, Vector &result) {
 		auto nr2_idx = number2_data.sel->get_index(i);
 		auto reg_idx = region_data.sel->get_index(i);
 
-		if (!number1_data.validity.RowIsValid(nr1_idx) || !number2_data.validity.RowIsValid(nr2_idx)) {
+		if (!number1_data.validity.RowIsValid(nr1_idx) ||
+		    !number2_data.validity.RowIsValid(nr2_idx)) {
 			FlatVector::SetNull(result, i, true);
 			continue;
 		}
 
-		auto number1 = reinterpret_cast<string_t *>(number1_data.data)[nr1_idx].GetString();
-		auto number2 = reinterpret_cast<string_t *>(number2_data.data)[nr2_idx].GetString();
+		auto raw_number1 = reinterpret_cast<string_t*>(number1_data.data)[nr1_idx].GetString();
+		auto raw_number2 = reinterpret_cast<string_t*>(number2_data.data)[nr2_idx].GetString();
 		auto region_hint = region_data.validity.RowIsValid(reg_idx)
-		                     ? reinterpret_cast<string_t *>(region_data.data)[reg_idx].GetString()
+		                     ? reinterpret_cast<string_t*>(region_data.data)[reg_idx].GetString()
 		                     : std::string();
 
-		auto match_result = PhoneNumberManager::Instance().Match(number1, number2, region_hint);
-		FlatVector::SetNull(result, i, false);
+		auto match_result = PhoneNumberManager::Instance().Match(raw_number1, raw_number2, region_hint);
 		result_data[i] = StringVector::AddString(result, match_result);
-	}
-
-	if (args.AllConstant()) {
-		result.SetVectorType(VectorType::CONSTANT_VECTOR);
+		FlatVector::SetNull(result, i, false);
 	}
 }
 
-void PhoneExampleFunction(DataChunk &args, ExpressionState &, Vector &result) {
+void PhoneExampleFunction(DataChunk& args, ExpressionState&, Vector& result) {
 	PhoneNumberManager::Instance().EnsureInitialized();
 
-	auto &regions = args.data[0];
+	auto& regions = args.data[0];
 
 	UnifiedVectorFormat region_data;
 	regions.ToUnifiedFormat(args.size(), region_data);
@@ -681,19 +851,15 @@ void PhoneExampleFunction(DataChunk &args, ExpressionState &, Vector &result) {
 			continue;
 		}
 
-		auto region_hint = reinterpret_cast<string_t *>(region_data.data)[reg_idx].GetString();
+		auto region_hint = reinterpret_cast<string_t*>(region_data.data)[reg_idx].GetString();
 
 		auto example = PhoneNumberManager::Instance().GetExampleNumber(region_hint);
 		if (example.empty()) {
 			FlatVector::SetNull(result, i, true);
 		} else {
-			FlatVector::SetNull(result, i, false);
 			result_data[i] = StringVector::AddString(result, example);
+			FlatVector::SetNull(result, i, false);
 		}
-	}
-
-	if (args.AllConstant()) {
-		result.SetVectorType(VectorType::CONSTANT_VECTOR);
 	}
 }
 
@@ -701,12 +867,12 @@ struct PhoneStatusState : public GlobalTableFunctionState {
 	bool done = false;
 };
 
-unique_ptr<GlobalTableFunctionState> PhoneStatusInit(ClientContext &, TableFunctionInitInput &) {
+unique_ptr<GlobalTableFunctionState> PhoneStatusInit(ClientContext&, TableFunctionInitInput&) {
 	return make_uniq<PhoneStatusState>();
 }
 
-unique_ptr<FunctionData> PhoneStatusBind(ClientContext &, TableFunctionBindInput &, vector<LogicalType> &return_types,
-                                         vector<string> &names) {
+unique_ptr<FunctionData> PhoneStatusBind(ClientContext&, TableFunctionBindInput&, vector<LogicalType>& return_types,
+                                         vector<string>& names) {
 	names.emplace_back("initialized");
 	return_types.emplace_back(LogicalTypeId::BOOLEAN);
 	names.emplace_back("default_region");
@@ -714,8 +880,8 @@ unique_ptr<FunctionData> PhoneStatusBind(ClientContext &, TableFunctionBindInput
 	return nullptr;
 }
 
-void PhoneStatusFunction(ClientContext &, TableFunctionInput &input, DataChunk &output) {
-	auto &state = input.global_state->Cast<PhoneStatusState>();
+void PhoneStatusFunction(ClientContext&, TableFunctionInput& input, DataChunk& output) {
+	auto& state = input.global_state->Cast<PhoneStatusState>();
 	if (state.done) {
 		return;
 	}
@@ -727,7 +893,7 @@ void PhoneStatusFunction(ClientContext &, TableFunctionInput &input, DataChunk &
 	state.done = true;
 }
 
-ScalarFunction CreateParseScalar(const string &name) {
+ScalarFunction CreateParseScalar(const string& name) {
 	ScalarFunction function(name, {LogicalTypeId::VARCHAR, LogicalTypeId::VARCHAR},
 	                        LogicalType::STRUCT({{"valid", LogicalTypeId::BOOLEAN},
 	                                             {"country_code", LogicalTypeId::INTEGER},
@@ -740,7 +906,7 @@ ScalarFunction CreateParseScalar(const string &name) {
 	return function;
 }
 
-ScalarFunction CreateFormatScalar(const string &name) {
+ScalarFunction CreateFormatScalar(const string& name) {
 	ScalarFunction function(name, {LogicalTypeId::VARCHAR, LogicalTypeId::VARCHAR, LogicalTypeId::VARCHAR},
 	                        LogicalTypeId::VARCHAR, PhoneFormatFunction);
 	function.stability = FunctionStability::CONSISTENT;
@@ -748,7 +914,7 @@ ScalarFunction CreateFormatScalar(const string &name) {
 	return function;
 }
 
-ScalarFunction CreateRegionScalar(const string &name) {
+ScalarFunction CreateRegionScalar(const string& name) {
 	ScalarFunction function(name, {LogicalTypeId::VARCHAR, LogicalTypeId::VARCHAR}, LogicalTypeId::VARCHAR,
 	                        PhoneRegionFunction);
 	function.stability = FunctionStability::CONSISTENT;
@@ -756,7 +922,7 @@ ScalarFunction CreateRegionScalar(const string &name) {
 	return function;
 }
 
-ScalarFunction CreateIsValidScalar(const string &name) {
+ScalarFunction CreateIsValidScalar(const string& name) {
 	ScalarFunction function(name, {LogicalTypeId::VARCHAR, LogicalTypeId::VARCHAR}, LogicalTypeId::BOOLEAN,
 	                        PhoneIsValidFunction);
 	function.stability = FunctionStability::CONSISTENT;
@@ -764,7 +930,7 @@ ScalarFunction CreateIsValidScalar(const string &name) {
 	return function;
 }
 
-ScalarFunction CreateIsPossibleScalar(const string &name) {
+ScalarFunction CreateIsPossibleScalar(const string& name) {
 	ScalarFunction function(name, {LogicalTypeId::VARCHAR, LogicalTypeId::VARCHAR}, LogicalTypeId::BOOLEAN,
 	                        PhoneIsPossibleFunction);
 	function.stability = FunctionStability::CONSISTENT;
@@ -772,7 +938,7 @@ ScalarFunction CreateIsPossibleScalar(const string &name) {
 	return function;
 }
 
-ScalarFunction CreateIsValidForRegionScalar(const string &name) {
+ScalarFunction CreateIsValidForRegionScalar(const string& name) {
 	ScalarFunction function(name, {LogicalTypeId::VARCHAR, LogicalTypeId::VARCHAR}, LogicalTypeId::BOOLEAN,
 	                        PhoneIsValidForRegionFunction);
 	function.stability = FunctionStability::CONSISTENT;
@@ -780,7 +946,7 @@ ScalarFunction CreateIsValidForRegionScalar(const string &name) {
 	return function;
 }
 
-ScalarFunction CreateMatchScalar(const string &name) {
+ScalarFunction CreateMatchScalar(const string& name) {
 	ScalarFunction function(name, {LogicalTypeId::VARCHAR, LogicalTypeId::VARCHAR, LogicalTypeId::VARCHAR},
 	                        LogicalTypeId::VARCHAR, PhoneMatchFunction);
 	function.stability = FunctionStability::CONSISTENT;
@@ -788,28 +954,28 @@ ScalarFunction CreateMatchScalar(const string &name) {
 	return function;
 }
 
-ScalarFunction CreateExampleScalar(const string &name) {
+ScalarFunction CreateExampleScalar(const string& name) {
 	ScalarFunction function(name, {LogicalTypeId::VARCHAR}, LogicalTypeId::VARCHAR, PhoneExampleFunction);
 	function.stability = FunctionStability::CONSISTENT;
 	function.null_handling = FunctionNullHandling::SPECIAL_HANDLING;
 	return function;
 }
 
-TableFunction CreateStatusTable(const string &name) {
+TableFunction CreateStatusTable(const string& name) {
 	return TableFunction(name, {}, PhoneStatusFunction, PhoneStatusBind, PhoneStatusInit);
 }
 
 } // namespace
 
 
-void RegisterPhonenumberOptions(ExtensionLoader &loader) {
-	auto &config = DBConfig::GetConfig(loader.GetDatabaseInstance());
+void RegisterPhonenumberOptions(ExtensionLoader& loader) {
+	auto& config = DBConfig::GetConfig(loader.GetDatabaseInstance());
 	config.AddExtensionOption("anofox_phonenumber_default_region",
 	                          "Default region code used when the region hint is NULL",
 	                          LogicalTypeId::VARCHAR, Value("US"), SetPhonenumberDefaultRegionOption);
 }
 
-void RegisterPhonenumberFunctions(ExtensionLoader &loader) {
+void RegisterPhonenumberFunctions(ExtensionLoader& loader) {
 	RegisterPhonenumberOptions(loader);
 	loader.RegisterFunction(CreateParseScalar("anofox_phonenumber_parse"));
 	loader.RegisterFunction(CreateFormatScalar("anofox_phonenumber_format"));
@@ -820,7 +986,6 @@ void RegisterPhonenumberFunctions(ExtensionLoader &loader) {
 	loader.RegisterFunction(CreateMatchScalar("anofox_phonenumber_match"));
 	loader.RegisterFunction(CreateExampleScalar("anofox_phonenumber_example"));
 	loader.RegisterFunction(CreateStatusTable("anofox_phonenumber_status"));
-	// Variable-like setter handled elsewhere
 }
 
 } // namespace anofox

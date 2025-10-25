@@ -30,11 +30,10 @@ if command -v apk &> /dev/null; then
         apk update
     fi
 
-    # Install libphonenumber-dev and libpostal-dev
-    # NOTE: On Alpine/musl, we use system packages for both libraries because
-    # vcpkg has issues building ICU (a libphonenumber dependency) on musl
-    echo "Installing libphonenumber-dev and libpostal-dev..."
-    apk add --no-cache libphonenumber-dev libpostal-dev
+    # Install libpostal-dev
+    # NOTE: libphonenumber is now implemented internally (no external dependency)
+    echo "Installing libpostal-dev..."
+    apk add --no-cache libpostal-dev
 
 elif command -v apt-get &> /dev/null; then
     PKG_MANAGER="apt"
@@ -52,31 +51,10 @@ elif command -v apt-get &> /dev/null; then
     # Update package lists
     $APT_CMD update
 
-    # Install build dependencies for libphonenumber and libpostal
+    # Install build dependencies for libpostal
+    # NOTE: libphonenumber is now implemented internally (no external dependency)
     echo "Installing build dependencies..."
-    $APT_CMD install -y curl autoconf automake libtool pkg-config git cmake libicu-dev libprotobuf-dev protobuf-compiler
-
-    # Build and install libphonenumber from source
-    echo "Building libphonenumber from source..."
-    LIBPHONENUMBER_DIR="/tmp/libphonenumber-build"
-    rm -rf "$LIBPHONENUMBER_DIR"
-    git clone --depth 1 --branch v9.0.2 https://github.com/google/libphonenumber "$LIBPHONENUMBER_DIR"
-    cd "$LIBPHONENUMBER_DIR/cpp"
-
-    mkdir build
-    cd build
-    cmake .. -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr/local
-    make -j$(nproc)
-    $SUDO_CMD make install
-
-    # Update library cache
-    $SUDO_CMD ldconfig
-
-    # Clean up
-    cd /
-    rm -rf "$LIBPHONENUMBER_DIR"
-
-    echo "libphonenumber built and installed successfully"
+    $APT_CMD install -y curl autoconf automake libtool pkg-config git
 
     # Build and install libpostal from source
     echo "Building libpostal from source..."
@@ -113,7 +91,8 @@ elif command -v yum &> /dev/null; then
         SUDO_CMD=""
     fi
 
-    # Install build dependencies for libpostal (libphonenumber comes from vcpkg)
+    # Install build dependencies for libpostal
+    # NOTE: libphonenumber is now implemented internally (no external dependency)
     echo "Installing build dependencies for libpostal..."
     $YUM_CMD install -y curl autoconf automake libtool pkgconfig git
 
@@ -148,12 +127,8 @@ fi
 echo ""
 echo "=== Verifying installation ==="
 
-if pkg-config --exists libphonenumber 2>/dev/null; then
-    echo "✓ libphonenumber found via pkg-config"
-    pkg-config --modversion libphonenumber
-else
-    echo "⚠ libphonenumber not found via pkg-config, but may be installed"
-fi
+# Note: libphonenumber is now implemented internally
+echo "ℹ libphonenumber: Using internal implementation (no external dependency)"
 
 if pkg-config --exists libpostal 2>/dev/null; then
     echo "✓ libpostal found via pkg-config"
@@ -165,7 +140,7 @@ fi
 # Check if library files exist
 echo ""
 echo "=== Checking for library files ==="
-for lib in /usr/lib/libpostal.* /usr/lib/libphonenumber.* /usr/local/lib/libpostal.* /usr/local/lib/libphonenumber.*; do
+for lib in /usr/lib/libpostal.* /usr/local/lib/libpostal.*; do
     if [ -e "$lib" ]; then
         echo "Found: $lib"
     fi
@@ -178,24 +153,15 @@ if [ -d "/usr/include/libpostal" ]; then
     echo "Found: /usr/include/libpostal"
     ls -la /usr/include/libpostal/ | head -5
 fi
-if [ -d "/usr/include/phonenumbers" ]; then
-    echo "Found: /usr/include/phonenumbers"
-    ls -la /usr/include/phonenumbers/ | head -5
-fi
 
 # Check for pkg-config files
 echo ""
 echo "=== Checking for .pc files ==="
-for pcfile in /usr/lib/pkgconfig/libpostal.pc /usr/lib/pkgconfig/libphonenumber.pc /usr/local/lib/pkgconfig/libpostal.pc /usr/local/lib/pkgconfig/libphonenumber.pc; do
+for pcfile in /usr/lib/pkgconfig/libpostal.pc /usr/local/lib/pkgconfig/libpostal.pc; do
     if [ -e "$pcfile" ]; then
         echo "Found: $pcfile"
     fi
 done
-
-# List all .pc files that might be related
-echo ""
-echo "=== All pkgconfig files containing 'postal' or 'phone' ==="
-find /usr -name "*.pc" 2>/dev/null | grep -E "(postal|phone)" || echo "None found"
 
 echo ""
 echo "=== Setup Complete ==="
