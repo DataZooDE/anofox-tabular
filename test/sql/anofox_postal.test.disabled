@@ -1,0 +1,31 @@
+require anofox_tabular
+
+statement ok
+LOAD anofox_tabular;
+
+statement ok
+SELECT initialized, data_present FROM anofox_postal_status();
+
+statement ok
+SET anofox_postal_data_path='duckdb_unittest_tempdir/libpostal';
+
+statement ok
+SELECT initialized, data_present FROM anofox_postal_status();
+
+query TTTTTT
+SELECT (parsed).house_number, (parsed).road, (parsed).city, (parsed).state IS NULL AS state_null,
+       (parsed).postcode IS NULL AS postcode_null, (parsed).country IS NULL AS country_null
+FROM (SELECT anofox_postal_parse_address('221B Baker Street, London') AS parsed);
+----
+221b	baker street	london	true	true	true
+
+query T
+SELECT array_length(anofox_postal_expand_address('221B Baker Street, London')) >= 1;
+----
+true
+
+query T
+SELECT data_dir LIKE '%duckdb_unittest_tempdir/libpostal'
+FROM anofox_postal_status();
+----
+true

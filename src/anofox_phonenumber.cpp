@@ -664,7 +664,9 @@ void PhoneFormatFunction(DataChunk& args, ExpressionState&, Vector& result) {
 			result_data[i] = StringVector::AddString(result, formatted);
 			FlatVector::SetNull(result, i, false);
 		} catch (const std::exception& e) {
-			FlatVector::SetNull(result, i, true);
+			// On formatting failure, return the original input
+			result_data[i] = StringVector::AddString(result, raw_number);
+			FlatVector::SetNull(result, i, false);
 		}
 	}
 }
