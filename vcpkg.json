@@ -4,12 +4,6 @@
                 "c-ares",
                 "spdlog"
         ],
-        "comments": [
-                "libphonenumber and libpostal are NOT managed by vcpkg.",
-                "Alpine/musl: Install via apk (libphonenumber-dev, libpostal-dev)",
-                "Ubuntu/glibc: Build libphonenumber from source, libpostal from source",
-                "See scripts/install-deps-ci.sh and CMakeLists.txt for details"
-        ],
         "vcpkg-configuration": {
                 "overlay-ports": [
                         "./extension-ci-tools/vcpkg_ports"
