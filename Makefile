@@ -14,21 +14,10 @@ EXT_CONFIG=${PROJ_DIR}extension_config.cmake
 # Include the Makefile from extension-ci-tools
 include extension-ci-tools/makefiles/duckdb_extension.Makefile
 
-# Override configure_ci to build libpostal from source
-# Install to local prefix so it's accessible during build without requiring root
+# Override configure_ci to run dependency installation script
+# The script will install/build libpostal based on the environment
 configure_ci:
-	@echo "=== Building libpostal from source ==="
-	@if [ ! -d "libpostal-src" ]; then \
-		echo "Cloning libpostal..."; \
-		git clone --depth 1 https://github.com/openvenues/libpostal libpostal-src; \
-	fi
-	mkdir -p $(PROJ_DIR)/libpostal-install
-	cd libpostal-src && \
-	./bootstrap.sh && \
-	./configure --prefix=$(PROJ_DIR)/libpostal-install --datadir=$(PROJ_DIR)/libpostal-install/share/libpostal --disable-sse2 && \
-	make -j$$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 2) && \
-	make install
-	@echo "=== libpostal installation complete ==="
+	bash $(PROJ_DIR)/scripts/install-deps-ci.sh
 
 # Debug target to output vcpkg build logs on failure
 .PHONY: debug_vcpkg_logs
