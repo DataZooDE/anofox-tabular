@@ -83,13 +83,37 @@ elif command -v yum &> /dev/null; then
     # Use sudo if not root
     if [ "$EUID" -ne 0 ]; then
         YUM_CMD="sudo yum"
+        SUDO_CMD="sudo"
     else
         YUM_CMD="yum"
+        SUDO_CMD=""
     fi
 
-    # Install libpostal development package (libphonenumber comes from vcpkg)
-    echo "Installing libpostal-devel..."
-    $YUM_CMD install -y libpostal-devel
+    # Install build dependencies for libpostal (libphonenumber comes from vcpkg)
+    echo "Installing build dependencies for libpostal..."
+    $YUM_CMD install -y curl autoconf automake libtool pkgconfig git
+
+    # Build and install libpostal from source
+    echo "Building libpostal from source..."
+    LIBPOSTAL_DIR="/tmp/libpostal-build"
+    rm -rf "$LIBPOSTAL_DIR"
+    git clone https://github.com/openvenues/libpostal "$LIBPOSTAL_DIR"
+    cd "$LIBPOSTAL_DIR"
+
+    ./bootstrap.sh
+    # Install to /usr/local with data in /usr/local/share/libpostal
+    ./configure --datadir=/usr/local/share/libpostal
+    make -j$(nproc)
+    $SUDO_CMD make install
+
+    # Update library cache
+    $SUDO_CMD ldconfig
+
+    # Clean up
+    cd /
+    rm -rf "$LIBPOSTAL_DIR"
+
+    echo "libpostal built and installed successfully"
 
 else
     echo "ERROR: No supported package manager found (apk, apt-get, or yum)"
