@@ -6,14 +6,11 @@ set -e
 
 echo "=== Installing CI dependencies for anofox_tabular ==="
 
-# For musl builds: skip if running outside Docker (packages will be installed inside)
-if [ "$LINUX_CI_IN_DOCKER" = "0" ] && [ "$DUCKDB_PLATFORM" = "linux_amd64_musl" ]; then
-    echo "Skipping package installation on host for musl build (will install inside Docker)"
-    exit 0
-fi
-
-if [ "$LINUX_CI_IN_DOCKER" = "0" ] && [ "$DUCKDB_PLATFORM" = "linux_arm64_musl" ]; then
-    echo "Skipping package installation on host for musl build (will install inside Docker)"
+# Skip if running outside Docker - dependencies will be installed inside Docker container
+# This applies to all Linux builds (both glibc and musl)
+if [ "$LINUX_CI_IN_DOCKER" = "0" ]; then
+    echo "Skipping package installation on host (LINUX_CI_IN_DOCKER=0)"
+    echo "Dependencies will be installed inside Docker container"
     exit 0
 fi
 
