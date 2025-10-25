@@ -26,40 +26,63 @@ find_package(c-ares CONFIG REQUIRED)
 # Libpostal via pkg-config (system-installed, CI preferred)
 find_package(PkgConfig REQUIRED)
 
-# First, check for local build (from configure_ci)
-set(LOCAL_LIBPOSTAL_DIR "${CMAKE_CURRENT_SOURCE_DIR}/libpostal-install")
-if(EXISTS "${LOCAL_LIBPOSTAL_DIR}/lib/libpostal.so" AND EXISTS "${LOCAL_LIBPOSTAL_DIR}/include/libpostal/libpostal.h")
-    message(STATUS "Found libpostal in local install (${LOCAL_LIBPOSTAL_DIR})")
-    set(LIBPOSTAL_LDFLAGS "${LOCAL_LIBPOSTAL_DIR}/lib/libpostal.so")
-    set(LIBPOSTAL_INCLUDE_DIRS "${LOCAL_LIBPOSTAL_DIR}/include")
+# First, check for Alpine/system package installation (most common in CI)
+# Alpine libpostal-dev package contents:
+#   /usr/include/libpostal/libpostal.h
+#   /usr/lib/libpostal.a
+#   /usr/lib/libpostal.so -> libpostal.so.1
+#   /usr/lib/pkgconfig/libpostal.pc
+if(EXISTS "/usr/lib/libpostal.so" AND EXISTS "/usr/include/libpostal/libpostal.h")
+    message(STATUS "Found libpostal via Alpine/system package (manual detection)")
+    set(LIBPOSTAL_LDFLAGS "/usr/lib/libpostal.so")
+    set(LIBPOSTAL_INCLUDE_DIRS "/usr/include")
+    set(LIBPOSTAL_FOUND TRUE)
+# Check for source build in /usr/local (Ubuntu CI builds from source)
+elseif(EXISTS "/usr/local/lib/libpostal.so" AND EXISTS "/usr/local/include/libpostal/libpostal.h")
+    message(STATUS "Found libpostal in /usr/local (built from source)")
+    set(LIBPOSTAL_LDFLAGS "/usr/local/lib/libpostal.so")
+    set(LIBPOSTAL_INCLUDE_DIRS "/usr/local/include")
+    set(LIBPOSTAL_FOUND TRUE)
+# Check for local build (from configure_ci)
+elseif(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/libpostal-install/lib/libpostal.so")
+    message(STATUS "Found libpostal in local install")
+    set(LIBPOSTAL_LDFLAGS "${CMAKE_CURRENT_SOURCE_DIR}/libpostal-install/lib/libpostal.so")
+    set(LIBPOSTAL_INCLUDE_DIRS "${CMAKE_CURRENT_SOURCE_DIR}/libpostal-install/include")
     set(LIBPOSTAL_FOUND TRUE)
 else()
-    # Try pkg-config for libpostal (Alpine has .pc file at /usr/lib/pkgconfig/libpostal.pc)
+    # Try pkg-config as last resort
     pkg_check_modules(LIBPOSTAL libpostal)
 
-    # If pkg-config found it, we're done
     if(LIBPOSTAL_FOUND)
         message(STATUS "Found libpostal via pkg-config")
     else()
-        # Fallback: Check for Alpine package installation
-        # Alpine libpostal-dev package contents:
-        #   /usr/include/libpostal/libpostal.h
-        #   /usr/lib/libpostal.a
-        #   /usr/lib/libpostal.so -> libpostal.so.1
-        #   /usr/lib/pkgconfig/libpostal.pc
-        if(EXISTS "/usr/lib/libpostal.so" AND EXISTS "/usr/include/libpostal/libpostal.h")
-            message(STATUS "Found libpostal via Alpine package (manual detection)")
-            set(LIBPOSTAL_LDFLAGS "/usr/lib/libpostal.so")
-            set(LIBPOSTAL_INCLUDE_DIRS "/usr/include")
-            set(LIBPOSTAL_FOUND TRUE)
-        # Fallback: Check for source build in /usr/local (Ubuntu CI builds from source)
-        elseif(EXISTS "/usr/local/lib/libpostal.so" AND EXISTS "/usr/local/include/libpostal/libpostal.h")
-            message(STATUS "Found libpostal in /usr/local (built from source)")
-            set(LIBPOSTAL_LDFLAGS "/usr/local/lib/libpostal.so")
-            set(LIBPOSTAL_INCLUDE_DIRS "/usr/local/include")
-            set(LIBPOSTAL_FOUND TRUE)
+        # Last resort: try to install libpostal using the install script
+        message(STATUS "libpostal not found, attempting to install via script...")
+        execute_process(
+            COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/scripts/install-deps-ci.sh
+            RESULT_VARIABLE INSTALL_RESULT
+            OUTPUT_VARIABLE INSTALL_OUTPUT
+            ERROR_VARIABLE INSTALL_ERROR
+        )
+
+        if(INSTALL_RESULT EQUAL 0)
+            message(STATUS "Installation script completed, rechecking for libpostal...")
+            # Check again after installation
+            if(EXISTS "/usr/lib/libpostal.so" AND EXISTS "/usr/include/libpostal/libpostal.h")
+                message(STATUS "Found libpostal after installation (Alpine)")
+                set(LIBPOSTAL_LDFLAGS "/usr/lib/libpostal.so")
+                set(LIBPOSTAL_INCLUDE_DIRS "/usr/include")
+                set(LIBPOSTAL_FOUND TRUE)
+            elseif(EXISTS "/usr/local/lib/libpostal.so" AND EXISTS "/usr/local/include/libpostal/libpostal.h")
+                message(STATUS "Found libpostal after installation (/usr/local)")
+                set(LIBPOSTAL_LDFLAGS "/usr/local/lib/libpostal.so")
+                set(LIBPOSTAL_INCLUDE_DIRS "/usr/local/include")
+                set(LIBPOSTAL_FOUND TRUE)
+            else()
+                message(FATAL_ERROR "libpostal installation script succeeded but library still not found")
+            endif()
         else()
-            message(FATAL_ERROR "libpostal not found. Install libpostal-dev (Alpine) or run scripts/install-deps-ci.sh to build from source")
+            message(FATAL_ERROR "libpostal not found and installation script failed: ${INSTALL_ERROR}")
         endif()
     endif()
 endif()
