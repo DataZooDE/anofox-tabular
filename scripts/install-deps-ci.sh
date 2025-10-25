@@ -87,11 +87,9 @@ elif command -v yum &> /dev/null; then
         YUM_CMD="yum"
     fi
 
-    # Install libphonenumber and libpostal development packages
-    echo "Installing libphonenumber-devel and libpostal-devel..."
-    $YUM_CMD install -y \
-        libphonenumber-devel \
-        libpostal-devel
+    # Install libpostal development package (libphonenumber comes from vcpkg)
+    echo "Installing libpostal-devel..."
+    $YUM_CMD install -y libpostal-devel
 
 else
     echo "ERROR: No supported package manager found (apk, apt-get, or yum)"
