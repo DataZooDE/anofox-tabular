@@ -30,9 +30,11 @@ if command -v apk &> /dev/null; then
         apk update
     fi
 
-    # Install libpostal-dev (libphonenumber comes from vcpkg)
-    echo "Installing libpostal-dev..."
-    apk add --no-cache libpostal-dev
+    # Install libphonenumber-dev and libpostal-dev
+    # NOTE: On Alpine/musl, we use system packages for both libraries because
+    # vcpkg has issues building ICU (a libphonenumber dependency) on musl
+    echo "Installing libphonenumber-dev and libpostal-dev..."
+    apk add --no-cache libphonenumber-dev libpostal-dev
 
 elif command -v apt-get &> /dev/null; then
     PKG_MANAGER="apt"

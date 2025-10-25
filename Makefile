@@ -19,3 +19,16 @@ include extension-ci-tools/makefiles/duckdb_extension.Makefile
 # For glibc: installs on Ubuntu/Debian host via apt
 configure_ci:
 	bash $(PROJ_DIR)/scripts/install-deps-ci.sh
+
+# Debug target to output vcpkg build logs on failure
+.PHONY: debug_vcpkg_logs
+debug_vcpkg_logs:
+	@echo "=== Checking for vcpkg build error logs ==="
+	@if [ -f "build/release/vcpkg_installed/vcpkg/buildtrees/icu/autoconf-x64-linux-err.log" ]; then \
+		echo "=== ICU autoconf error log ==="; \
+		cat build/release/vcpkg_installed/vcpkg/buildtrees/icu/autoconf-x64-linux-err.log; \
+	fi
+	@if [ -f "build/release/vcpkg-manifest-install.log" ]; then \
+		echo "=== vcpkg manifest install log ==="; \
+		tail -100 build/release/vcpkg-manifest-install.log; \
+	fi
