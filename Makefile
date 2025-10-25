@@ -15,16 +15,17 @@ EXT_CONFIG=${PROJ_DIR}extension_config.cmake
 include extension-ci-tools/makefiles/duckdb_extension.Makefile
 
 # Override configure_ci to build libpostal from source
-# This ensures libpostal is built in the same Docker container that will run the build
+# Install to local prefix so it's accessible during build without requiring root
 configure_ci:
 	@echo "=== Building libpostal from source ==="
 	@if [ ! -d "libpostal-src" ]; then \
 		echo "Cloning libpostal..."; \
 		git clone --depth 1 https://github.com/openvenues/libpostal libpostal-src; \
 	fi
+	mkdir -p $(PROJ_DIR)/libpostal-install
 	cd libpostal-src && \
 	./bootstrap.sh && \
-	./configure --datadir=/usr/share/libpostal --disable-sse2 && \
+	./configure --prefix=$(PROJ_DIR)/libpostal-install --datadir=$(PROJ_DIR)/libpostal-install/share/libpostal --disable-sse2 && \
 	make -j$$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 2) && \
 	make install
 	@echo "=== libpostal installation complete ==="
