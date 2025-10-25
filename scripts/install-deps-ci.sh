@@ -45,8 +45,9 @@ if command -v apk &> /dev/null; then
     make install
 
     # Update library cache (if ldconfig is available)
+    # In Alpine/musl, ldconfig is a no-op that may return non-zero, so ignore errors
     if command -v ldconfig &> /dev/null; then
-        ldconfig
+        ldconfig || true
     fi
 
     # Clean up
