@@ -53,11 +53,7 @@ elif command -v apt-get &> /dev/null; then
     # Update package lists
     $APT_CMD update
 
-    # Install libphonenumber-dev from repositories
-    echo "Installing libphonenumber-dev..."
-    $APT_CMD install -y libphonenumber-dev
-
-    # Install build dependencies for libpostal
+    # Install build dependencies for libpostal (libphonenumber comes from vcpkg)
     echo "Installing build dependencies for libpostal..."
     $APT_CMD install -y curl autoconf automake libtool pkg-config git
 
