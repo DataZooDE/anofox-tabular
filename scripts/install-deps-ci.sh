@@ -52,9 +52,31 @@ elif command -v apt-get &> /dev/null; then
     # Update package lists
     $APT_CMD update
 
-    # Install build dependencies for libpostal (libphonenumber comes from vcpkg)
-    echo "Installing build dependencies for libpostal..."
-    $APT_CMD install -y curl autoconf automake libtool pkg-config git
+    # Install build dependencies for libphonenumber and libpostal
+    echo "Installing build dependencies..."
+    $APT_CMD install -y curl autoconf automake libtool pkg-config git cmake libicu-dev libprotobuf-dev protobuf-compiler
+
+    # Build and install libphonenumber from source
+    echo "Building libphonenumber from source..."
+    LIBPHONENUMBER_DIR="/tmp/libphonenumber-build"
+    rm -rf "$LIBPHONENUMBER_DIR"
+    git clone --depth 1 --branch v9.0.2 https://github.com/google/libphonenumber "$LIBPHONENUMBER_DIR"
+    cd "$LIBPHONENUMBER_DIR/cpp"
+
+    mkdir build
+    cd build
+    cmake .. -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr/local
+    make -j$(nproc)
+    $SUDO_CMD make install
+
+    # Update library cache
+    $SUDO_CMD ldconfig
+
+    # Clean up
+    cd /
+    rm -rf "$LIBPHONENUMBER_DIR"
+
+    echo "libphonenumber built and installed successfully"
 
     # Build and install libpostal from source
     echo "Building libpostal from source..."
