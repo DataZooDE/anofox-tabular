@@ -9,10 +9,7 @@ namespace anofox {
 // Helper Functions
 // ============================================================================
 
-double DBSCAN::ComputeDistance(
-	const std::vector<double>& p1,
-	const std::vector<double>& p2
-) const {
+double DBSCAN::ComputeDistance(const std::vector<double> &p1, const std::vector<double> &p2) const {
 	if (p1.size() != p2.size()) {
 		return std::numeric_limits<double>::max();
 	}
