@@ -14,11 +14,20 @@ EXT_CONFIG=${PROJ_DIR}extension_config.cmake
 # Include the Makefile from extension-ci-tools
 include extension-ci-tools/makefiles/duckdb_extension.Makefile
 
-# Override configure_ci to install system packages for libphonenumber and libpostal
-# For musl: installs in Alpine Docker container via apk
-# For glibc: installs on Ubuntu/Debian host via apt
+# Override configure_ci to build libpostal from source
+# This ensures libpostal is built in the same Docker container that will run the build
 configure_ci:
-	bash $(PROJ_DIR)/scripts/install-deps-ci.sh
+	@echo "=== Building libpostal from source ==="
+	@if [ ! -d "libpostal-src" ]; then \
+		echo "Cloning libpostal..."; \
+		git clone --depth 1 https://github.com/openvenues/libpostal libpostal-src; \
+	fi
+	cd libpostal-src && \
+	./bootstrap.sh && \
+	./configure --datadir=/usr/share/libpostal --disable-sse2 && \
+	make -j$$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 2) && \
+	make install
+	@echo "=== libpostal installation complete ==="
 
 # Debug target to output vcpkg build logs on failure
 .PHONY: debug_vcpkg_logs
