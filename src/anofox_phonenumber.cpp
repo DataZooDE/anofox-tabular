@@ -98,20 +98,33 @@ std::string DeterminePhoneNumberType(const std::string& national_number, const C
 			}
 		}
 
-		// Try mobile pattern
+		// Check if the number matches both mobile and fixed_line patterns
+		// This is common in NANPA countries (US, CA) where the patterns are identical
+		bool matches_mobile = false;
+		bool matches_fixed_line = false;
+
 		if (!metadata->mobile_pattern.empty()) {
 			std::regex mobile_regex(metadata->mobile_pattern);
-			if (std::regex_match(national_number, mobile_regex)) {
-				return PhoneNumberType::MOBILE;
-			}
+			matches_mobile = std::regex_match(national_number, mobile_regex);
 		}
 
-		// Try fixed_line pattern
 		if (!metadata->fixed_line_pattern.empty()) {
 			std::regex fixed_line_regex(metadata->fixed_line_pattern);
-			if (std::regex_match(national_number, fixed_line_regex)) {
-				return PhoneNumberType::FIXED_LINE;
-			}
+			matches_fixed_line = std::regex_match(national_number, fixed_line_regex);
+		}
+
+		// If matches both, return FIXED_LINE_OR_MOBILE (e.g., US/NANPA numbers)
+		if (matches_mobile && matches_fixed_line) {
+			return PhoneNumberType::FIXED_LINE_OR_MOBILE;
+		}
+
+		// Otherwise return the specific type
+		if (matches_mobile) {
+			return PhoneNumberType::MOBILE;
+		}
+
+		if (matches_fixed_line) {
+			return PhoneNumberType::FIXED_LINE;
 		}
 	} catch (const std::regex_error& e) {
 		AnofoxTrace(AnofoxLogLevel::Warn, "Regex error in DeterminePhoneNumberType: " + std::string(e.what()));
