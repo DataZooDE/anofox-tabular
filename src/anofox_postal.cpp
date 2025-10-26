@@ -169,8 +169,14 @@ PostalStatus PostalManager::GetStatus(ClientContext &context) {
 void PostalManager::Initialize(ClientContext &context) {
 	auto status = GetStatus(context);
 	if (!status.data_present) {
-		throw IOException("Libpostal data not found in '" + status.data_dir +
-		                  "'. Run anofox_postal_load_data() before using postal functions.");
+		AnofoxTrace(AnofoxLogLevel::Info,
+		           "Libpostal data not found in '" + status.data_dir + "', downloading automatically...");
+		LoadData(context);
+		status = GetStatus(context);  // Refresh status after download
+		if (!status.data_present) {
+			AnofoxTrace(AnofoxLogLevel::Error, "Postal data download failed");
+			throw IOException("Failed to download libpostal data to '" + status.data_dir + "'");
+		}
 	}
 
 	auto data_dir = status.data_dir;
