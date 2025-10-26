@@ -19,6 +19,9 @@ jobs:
       duckdb_version: v1.4.1
       ci_tools_version: v1.4.1
       extension_name: anofox_tabular
+      # Exclude WASM builds - extension uses features not compatible with WASM
+      # (libpostal, libphonenumber, DNS/SMTP network operations)
+      exclude_archs: wasm_mvp;wasm_eh;wasm_threads
 
   # Disabled format and tidy checks - local development environment doesn't match CI formatter versions
   # code-quality-check:
