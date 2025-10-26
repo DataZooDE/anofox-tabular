@@ -26,7 +26,8 @@ find_package(CURL CONFIG REQUIRED)
 
 # Libpostal via pkg-config (system-installed, CI preferred)
 # Note: libpostal is NOT supported on Windows - postal module will be disabled
-find_package(PkgConfig REQUIRED)
+# pkg-config is optional - only needed for libpostal detection on Linux/macOS
+find_package(PkgConfig)
 
 # Libpostal is installed by configure_ci (Makefile) before CMake runs.
 # The install script (scripts/install-deps-ci.sh) builds from source with -fPIC
@@ -48,11 +49,15 @@ elseif(EXISTS "/usr/lib/libpostal.a" AND EXISTS "/usr/include/libpostal/libposta
     set(LIBPOSTAL_INCLUDE_DIRS "/usr/include")
     set(LIBPOSTAL_FOUND TRUE)
 else()
-    # Try pkg-config
-    pkg_check_modules(LIBPOSTAL libpostal)
-    if(LIBPOSTAL_FOUND)
-        message(STATUS "Found libpostal via pkg-config")
-    else()
+    # Try pkg-config (if available)
+    if(PkgConfig_FOUND)
+        pkg_check_modules(LIBPOSTAL libpostal)
+        if(LIBPOSTAL_FOUND)
+            message(STATUS "Found libpostal via pkg-config")
+        endif()
+    endif()
+
+    if(NOT LIBPOSTAL_FOUND)
         # Last resort: run the install script from CMake
         # This handles multi-container CI where configure_ci runs in different container
         message(STATUS "libpostal not found, running install script from CMake...")

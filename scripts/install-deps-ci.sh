@@ -163,6 +163,19 @@ elif command -v yum &> /dev/null; then
     echo "libpostal built and installed successfully"
 
 elif [ "$OS" = "Darwin" ]; then
+    echo "macOS detected"
+
+    # Skip libpostal installation in CI - building from source is too slow
+    # Users can install libpostal manually with: brew install libpostal
+    # Or build from source: https://github.com/openvenues/libpostal
+    if [ "$CI" = "true" ] || [ "$GITHUB_ACTIONS" = "true" ]; then
+        echo "CI environment detected - skipping libpostal installation"
+        echo "libpostal will be disabled via conditional compilation"
+        echo "Users can install libpostal manually after downloading the extension"
+        exit 0
+    fi
+
+    # Non-CI build: attempt to build libpostal from source
     echo "macOS detected - building libpostal from source"
 
     # Check for Homebrew and install build dependencies
