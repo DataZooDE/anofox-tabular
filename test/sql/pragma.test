@@ -3,16 +3,11 @@ require anofox_tabular
 statement ok
 LOAD anofox_tabular;
 
-statement ok
-SELECT initialized, data_present FROM anofox_postal_status();
+# Note: Postal tests are in anofox_postal.test
+# anofox_postal_status() is only available when HAVE_LIBPOSTAL=1 (Linux builds)
+# macOS CI builds skip libpostal due to long build times
 
 query T
 SELECT anofox_email_is_valid('user@example.com');
 ----
 true
-
-statement ok
-SET anofox_postal_data_path='duckdb_unittest_tempdir/libpostal';
-
-statement ok
-SELECT initialized, data_present FROM anofox_postal_status();

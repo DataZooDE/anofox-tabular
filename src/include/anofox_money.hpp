@@ -26,8 +26,8 @@ inline MoneyStructData ExtractMoneyStruct(Vector& money_vec, idx_t count) {
   }
 
   MoneyStructData data{
-    .amount_vec = *children[0],
-    .currency_vec = *children[1],
+    *children[0],
+    *children[1],
   };
 
   data.amount_vec.ToUnifiedFormat(count, data.amount_data);
@@ -61,10 +61,10 @@ inline MoneyResultBuilder PrepareMoneyResult(Vector& result) {
   currency_vec.SetVectorType(VectorType::FLAT_VECTOR);
 
   return MoneyResultBuilder{
-    .amount_ptr = FlatVector::GetData<double>(amount_vec),
-    .currency_ptr = FlatVector::GetData<string_t>(currency_vec),
-    .amount_validity = FlatVector::Validity(amount_vec),
-    .currency_validity = FlatVector::Validity(currency_vec),
+    FlatVector::GetData<double>(amount_vec),
+    FlatVector::GetData<string_t>(currency_vec),
+    FlatVector::Validity(amount_vec),
+    FlatVector::Validity(currency_vec),
   };
 }
 
