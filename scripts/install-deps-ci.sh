@@ -2,6 +2,11 @@
 # Install libpostal from source for anofox_tabular extension
 # This script is used in CI environments via the configure_ci Makefile target
 #
+# Platform support:
+# - Linux (glibc/musl): Build from source with CFLAGS=-fPIC
+# - macOS: Build from source with CFLAGS=-fPIC
+# - Windows: NOT SUPPORTED (postal module disabled via conditional compilation)
+#
 # Dependencies:
 # - libphonenumber: Internal implementation (no external dependency required)
 # - libpostal: Built from source with CFLAGS=-fPIC for shared library linking
@@ -10,13 +15,31 @@ set -e
 
 echo "=== Installing CI dependencies for anofox_tabular ==="
 
-# Skip if running outside Docker - dependencies will be installed inside Docker container
-# This applies to all Linux builds (both glibc and musl)
-if [ "$LINUX_CI_IN_DOCKER" = "0" ]; then
-    echo "Skipping package installation on host (LINUX_CI_IN_DOCKER=0)"
-    echo "Dependencies will be installed inside Docker container"
-    exit 0
-fi
+# Detect operating system
+OS="$(uname -s)"
+case "$OS" in
+    Linux*)
+        echo "Detected Linux"
+        # Skip if running outside Docker - dependencies will be installed inside Docker container
+        if [ "$LINUX_CI_IN_DOCKER" = "0" ]; then
+            echo "Skipping package installation on host (LINUX_CI_IN_DOCKER=0)"
+            echo "Dependencies will be installed inside Docker container"
+            exit 0
+        fi
+        ;;
+    Darwin*)
+        echo "Detected macOS"
+        ;;
+    MINGW*|MSYS*|CYGWIN*)
+        echo "Windows detected - libpostal not supported, skipping installation"
+        echo "Postal module will be disabled via conditional compilation"
+        exit 0
+        ;;
+    *)
+        echo "ERROR: Unsupported operating system: $OS"
+        exit 1
+        ;;
+esac
 
 # Detect package manager
 if command -v apk &> /dev/null; then
@@ -139,8 +162,49 @@ elif command -v yum &> /dev/null; then
 
     echo "libpostal built and installed successfully"
 
+elif [ "$OS" = "Darwin" ]; then
+    echo "macOS detected - building libpostal from source"
+
+    # Check for Homebrew and install build dependencies
+    if command -v brew &> /dev/null; then
+        echo "Homebrew detected, installing build dependencies..."
+        brew install autoconf automake libtool pkg-config git || true
+    else
+        echo "Warning: Homebrew not found. Assuming build tools are already installed."
+    fi
+
+    # Build and install libpostal from source
+    echo "Building libpostal from source for macOS..."
+    LIBPOSTAL_DIR="/tmp/libpostal-build"
+    rm -rf "$LIBPOSTAL_DIR"
+    git clone https://github.com/openvenues/libpostal "$LIBPOSTAL_DIR"
+    cd "$LIBPOSTAL_DIR"
+
+    ./bootstrap.sh
+    # Install to /usr/local with data in /usr/local/share/libpostal
+    # CRITICAL: Use CFLAGS=-fPIC to enable linking into shared libraries
+    CFLAGS="-fPIC" ./configure --datadir=/usr/local/share/libpostal
+
+    # Use sysctl to get CPU count on macOS
+    NPROC=$(sysctl -n hw.ncpu 2>/dev/null || echo "4")
+    make -j"$NPROC"
+
+    # Install (may require sudo on macOS)
+    if [ -w /usr/local ]; then
+        make install
+    else
+        echo "Installing libpostal (may require sudo password)..."
+        sudo make install
+    fi
+
+    # Clean up
+    cd /
+    rm -rf "$LIBPOSTAL_DIR"
+
+    echo "libpostal built and installed successfully for macOS"
+
 else
-    echo "ERROR: No supported package manager found (apk, apt-get, or yum)"
+    echo "ERROR: No supported package manager found (apk, apt-get, yum) and not macOS"
     exit 1
 fi
 

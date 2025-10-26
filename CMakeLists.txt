@@ -25,6 +25,7 @@ find_package(CURL CONFIG REQUIRED)
 # Libphonenumber: Custom implementation (no external dependency)
 
 # Libpostal via pkg-config (system-installed, CI preferred)
+# Note: libpostal is NOT supported on Windows - postal module will be disabled
 find_package(PkgConfig REQUIRED)
 
 # Libpostal is installed by configure_ci (Makefile) before CMake runs.
@@ -76,12 +77,25 @@ else()
                 set(LIBPOSTAL_INCLUDE_DIRS "/usr/include")
                 set(LIBPOSTAL_FOUND TRUE)
             else()
-                message(FATAL_ERROR "Install script succeeded but libpostal still not found")
+                # Windows or unsupported platform - libpostal is optional
+                message(WARNING "Install script succeeded but libpostal still not found - postal module will be disabled")
+                set(LIBPOSTAL_FOUND FALSE)
             endif()
         else()
-            message(FATAL_ERROR "libpostal not found and install script failed: ${INSTALL_ERROR}")
+            # Windows or unsupported platform - libpostal is optional
+            message(WARNING "libpostal not found and install script failed/skipped - postal module will be disabled")
+            set(LIBPOSTAL_FOUND FALSE)
         endif()
     endif()
+endif()
+
+# Set HAVE_LIBPOSTAL define for conditional compilation
+if(LIBPOSTAL_FOUND)
+    message(STATUS "libpostal support: ENABLED")
+    add_compile_definitions(HAVE_LIBPOSTAL=1)
+else()
+    message(STATUS "libpostal support: DISABLED (postal module functions will not be available)")
+    add_compile_definitions(HAVE_LIBPOSTAL=0)
 endif()
 
 

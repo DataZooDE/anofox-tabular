@@ -1,5 +1,7 @@
 #pragma once
 
+#if HAVE_LIBPOSTAL
+
 #include "duckdb/main/extension/extension_loader.hpp"
 #include "duckdb/main/client_context.hpp"
 
@@ -55,3 +57,5 @@ private:
 
 } // namespace anofox
 } // namespace duckdb
+
+#endif // HAVE_LIBPOSTAL

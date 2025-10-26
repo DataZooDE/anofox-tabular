@@ -1,5 +1,7 @@
 #include "anofox_postal.hpp"
 
+#if HAVE_LIBPOSTAL
+
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/file_system.hpp"
 #include "duckdb/common/types/string_type.hpp"
@@ -483,3 +485,5 @@ void RegisterPostalFunctions(ExtensionLoader &loader) {
 
 } // namespace anofox
 } // namespace duckdb
+
+#endif // HAVE_LIBPOSTAL

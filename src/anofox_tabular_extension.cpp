@@ -3,7 +3,9 @@
 #include "anofox_tabular_extension.hpp"
 #include "anofox_diff.hpp"
 #include "anofox_email.hpp"
+#if HAVE_LIBPOSTAL
 #include "anofox_postal.hpp"
+#endif
 #include "anofox_phonenumber.hpp"
 #include "anofox_metric.hpp"
 #include "anofox_money.hpp"
@@ -12,8 +14,10 @@
 namespace duckdb {
 
 void LoadInternal(ExtensionLoader &loader) {
+#if HAVE_LIBPOSTAL
 	anofox::RegisterPostalOptions(loader);
 	anofox::RegisterPostalFunctions(loader);
+#endif
 	anofox::RegisterPhonenumberOptions(loader);
 	anofox::RegisterPhonenumberFunctions(loader);
 	anofox::RegisterEmailOptions(loader);
