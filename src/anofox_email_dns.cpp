@@ -19,6 +19,9 @@
 #ifdef _WIN32
 #include <winsock2.h>
 #include <ws2tcpip.h>
+// Undefine Windows min/max macros that conflict with std::min/max and std::numeric_limits
+#undef min
+#undef max
 #else
 #include <arpa/inet.h>
 #include <netdb.h>
