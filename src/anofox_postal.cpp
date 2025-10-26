@@ -13,6 +13,8 @@
 
 #include "anofox_trace.hpp"
 #include "duckdb/common/string_util.hpp"
+#include "duckdb/common/http_util.hpp"
+#include "duckdb/main/database.hpp"
 
 #include <cstdlib>
 #include <fstream>
@@ -29,8 +31,6 @@ constexpr const char *POSTAL_BASE_URL = "https://public-read-libpostal-data.s3.a
 const std::vector<std::string> POSTAL_ASSETS = {"language_classifier.tar.gz", "libpostal_data.tar.gz",
                                                 "parser.tar.gz"};
 constexpr const char *DEFAULT_POSTAL_DIR = ".duckdb/extensions/libpostal";
-constexpr uint32_t POSTAL_CURL_CONNECT_TIMEOUT_SECONDS = 3;
-constexpr uint32_t POSTAL_CURL_MAX_TIME_SECONDS = 10;
 } // namespace
 
 PostalManager &PostalManager::Instance() {
@@ -128,17 +128,46 @@ void PostalManager::LoadData(ClientContext &context) {
 	for (const auto &asset : POSTAL_ASSETS) {
 		auto url = std::string(POSTAL_BASE_URL) + asset;
 		auto destination = fs.JoinPath(data_dir, asset);
-		AnofoxTrace(AnofoxLogLevel::Info, "Postal download " + url);
+		AnofoxTrace(AnofoxLogLevel::Info, "Postal downloading " + asset + " from " + url);
 
-		std::string curl_command = "curl -L --fail --silent --show-error"
-		                           " --connect-timeout " + std::to_string(POSTAL_CURL_CONNECT_TIMEOUT_SECONDS) +
-		                           " --max-time " + std::to_string(POSTAL_CURL_MAX_TIME_SECONDS) + " \"" + url +
-		                           "\" -o \"" + destination + "\"";
-		if (std::system(curl_command.c_str()) != 0) {
-			AnofoxTrace(AnofoxLogLevel::Error, "Postal download failed for " + url);
-			throw IOException("Failed to download '" + asset + "' from " + url);
+		// Get database instance and HTTP utility
+		auto &db = DatabaseInstance::GetDatabase(context);
+		auto &http_util = HTTPUtil::Get(db);
+
+		// Initialize HTTP parameters with robust settings
+		auto params = http_util.InitializeParameters(db, url);
+		params->timeout = 60;  // 60 seconds (larger files)
+		params->retries = 5;   // More retries for reliability
+		params->retry_wait_ms = 200;
+		params->retry_backoff = 3.0;
+
+		// Create HTTP headers
+		HTTPHeaders headers(db);
+
+		// Create GET request
+		GetRequestInfo request(url, headers, *params, nullptr, nullptr);
+
+		// Execute download
+		auto response = http_util.Request(request);
+
+		// Check response
+		if (!response->Success()) {
+			AnofoxTrace(AnofoxLogLevel::Error,
+				"Postal download failed: HTTP " + std::to_string(static_cast<int>(response->status)));
+			throw IOException("Failed to download '" + asset + "' from " + url +
+			                  ": HTTP " + std::to_string(static_cast<int>(response->status)));
 		}
 
+		// Write response body to file
+		auto file_handle = fs.OpenFile(destination,
+			FileFlags::FILE_FLAGS_WRITE | FileFlags::FILE_FLAGS_FILE_CREATE);
+		file_handle->Write((void*)response->body.data(), response->body.size());
+		file_handle->Close();
+
+		AnofoxTrace(AnofoxLogLevel::Info,
+			"Postal downloaded " + asset + " (" + std::to_string(response->body.size()) + " bytes)");
+
+		// Extract the tarball
 		std::string extract_command = "tar -xzf \"" + destination + "\" -C \"" + data_dir + "\"";
 		if (std::system(extract_command.c_str()) != 0) {
 			AnofoxTrace(AnofoxLogLevel::Error, "Postal extract failed for " + destination);
