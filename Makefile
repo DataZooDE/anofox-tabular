@@ -14,13 +14,12 @@ EXT_CONFIG=${PROJ_DIR}extension_config.cmake
 # Include the Makefile from extension-ci-tools
 include extension-ci-tools/makefiles/duckdb_extension.Makefile
 
-# Force all builds to use "build" directory (remove -ninja suffix)
-# Override BUILD_ROOT after include to force unified build directory
+# Force unified "build" directory regardless of generator (ninja or make)
+# This simplifies .gitignore and documentation by avoiding build-ninja vs build split
 BUILD_ROOT:=build
-DEBUG_BUILD_DIR:=$(BUILD_ROOT)/debug
-RELEASE_BUILD_DIR:=$(BUILD_ROOT)/release
 
-# Override configure_ci to run dependency installation script
-# The script will install/build libpostal based on the environment
+# Override configure_ci to build libpostal from source with -fPIC
+# System packages (Alpine libpostal-dev) lack -fPIC, which is required
+# for linking into shared libraries (DuckDB extensions)
 configure_ci:
 	bash $(PROJ_DIR)/scripts/install-deps-ci.sh

@@ -1,6 +1,10 @@
 #!/bin/bash
-# Install libphonenumber and libpostal from system packages
+# Install libpostal from source for anofox_tabular extension
 # This script is used in CI environments via the configure_ci Makefile target
+#
+# Dependencies:
+# - libphonenumber: Internal implementation (no external dependency required)
+# - libpostal: Built from source with CFLAGS=-fPIC for shared library linking
 
 set -e
 
@@ -22,11 +26,7 @@ if command -v apk &> /dev/null; then
     # Update package list
     apk update
 
-    # Install build dependencies for libpostal
-    # NOTE: libphonenumber is now implemented internally (no external dependency)
-    # NOTE: Alpine's libpostal-dev static library is not compiled with -fPIC,
-    #       which is required for linking into shared libraries (DuckDB extensions).
-    #       We must build libpostal from source with CFLAGS=-fPIC.
+    # Install build dependencies
     echo "Installing build dependencies..."
     apk add --no-cache curl autoconf automake libtool pkgconf git
 
@@ -72,8 +72,7 @@ elif command -v apt-get &> /dev/null; then
     # Update package lists
     $APT_CMD update
 
-    # Install build dependencies for libpostal
-    # NOTE: libphonenumber is now implemented internally (no external dependency)
+    # Install build dependencies
     echo "Installing build dependencies..."
     $APT_CMD install -y curl autoconf automake libtool pkg-config git
 
@@ -113,9 +112,8 @@ elif command -v yum &> /dev/null; then
         SUDO_CMD=""
     fi
 
-    # Install build dependencies for libpostal
-    # NOTE: libphonenumber is now implemented internally (no external dependency)
-    echo "Installing build dependencies for libpostal..."
+    # Install build dependencies
+    echo "Installing build dependencies..."
     $YUM_CMD install -y curl autoconf automake libtool pkgconfig git
 
     # Build and install libpostal from source
@@ -146,46 +144,16 @@ else
     exit 1
 fi
 
-# Verify installation with pkg-config
+# Verify installation
 echo ""
 echo "=== Verifying installation ==="
 
-# Note: libphonenumber is now implemented internally
-echo "ℹ libphonenumber: Using internal implementation (no external dependency)"
-
-if pkg-config --exists libpostal 2>/dev/null; then
-    echo "✓ libpostal found via pkg-config"
-    pkg-config --modversion libpostal
+if [ -f "/usr/local/lib/libpostal.a" ] && [ -f "/usr/local/include/libpostal/libpostal.h" ]; then
+    echo "✓ libpostal installed successfully in /usr/local"
 else
-    echo "⚠ libpostal not found via pkg-config, but may be installed"
+    echo "⚠ Warning: libpostal files not found in expected location"
+    echo "  Expected: /usr/local/lib/libpostal.a and /usr/local/include/libpostal/libpostal.h"
 fi
-
-# Check if library files exist
-echo ""
-echo "=== Checking for library files ==="
-for lib in /usr/lib/libpostal.* /usr/local/lib/libpostal.*; do
-    if [ -e "$lib" ]; then
-        echo "Found: $lib"
-    fi
-done
-
-# Check for header files
-echo ""
-echo "=== Checking for header files ==="
-if [ -d "/usr/include/libpostal" ]; then
-    echo "Found: /usr/include/libpostal"
-    ls -la /usr/include/libpostal/ | head -5
-fi
-
-# Check for pkg-config files
-echo ""
-echo "=== Checking for .pc files ==="
-for pcfile in /usr/lib/pkgconfig/libpostal.pc /usr/local/lib/pkgconfig/libpostal.pc; do
-    if [ -e "$pcfile" ]; then
-        echo "Found: $pcfile"
-    fi
-done
 
 echo ""
 echo "=== Setup Complete ==="
-echo "System packages installed successfully!"

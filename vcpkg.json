@@ -2,7 +2,8 @@
         "dependencies": [
                 "openssl",
                 "c-ares",
-                "spdlog"
+                "spdlog",
+                "curl"
         ],
         "vcpkg-configuration": {
                 "overlay-ports": [

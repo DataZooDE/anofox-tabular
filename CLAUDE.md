@@ -228,13 +228,24 @@ When bumping DuckDB target version:
 If you are adding a new feature, try to reuse existing code and concepts from the project. If you are not sure how to do it, ask.
 Also have a look at duckdb source in `./duckdb` and the cpp tests in `./duckdb/test` wether you can find a similar concept or code to reuse.
 
-## Git Status
+## Git Commit Guidelines
 
-Recent changes tracked in git show:
-- `Makefile`, `src/anofox_*.cpp`, `test/sql/anofox_quality.test` modified
-- `src/include/anofox_quality.hpp`, `src/anofox_quality.cpp` added (new quality module)
+When creating git commits:
+- **NEVER** include any attribution to AI assistants or code generators (e.g., "Generated with Claude Code", "Co-Authored-By: Claude")
+- Write clear, concise commit messages that explain the "why" rather than the "what"
+- Use conventional commit format when appropriate (feat:, fix:, refactor:, etc.)
+- Keep commit messages professional and focused on the technical changes
+- Squash trial-and-error commits into clean, logical commits before pushing
 
-Don't forget to remove the note for claude code when you do a git commit.
+Example of a good commit message:
+```
+Improve build system: libcurl S3 downloads and cleaner configuration
+
+- Replace DuckDB HTTPUtil with libcurl for postal data downloads
+- Add CMake fallback to handle multi-container CI workflows
+- Simplify libpostal detection logic with better error messages
+- Unify build directory structure for all generators
+```
 
 See `docs/UPDATING.md` for version bump procedures.
 

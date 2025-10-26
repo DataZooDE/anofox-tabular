@@ -20,45 +20,41 @@ endif()
 include(CMakeFindDependencyMacro)
 find_package(spdlog CONFIG REQUIRED)
 find_package(c-ares CONFIG REQUIRED)
+find_package(CURL CONFIG REQUIRED)
 
 # Libphonenumber: Custom implementation (no external dependency)
 
 # Libpostal via pkg-config (system-installed, CI preferred)
 find_package(PkgConfig REQUIRED)
 
-# First, check for Alpine/system package installation (most common in CI)
-# Alpine libpostal-dev package contents:
-#   /usr/include/libpostal/libpostal.h
-#   /usr/lib/libpostal.a
-#   /usr/lib/libpostal.so -> libpostal.so.1
-#   /usr/lib/pkgconfig/libpostal.pc
-# Prefer static library (.a) to avoid runtime dependency issues in Docker CI
-if(EXISTS "/usr/lib/libpostal.a" AND EXISTS "/usr/include/libpostal/libpostal.h")
-    message(STATUS "Found libpostal via Alpine/system package (static library)")
-    set(LIBPOSTAL_LDFLAGS "/usr/lib/libpostal.a")
-    set(LIBPOSTAL_INCLUDE_DIRS "/usr/include")
-    set(LIBPOSTAL_FOUND TRUE)
-# Check for source build in /usr/local (Ubuntu CI builds from source)
-elseif(EXISTS "/usr/local/lib/libpostal.a" AND EXISTS "/usr/local/include/libpostal/libpostal.h")
-    message(STATUS "Found libpostal in /usr/local (static library)")
+# Libpostal is installed by configure_ci (Makefile) before CMake runs.
+# The install script (scripts/install-deps-ci.sh) builds from source with -fPIC
+# and installs to /usr/local for both Alpine (musl) and Ubuntu (glibc).
+#
+# In multi-container CI workflows, configure_ci may run in one container and
+# CMake in another, so we fallback to running the install script from CMake.
+
+# Check for source build in /usr/local (standard install location)
+if(EXISTS "/usr/local/lib/libpostal.a" AND EXISTS "/usr/local/include/libpostal/libpostal.h")
+    message(STATUS "Found libpostal in /usr/local (static library with -fPIC)")
     set(LIBPOSTAL_LDFLAGS "/usr/local/lib/libpostal.a")
     set(LIBPOSTAL_INCLUDE_DIRS "/usr/local/include")
     set(LIBPOSTAL_FOUND TRUE)
-# Check for local build (from configure_ci)
-elseif(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/libpostal-install/lib/libpostal.a")
-    message(STATUS "Found libpostal in local install (static library)")
-    set(LIBPOSTAL_LDFLAGS "${CMAKE_CURRENT_SOURCE_DIR}/libpostal-install/lib/libpostal.a")
-    set(LIBPOSTAL_INCLUDE_DIRS "${CMAKE_CURRENT_SOURCE_DIR}/libpostal-install/include")
+# Fallback: Check Alpine system package location (if install script changes)
+elseif(EXISTS "/usr/lib/libpostal.a" AND EXISTS "/usr/include/libpostal/libpostal.h")
+    message(STATUS "Found libpostal in /usr/lib (static library)")
+    set(LIBPOSTAL_LDFLAGS "/usr/lib/libpostal.a")
+    set(LIBPOSTAL_INCLUDE_DIRS "/usr/include")
     set(LIBPOSTAL_FOUND TRUE)
 else()
-    # Try pkg-config as last resort
+    # Try pkg-config
     pkg_check_modules(LIBPOSTAL libpostal)
-
     if(LIBPOSTAL_FOUND)
         message(STATUS "Found libpostal via pkg-config")
     else()
-        # Last resort: try to install libpostal using the install script
-        message(STATUS "libpostal not found, attempting to install via script...")
+        # Last resort: run the install script from CMake
+        # This handles multi-container CI where configure_ci runs in different container
+        message(STATUS "libpostal not found, running install script from CMake...")
         execute_process(
             COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/scripts/install-deps-ci.sh
             RESULT_VARIABLE INSTALL_RESULT
@@ -67,23 +63,23 @@ else()
         )
 
         if(INSTALL_RESULT EQUAL 0)
-            message(STATUS "Installation script completed, rechecking for libpostal...")
-            # Check again after installation (prefer static library)
-            if(EXISTS "/usr/lib/libpostal.a" AND EXISTS "/usr/include/libpostal/libpostal.h")
-                message(STATUS "Found libpostal after installation (Alpine, static library)")
-                set(LIBPOSTAL_LDFLAGS "/usr/lib/libpostal.a")
-                set(LIBPOSTAL_INCLUDE_DIRS "/usr/include")
-                set(LIBPOSTAL_FOUND TRUE)
-            elseif(EXISTS "/usr/local/lib/libpostal.a" AND EXISTS "/usr/local/include/libpostal/libpostal.h")
-                message(STATUS "Found libpostal after installation (/usr/local, static library)")
+            message(STATUS "Install script completed, rechecking for libpostal...")
+            # Check again after installation
+            if(EXISTS "/usr/local/lib/libpostal.a" AND EXISTS "/usr/local/include/libpostal/libpostal.h")
+                message(STATUS "Found libpostal in /usr/local after installation")
                 set(LIBPOSTAL_LDFLAGS "/usr/local/lib/libpostal.a")
                 set(LIBPOSTAL_INCLUDE_DIRS "/usr/local/include")
                 set(LIBPOSTAL_FOUND TRUE)
+            elseif(EXISTS "/usr/lib/libpostal.a" AND EXISTS "/usr/include/libpostal/libpostal.h")
+                message(STATUS "Found libpostal in /usr/lib after installation")
+                set(LIBPOSTAL_LDFLAGS "/usr/lib/libpostal.a")
+                set(LIBPOSTAL_INCLUDE_DIRS "/usr/include")
+                set(LIBPOSTAL_FOUND TRUE)
             else()
-                message(FATAL_ERROR "libpostal installation script succeeded but library still not found")
+                message(FATAL_ERROR "Install script succeeded but libpostal still not found")
             endif()
         else()
-            message(FATAL_ERROR "libpostal not found and installation script failed: ${INSTALL_ERROR}")
+            message(FATAL_ERROR "libpostal not found and install script failed: ${INSTALL_ERROR}")
         endif()
     endif()
 endif()
@@ -126,6 +122,7 @@ target_sources(${LOADABLE_EXTENSION_NAME} PRIVATE $<TARGET_OBJECTS:anofox_trace_
 target_link_libraries(${EXTENSION_NAME}
     c-ares::cares
     spdlog::spdlog_header_only
+    CURL::libcurl
     ${LIBPOSTAL_LDFLAGS}
 )
 
@@ -147,6 +144,7 @@ endif()
 target_link_libraries(${LOADABLE_EXTENSION_NAME}
     c-ares::cares
     spdlog::spdlog_header_only
+    CURL::libcurl
     ${LIBPOSTAL_LDFLAGS}
 )
 

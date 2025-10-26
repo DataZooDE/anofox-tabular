@@ -13,14 +13,14 @@
 
 #include "anofox_trace.hpp"
 #include "duckdb/common/string_util.hpp"
-#include "duckdb/common/http_util.hpp"
-#include "duckdb/main/database.hpp"
 
-#include <cstdlib>
+#include <chrono>
+#include <curl/curl.h>
 #include <fstream>
 #include <libpostal/libpostal.h>
 #include <mutex>
 #include <string>
+#include <thread>
 
 namespace duckdb {
 namespace anofox {
@@ -31,6 +31,11 @@ constexpr const char *POSTAL_BASE_URL = "https://public-read-libpostal-data.s3.a
 const std::vector<std::string> POSTAL_ASSETS = {"language_classifier.tar.gz", "libpostal_data.tar.gz",
                                                 "parser.tar.gz"};
 constexpr const char *DEFAULT_POSTAL_DIR = ".duckdb/extensions/libpostal";
+
+// Callback for libcurl to write data to file
+static size_t WriteDataToFile(void *ptr, size_t size, size_t nmemb, FILE *stream) {
+	return fwrite(ptr, size, nmemb, stream);
+}
 } // namespace
 
 PostalManager &PostalManager::Instance() {
@@ -125,49 +130,88 @@ void PostalManager::LoadData(ClientContext &context) {
 		return;
 	}
 
+	// Initialize libcurl globally (thread-safe after first call)
+	curl_global_init(CURL_GLOBAL_DEFAULT);
+
 	for (const auto &asset : POSTAL_ASSETS) {
 		auto url = std::string(POSTAL_BASE_URL) + asset;
 		auto destination = fs.JoinPath(data_dir, asset);
-		AnofoxTrace(AnofoxLogLevel::Info, "Postal downloading " + asset + " from " + url);
 
-		// Get database instance and HTTP utility
-		auto &db = DatabaseInstance::GetDatabase(context);
-		auto &http_util = HTTPUtil::Get(db);
+		// Robust libcurl-based download with retry logic
+		const int max_retries = 5;
+		bool download_success = false;
 
-		// Initialize HTTP parameters with robust settings
-		auto params = http_util.InitializeParameters(db, url);
-		params->timeout = 60;  // 60 seconds (larger files)
-		params->retries = 5;   // More retries for reliability
-		params->retry_wait_ms = 200;
-		params->retry_backoff = 3.0;
+		for (int attempt = 1; attempt <= max_retries && !download_success; attempt++) {
+			if (attempt > 1) {
+				AnofoxTrace(AnofoxLogLevel::Info,
+					"Postal retrying download attempt " + std::to_string(attempt) + "/" + std::to_string(max_retries));
+			} else {
+				AnofoxTrace(AnofoxLogLevel::Info, "Postal downloading " + asset + " from " + url);
+			}
 
-		// Create HTTP headers
-		HTTPHeaders headers(db);
+			// Open file for writing
+			FILE *file = fopen(destination.c_str(), "wb");
+			if (!file) {
+				AnofoxTrace(AnofoxLogLevel::Error, "Postal failed to open file for writing: " + destination);
+				throw IOException("Failed to open file for writing: " + destination);
+			}
 
-		// Create GET request
-		GetRequestInfo request(url, headers, *params, nullptr, nullptr);
+			// Initialize curl handle
+			CURL *curl = curl_easy_init();
+			if (!curl) {
+				fclose(file);
+				AnofoxTrace(AnofoxLogLevel::Error, "Postal failed to initialize curl");
+				throw IOException("Failed to initialize libcurl");
+			}
 
-		// Execute download
-		auto response = http_util.Request(request);
+			// Configure curl options
+			curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+			curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteDataToFile);
+			curl_easy_setopt(curl, CURLOPT_WRITEDATA, file);
+			curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);  // Follow redirects
+			curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 10L);  // 10s connection timeout
+			curl_easy_setopt(curl, CURLOPT_TIMEOUT, 300L);  // 5 minute total timeout
+			curl_easy_setopt(curl, CURLOPT_FAILONERROR, 1L);  // Fail on HTTP error codes
+			curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 1L);  // Verify SSL certificates
+			curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 2L);  // Verify hostname matches cert
 
-		// Check response
-		if (!response->Success()) {
-			AnofoxTrace(AnofoxLogLevel::Error,
-				"Postal download failed: HTTP " + std::to_string(static_cast<int>(response->status)));
-			throw IOException("Failed to download '" + asset + "' from " + url +
-			                  ": HTTP " + std::to_string(static_cast<int>(response->status)));
+			// Perform the download
+			CURLcode res = curl_easy_perform(curl);
+			long http_code = 0;
+			curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
+
+			// Cleanup
+			curl_easy_cleanup(curl);
+			fclose(file);
+
+			if (res == CURLE_OK) {
+				download_success = true;
+				AnofoxTrace(AnofoxLogLevel::Info, "Postal download complete for " + asset);
+			} else {
+				const char *error_msg = curl_easy_strerror(res);
+				AnofoxTrace(AnofoxLogLevel::Warn,
+					"Postal download attempt " + std::to_string(attempt) + " failed: " +
+					std::string(error_msg) + " (HTTP " + std::to_string(http_code) + ")");
+
+				// Remove partially downloaded file
+				fs.RemoveFile(destination);
+
+				if (attempt < max_retries) {
+					// Exponential backoff: wait 2s, 4s, 8s, 16s between retry attempts
+					int wait_time = 1 << attempt;  // 2^attempt
+					AnofoxTrace(AnofoxLogLevel::Info, "Waiting " + std::to_string(wait_time) + "s before retry");
+					std::this_thread::sleep_for(std::chrono::seconds(wait_time));
+				}
+			}
 		}
 
-		// Write response body to file
-		auto file_handle = fs.OpenFile(destination,
-			FileFlags::FILE_FLAGS_WRITE | FileFlags::FILE_FLAGS_FILE_CREATE);
-		file_handle->Write((void*)response->body.data(), response->body.size());
-		file_handle->Close();
-
-		AnofoxTrace(AnofoxLogLevel::Info,
-			"Postal downloaded " + asset + " (" + std::to_string(response->body.size()) + " bytes)");
+		if (!download_success) {
+			AnofoxTrace(AnofoxLogLevel::Error, "Postal download failed after " + std::to_string(max_retries) + " attempts");
+			throw IOException("Failed to download '" + asset + "' from " + url + " after " + std::to_string(max_retries) + " attempts");
+		}
 
 		// Extract the tarball
+		AnofoxTrace(AnofoxLogLevel::Debug, "Postal extracting " + asset);
 		std::string extract_command = "tar -xzf \"" + destination + "\" -C \"" + data_dir + "\"";
 		if (std::system(extract_command.c_str()) != 0) {
 			AnofoxTrace(AnofoxLogLevel::Error, "Postal extract failed for " + destination);
@@ -175,6 +219,8 @@ void PostalManager::LoadData(ClientContext &context) {
 		}
 		fs.RemoveFile(destination);
 	}
+
+	curl_global_cleanup();
 	AnofoxTrace(AnofoxLogLevel::Info, "Postal data download complete");
 }
 
