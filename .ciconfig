@@ -1,0 +1,5 @@
+# CI Configuration for anofox_tabular extension
+# Disable WASM builds - extension uses features not compatible with WASM
+# (libpostal, libphonenumber, DNS/SMTP network operations)
+
+exclude_archs: wasm_mvp;wasm_eh;wasm_threads
