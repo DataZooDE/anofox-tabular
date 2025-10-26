@@ -14,20 +14,13 @@ EXT_CONFIG=${PROJ_DIR}extension_config.cmake
 # Include the Makefile from extension-ci-tools
 include extension-ci-tools/makefiles/duckdb_extension.Makefile
 
+# Force all builds to use "build" directory (remove -ninja suffix)
+# Override BUILD_ROOT after include to force unified build directory
+BUILD_ROOT:=build
+DEBUG_BUILD_DIR:=$(BUILD_ROOT)/debug
+RELEASE_BUILD_DIR:=$(BUILD_ROOT)/release
+
 # Override configure_ci to run dependency installation script
 # The script will install/build libpostal based on the environment
 configure_ci:
 	bash $(PROJ_DIR)/scripts/install-deps-ci.sh
-
-# Debug target to output vcpkg build logs on failure
-.PHONY: debug_vcpkg_logs
-debug_vcpkg_logs:
-	@echo "=== Checking for vcpkg build error logs ==="
-	@if [ -f "build/release/vcpkg_installed/vcpkg/buildtrees/icu/autoconf-x64-linux-err.log" ]; then \
-		echo "=== ICU autoconf error log ==="; \
-		cat build/release/vcpkg_installed/vcpkg/buildtrees/icu/autoconf-x64-linux-err.log; \
-	fi
-	@if [ -f "build/release/vcpkg-manifest-install.log" ]; then \
-		echo "=== vcpkg manifest install log ==="; \
-		tail -100 build/release/vcpkg-manifest-install.log; \
-	fi

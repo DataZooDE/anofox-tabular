@@ -436,8 +436,14 @@ std::string PhoneNumberManager::Match(const std::string& number1, const std::str
 	auto parts1 = Parse(number1, region_hint);
 	auto parts2 = Parse(number2, region_hint);
 
-	// If either parse failed, it's NO_MATCH
+	// If either parse failed, check if raw strings match exactly
 	if (!parts1.valid || !parts2.valid) {
+		// For short numbers or invalid formats, if both strings are identical, it's an exact match
+		if (number1 == number2) {
+			AnofoxTrace(AnofoxLogLevel::Debug,
+			           "PhoneNumber Match result=EXACT_MATCH (raw string match, parse failed) number1=" + number1 + " number2=" + number2);
+			return "EXACT_MATCH";
+		}
 		AnofoxTrace(AnofoxLogLevel::Debug,
 		           "PhoneNumber Match result=NO_MATCH (parse failed) number1=" + number1 + " number2=" + number2);
 		return "NO_MATCH";
