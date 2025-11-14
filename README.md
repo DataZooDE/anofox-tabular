@@ -1,6 +1,6 @@
 # Anofox Tabular
 
-> **The most comprehensive data quality and validation toolkit for DuckDB**
+> **A data quality and validation toolkit for DuckDB**
 
 [![DuckDB](https://img.shields.io/badge/DuckDB-1.4.1-yellow)](https://duckdb.org/)
 [![C++17](https://img.shields.io/badge/C++-17-blue.svg)](https://isocpp.org/)
@@ -27,7 +27,7 @@ WHERE anofox_vat_is_valid(vat_id)
 
 ## 🌟 Why Anofox Tabular?
 
-**The only DuckDB extension combining validation, anomaly detection, and data diffing.**
+**The DuckDB extension combining validation, anomaly detection, and data diffing.**
 
 - ✅ **8 Production-Ready Modules** - 52 SQL functions for email, postal, phone, money, VAT, metrics, anomalies, and diffing
 - ⚡ **Blazing Fast** - Vectorized C++17 implementation processes millions of rows per second
@@ -37,7 +37,6 @@ WHERE anofox_vat_is_valid(vat_id)
 
 **vs. Python Libraries:** No context switching, no data movement, 10-100x faster
 **vs. External APIs:** No latency, no rate limits, works offline, data stays local
-**vs. Other DuckDB Extensions:** Most comprehensive data quality toolkit available
 
 ---
 
@@ -81,7 +80,7 @@ WHERE anofox_vat_is_valid(vat_id)
 | 🤖 **Anomaly Detection** | 4 | Isolation Forest, DBSCAN, outliers | Stable |
 | 🔄 **Data Diffing** | 2 | Table comparison, migration validation | Stable |
 
-**Total: 57 SQL Functions** | **Zero Required Dependencies*** | **Production Ready**
+**Total: 57 SQL Functions** | **Zero Required Dependencies***
 
 <sub>*Except libpostal (address parsing) and optional DNS/SMTP for email</sub>
 
@@ -341,7 +340,7 @@ SELECT * FROM anofox_metric_iqr('transactions', 'amount', 1.5);
 
 #### Isolation Forest
 
-State-of-the-art unsupervised anomaly detection that scales to high dimensions:
+A unsupervised anomaly detection that scales to high dimensions:
 
 ```sql
 -- Univariate: detect outliers in single column
