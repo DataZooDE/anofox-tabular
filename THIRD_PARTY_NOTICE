@@ -1,0 +1,187 @@
+# THIRD PARTY NOTICES AND LICENSES
+
+The Anofox Tabular Extension for DuckDB incorporates material from the
+projects listed below. The original copyright notices and licenses under which
+DataZoo GmbH received such material are set forth below.
+
+---
+
+## libpostal
+
+   <https://github.com/openvenues/libpostal>
+
+   libpostal is a C library for parsing/normalizing street addresses around
+   the world using statistical NLP and open data. It is used in the anofox_tabular
+   extension for address parsing and normalization functionality.
+
+   The MIT License
+
+   Copyright (c) 2016-2024 Al Barrentine
+
+   Permission is hereby granted, free of charge, to any person obtaining a copy
+   of this software and associated documentation files (the "Software"), to deal
+   in the Software without restriction, including without limitation the rights
+   to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+   copies of the Software, and to permit persons to whom the Software is
+   furnished to do so, subject to the following conditions:
+
+   The above copyright notice and this permission notice shall be included in all
+   copies or substantial portions of the Software.
+
+   THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+   IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+   FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+   AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+   LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+   OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+   SOFTWARE.
+
+   See full MIT License text in [licences/MIT.txt](licences/MIT.txt)
+
+   Components used:
+
+- Address parsing functionality (`src/anofox_postal.cpp`) - uses libpostal
+  for parsing unstructured addresses into structured components (house_number,
+  road, city, state, postcode, country)
+- Address expansion functionality - uses libpostal for generating normalized
+  address variants for fuzzy matching
+
+---
+
+## spdlog
+
+   <https://github.com/gabime/spdlog>
+
+   spdlog is a fast C++ logging library. It is used in the anofox_tabular
+   extension via vcpkg for header-only logging functionality.
+
+   The MIT License
+
+   Copyright (c) 2016-2024 Gabi Melman
+
+   Permission is hereby granted, free of charge, to any person obtaining a copy
+   of this software and associated documentation files (the "Software"), to deal
+   in the Software without restriction, including without limitation the rights
+   to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+   copies of the Software, and to permit persons to whom the Software is
+   furnished to do so, subject to the following conditions:
+
+   The above copyright notice and this permission notice shall be included in all
+   copies or substantial portions of the Software.
+
+   THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+   IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+   FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+   AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+   LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+   OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+   SOFTWARE.
+
+   See full MIT License text in [licences/MIT.txt](licences/MIT.txt)
+
+   Components used:
+
+- Header-only logging library used throughout the extension for trace and
+  debug logging functionality
+
+---
+
+## c-ares
+
+   <https://github.com/c-ares/c-ares>
+
+   c-ares is a C library for asynchronous DNS requests. It is used in the
+   anofox_tabular extension via vcpkg for DNS resolution in email validation
+   functionality.
+
+   The MIT License
+
+   Copyright 1998 by the Massachusetts Institute of Technology.
+
+   Permission to use, copy, modify, and distribute this software and its
+   documentation for any purpose and without fee is hereby granted, provided that
+   the above copyright notice appear in all copies and that both that copyright
+   notice and this permission notice appear in supporting documentation, and
+   that the name of M.I.T. not be used in advertising or publicity pertaining
+   to distribution of the software without specific, written prior permission.
+   M.I.T. makes no representations about the suitability of this software for any
+   purpose.  It is provided "as is" without express or implied warranty.
+
+   See full MIT License text in [licences/MIT.txt](licences/MIT.txt)
+
+   Components used:
+
+- Asynchronous DNS resolver used for MX record lookups in email validation
+  (`src/anofox_email_dns.cpp`)
+
+---
+
+## curl
+
+   <https://curl.se/>
+
+   curl is a command-line tool and library for transferring data with URLs.
+   It is used in the anofox_tabular extension via vcpkg for HTTP/HTTPS
+   functionality, including downloading libpostal data assets.
+
+   COPYRIGHT AND PERMISSION NOTICE
+
+   Copyright (c) 1996 - 2024, Daniel Stenberg, <daniel@haxx.se>, and many
+   contributors, see the THANKS file.
+
+   All rights reserved.
+
+   Permission to use, copy, modify, and distribute this software for any purpose
+   with or without fee is hereby granted, provided that the above copyright
+   notice and this permission notice appear in all copies.
+
+   THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+   IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+   FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT OF THIRD PARTY RIGHTS. IN
+   NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM,
+   DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
+   OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE
+   OR OTHER DEALINGS IN THE SOFTWARE.
+
+   Except as contained in this notice, the name of a copyright holder shall not
+   be used in advertising or otherwise to promote the sale, use or other dealings
+   in this Software without prior written authorization of the copyright holder.
+
+   See full curl license text in [licences/curl-license.txt](licences/curl-license.txt)
+
+   Components used:
+
+- HTTP/HTTPS client library used for downloading libpostal data assets
+  (`src/anofox_postal.cpp`)
+
+---
+
+## OpenSSL
+
+   <https://www.openssl.org/>
+
+   OpenSSL is a robust, commercial-grade, and full-featured toolkit for the
+   Transport Layer Security (TLS) and Secure Sockets Layer (SSL) protocols.
+   It is used in the anofox_tabular extension via vcpkg (version 3.0+) for
+   cryptographic functionality.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+
+   See full Apache License 2.0 text in [licences/Apache-2.0.txt](licences/Apache-2.0.txt)
+
+   Components used:
+
+- Cryptographic library used by curl for HTTPS/TLS functionality
+
+---
+

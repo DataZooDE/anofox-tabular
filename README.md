@@ -954,11 +954,24 @@ This project is licensed under the Business Source License (BSL) 1.1 - see the [
 
 ---
 
+## 📋 Third-Party Attributions
+
+This project incorporates third-party libraries and their respective licenses. For complete license information and copyright notices, please see [THIRD_PARTY_NOTICE](THIRD_PARTY_NOTICE).
+
+**Third-Party Libraries:**
+- **[libpostal](https://github.com/openvenues/libpostal)** - Address parsing and normalization (MIT License)
+- **[spdlog](https://github.com/gabime/spdlog)** - Fast C++ logging library (MIT License)
+- **[c-ares](https://github.com/c-ares/c-ares)** - Asynchronous DNS resolver (MIT License)
+- **[curl](https://curl.se/)** - HTTP client library (curl License)
+- **[OpenSSL](https://www.openssl.org/)** - Cryptography library (Apache License 2.0)
+
+---
+
 ## 🙏 Acknowledgments
 
 - **[DuckDB Team](https://duckdb.org/)** - For the amazing embedded analytics database
 - **[libpostal](https://github.com/openvenues/libpostal)** - Statistical NLP library for parsing world addresses
-- **[libphonenumber](https://github.com/google/libphonenumber)** - Google's comprehensive phone number handling library
+- **[libphonenumber](https://github.com/google/libphonenumber)** - Google's comprehensive phone number handling library (custom implementation)
 - **c-ares** - Asynchronous DNS resolver library
 
 ---
