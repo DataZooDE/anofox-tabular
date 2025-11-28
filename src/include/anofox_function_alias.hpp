@@ -19,7 +19,6 @@ inline void RegisterScalarFunctionWithAlias(ExtensionLoader &loader, ScalarFunct
 	alias_func.null_handling = func.null_handling;
 	alias_func.stability = func.stability;
 	alias_func.varargs = func.varargs;
-	alias_func.side_effects = func.side_effects;
 	
 	CreateScalarFunctionInfo alias_info(alias_func);
 	alias_info.alias_of = func.name;
@@ -38,7 +37,6 @@ inline void RegisterScalarFunctionSetWithAlias(ExtensionLoader &loader, ScalarFu
 		alias_func.null_handling = func.null_handling;
 		alias_func.stability = func.stability;
 		alias_func.varargs = func.varargs;
-		alias_func.side_effects = func.side_effects;
 		alias_set.AddFunction(alias_func);
 	}
 	
@@ -54,8 +52,6 @@ inline void RegisterTableFunctionWithAlias(ExtensionLoader &loader, TableFunctio
 	
 	// Register alias
 	TableFunction alias_func(alias_name, func.arguments, func.function, func.bind, func.init_global, func.init_local);
-	alias_func.null_handling = func.null_handling;
-	alias_func.stability = func.stability;
 	alias_func.init_global = func.init_global;
 	alias_func.init_local = func.init_local;
 	alias_func.bind_replace = func.bind_replace;

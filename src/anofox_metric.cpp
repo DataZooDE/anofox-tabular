@@ -775,19 +775,38 @@ void RegisterMetricFunctions(ExtensionLoader &loader) {
 	RegisterTableFunctionWithAlias(loader, schema_func, "metric_schema");
 
 	// anofox_tab_metric_freshness(table_name, timestamp_column, max_age) or (table_name, timestamp_column, max_age, reference_time) (alias: metric_freshness)
+	TableFunctionSet freshness_set("anofox_tab_metric_freshness");
+	
+	// Basic overload with 3 parameters
 	TableFunction freshness_func_basic("anofox_tab_metric_freshness",
 	                                    {LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::INTERVAL)},
 	                                    nullptr, nullptr);
 	freshness_func_basic.bind_replace = MetricFreshnessBindReplace;
-	RegisterTableFunctionWithAlias(loader, freshness_func_basic, "metric_freshness");
-
-	// anofox_tab_metric_freshness with reference_time parameter
+	freshness_set.AddFunction(freshness_func_basic);
+	
+	// Full overload with 4 parameters (includes reference_time)
 	TableFunction freshness_func_full("anofox_tab_metric_freshness",
 	                                   {LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::VARCHAR),
 	                                    LogicalType(LogicalTypeId::INTERVAL), LogicalType(LogicalTypeId::TIMESTAMP)},
 	                                   nullptr, nullptr);
 	freshness_func_full.bind_replace = MetricFreshnessBindReplace;
-	RegisterTableFunctionWithAlias(loader, freshness_func_full, "metric_freshness");
+	freshness_set.AddFunction(freshness_func_full);
+	
+	loader.RegisterFunction(freshness_set);
+	
+	// Register alias
+	TableFunctionSet alias_freshness_set("metric_freshness");
+	for (const auto &func : freshness_set.functions) {
+		TableFunction alias_func("metric_freshness", func.arguments, func.function, func.bind, func.init_global, func.init_local);
+		alias_func.init_global = func.init_global;
+		alias_func.init_local = func.init_local;
+		alias_func.bind_replace = func.bind_replace;
+		alias_func.named_parameters = func.named_parameters;
+		alias_freshness_set.AddFunction(alias_func);
+	}
+	CreateTableFunctionInfo alias_freshness_info(alias_freshness_set);
+	alias_freshness_info.alias_of = "anofox_tab_metric_freshness";
+	loader.RegisterFunction(alias_freshness_info);
 
 	// anofox_tab_metric_isolation_forest(table_name, column_name, n_trees=100, sample_size=256, contamination=0.1, output_mode='summary') (alias: metric_isolation_forest)
 	TableFunction iso_forest_func("anofox_tab_metric_isolation_forest",

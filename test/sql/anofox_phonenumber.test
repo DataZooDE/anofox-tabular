@@ -1,217 +1,217 @@
 require anofox_tabular
 
 statement ok
-SELECT * FROM anofox_phonenumber_status();
+SELECT * FROM phonenumber_status();
 
 statement ok
-SET anofox_phonenumber_default_region='US';
+SET anofox_tab_phonenumber_default_region='US';
 
 query TTTTT
 SELECT (parsed).valid, (parsed).country_code, (parsed).national_number, (parsed).region, (parsed).type
-FROM (SELECT anofox_phonenumber_parse('+1 650-253-0000', NULL) AS parsed);
+FROM (SELECT phonenumber_parse('+1 650-253-0000', NULL) AS parsed);
 ----
 true	1	6502530000	US	fixed_line_or_mobile
 
 query TT
-SELECT * FROM anofox_phonenumber_status();
+SELECT * FROM phonenumber_status();
 ----
 true	US
 
 query T
-SELECT anofox_phonenumber_format('6502530000', 'US', 'E164');
+SELECT phonenumber_format('6502530000', 'US', 'E164');
 ----
 +16502530000
 
 query T
-SELECT anofox_phonenumber_region('+44 20 8366 1177', NULL);
+SELECT phonenumber_region('+44 20 8366 1177', NULL);
 ----
 GB
 
 query T
-SELECT anofox_phonenumber_format('2025550179', NULL, 'national');
+SELECT phonenumber_format('2025550179', NULL, 'national');
 ----
 (202) 555-0179
 
 query T
-SELECT anofox_phonenumber_parse('2025550179', NULL).valid;
+SELECT phonenumber_parse('2025550179', NULL).valid;
 ----
 true
 
 query T
-SELECT anofox_phonenumber_parse('not a number', NULL).valid;
+SELECT phonenumber_parse('not a number', NULL).valid;
 ----
 false
 
 query T
-SELECT anofox_phonenumber_format('123', 'US', 'foobar');
+SELECT phonenumber_format('123', 'US', 'foobar');
 ----
 123
 
 statement ok
-SET anofox_phonenumber_default_region='GB';
+SET anofox_tab_phonenumber_default_region='GB';
 
 query T
 SELECT (parsed).region
-FROM (SELECT anofox_phonenumber_parse('02083661177', NULL) AS parsed);
+FROM (SELECT phonenumber_parse('02083661177', NULL) AS parsed);
 ----
 GB
 
 statement ok
-SET anofox_phonenumber_default_region='US';
+SET anofox_tab_phonenumber_default_region='US';
 
-# Test anofox_phonenumber_is_valid function
+# Test phonenumber_is_valid function
 query T
-SELECT anofox_phonenumber_is_valid('+1 650-253-0000', 'US');
+SELECT phonenumber_is_valid('+1 650-253-0000', 'US');
 ----
 true
 
 query T
-SELECT anofox_phonenumber_is_valid('6502530000', 'US');
+SELECT phonenumber_is_valid('6502530000', 'US');
 ----
 true
 
 query T
-SELECT anofox_phonenumber_is_valid('123', 'US');
+SELECT phonenumber_is_valid('123', 'US');
 ----
 false
 
 query T
-SELECT anofox_phonenumber_is_valid('not a number', 'US');
+SELECT phonenumber_is_valid('not a number', 'US');
 ----
 false
 
-# Test anofox_phonenumber_is_valid with NULL region (should use default)
+# Test phonenumber_is_valid with NULL region (should use default)
 query T
-SELECT anofox_phonenumber_is_valid('2025550179', NULL);
+SELECT phonenumber_is_valid('2025550179', NULL);
 ----
 true
 
-# Test anofox_phonenumber_is_possible function
+# Test phonenumber_is_possible function
 query T
-SELECT anofox_phonenumber_is_possible('+1 650-253-0000', 'US');
-----
-true
-
-query T
-SELECT anofox_phonenumber_is_possible('6502530000', 'US');
+SELECT phonenumber_is_possible('+1 650-253-0000', 'US');
 ----
 true
 
 query T
-SELECT anofox_phonenumber_is_possible('123', 'US');
+SELECT phonenumber_is_possible('6502530000', 'US');
+----
+true
+
+query T
+SELECT phonenumber_is_possible('123', 'US');
 ----
 false
 
 query T
-SELECT anofox_phonenumber_is_possible('not a number', 'US');
+SELECT phonenumber_is_possible('not a number', 'US');
 ----
 false
 
-# Test anofox_phonenumber_is_valid_for_region function
+# Test phonenumber_is_valid_for_region function
 query T
-SELECT anofox_phonenumber_is_valid_for_region('+1 650-253-0000', 'US');
+SELECT phonenumber_is_valid_for_region('+1 650-253-0000', 'US');
 ----
 true
 
 query T
-SELECT anofox_phonenumber_is_valid_for_region('6502530000', 'US');
+SELECT phonenumber_is_valid_for_region('6502530000', 'US');
 ----
 true
 
 # UK number should be valid for GB region
 query T
-SELECT anofox_phonenumber_is_valid_for_region('+44 20 8366 1177', 'GB');
+SELECT phonenumber_is_valid_for_region('+44 20 8366 1177', 'GB');
 ----
 true
 
 # UK number should not be valid for US region
 query T
-SELECT anofox_phonenumber_is_valid_for_region('+44 20 8366 1177', 'US');
+SELECT phonenumber_is_valid_for_region('+44 20 8366 1177', 'US');
 ----
 false
 
 # Test with NULL region (should use default region which is US)
 query T
-SELECT anofox_phonenumber_is_valid_for_region('2025550179', NULL);
+SELECT phonenumber_is_valid_for_region('2025550179', NULL);
 ----
 true
 
-# Test anofox_phonenumber_match function
+# Test phonenumber_match function
 # Exact match: same number in different formats
 query T
-SELECT anofox_phonenumber_match('+1 650-253-0000', '6502530000', 'US');
+SELECT phonenumber_match('+1 650-253-0000', '6502530000', 'US');
 ----
 EXACT_MATCH
 
 # NSN match: numbers match when ignoring country code
 query T
-SELECT anofox_phonenumber_match('+1 650-253-0000', '+1 (650) 253-0000', 'US');
+SELECT phonenumber_match('+1 650-253-0000', '+1 (650) 253-0000', 'US');
 ----
 EXACT_MATCH
 
 # Short NSN match (for short numbers)
 query T
-SELECT anofox_phonenumber_match('411', '411', 'US');
+SELECT phonenumber_match('411', '411', 'US');
 ----
 EXACT_MATCH
 
 # No match: different numbers
 query T
-SELECT anofox_phonenumber_match('+1 650-253-0000', '+1 415-555-1234', 'US');
+SELECT phonenumber_match('+1 650-253-0000', '+1 415-555-1234', 'US');
 ----
 NO_MATCH
 
 # Different country codes
 query T
-SELECT anofox_phonenumber_match('+1 650-253-0000', '+44 20 8366 1177', NULL);
+SELECT phonenumber_match('+1 650-253-0000', '+44 20 8366 1177', NULL);
 ----
 NO_MATCH
 
 # With NULL region (should use default)
 query T
-SELECT anofox_phonenumber_match('2025550179', '(202) 555-0179', NULL);
+SELECT phonenumber_match('2025550179', '(202) 555-0179', NULL);
 ----
 EXACT_MATCH
 
 # Invalid first number should return NO_MATCH
 query T
-SELECT anofox_phonenumber_match('invalid', '6502530000', 'US');
+SELECT phonenumber_match('invalid', '6502530000', 'US');
 ----
 NO_MATCH
 
 # Invalid second number should return NO_MATCH
 query T
-SELECT anofox_phonenumber_match('6502530000', 'invalid', 'US');
+SELECT phonenumber_match('6502530000', 'invalid', 'US');
 ----
 NO_MATCH
 
-# Test anofox_phonenumber_example function
+# Test phonenumber_example function
 # Get example number for US
 query T
-SELECT anofox_phonenumber_example('US');
+SELECT phonenumber_example('US');
 ----
 +12015550123
 
 # Get example number for GB
 query T
-SELECT anofox_phonenumber_example('GB');
+SELECT phonenumber_example('GB');
 ----
 +441212345678
 
 # Get example number for DE
 query T
-SELECT anofox_phonenumber_example('DE');
+SELECT phonenumber_example('DE');
 ----
 +4930123456
 
 # Get example number for FR
 query T
-SELECT anofox_phonenumber_example('FR');
+SELECT phonenumber_example('FR');
 ----
 +33123456789
 
 # With lowercase region code (should be normalized to uppercase internally)
 query T
-SELECT anofox_phonenumber_example('us');
+SELECT phonenumber_example('us');
 ----
 +12015550123

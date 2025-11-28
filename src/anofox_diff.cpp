@@ -444,8 +444,6 @@ void RegisterDiffFunctions(ExtensionLoader &loader) {
 	TableFunctionSet alias_joindiff_set("diff_joindiff");
 	for (const auto &func : joindiff_set.functions) {
 		TableFunction alias_func("diff_joindiff", func.arguments, func.function, func.bind, func.init_global, func.init_local);
-		alias_func.null_handling = func.null_handling;
-		alias_func.stability = func.stability;
 		alias_func.init_global = func.init_global;
 		alias_func.init_local = func.init_local;
 		alias_func.bind_replace = func.bind_replace;
@@ -523,8 +521,6 @@ void RegisterDiffFunctions(ExtensionLoader &loader) {
 	TableFunctionSet alias_hashdiff_set("diff_hashdiff");
 	for (const auto &func : hashdiff_set.functions) {
 		TableFunction alias_func("diff_hashdiff", func.arguments, func.function, func.bind, func.init_global, func.init_local);
-		alias_func.null_handling = func.null_handling;
-		alias_func.stability = func.stability;
 		alias_func.init_global = func.init_global;
 		alias_func.init_local = func.init_local;
 		alias_func.bind_replace = func.bind_replace;

@@ -184,54 +184,54 @@ void RegisterVATFunctions(ExtensionLoader& loader) {
   // Phase 2: Basic VAT Operations
   ScalarFunction vat_func("anofox_tab_vat", {LogicalTypeId::VARCHAR}, GetVATType(),
                          VATParseFunc);
-  RegisterScalarFunctionWithAlias(loader, vat_func, "vat");
+  anofox::RegisterScalarFunctionWithAlias(loader, vat_func, "vat");
 
   ScalarFunction is_valid_country_func("anofox_tab_is_valid_vat_country",
                                        {LogicalTypeId::VARCHAR},
                                        LogicalTypeId::BOOLEAN,
                                        IsValidVATCountryFunc);
-  RegisterScalarFunctionWithAlias(loader, is_valid_country_func, "is_valid_vat_country");
+  anofox::RegisterScalarFunctionWithAlias(loader, is_valid_country_func, "is_valid_vat_country");
 
   ScalarFunction normalize_func("anofox_tab_vat_normalize",
                                {LogicalTypeId::VARCHAR},
                                LogicalTypeId::VARCHAR, VATNormalizeFunc);
-  RegisterScalarFunctionWithAlias(loader, normalize_func, "vat_normalize");
+  anofox::RegisterScalarFunctionWithAlias(loader, normalize_func, "vat_normalize");
 
   // Phase 3: Syntax Validation
   ScalarFunction is_valid_syntax_func("anofox_tab_vat_is_valid_syntax",
                                       {LogicalTypeId::VARCHAR},
                                       LogicalTypeId::BOOLEAN,
                                       VATIsValidSyntaxFunc);
-  RegisterScalarFunctionWithAlias(loader, is_valid_syntax_func, "vat_is_valid_syntax");
+  anofox::RegisterScalarFunctionWithAlias(loader, is_valid_syntax_func, "vat_is_valid_syntax");
 
   ScalarFunction split_func("anofox_tab_vat_split", {LogicalTypeId::VARCHAR},
                            GetVATType(), VATSplitFunc);
-  RegisterScalarFunctionWithAlias(loader, split_func, "vat_split");
+  anofox::RegisterScalarFunctionWithAlias(loader, split_func, "vat_split");
 
   ScalarFunction exists_func("anofox_tab_vat_exists", {LogicalTypeId::VARCHAR},
                             LogicalTypeId::BOOLEAN, VATExistsFunc);
-  RegisterScalarFunctionWithAlias(loader, exists_func, "vat_exists");
+  anofox::RegisterScalarFunctionWithAlias(loader, exists_func, "vat_exists");
 
   // Phase 5: EU Utilities
   ScalarFunction is_eu_member_func("anofox_tab_vat_is_eu_member",
                                    {LogicalTypeId::VARCHAR},
                                    LogicalTypeId::BOOLEAN, VATIsEUMemberFunc);
-  RegisterScalarFunctionWithAlias(loader, is_eu_member_func, "vat_is_eu_member");
+  anofox::RegisterScalarFunctionWithAlias(loader, is_eu_member_func, "vat_is_eu_member");
 
   ScalarFunction country_name_func("anofox_tab_vat_country_name",
                                    {LogicalTypeId::VARCHAR},
                                    LogicalTypeId::VARCHAR, VATCountryNameFunc);
-  RegisterScalarFunctionWithAlias(loader, country_name_func, "vat_country_name");
+  anofox::RegisterScalarFunctionWithAlias(loader, country_name_func, "vat_country_name");
 
   ScalarFunction format_func("anofox_tab_vat_format",
                             {LogicalTypeId::VARCHAR, LogicalTypeId::VARCHAR},
                             LogicalTypeId::VARCHAR, VATFormatFunc);
-  RegisterScalarFunctionWithAlias(loader, format_func, "vat_format");
+  anofox::RegisterScalarFunctionWithAlias(loader, format_func, "vat_format");
 
   // Phase 6: Combined Validation
   ScalarFunction is_valid_func("anofox_tab_vat_is_valid", {LogicalTypeId::VARCHAR},
                               LogicalTypeId::BOOLEAN, VATIsValidFunc);
-  RegisterScalarFunctionWithAlias(loader, is_valid_func, "vat_is_valid");
+  anofox::RegisterScalarFunctionWithAlias(loader, is_valid_func, "vat_is_valid");
 }
 
 }  // namespace duckdb

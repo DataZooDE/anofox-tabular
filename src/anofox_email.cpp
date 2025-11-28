@@ -133,7 +133,7 @@ public:
 	void SetDnsTimeout(uint32_t timeout_ms) {
 		if (timeout_ms < email::DnsOptions::MIN_TIMEOUT_MS || timeout_ms > email::DnsOptions::MAX_TIMEOUT_MS) {
 			throw InvalidInputException(
-			    "anofox_email_dns_timeout_ms must be between " +
+			    "anofox_tab_email_dns_timeout_ms must be between " +
 			    std::to_string(email::DnsOptions::MIN_TIMEOUT_MS) + " and " +
 			    std::to_string(email::DnsOptions::MAX_TIMEOUT_MS));
 		}
@@ -144,7 +144,7 @@ public:
 
 	void SetDnsTries(uint32_t tries) {
 		if (tries == 0) {
-			throw InvalidInputException("anofox_email_dns_tries must be greater than 0");
+			throw InvalidInputException("anofox_tab_email_dns_tries must be greater than 0");
 		}
 		std::lock_guard<std::mutex> lock(config_mutex);
 		dns_options.tries = tries;
@@ -157,7 +157,7 @@ public:
 
 	void SetSmtpPort(uint16_t port) {
 		if (port == 0) {
-			throw InvalidInputException("anofox_email_smtp_port must be between 1 and 65535");
+			throw InvalidInputException("anofox_tab_email_smtp_port must be between 1 and 65535");
 		}
 		std::lock_guard<std::mutex> lock(config_mutex);
 		smtp_options.port = port;
@@ -167,7 +167,7 @@ public:
 		if (timeout_ms < email::SmtpOptions::MIN_TIMEOUT_MS ||
 		    timeout_ms > email::SmtpOptions::MAX_CONNECT_TIMEOUT_MS) {
 			throw InvalidInputException(
-			    "anofox_email_smtp_connect_timeout_ms must be between " +
+			    "anofox_tab_email_smtp_connect_timeout_ms must be between " +
 			    std::to_string(email::SmtpOptions::MIN_TIMEOUT_MS) + " and " +
 			    std::to_string(email::SmtpOptions::MAX_CONNECT_TIMEOUT_MS));
 		}
@@ -181,7 +181,7 @@ public:
 		if (timeout_ms < email::SmtpOptions::MIN_TIMEOUT_MS ||
 		    timeout_ms > email::SmtpOptions::MAX_READ_TIMEOUT_MS) {
 			throw InvalidInputException(
-			    "anofox_email_smtp_read_timeout_ms must be between " +
+			    "anofox_tab_email_smtp_read_timeout_ms must be between " +
 			    std::to_string(email::SmtpOptions::MIN_TIMEOUT_MS) + " and " +
 			    std::to_string(email::SmtpOptions::MAX_READ_TIMEOUT_MS));
 		}
@@ -195,7 +195,7 @@ public:
 		auto cleaned = value;
 		StringUtil::Trim(cleaned);
 		if (cleaned.empty()) {
-			throw InvalidInputException("anofox_email_smtp_helo_domain cannot be empty");
+			throw InvalidInputException("anofox_tab_email_smtp_helo_domain cannot be empty");
 		}
 		std::lock_guard<std::mutex> lock(config_mutex);
 		smtp_options.helo_domain = cleaned;
@@ -205,7 +205,7 @@ public:
 		auto cleaned = value;
 		StringUtil::Trim(cleaned);
 		if (cleaned.empty()) {
-			throw InvalidInputException("anofox_email_smtp_mail_from cannot be empty");
+			throw InvalidInputException("anofox_tab_email_smtp_mail_from cannot be empty");
 		}
 		std::lock_guard<std::mutex> lock(config_mutex);
 		smtp_options.mail_from = cleaned;
@@ -530,7 +530,7 @@ void EmailConfigFunction(ClientContext &, TableFunctionInput &input, DataChunk &
 
 void SetDefaultValidationOption(ClientContext &, SetScope, Value &parameter) {
 	if (parameter.IsNull()) {
-		throw InvalidInputException("anofox_email_default_validation cannot be NULL");
+		throw InvalidInputException("anofox_tab_email_default_validation cannot be NULL");
 	}
 	EmailConfig::Get().SetDefaultValidation(parameter.ToString());
 	parameter = Value(EmailConfig::Get().GetDefaultValidation());
@@ -538,7 +538,7 @@ void SetDefaultValidationOption(ClientContext &, SetScope, Value &parameter) {
 
 void SetRegexPatternOption(ClientContext &, SetScope, Value &parameter) {
 	if (parameter.IsNull()) {
-		throw InvalidInputException("anofox_email_regex_pattern cannot be NULL");
+		throw InvalidInputException("anofox_tab_email_regex_pattern cannot be NULL");
 	}
 	EmailConfig::Get().SetRegexPattern(parameter.ToString());
 	parameter = Value(EmailConfig::Get().GetRegexPattern());
@@ -546,11 +546,11 @@ void SetRegexPatternOption(ClientContext &, SetScope, Value &parameter) {
 
 void SetDnsTimeoutOption(ClientContext &, SetScope, Value &parameter) {
 	if (parameter.IsNull()) {
-		throw InvalidInputException("anofox_email_dns_timeout_ms cannot be NULL");
+		throw InvalidInputException("anofox_tab_email_dns_timeout_ms cannot be NULL");
 	}
 	auto value = parameter.GetValue<int64_t>();
 	if (value < email::DnsOptions::MIN_TIMEOUT_MS || value > email::DnsOptions::MAX_TIMEOUT_MS) {
-		throw InvalidInputException("anofox_email_dns_timeout_ms must be between " +
+		throw InvalidInputException("anofox_tab_email_dns_timeout_ms must be between " +
 		                            std::to_string(email::DnsOptions::MIN_TIMEOUT_MS) + " and " +
 		                            std::to_string(email::DnsOptions::MAX_TIMEOUT_MS));
 	}
@@ -560,11 +560,11 @@ void SetDnsTimeoutOption(ClientContext &, SetScope, Value &parameter) {
 
 void SetDnsTriesOption(ClientContext &, SetScope, Value &parameter) {
 	if (parameter.IsNull()) {
-		throw InvalidInputException("anofox_email_dns_tries cannot be NULL");
+		throw InvalidInputException("anofox_tab_email_dns_tries cannot be NULL");
 	}
 	auto value = parameter.GetValue<int64_t>();
 	if (value <= 0 || value > std::numeric_limits<uint32_t>::max()) {
-		throw InvalidInputException("anofox_email_dns_tries must be between 1 and " +
+		throw InvalidInputException("anofox_tab_email_dns_tries must be between 1 and " +
 		                            std::to_string(std::numeric_limits<uint32_t>::max()));
 	}
 	EmailConfig::Get().SetDnsTries(static_cast<uint32_t>(value));
@@ -573,11 +573,11 @@ void SetDnsTriesOption(ClientContext &, SetScope, Value &parameter) {
 
 void SetSmtpPortOption(ClientContext &, SetScope, Value &parameter) {
 	if (parameter.IsNull()) {
-		throw InvalidInputException("anofox_email_smtp_port cannot be NULL");
+		throw InvalidInputException("anofox_tab_email_smtp_port cannot be NULL");
 	}
 	auto value = parameter.GetValue<int64_t>();
 	if (value <= 0 || value > std::numeric_limits<uint16_t>::max()) {
-		throw InvalidInputException("anofox_email_smtp_port must be between 1 and 65535");
+		throw InvalidInputException("anofox_tab_email_smtp_port must be between 1 and 65535");
 	}
 	EmailConfig::Get().SetSmtpPort(static_cast<uint16_t>(value));
 	parameter = Value::INTEGER(static_cast<int32_t>(EmailConfig::Get().GetSmtpOptions().port));
@@ -585,11 +585,11 @@ void SetSmtpPortOption(ClientContext &, SetScope, Value &parameter) {
 
 void SetSmtpConnectTimeoutOption(ClientContext &, SetScope, Value &parameter) {
 	if (parameter.IsNull()) {
-		throw InvalidInputException("anofox_email_smtp_connect_timeout_ms cannot be NULL");
+		throw InvalidInputException("anofox_tab_email_smtp_connect_timeout_ms cannot be NULL");
 	}
 	auto value = parameter.GetValue<int64_t>();
 	if (value < email::SmtpOptions::MIN_TIMEOUT_MS || value > email::SmtpOptions::MAX_CONNECT_TIMEOUT_MS) {
-		throw InvalidInputException("anofox_email_smtp_connect_timeout_ms must be between " +
+		throw InvalidInputException("anofox_tab_email_smtp_connect_timeout_ms must be between " +
 		                            std::to_string(email::SmtpOptions::MIN_TIMEOUT_MS) + " and " +
 		                            std::to_string(email::SmtpOptions::MAX_CONNECT_TIMEOUT_MS));
 	}
@@ -599,11 +599,11 @@ void SetSmtpConnectTimeoutOption(ClientContext &, SetScope, Value &parameter) {
 
 void SetSmtpReadTimeoutOption(ClientContext &, SetScope, Value &parameter) {
 	if (parameter.IsNull()) {
-		throw InvalidInputException("anofox_email_smtp_read_timeout_ms cannot be NULL");
+		throw InvalidInputException("anofox_tab_email_smtp_read_timeout_ms cannot be NULL");
 	}
 	auto value = parameter.GetValue<int64_t>();
 	if (value < email::SmtpOptions::MIN_TIMEOUT_MS || value > email::SmtpOptions::MAX_READ_TIMEOUT_MS) {
-		throw InvalidInputException("anofox_email_smtp_read_timeout_ms must be between " +
+		throw InvalidInputException("anofox_tab_email_smtp_read_timeout_ms must be between " +
 		                            std::to_string(email::SmtpOptions::MIN_TIMEOUT_MS) + " and " +
 		                            std::to_string(email::SmtpOptions::MAX_READ_TIMEOUT_MS));
 	}
@@ -613,7 +613,7 @@ void SetSmtpReadTimeoutOption(ClientContext &, SetScope, Value &parameter) {
 
 void SetSmtpHeloDomainOption(ClientContext &, SetScope, Value &parameter) {
 	if (parameter.IsNull()) {
-		throw InvalidInputException("anofox_email_smtp_helo_domain cannot be NULL");
+		throw InvalidInputException("anofox_tab_email_smtp_helo_domain cannot be NULL");
 	}
 	EmailConfig::Get().SetSmtpHeloDomain(parameter.ToString());
 	parameter = Value(EmailConfig::Get().GetSmtpOptions().helo_domain);
@@ -621,7 +621,7 @@ void SetSmtpHeloDomainOption(ClientContext &, SetScope, Value &parameter) {
 
 void SetSmtpMailFromOption(ClientContext &, SetScope, Value &parameter) {
 	if (parameter.IsNull()) {
-		throw InvalidInputException("anofox_email_smtp_mail_from cannot be NULL");
+		throw InvalidInputException("anofox_tab_email_smtp_mail_from cannot be NULL");
 	}
 	EmailConfig::Get().SetSmtpMailFrom(parameter.ToString());
 	parameter = Value(EmailConfig::Get().GetSmtpOptions().mail_from);
