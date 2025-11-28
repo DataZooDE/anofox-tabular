@@ -2,6 +2,7 @@
 
 #if HAVE_LIBPOSTAL
 
+#include "anofox_function_alias.hpp"
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/file_system.hpp"
 #include "duckdb/common/types/string_type.hpp"
@@ -460,7 +461,7 @@ void PostalLoadDataFunction(DataChunk &, ExpressionState &state, Vector &result)
 }
 
 ScalarFunction CreateLoadFunction() {
-	ScalarFunction function("anofox_postal_load_data", {}, LogicalTypeId::BOOLEAN, PostalLoadDataFunction);
+	ScalarFunction function("anofox_tab_postal_load_data", {}, LogicalTypeId::BOOLEAN, PostalLoadDataFunction);
 	function.null_handling = FunctionNullHandling::SPECIAL_HANDLING;
 	function.stability = FunctionStability::VOLATILE;
 	return function;
@@ -470,17 +471,30 @@ ScalarFunction CreateLoadFunction() {
 
 void RegisterPostalOptions(ExtensionLoader &loader) {
 	auto &config = DBConfig::GetConfig(loader.GetDatabaseInstance());
-	config.AddExtensionOption("anofox_postal_data_path",
+	config.AddExtensionOption("anofox_tab_postal_data_path",
 	                          "Directory storing libpostal assets",
 	                          LogicalTypeId::VARCHAR, Value(postal::DEFAULT_POSTAL_DIR), SetPostalDataPathOption);
 }
 
 void RegisterPostalFunctions(ExtensionLoader &loader) {
 	RegisterPostalOptions(loader);
-	loader.RegisterFunction(CreateParseFunction("anofox_postal_parse_address"));
-	loader.RegisterFunction(CreateExpandFunction("anofox_postal_expand_address"));
-	loader.RegisterFunction(CreateStatusFunction("anofox_postal_status"));
-	loader.RegisterFunction(CreateLoadFunction());
+	
+	// Register postal_parse_address
+	ScalarFunction parse_func = CreateParseFunction("anofox_tab_postal_parse_address");
+	RegisterScalarFunctionWithAlias(loader, parse_func, "postal_parse_address");
+	
+	// Register postal_expand_address
+	ScalarFunction expand_func = CreateExpandFunction("anofox_tab_postal_expand_address");
+	RegisterScalarFunctionWithAlias(loader, expand_func, "postal_expand_address");
+	
+	// Register postal_status
+	TableFunction status_func = CreateStatusFunction("anofox_tab_postal_status");
+	RegisterTableFunctionWithAlias(loader, status_func, "postal_status");
+	
+	// Register postal_load_data
+	ScalarFunction load_func = CreateLoadFunction();
+	load_func.name = "anofox_tab_postal_load_data";
+	RegisterScalarFunctionWithAlias(loader, load_func, "postal_load_data");
 }
 
 } // namespace anofox

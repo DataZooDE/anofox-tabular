@@ -1,216 +1,216 @@
 require anofox_tabular
 
-# Test anofox_money creation
+# Test anofox_tab_money creation
 query T
-SELECT anofox_money(100.50, 'USD');
+SELECT anofox_tab_money(100.50, 'USD');
 ----
 {'amount': 100.5, 'currency': USD}
 
-# Test anofox_money with different currencies
+# Test anofox_tab_money with different currencies
 query T
-SELECT anofox_money(50.00, 'EUR');
+SELECT anofox_tab_money(50.00, 'EUR');
 ----
 {'amount': 50.0, 'currency': EUR}
 
 query T
-SELECT anofox_money(1000.0, 'JPY');
+SELECT anofox_tab_money(1000.0, 'JPY');
 ----
 {'amount': 1000.0, 'currency': JPY}
 
-# Test anofox_money_from_cents
+# Test anofox_tab_money_from_cents
 query T
-SELECT anofox_money_from_cents(10050, 'USD');
+SELECT anofox_tab_money_from_cents(10050, 'USD');
 ----
 {'amount': 10050.0, 'currency': USD}
 
 query T
-SELECT anofox_money_from_cents(5000, 'EUR');
+SELECT anofox_tab_money_from_cents(5000, 'EUR');
 ----
 {'amount': 5000.0, 'currency': EUR}
 
-# Test anofox_money_amount extraction
+# Test anofox_tab_money_amount extraction
 query I
-SELECT anofox_money_amount(anofox_money(100.50, 'USD'));
+SELECT anofox_tab_money_amount(anofox_tab_money(100.50, 'USD'));
 ----
 100
 
 query I
-SELECT anofox_money_amount(anofox_money(75.25, 'EUR'));
+SELECT anofox_tab_money_amount(anofox_tab_money(75.25, 'EUR'));
 ----
 75
 
-# Test anofox_money_currency extraction
+# Test anofox_tab_money_currency extraction
 query T
-SELECT anofox_money_currency(anofox_money(100.50, 'USD'));
+SELECT anofox_tab_money_currency(anofox_tab_money(100.50, 'USD'));
 ----
 USD
 
 query T
-SELECT anofox_money_currency(anofox_money(50.00, 'GBP'));
+SELECT anofox_tab_money_currency(anofox_tab_money(50.00, 'GBP'));
 ----
 GBP
 
-# Test anofox_is_valid_currency with valid currencies
+# Test anofox_tab_is_valid_currency with valid currencies
 query I
-SELECT anofox_is_valid_currency('USD');
+SELECT anofox_tab_is_valid_currency('USD');
 ----
 true
 
 query I
-SELECT anofox_is_valid_currency('EUR');
+SELECT anofox_tab_is_valid_currency('EUR');
 ----
 true
 
 query I
-SELECT anofox_is_valid_currency('JPY');
+SELECT anofox_tab_is_valid_currency('JPY');
 ----
 true
 
 query I
-SELECT anofox_is_valid_currency('GBP');
+SELECT anofox_tab_is_valid_currency('GBP');
 ----
 true
 
 query I
-SELECT anofox_is_valid_currency('CAD');
+SELECT anofox_tab_is_valid_currency('CAD');
 ----
 true
 
 query I
-SELECT anofox_is_valid_currency('AUD');
+SELECT anofox_tab_is_valid_currency('AUD');
 ----
 true
 
 query I
-SELECT anofox_is_valid_currency('CHF');
+SELECT anofox_tab_is_valid_currency('CHF');
 ----
 true
 
 query I
-SELECT anofox_is_valid_currency('CNY');
+SELECT anofox_tab_is_valid_currency('CNY');
 ----
 true
 
 query I
-SELECT anofox_is_valid_currency('INR');
+SELECT anofox_tab_is_valid_currency('INR');
 ----
 true
 
 query I
-SELECT anofox_is_valid_currency('BRL');
+SELECT anofox_tab_is_valid_currency('BRL');
 ----
 true
 
-# Test anofox_is_valid_currency with invalid currencies
+# Test anofox_tab_is_valid_currency with invalid currencies
 query I
-SELECT anofox_is_valid_currency('XYZ');
+SELECT anofox_tab_is_valid_currency('XYZ');
 ----
 false
 
 query I
-SELECT anofox_is_valid_currency('INVALID');
+SELECT anofox_tab_is_valid_currency('INVALID');
 ----
 false
 
 query I
-SELECT anofox_is_valid_currency('');
+SELECT anofox_tab_is_valid_currency('');
 ----
 false
 
-# Test anofox_currency_symbol
+# Test anofox_tab_currency_symbol
 query T
-SELECT anofox_currency_symbol('USD');
+SELECT anofox_tab_currency_symbol('USD');
 ----
 $
 
 query T
-SELECT anofox_currency_symbol('EUR');
+SELECT anofox_tab_currency_symbol('EUR');
 ----
 €
 
 query T
-SELECT anofox_currency_symbol('GBP');
+SELECT anofox_tab_currency_symbol('GBP');
 ----
 £
 
 query T
-SELECT anofox_currency_symbol('JPY');
+SELECT anofox_tab_currency_symbol('JPY');
 ----
 ¥
 
-# Test anofox_currency_name
+# Test anofox_tab_currency_name
 query T
-SELECT anofox_currency_name('USD');
+SELECT anofox_tab_currency_name('USD');
 ----
 United States Dollar
 
 query T
-SELECT anofox_currency_name('EUR');
+SELECT anofox_tab_currency_name('EUR');
 ----
 Euro
 
 query T
-SELECT anofox_currency_name('GBP');
+SELECT anofox_tab_currency_name('GBP');
 ----
 British Pound
 
 query T
-SELECT anofox_currency_name('JPY');
+SELECT anofox_tab_currency_name('JPY');
 ----
 Japanese Yen
 
 query T
-SELECT anofox_currency_name('CAD');
+SELECT anofox_tab_currency_name('CAD');
 ----
 Canadian Dollar
 
 query T
-SELECT anofox_currency_name('AUD');
+SELECT anofox_tab_currency_name('AUD');
 ----
 Australian Dollar
 
 # Test NULL handling in money creation
 query T
-SELECT anofox_money(NULL, 'USD');
+SELECT anofox_tab_money(NULL, 'USD');
 ----
 NULL
 
 query T
-SELECT anofox_money(100.50, NULL);
+SELECT anofox_tab_money(100.50, NULL);
 ----
 NULL
 
 # Test NULL handling in money extraction
 query T
-SELECT anofox_money_amount(NULL);
+SELECT anofox_tab_money_amount(NULL);
 ----
 NULL
 
 query T
-SELECT anofox_money_currency(NULL);
+SELECT anofox_tab_money_currency(NULL);
 ----
 NULL
 
 # Test NULL handling in currency validation
 query I
-SELECT anofox_is_valid_currency(NULL);
+SELECT anofox_tab_is_valid_currency(NULL);
 ----
 NULL
 
 # Test NULL handling in currency symbol/name
 query T
-SELECT anofox_currency_symbol(NULL);
+SELECT anofox_tab_currency_symbol(NULL);
 ----
 NULL
 
 query T
-SELECT anofox_currency_name(NULL);
+SELECT anofox_tab_currency_name(NULL);
 ----
 NULL
 
 # Test with vectors/tables
 query T
-SELECT anofox_money(amount, code) FROM (
+SELECT anofox_tab_money(amount, code) FROM (
     SELECT 100.50 as amount, 'USD' as code
     UNION ALL
     SELECT 75.00 as amount, 'EUR' as code
@@ -232,7 +232,7 @@ SELECT COUNT(*) FROM (
         UNION ALL
         SELECT 'XYZ' as code
     )
-    WHERE anofox_is_valid_currency(code)
+    WHERE anofox_tab_is_valid_currency(code)
 );
 ----
 2
@@ -240,91 +240,91 @@ SELECT COUNT(*) FROM (
 # Test invalid currency - should return NULL/error
 # Commenting out as the exact error message format varies
 # statement error Invalid currency code: INVALID
-# SELECT anofox_money(100.50, 'INVALID');
+# SELECT anofox_tab_money(100.50, 'INVALID');
 
 # Test money field access via column reference
 query TI
-SELECT anofox_money_currency(m), CAST(anofox_money_amount(m) AS INTEGER) FROM (
-    SELECT anofox_money(100.50, 'USD') as m
+SELECT anofox_tab_money_currency(m), CAST(anofox_tab_money_amount(m) AS INTEGER) FROM (
+    SELECT anofox_tab_money(100.50, 'USD') as m
 );
 ----
 USD	100
 
 # Test chaining operations
 query T
-SELECT anofox_currency_symbol(anofox_money_currency(anofox_money(50.0, 'EUR')));
+SELECT anofox_tab_currency_symbol(anofox_tab_money_currency(anofox_tab_money(50.0, 'EUR')));
 ----
 €
 
 # Test case insensitivity of currency codes in queries (depends on implementation)
 query T
-SELECT anofox_money(100.0, 'usd');
+SELECT anofox_tab_money(100.0, 'usd');
 ----
 {'amount': 100.0, 'currency': usd}
 
-# Test anofox_money_format with 'symbol' style
+# Test anofox_tab_money_format with 'symbol' style
 query T
-SELECT anofox_money_format(anofox_money(100.50, 'USD'), 'symbol');
+SELECT anofox_tab_money_format(anofox_tab_money(100.50, 'USD'), 'symbol');
 ----
 $100.50
 
 query T
-SELECT anofox_money_format(anofox_money(75.25, 'EUR'), 'symbol');
+SELECT anofox_tab_money_format(anofox_tab_money(75.25, 'EUR'), 'symbol');
 ----
 75,25 €
 
 query T
-SELECT anofox_money_format(anofox_money(1000.00, 'JPY'), 'symbol');
+SELECT anofox_tab_money_format(anofox_tab_money(1000.00, 'JPY'), 'symbol');
 ----
 ¥1000.00
 
-# Test anofox_money_format with 'code' style
+# Test anofox_tab_money_format with 'code' style
 query T
-SELECT anofox_money_format(anofox_money(100.50, 'USD'), 'code');
+SELECT anofox_tab_money_format(anofox_tab_money(100.50, 'USD'), 'code');
 ----
 100.50 USD
 
 query T
-SELECT anofox_money_format(anofox_money(75.25, 'EUR'), 'code');
+SELECT anofox_tab_money_format(anofox_tab_money(75.25, 'EUR'), 'code');
 ----
 75.25 EUR
 
-# Test anofox_money_format with 'long' style
+# Test anofox_tab_money_format with 'long' style
 query T
-SELECT anofox_money_format(anofox_money(100.50, 'USD'), 'long');
+SELECT anofox_tab_money_format(anofox_tab_money(100.50, 'USD'), 'long');
 ----
 100.50 United States Dollar
 
 query T
-SELECT anofox_money_format(anofox_money(75.25, 'EUR'), 'long');
+SELECT anofox_tab_money_format(anofox_tab_money(75.25, 'EUR'), 'long');
 ----
 75.25 Euro
 
 query T
-SELECT anofox_money_format(anofox_money(1000.00, 'JPY'), 'long');
+SELECT anofox_tab_money_format(anofox_tab_money(1000.00, 'JPY'), 'long');
 ----
 1000.00 Japanese Yen
 
-# Test anofox_money_format with default/unknown style (defaults to code)
+# Test anofox_tab_money_format with default/unknown style (defaults to code)
 query T
-SELECT anofox_money_format(anofox_money(100.50, 'USD'), 'unknown');
+SELECT anofox_tab_money_format(anofox_tab_money(100.50, 'USD'), 'unknown');
 ----
 100.50 USD
 
-# Test anofox_money_format with NULL values
+# Test anofox_tab_money_format with NULL values
 query T
-SELECT anofox_money_format(NULL, 'symbol');
+SELECT anofox_tab_money_format(NULL, 'symbol');
 ----
 NULL
 
 query T
-SELECT anofox_money_format(anofox_money(100.50, 'USD'), NULL);
+SELECT anofox_tab_money_format(anofox_tab_money(100.50, 'USD'), NULL);
 ----
 NULL
 
-# Test anofox_money_format in vector context
+# Test anofox_tab_money_format in vector context
 query T
-SELECT anofox_money_format(anofox_money(amount, code), 'symbol') FROM (
+SELECT anofox_tab_money_format(anofox_tab_money(amount, code), 'symbol') FROM (
     SELECT 100.50 as amount, 'USD' as code
     UNION ALL
     SELECT 75.00 as amount, 'EUR' as code
@@ -338,119 +338,119 @@ $100.50
 
 # Test formatting with different amount values
 query T
-SELECT anofox_money_format(anofox_money(0.01, 'USD'), 'symbol');
+SELECT anofox_tab_money_format(anofox_tab_money(0.01, 'USD'), 'symbol');
 ----
 $0.01
 
 query T
-SELECT anofox_money_format(anofox_money(999999.99, 'USD'), 'symbol');
+SELECT anofox_tab_money_format(anofox_tab_money(999999.99, 'USD'), 'symbol');
 ----
 $999999.99
 
 query T
-SELECT anofox_money_format(anofox_money(1000.00, 'USD'), 'symbol');
+SELECT anofox_tab_money_format(anofox_tab_money(1000.00, 'USD'), 'symbol');
 ----
 $1000.00
 
-# Test anofox_money_is_positive
+# Test anofox_tab_money_is_positive
 query I
-SELECT anofox_money_is_positive(anofox_money(100.0, 'USD'));
+SELECT anofox_tab_money_is_positive(anofox_tab_money(100.0, 'USD'));
 ----
 true
 
 query I
-SELECT anofox_money_is_positive(anofox_money(-50.0, 'USD'));
+SELECT anofox_tab_money_is_positive(anofox_tab_money(-50.0, 'USD'));
 ----
 false
 
 query I
-SELECT anofox_money_is_positive(anofox_money(0.0, 'USD'));
+SELECT anofox_tab_money_is_positive(anofox_tab_money(0.0, 'USD'));
 ----
 false
 
 query I
-SELECT anofox_money_is_positive(NULL);
+SELECT anofox_tab_money_is_positive(NULL);
 ----
 NULL
 
-# Test anofox_money_is_negative
+# Test anofox_tab_money_is_negative
 query I
-SELECT anofox_money_is_negative(anofox_money(-50.0, 'USD'));
+SELECT anofox_tab_money_is_negative(anofox_tab_money(-50.0, 'USD'));
 ----
 true
 
 query I
-SELECT anofox_money_is_negative(anofox_money(100.0, 'USD'));
+SELECT anofox_tab_money_is_negative(anofox_tab_money(100.0, 'USD'));
 ----
 false
 
 query I
-SELECT anofox_money_is_negative(anofox_money(0.0, 'USD'));
+SELECT anofox_tab_money_is_negative(anofox_tab_money(0.0, 'USD'));
 ----
 false
 
 query I
-SELECT anofox_money_is_negative(NULL);
+SELECT anofox_tab_money_is_negative(NULL);
 ----
 NULL
 
-# Test anofox_money_is_zero
+# Test anofox_tab_money_is_zero
 query I
-SELECT anofox_money_is_zero(anofox_money(0.0, 'USD'));
+SELECT anofox_tab_money_is_zero(anofox_tab_money(0.0, 'USD'));
 ----
 true
 
 query I
-SELECT anofox_money_is_zero(anofox_money(0.00, 'USD'));
+SELECT anofox_tab_money_is_zero(anofox_tab_money(0.00, 'USD'));
 ----
 true
 
 query I
-SELECT anofox_money_is_zero(anofox_money(0.01, 'USD'));
+SELECT anofox_tab_money_is_zero(anofox_tab_money(0.01, 'USD'));
 ----
 false
 
 query I
-SELECT anofox_money_is_zero(anofox_money(-0.01, 'USD'));
+SELECT anofox_tab_money_is_zero(anofox_tab_money(-0.01, 'USD'));
 ----
 false
 
 query I
-SELECT anofox_money_is_zero(NULL);
+SELECT anofox_tab_money_is_zero(NULL);
 ----
 NULL
 
-# Test anofox_money_abs
+# Test anofox_tab_money_abs
 query T
-SELECT anofox_money_abs(anofox_money(-100.0, 'USD'));
+SELECT anofox_tab_money_abs(anofox_tab_money(-100.0, 'USD'));
 ----
 {'amount': 100.0, 'currency': USD}
 
 query T
-SELECT anofox_money_abs(anofox_money(100.0, 'USD'));
+SELECT anofox_tab_money_abs(anofox_tab_money(100.0, 'USD'));
 ----
 {'amount': 100.0, 'currency': USD}
 
 query T
-SELECT anofox_money_abs(anofox_money(0.0, 'EUR'));
+SELECT anofox_tab_money_abs(anofox_tab_money(0.0, 'EUR'));
 ----
 {'amount': 0.0, 'currency': EUR}
 
 query T
-SELECT anofox_money_abs(NULL);
+SELECT anofox_tab_money_abs(NULL);
 ----
 NULL
 
-# Test anofox_money_abs with amount extraction
+# Test anofox_tab_money_abs with amount extraction
 query R
-SELECT anofox_money_amount(anofox_money_abs(anofox_money(-999.99, 'USD')));
+SELECT anofox_tab_money_amount(anofox_tab_money_abs(anofox_tab_money(-999.99, 'USD')));
 ----
 999.99
 
 # Test validation functions on vectors
 query I
 SELECT COUNT(*) FROM (
-    SELECT anofox_money_is_positive(anofox_money(amount, 'USD')) as is_pos FROM (
+    SELECT anofox_tab_money_is_positive(anofox_tab_money(amount, 'USD')) as is_pos FROM (
         SELECT 100.0 as amount
         UNION ALL
         SELECT -50.0 as amount
@@ -465,117 +465,117 @@ SELECT COUNT(*) FROM (
 # Test validation functions in WHERE clause
 query I
 SELECT COUNT(*) FROM (
-    SELECT anofox_money(amount, 'USD') as m FROM (
+    SELECT anofox_tab_money(amount, 'USD') as m FROM (
         SELECT 100.0 as amount
         UNION ALL
         SELECT -50.0 as amount
         UNION ALL
         SELECT 75.0 as amount
     )
-) WHERE anofox_money_is_positive(m);
+) WHERE anofox_tab_money_is_positive(m);
 ----
 2
 
 # Test chaining validation with formatting
 query T
-SELECT anofox_money_format(anofox_money_abs(anofox_money(-123.45, 'EUR')), 'symbol');
+SELECT anofox_tab_money_format(anofox_tab_money_abs(anofox_tab_money(-123.45, 'EUR')), 'symbol');
 ----
 123,45 €
 
-# Test anofox_money_add with same currency
+# Test anofox_tab_money_add with same currency
 query T
-SELECT anofox_money_add(anofox_money(100.0, 'USD'), anofox_money(50.0, 'USD'));
+SELECT anofox_tab_money_add(anofox_tab_money(100.0, 'USD'), anofox_tab_money(50.0, 'USD'));
 ----
 {'amount': 150.0, 'currency': USD}
 
 query T
-SELECT anofox_money_add(anofox_money(25.50, 'EUR'), anofox_money(75.50, 'EUR'));
+SELECT anofox_tab_money_add(anofox_tab_money(25.50, 'EUR'), anofox_tab_money(75.50, 'EUR'));
 ----
 {'amount': 101.0, 'currency': EUR}
 
 query T
-SELECT anofox_money_add(anofox_money(-10.0, 'USD'), anofox_money(10.0, 'USD'));
+SELECT anofox_tab_money_add(anofox_tab_money(-10.0, 'USD'), anofox_tab_money(10.0, 'USD'));
 ----
 {'amount': 0.0, 'currency': USD}
 
-# Test anofox_money_add with NULL values
+# Test anofox_tab_money_add with NULL values
 query T
-SELECT anofox_money_add(NULL, anofox_money(50.0, 'USD'));
+SELECT anofox_tab_money_add(NULL, anofox_tab_money(50.0, 'USD'));
 ----
 NULL
 
 query T
-SELECT anofox_money_add(anofox_money(100.0, 'USD'), NULL);
+SELECT anofox_tab_money_add(anofox_tab_money(100.0, 'USD'), NULL);
 ----
 NULL
 
-# Test anofox_money_subtract with same currency
+# Test anofox_tab_money_subtract with same currency
 query T
-SELECT anofox_money_subtract(anofox_money(100.0, 'USD'), anofox_money(30.0, 'USD'));
+SELECT anofox_tab_money_subtract(anofox_tab_money(100.0, 'USD'), anofox_tab_money(30.0, 'USD'));
 ----
 {'amount': 70.0, 'currency': USD}
 
 query T
-SELECT anofox_money_subtract(anofox_money(50.0, 'EUR'), anofox_money(75.0, 'EUR'));
+SELECT anofox_tab_money_subtract(anofox_tab_money(50.0, 'EUR'), anofox_tab_money(75.0, 'EUR'));
 ----
 {'amount': -25.0, 'currency': EUR}
 
 query T
-SELECT anofox_money_subtract(anofox_money(100.0, 'USD'), anofox_money(100.0, 'USD'));
+SELECT anofox_tab_money_subtract(anofox_tab_money(100.0, 'USD'), anofox_tab_money(100.0, 'USD'));
 ----
 {'amount': 0.0, 'currency': USD}
 
-# Test anofox_money_subtract with NULL values
+# Test anofox_tab_money_subtract with NULL values
 query T
-SELECT anofox_money_subtract(NULL, anofox_money(50.0, 'USD'));
+SELECT anofox_tab_money_subtract(NULL, anofox_tab_money(50.0, 'USD'));
 ----
 NULL
 
 query T
-SELECT anofox_money_subtract(anofox_money(100.0, 'USD'), NULL);
+SELECT anofox_tab_money_subtract(anofox_tab_money(100.0, 'USD'), NULL);
 ----
 NULL
 
-# Test anofox_money_multiply with various factors
+# Test anofox_tab_money_multiply with various factors
 query T
-SELECT anofox_money_multiply(anofox_money(25.0, 'USD'), 2.0);
+SELECT anofox_tab_money_multiply(anofox_tab_money(25.0, 'USD'), 2.0);
 ----
 {'amount': 50.0, 'currency': USD}
 
 query T
-SELECT anofox_money_multiply(anofox_money(100.0, 'EUR'), 0.5);
+SELECT anofox_tab_money_multiply(anofox_tab_money(100.0, 'EUR'), 0.5);
 ----
 {'amount': 50.0, 'currency': EUR}
 
 query T
-SELECT anofox_money_multiply(anofox_money(50.0, 'USD'), 1.0);
+SELECT anofox_tab_money_multiply(anofox_tab_money(50.0, 'USD'), 1.0);
 ----
 {'amount': 50.0, 'currency': USD}
 
 query T
-SELECT anofox_money_multiply(anofox_money(50.0, 'USD'), 0.0);
+SELECT anofox_tab_money_multiply(anofox_tab_money(50.0, 'USD'), 0.0);
 ----
 {'amount': 0.0, 'currency': USD}
 
 query T
-SELECT anofox_money_multiply(anofox_money(10.0, 'USD'), 1.5);
+SELECT anofox_tab_money_multiply(anofox_tab_money(10.0, 'USD'), 1.5);
 ----
 {'amount': 15.0, 'currency': USD}
 
-# Test anofox_money_multiply with NULL values
+# Test anofox_tab_money_multiply with NULL values
 query T
-SELECT anofox_money_multiply(NULL, 2.0);
+SELECT anofox_tab_money_multiply(NULL, 2.0);
 ----
 NULL
 
 query T
-SELECT anofox_money_multiply(anofox_money(100.0, 'USD'), NULL);
+SELECT anofox_tab_money_multiply(anofox_tab_money(100.0, 'USD'), NULL);
 ----
 NULL
 
 # Test arithmetic operations on vectors
 query T
-SELECT anofox_money_add(anofox_money(amount1, 'USD'), anofox_money(amount2, 'USD')) FROM (
+SELECT anofox_tab_money_add(anofox_tab_money(amount1, 'USD'), anofox_tab_money(amount2, 'USD')) FROM (
     SELECT 100.0 as amount1, 50.0 as amount2
     UNION ALL
     SELECT 200.0 as amount1, 75.0 as amount2
@@ -586,10 +586,10 @@ SELECT anofox_money_add(anofox_money(amount1, 'USD'), anofox_money(amount2, 'USD
 
 # Test chaining arithmetic operations
 query T
-SELECT anofox_money_format(
-    anofox_money_add(
-        anofox_money_multiply(anofox_money(10.0, 'USD'), 2.0),
-        anofox_money(5.0, 'USD')
+SELECT anofox_tab_money_format(
+    anofox_tab_money_add(
+        anofox_tab_money_multiply(anofox_tab_money(10.0, 'USD'), 2.0),
+        anofox_tab_money(5.0, 'USD')
     ),
     'symbol'
 );
@@ -598,101 +598,101 @@ $25.00
 
 # Test extracting amount from arithmetic result
 query R
-SELECT anofox_money_amount(anofox_money_add(anofox_money(33.33, 'USD'), anofox_money(66.67, 'USD')));
+SELECT anofox_tab_money_amount(anofox_tab_money_add(anofox_tab_money(33.33, 'USD'), anofox_tab_money(66.67, 'USD')));
 ----
 100.0
 
 # Test validation on arithmetic result
 query I
-SELECT anofox_money_is_positive(anofox_money_subtract(anofox_money(100.0, 'USD'), anofox_money(50.0, 'USD')));
+SELECT anofox_tab_money_is_positive(anofox_tab_money_subtract(anofox_tab_money(100.0, 'USD'), anofox_tab_money(50.0, 'USD')));
 ----
 true
 
 query I
-SELECT anofox_money_is_negative(anofox_money_subtract(anofox_money(50.0, 'USD'), anofox_money(100.0, 'USD')));
+SELECT anofox_tab_money_is_negative(anofox_tab_money_subtract(anofox_tab_money(50.0, 'USD'), anofox_tab_money(100.0, 'USD')));
 ----
 true
 
-# Test anofox_money_in_range (quality validation)
+# Test anofox_tab_money_in_range (quality validation)
 query I
-SELECT anofox_money_in_range(anofox_money(50.0, 'USD'), 10.0, 100.0);
+SELECT anofox_tab_money_in_range(anofox_tab_money(50.0, 'USD'), 10.0, 100.0);
 ----
 true
 
 query I
-SELECT anofox_money_in_range(anofox_money(5.0, 'USD'), 10.0, 100.0);
+SELECT anofox_tab_money_in_range(anofox_tab_money(5.0, 'USD'), 10.0, 100.0);
 ----
 false
 
 query I
-SELECT anofox_money_in_range(anofox_money(150.0, 'USD'), 10.0, 100.0);
+SELECT anofox_tab_money_in_range(anofox_tab_money(150.0, 'USD'), 10.0, 100.0);
 ----
 false
 
 query I
-SELECT anofox_money_in_range(anofox_money(10.0, 'USD'), 10.0, 100.0);
+SELECT anofox_tab_money_in_range(anofox_tab_money(10.0, 'USD'), 10.0, 100.0);
 ----
 true
 
 query I
-SELECT anofox_money_in_range(anofox_money(100.0, 'USD'), 10.0, 100.0);
+SELECT anofox_tab_money_in_range(anofox_tab_money(100.0, 'USD'), 10.0, 100.0);
 ----
 true
 
-# Test anofox_money_in_range with NULL values
+# Test anofox_tab_money_in_range with NULL values
 query I
-SELECT anofox_money_in_range(NULL, 10.0, 100.0);
+SELECT anofox_tab_money_in_range(NULL, 10.0, 100.0);
 ----
 NULL
 
 query I
-SELECT anofox_money_in_range(anofox_money(50.0, 'USD'), NULL, 100.0);
+SELECT anofox_tab_money_in_range(anofox_tab_money(50.0, 'USD'), NULL, 100.0);
 ----
 NULL
 
-# Test anofox_money_same_currency
+# Test anofox_tab_money_same_currency
 query I
-SELECT anofox_money_same_currency(anofox_money(100.0, 'USD'), anofox_money(50.0, 'USD'));
+SELECT anofox_tab_money_same_currency(anofox_tab_money(100.0, 'USD'), anofox_tab_money(50.0, 'USD'));
 ----
 true
 
 query I
-SELECT anofox_money_same_currency(anofox_money(100.0, 'USD'), anofox_money(50.0, 'EUR'));
+SELECT anofox_tab_money_same_currency(anofox_tab_money(100.0, 'USD'), anofox_tab_money(50.0, 'EUR'));
 ----
 false
 
 query I
-SELECT anofox_money_same_currency(anofox_money(100.0, 'EUR'), anofox_money(50.0, 'EUR'));
+SELECT anofox_tab_money_same_currency(anofox_tab_money(100.0, 'EUR'), anofox_tab_money(50.0, 'EUR'));
 ----
 true
 
 query I
-SELECT anofox_money_same_currency(anofox_money(100.0, 'JPY'), anofox_money(50.0, 'GBP'));
+SELECT anofox_tab_money_same_currency(anofox_tab_money(100.0, 'JPY'), anofox_tab_money(50.0, 'GBP'));
 ----
 false
 
-# Test anofox_money_same_currency with NULL values
+# Test anofox_tab_money_same_currency with NULL values
 query I
-SELECT anofox_money_same_currency(NULL, anofox_money(50.0, 'USD'));
+SELECT anofox_tab_money_same_currency(NULL, anofox_tab_money(50.0, 'USD'));
 ----
 NULL
 
 query I
-SELECT anofox_money_same_currency(anofox_money(100.0, 'USD'), NULL);
+SELECT anofox_tab_money_same_currency(anofox_tab_money(100.0, 'USD'), NULL);
 ----
 NULL
 
 # Test quality validation in WHERE clause
 query I
 SELECT COUNT(*) FROM (
-    SELECT anofox_money(amount, currency) as m FROM (
+    SELECT anofox_tab_money(amount, currency) as m FROM (
         SELECT 50.0 as amount, 'USD' as currency
         UNION ALL
         SELECT 150.0 as amount, 'USD' as currency
         UNION ALL
         SELECT 75.0 as amount, 'USD' as currency
     )
-) WHERE anofox_money_in_range(m, 10.0, 100.0);
+) WHERE anofox_tab_money_in_range(m, 10.0, 100.0);
 ----
 2
 
@@ -700,8 +700,8 @@ SELECT COUNT(*) FROM (
 query I
 SELECT COUNT(*) FROM (
     SELECT
-        anofox_money(100.0, c1) as m1,
-        anofox_money(50.0, c2) as m2
+        anofox_tab_money(100.0, c1) as m1,
+        anofox_tab_money(50.0, c2) as m2
     FROM (
         SELECT 'USD' as c1, 'USD' as c2
         UNION ALL
@@ -709,6 +709,6 @@ SELECT COUNT(*) FROM (
         UNION ALL
         SELECT 'USD' as c1, 'EUR' as c2
     )
-) WHERE anofox_money_same_currency(m1, m2);
+) WHERE anofox_tab_money_same_currency(m1, m2);
 ----
 1

@@ -1,4 +1,5 @@
 #include "anofox_vat.hpp"
+#include "anofox_function_alias.hpp"
 #include "duckdb/function/scalar_function.hpp"
 #include "duckdb/parser/parsed_expression.hpp"
 #include "duckdb/common/string_util.hpp"
@@ -181,56 +182,56 @@ void RegisterVATOptions(ExtensionLoader& loader) {
 
 void RegisterVATFunctions(ExtensionLoader& loader) {
   // Phase 2: Basic VAT Operations
-  ScalarFunction vat_func("anofox_vat", {LogicalTypeId::VARCHAR}, GetVATType(),
+  ScalarFunction vat_func("anofox_tab_vat", {LogicalTypeId::VARCHAR}, GetVATType(),
                          VATParseFunc);
-  loader.RegisterFunction(vat_func);
+  RegisterScalarFunctionWithAlias(loader, vat_func, "vat");
 
-  ScalarFunction is_valid_country_func("anofox_is_valid_vat_country",
+  ScalarFunction is_valid_country_func("anofox_tab_is_valid_vat_country",
                                        {LogicalTypeId::VARCHAR},
                                        LogicalTypeId::BOOLEAN,
                                        IsValidVATCountryFunc);
-  loader.RegisterFunction(is_valid_country_func);
+  RegisterScalarFunctionWithAlias(loader, is_valid_country_func, "is_valid_vat_country");
 
-  ScalarFunction normalize_func("anofox_vat_normalize",
+  ScalarFunction normalize_func("anofox_tab_vat_normalize",
                                {LogicalTypeId::VARCHAR},
                                LogicalTypeId::VARCHAR, VATNormalizeFunc);
-  loader.RegisterFunction(normalize_func);
+  RegisterScalarFunctionWithAlias(loader, normalize_func, "vat_normalize");
 
   // Phase 3: Syntax Validation
-  ScalarFunction is_valid_syntax_func("anofox_vat_is_valid_syntax",
+  ScalarFunction is_valid_syntax_func("anofox_tab_vat_is_valid_syntax",
                                       {LogicalTypeId::VARCHAR},
                                       LogicalTypeId::BOOLEAN,
                                       VATIsValidSyntaxFunc);
-  loader.RegisterFunction(is_valid_syntax_func);
+  RegisterScalarFunctionWithAlias(loader, is_valid_syntax_func, "vat_is_valid_syntax");
 
-  ScalarFunction split_func("anofox_vat_split", {LogicalTypeId::VARCHAR},
+  ScalarFunction split_func("anofox_tab_vat_split", {LogicalTypeId::VARCHAR},
                            GetVATType(), VATSplitFunc);
-  loader.RegisterFunction(split_func);
+  RegisterScalarFunctionWithAlias(loader, split_func, "vat_split");
 
-  ScalarFunction exists_func("anofox_vat_exists", {LogicalTypeId::VARCHAR},
+  ScalarFunction exists_func("anofox_tab_vat_exists", {LogicalTypeId::VARCHAR},
                             LogicalTypeId::BOOLEAN, VATExistsFunc);
-  loader.RegisterFunction(exists_func);
+  RegisterScalarFunctionWithAlias(loader, exists_func, "vat_exists");
 
   // Phase 5: EU Utilities
-  ScalarFunction is_eu_member_func("anofox_vat_is_eu_member",
+  ScalarFunction is_eu_member_func("anofox_tab_vat_is_eu_member",
                                    {LogicalTypeId::VARCHAR},
                                    LogicalTypeId::BOOLEAN, VATIsEUMemberFunc);
-  loader.RegisterFunction(is_eu_member_func);
+  RegisterScalarFunctionWithAlias(loader, is_eu_member_func, "vat_is_eu_member");
 
-  ScalarFunction country_name_func("anofox_vat_country_name",
+  ScalarFunction country_name_func("anofox_tab_vat_country_name",
                                    {LogicalTypeId::VARCHAR},
                                    LogicalTypeId::VARCHAR, VATCountryNameFunc);
-  loader.RegisterFunction(country_name_func);
+  RegisterScalarFunctionWithAlias(loader, country_name_func, "vat_country_name");
 
-  ScalarFunction format_func("anofox_vat_format",
+  ScalarFunction format_func("anofox_tab_vat_format",
                             {LogicalTypeId::VARCHAR, LogicalTypeId::VARCHAR},
                             LogicalTypeId::VARCHAR, VATFormatFunc);
-  loader.RegisterFunction(format_func);
+  RegisterScalarFunctionWithAlias(loader, format_func, "vat_format");
 
   // Phase 6: Combined Validation
-  ScalarFunction is_valid_func("anofox_vat_is_valid", {LogicalTypeId::VARCHAR},
+  ScalarFunction is_valid_func("anofox_tab_vat_is_valid", {LogicalTypeId::VARCHAR},
                               LogicalTypeId::BOOLEAN, VATIsValidFunc);
-  loader.RegisterFunction(is_valid_func);
+  RegisterScalarFunctionWithAlias(loader, is_valid_func, "vat_is_valid");
 }
 
 }  // namespace duckdb

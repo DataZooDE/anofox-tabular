@@ -12,43 +12,55 @@ LOAD anofox_tabular
 # Phase 2: Basic VAT Operations
 # ============================================================================
 
-# Test anofox_vat - Parse VAT string into struct
+# Test anofox_tab_vat - Parse VAT string into struct
 query I
-SELECT anofox_vat('DE123456789')
+SELECT anofox_tab_vat('DE123456789')
 ----
 {'country': DE, 'digits': 123456789}
 
-# Test anofox_vat with lowercase input
+# Test vat alias - Parse VAT string into struct
 query I
-SELECT anofox_vat('de123456789')
+SELECT vat('DE123456789')
 ----
 {'country': DE, 'digits': 123456789}
 
-# Test anofox_vat with invalid country
+# Test anofox_tab_vat with lowercase input
 query I
-SELECT anofox_vat('XX123456789')
+SELECT anofox_tab_vat('de123456789')
+----
+{'country': DE, 'digits': 123456789}
+
+# Test vat alias with lowercase input
+query I
+SELECT vat('de123456789')
+----
+{'country': DE, 'digits': 123456789}
+
+# Test anofox_tab_vat with invalid country
+query I
+SELECT anofox_tab_vat('XX123456789')
 ----
 NULL
 
-# Test anofox_vat with spaces and punctuation (should be normalized)
+# Test anofox_tab_vat with spaces and punctuation (should be normalized)
 query I
-SELECT anofox_vat('DE 123-456-789')
+SELECT anofox_tab_vat('DE 123-456-789')
 ----
 {'country': DE, 'digits': 123456789}
 
-# Test anofox_is_valid_vat_country - Valid country
+# Test anofox_tab_is_valid_vat_country - Valid country
 query I
-SELECT anofox_is_valid_vat_country('DE')
+SELECT anofox_tab_is_valid_vat_country('DE')
 ----
 true
 
-# Test anofox_is_valid_vat_country - Invalid country
+# Test anofox_tab_is_valid_vat_country - Invalid country
 query I
-SELECT anofox_is_valid_vat_country('XX')
+SELECT anofox_tab_is_valid_vat_country('XX')
 ----
 false
 
-# Test anofox_is_valid_vat_country - All EU countries
+# Test anofox_tab_is_valid_vat_country - All EU countries
 query I
 SELECT COUNT(*) FROM (
   SELECT 'AT' AS c UNION ALL
@@ -59,25 +71,25 @@ SELECT COUNT(*) FROM (
   SELECT 'LT' UNION ALL SELECT 'LU' UNION ALL SELECT 'LV' UNION ALL SELECT 'MT' UNION ALL
   SELECT 'NL' UNION ALL SELECT 'PL' UNION ALL SELECT 'PT' UNION ALL SELECT 'RO' UNION ALL
   SELECT 'SE' UNION ALL SELECT 'SI' UNION ALL SELECT 'SK'
-) WHERE anofox_is_valid_vat_country(c)
+) WHERE anofox_tab_is_valid_vat_country(c)
 ----
 29
 
-# Test anofox_vat_normalize
+# Test anofox_tab_vat_normalize
 query T
-SELECT anofox_vat_normalize('DE 123-456-789')
+SELECT anofox_tab_vat_normalize('DE 123-456-789')
 ----
 DE123456789
 
-# Test anofox_vat_normalize with lowercase
+# Test anofox_tab_vat_normalize with lowercase
 query T
-SELECT anofox_vat_normalize('de123456789')
+SELECT anofox_tab_vat_normalize('de123456789')
 ----
 DE123456789
 
-# Test anofox_vat_normalize with special characters
+# Test anofox_tab_vat_normalize with special characters
 query T
-SELECT anofox_vat_normalize('DE.123/456-789')
+SELECT anofox_tab_vat_normalize('DE.123/456-789')
 ----
 DE123456789
 
@@ -85,63 +97,63 @@ DE123456789
 # Phase 3: Syntax Validation
 # ============================================================================
 
-# Test anofox_vat_is_valid_syntax - Valid German VAT
+# Test anofox_tab_vat_is_valid_syntax - Valid German VAT
 query I
-SELECT anofox_vat_is_valid_syntax('DE123456789')
+SELECT anofox_tab_vat_is_valid_syntax('DE123456789')
 ----
 true
 
-# Test anofox_vat_is_valid_syntax - Invalid German VAT (too short)
+# Test anofox_tab_vat_is_valid_syntax - Invalid German VAT (too short)
 query I
-SELECT anofox_vat_is_valid_syntax('DE12345678')
+SELECT anofox_tab_vat_is_valid_syntax('DE12345678')
 ----
 false
 
-# Test anofox_vat_is_valid_syntax - Invalid German VAT (too long)
+# Test anofox_tab_vat_is_valid_syntax - Invalid German VAT (too long)
 query I
-SELECT anofox_vat_is_valid_syntax('DE1234567890')
+SELECT anofox_tab_vat_is_valid_syntax('DE1234567890')
 ----
 false
 
-# Test anofox_vat_is_valid_syntax - Valid Austrian VAT
+# Test anofox_tab_vat_is_valid_syntax - Valid Austrian VAT
 query I
-SELECT anofox_vat_is_valid_syntax('ATU12345678')
+SELECT anofox_tab_vat_is_valid_syntax('ATU12345678')
 ----
 true
 
-# Test anofox_vat_is_valid_syntax - Valid Belgian VAT
+# Test anofox_tab_vat_is_valid_syntax - Valid Belgian VAT
 query I
-SELECT anofox_vat_is_valid_syntax('BE0123456789')
+SELECT anofox_tab_vat_is_valid_syntax('BE0123456789')
 ----
 true
 
-# Test anofox_vat_split - Parse VAT string
+# Test anofox_tab_vat_split - Parse VAT string
 query I
-SELECT anofox_vat_split('DE123456789')
+SELECT anofox_tab_vat_split('DE123456789')
 ----
 {'country': DE, 'digits': 123456789}
 
-# Test anofox_vat_split with invalid input
+# Test anofox_tab_vat_split with invalid input
 query I
-SELECT anofox_vat_split('XX123456789')
+SELECT anofox_tab_vat_split('XX123456789')
 ----
 NULL
 
-# Test anofox_vat_exists - Valid VAT prefix
+# Test anofox_tab_vat_exists - Valid VAT prefix
 query I
-SELECT anofox_vat_exists('DE123456789')
+SELECT anofox_tab_vat_exists('DE123456789')
 ----
 true
 
-# Test anofox_vat_exists - Invalid VAT prefix
+# Test anofox_tab_vat_exists - Invalid VAT prefix
 query I
-SELECT anofox_vat_exists('XX123456789')
+SELECT anofox_tab_vat_exists('XX123456789')
 ----
 false
 
-# Test anofox_vat_exists - Short input
+# Test anofox_tab_vat_exists - Short input
 query I
-SELECT anofox_vat_exists('D')
+SELECT anofox_tab_vat_exists('D')
 ----
 false
 
@@ -149,51 +161,51 @@ false
 # Phase 5: EU Utilities
 # ============================================================================
 
-# Test anofox_vat_is_eu_member - Germany
+# Test anofox_tab_vat_is_eu_member - Germany
 query I
-SELECT anofox_vat_is_eu_member('DE')
+SELECT anofox_tab_vat_is_eu_member('DE')
 ----
 true
 
-# Test anofox_vat_is_eu_member - UK (not EU)
+# Test anofox_tab_vat_is_eu_member - UK (not EU)
 query I
-SELECT anofox_vat_is_eu_member('GB')
+SELECT anofox_tab_vat_is_eu_member('GB')
 ----
 false
 
-# Test anofox_vat_is_eu_member - Invalid country
+# Test anofox_tab_vat_is_eu_member - Invalid country
 query I
-SELECT anofox_vat_is_eu_member('XX')
+SELECT anofox_tab_vat_is_eu_member('XX')
 ----
 false
 
-# Test anofox_vat_country_name - Germany
+# Test anofox_tab_vat_country_name - Germany
 query T
-SELECT anofox_vat_country_name('DE')
+SELECT anofox_tab_vat_country_name('DE')
 ----
 Germany
 
-# Test anofox_vat_country_name - France
+# Test anofox_tab_vat_country_name - France
 query T
-SELECT anofox_vat_country_name('FR')
+SELECT anofox_tab_vat_country_name('FR')
 ----
 France
 
-# Test anofox_vat_country_name - Austria
+# Test anofox_tab_vat_country_name - Austria
 query T
-SELECT anofox_vat_country_name('AT')
+SELECT anofox_tab_vat_country_name('AT')
 ----
 Austria
 
-# Test anofox_vat_country_name - Invalid country
+# Test anofox_tab_vat_country_name - Invalid country
 query I
-SELECT anofox_vat_country_name('XX')
+SELECT anofox_tab_vat_country_name('XX')
 ----
 NULL
 
-# Test anofox_vat_format - Plain style (simplified for now)
+# Test anofox_tab_vat_format - Plain style (simplified for now)
 query I
-SELECT anofox_vat_format('DE123456789', 'plain')
+SELECT anofox_tab_vat_format('DE123456789', 'plain')
 ----
 NULL
 
@@ -201,21 +213,27 @@ NULL
 # Phase 6: Combined Validation
 # ============================================================================
 
-# Test anofox_vat_is_valid - Valid syntax
+# Test anofox_tab_vat_is_valid - Valid syntax
 query I
-SELECT anofox_vat_is_valid('DE123456789')
+SELECT anofox_tab_vat_is_valid('DE123456789')
 ----
 true
 
-# Test anofox_vat_is_valid - Invalid country code
+# Test vat_is_valid alias - Valid syntax
 query I
-SELECT anofox_vat_is_valid('XX123456789')
+SELECT vat_is_valid('DE123456789')
+----
+true
+
+# Test anofox_tab_vat_is_valid - Invalid country code
+query I
+SELECT anofox_tab_vat_is_valid('XX123456789')
 ----
 false
 
-# Test anofox_vat_is_valid - Invalid length
+# Test anofox_tab_vat_is_valid - Invalid length
 query I
-SELECT anofox_vat_is_valid('DE12345678')
+SELECT anofox_tab_vat_is_valid('DE12345678')
 ----
 false
 
@@ -225,19 +243,19 @@ false
 
 # Test NULL input handling
 query I
-SELECT anofox_vat_is_valid_syntax(NULL)
+SELECT anofox_tab_vat_is_valid_syntax(NULL)
 ----
 NULL
 
 # Test NULL in country validation
 query I
-SELECT anofox_is_valid_vat_country(NULL)
+SELECT anofox_tab_is_valid_vat_country(NULL)
 ----
 NULL
 
 # Test NULL in normalize
 query I
-SELECT anofox_vat_normalize(NULL)
+SELECT anofox_tab_vat_normalize(NULL)
 ----
 NULL
 
@@ -253,7 +271,7 @@ SELECT COUNT(*) FROM (
   SELECT 'BE1234567890' UNION ALL
   SELECT 'FR12AB123456' UNION ALL
   SELECT 'INVALID'
-) WHERE anofox_vat_is_valid(vat)
+) WHERE anofox_tab_vat_is_valid(vat)
 ----
 4
 
@@ -265,7 +283,7 @@ SELECT COUNT(*) FROM (
   SELECT 'GB' UNION ALL
   SELECT 'DE' UNION ALL
   SELECT 'FR'
-) WHERE anofox_vat_is_eu_member(c)
+) WHERE anofox_tab_vat_is_eu_member(c)
 ----
 4
 
@@ -275,30 +293,30 @@ SELECT COUNT(*) FROM (
 
 # Test empty string
 query I
-SELECT anofox_vat_is_valid('')
+SELECT anofox_tab_vat_is_valid('')
 ----
 false
 
 # Test single character
 query I
-SELECT anofox_vat_is_valid('D')
+SELECT anofox_tab_vat_is_valid('D')
 ----
 false
 
 # Test only country code
 query I
-SELECT anofox_vat_is_valid('DE')
+SELECT anofox_tab_vat_is_valid('DE')
 ----
 false
 
 # Test mixed case input
 query I
-SELECT anofox_vat_is_valid('De123456789')
+SELECT anofox_tab_vat_is_valid('De123456789')
 ----
 true
 
 # Test with leading/trailing spaces (should be normalized)
 query I
-SELECT anofox_vat_is_valid('  DE123456789  ')
+SELECT anofox_tab_vat_is_valid('  DE123456789  ')
 ----
 true

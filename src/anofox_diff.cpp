@@ -1,10 +1,12 @@
 #include "anofox_diff.hpp"
+#include "anofox_function_alias.hpp"
 
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/common/types/value.hpp"
 #include "duckdb/function/table_function.hpp"
 #include "duckdb/parser/parser.hpp"
 #include "duckdb/parser/tableref/subqueryref.hpp"
+#include "duckdb/parser/parsed_data/create_table_function_info.hpp"
 #include "duckdb/main/client_context.hpp"
 
 #include <algorithm>
@@ -352,11 +354,14 @@ static unique_ptr<TableRef> JoinDiffBindReplace(ClientContext &context, TableFun
 }
 
 void RegisterDiffFunctions(ExtensionLoader &loader) {
-	// Register anofox_diff_joindiff using bind_replace for SQL generation
+	// Register anofox_tab_diff_joindiff using bind_replace for SQL generation
 	// This accepts table NAMES (VARCHAR) and generates the diff SQL query
 
+	// Register anofox_tab_diff_joindiff with all overloads (alias: diff_joindiff)
+	TableFunctionSet joindiff_set("anofox_tab_diff_joindiff");
+	
 	// Single primary key overload (VARCHAR primary_key)
-	TableFunction joindiff_single("anofox_diff_joindiff",
+	TableFunction joindiff_single("anofox_tab_diff_joindiff",
 	                             {LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::VARCHAR),
 	                              LogicalType(LogicalTypeId::VARCHAR)},
 	                             nullptr, nullptr);
@@ -364,11 +369,10 @@ void RegisterDiffFunctions(ExtensionLoader &loader) {
 	joindiff_single.named_parameters["source_table"] = LogicalType(LogicalTypeId::VARCHAR);
 	joindiff_single.named_parameters["target_table"] = LogicalType(LogicalTypeId::VARCHAR);
 	joindiff_single.named_parameters["primary_key"] = LogicalType(LogicalTypeId::VARCHAR);
-
-	loader.RegisterFunction(joindiff_single);
+	joindiff_set.AddFunction(joindiff_single);
 
 	// Add optional parameters for single PK overload
-	TableFunction joindiff_single_compare("anofox_diff_joindiff",
+	TableFunction joindiff_single_compare("anofox_tab_diff_joindiff",
 	                                     {LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::VARCHAR),
 	                                      LogicalType(LogicalTypeId::VARCHAR),
 	                                      LogicalType::LIST(LogicalType(LogicalTypeId::VARCHAR))},
@@ -378,11 +382,10 @@ void RegisterDiffFunctions(ExtensionLoader &loader) {
 	joindiff_single_compare.named_parameters["target_table"] = LogicalType(LogicalTypeId::VARCHAR);
 	joindiff_single_compare.named_parameters["primary_key"] = LogicalType(LogicalTypeId::VARCHAR);
 	joindiff_single_compare.named_parameters["compare_columns"] = LogicalType::LIST(LogicalType(LogicalTypeId::VARCHAR));
-
-	loader.RegisterFunction(joindiff_single_compare);
+	joindiff_set.AddFunction(joindiff_single_compare);
 
 	// Full parameters for single PK overload
-	TableFunction joindiff_single_full("anofox_diff_joindiff",
+	TableFunction joindiff_single_full("anofox_tab_diff_joindiff",
 	                                  {LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::VARCHAR),
 	                                   LogicalType(LogicalTypeId::VARCHAR),
 	                                   LogicalType::LIST(LogicalType(LogicalTypeId::VARCHAR)),
@@ -394,11 +397,10 @@ void RegisterDiffFunctions(ExtensionLoader &loader) {
 	joindiff_single_full.named_parameters["primary_key"] = LogicalType(LogicalTypeId::VARCHAR);
 	joindiff_single_full.named_parameters["compare_columns"] = LogicalType::LIST(LogicalType(LogicalTypeId::VARCHAR));
 	joindiff_single_full.named_parameters["include_all"] = LogicalType(LogicalTypeId::BOOLEAN);
-
-	loader.RegisterFunction(joindiff_single_full);
+	joindiff_set.AddFunction(joindiff_single_full);
 
 	// Compound primary keys overload (LIST<VARCHAR> primary_keys)
-	TableFunction joindiff_compound("anofox_diff_joindiff",
+	TableFunction joindiff_compound("anofox_tab_diff_joindiff",
 	                               {LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::VARCHAR),
 	                                LogicalType::LIST(LogicalType(LogicalTypeId::VARCHAR))},
 	                               nullptr, nullptr);
@@ -406,11 +408,10 @@ void RegisterDiffFunctions(ExtensionLoader &loader) {
 	joindiff_compound.named_parameters["source_table"] = LogicalType(LogicalTypeId::VARCHAR);
 	joindiff_compound.named_parameters["target_table"] = LogicalType(LogicalTypeId::VARCHAR);
 	joindiff_compound.named_parameters["primary_keys"] = LogicalType::LIST(LogicalType(LogicalTypeId::VARCHAR));
-
-	loader.RegisterFunction(joindiff_compound);
+	joindiff_set.AddFunction(joindiff_compound);
 
 	// Compound PK with compare_columns
-	TableFunction joindiff_compound_compare("anofox_diff_joindiff",
+	TableFunction joindiff_compound_compare("anofox_tab_diff_joindiff",
 	                                       {LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::VARCHAR),
 	                                        LogicalType::LIST(LogicalType(LogicalTypeId::VARCHAR)),
 	                                        LogicalType::LIST(LogicalType(LogicalTypeId::VARCHAR))},
@@ -420,11 +421,10 @@ void RegisterDiffFunctions(ExtensionLoader &loader) {
 	joindiff_compound_compare.named_parameters["target_table"] = LogicalType(LogicalTypeId::VARCHAR);
 	joindiff_compound_compare.named_parameters["primary_keys"] = LogicalType::LIST(LogicalType(LogicalTypeId::VARCHAR));
 	joindiff_compound_compare.named_parameters["compare_columns"] = LogicalType::LIST(LogicalType(LogicalTypeId::VARCHAR));
-
-	loader.RegisterFunction(joindiff_compound_compare);
+	joindiff_set.AddFunction(joindiff_compound_compare);
 
 	// Compound PK with all parameters
-	TableFunction joindiff_compound_full("anofox_diff_joindiff",
+	TableFunction joindiff_compound_full("anofox_tab_diff_joindiff",
 	                                    {LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::VARCHAR),
 	                                     LogicalType::LIST(LogicalType(LogicalTypeId::VARCHAR)),
 	                                     LogicalType::LIST(LogicalType(LogicalTypeId::VARCHAR)),
@@ -436,8 +436,25 @@ void RegisterDiffFunctions(ExtensionLoader &loader) {
 	joindiff_compound_full.named_parameters["primary_keys"] = LogicalType::LIST(LogicalType(LogicalTypeId::VARCHAR));
 	joindiff_compound_full.named_parameters["compare_columns"] = LogicalType::LIST(LogicalType(LogicalTypeId::VARCHAR));
 	joindiff_compound_full.named_parameters["include_all"] = LogicalType(LogicalTypeId::BOOLEAN);
-
-	loader.RegisterFunction(joindiff_compound_full);
+	joindiff_set.AddFunction(joindiff_compound_full);
+	
+	loader.RegisterFunction(joindiff_set);
+	
+	// Register alias
+	TableFunctionSet alias_joindiff_set("diff_joindiff");
+	for (const auto &func : joindiff_set.functions) {
+		TableFunction alias_func("diff_joindiff", func.arguments, func.function, func.bind, func.init_global, func.init_local);
+		alias_func.null_handling = func.null_handling;
+		alias_func.stability = func.stability;
+		alias_func.init_global = func.init_global;
+		alias_func.init_local = func.init_local;
+		alias_func.bind_replace = func.bind_replace;
+		alias_func.named_parameters = func.named_parameters;
+		alias_joindiff_set.AddFunction(alias_func);
+	}
+	CreateTableFunctionInfo alias_joindiff_info(alias_joindiff_set);
+	alias_joindiff_info.alias_of = "anofox_tab_diff_joindiff";
+	loader.RegisterFunction(alias_joindiff_info);
 
 	//===--------------------------------------------------------------------===//
 	// HashDiff Function Registration
@@ -449,8 +466,11 @@ void RegisterDiffFunctions(ExtensionLoader &loader) {
 	// For now, HashDiff is an alias to JoinDiff
 	// Future: Implement SQL-based bisection using recursive CTEs
 
+	// Register anofox_tab_diff_hashdiff with all overloads (alias: diff_hashdiff)
+	TableFunctionSet hashdiff_set("anofox_tab_diff_hashdiff");
+	
 	// Single PK, basic
-	TableFunction hashdiff_single("anofox_diff_hashdiff",
+	TableFunction hashdiff_single("anofox_tab_diff_hashdiff",
 	                             {LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::VARCHAR),
 	                              LogicalType(LogicalTypeId::VARCHAR)},
 	                             nullptr, nullptr);
@@ -458,11 +478,10 @@ void RegisterDiffFunctions(ExtensionLoader &loader) {
 	hashdiff_single.named_parameters["source_table"] = LogicalType(LogicalTypeId::VARCHAR);
 	hashdiff_single.named_parameters["target_table"] = LogicalType(LogicalTypeId::VARCHAR);
 	hashdiff_single.named_parameters["primary_key"] = LogicalType(LogicalTypeId::VARCHAR);
-
-	loader.RegisterFunction(hashdiff_single);
+	hashdiff_set.AddFunction(hashdiff_single);
 
 	// Single PK with bisection_threshold (ignored for now)
-	TableFunction hashdiff_single_threshold("anofox_diff_hashdiff",
+	TableFunction hashdiff_single_threshold("anofox_tab_diff_hashdiff",
 	                                       {LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::VARCHAR),
 	                                        LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::BIGINT)},
 	                                       nullptr, nullptr);
@@ -471,11 +490,10 @@ void RegisterDiffFunctions(ExtensionLoader &loader) {
 	hashdiff_single_threshold.named_parameters["target_table"] = LogicalType(LogicalTypeId::VARCHAR);
 	hashdiff_single_threshold.named_parameters["primary_key"] = LogicalType(LogicalTypeId::VARCHAR);
 	hashdiff_single_threshold.named_parameters["bisection_threshold"] = LogicalType(LogicalTypeId::BIGINT);
-
-	loader.RegisterFunction(hashdiff_single_threshold);
+	hashdiff_set.AddFunction(hashdiff_single_threshold);
 
 	// Single PK with all parameters (ignored for now)
-	TableFunction hashdiff_single_full("anofox_diff_hashdiff",
+	TableFunction hashdiff_single_full("anofox_tab_diff_hashdiff",
 	                                  {LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::VARCHAR),
 	                                   LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::BIGINT),
 	                                   LogicalType(LogicalTypeId::BIGINT)},
@@ -486,11 +504,10 @@ void RegisterDiffFunctions(ExtensionLoader &loader) {
 	hashdiff_single_full.named_parameters["primary_key"] = LogicalType(LogicalTypeId::VARCHAR);
 	hashdiff_single_full.named_parameters["bisection_threshold"] = LogicalType(LogicalTypeId::BIGINT);
 	hashdiff_single_full.named_parameters["bisection_factor"] = LogicalType(LogicalTypeId::BIGINT);
-
-	loader.RegisterFunction(hashdiff_single_full);
+	hashdiff_set.AddFunction(hashdiff_single_full);
 
 	// Compound PK, basic
-	TableFunction hashdiff_compound("anofox_diff_hashdiff",
+	TableFunction hashdiff_compound("anofox_tab_diff_hashdiff",
 	                               {LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::VARCHAR),
 	                                LogicalType::LIST(LogicalType(LogicalTypeId::VARCHAR))},
 	                               nullptr, nullptr);
@@ -498,8 +515,25 @@ void RegisterDiffFunctions(ExtensionLoader &loader) {
 	hashdiff_compound.named_parameters["source_table"] = LogicalType(LogicalTypeId::VARCHAR);
 	hashdiff_compound.named_parameters["target_table"] = LogicalType(LogicalTypeId::VARCHAR);
 	hashdiff_compound.named_parameters["primary_keys"] = LogicalType::LIST(LogicalType(LogicalTypeId::VARCHAR));
-
-	loader.RegisterFunction(hashdiff_compound);
+	hashdiff_set.AddFunction(hashdiff_compound);
+	
+	loader.RegisterFunction(hashdiff_set);
+	
+	// Register alias
+	TableFunctionSet alias_hashdiff_set("diff_hashdiff");
+	for (const auto &func : hashdiff_set.functions) {
+		TableFunction alias_func("diff_hashdiff", func.arguments, func.function, func.bind, func.init_global, func.init_local);
+		alias_func.null_handling = func.null_handling;
+		alias_func.stability = func.stability;
+		alias_func.init_global = func.init_global;
+		alias_func.init_local = func.init_local;
+		alias_func.bind_replace = func.bind_replace;
+		alias_func.named_parameters = func.named_parameters;
+		alias_hashdiff_set.AddFunction(alias_func);
+	}
+	CreateTableFunctionInfo alias_hashdiff_info(alias_hashdiff_set);
+	alias_hashdiff_info.alias_of = "anofox_tab_diff_hashdiff";
+	loader.RegisterFunction(alias_hashdiff_info);
 }
 
 } // namespace anofox
