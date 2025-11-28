@@ -1,0 +1,1316 @@
+# Anofox Tabular Extension - API Reference
+
+**Version:** 0.1.0  
+**DuckDB Version:** ≥ v1.4.2
+
+---
+
+## Overview
+
+The Anofox Tabular extension provides comprehensive data quality validation, anomaly detection, and data diffing capabilities directly within DuckDB. All validation and analysis computations are performed by native C++ implementations with optional integration to external libraries.
+
+### Key Features
+
+- **8 Production-Ready Modules**: Email, postal, phone, money, VAT, metrics, anomalies, and diffing
+- **57 SQL Functions**: Complete validation and analysis toolkit
+- **Zero Friction**: SQL-native with no external services required (except optional libpostal for address parsing)
+- **Blazing Fast**: Vectorized C++17 implementation processes millions of rows per second
+- **Self-Contained**: Embedded validation patterns; no API keys or network calls required
+
+### Function Naming Conventions
+
+Functions follow consistent naming patterns:
+- `anofox_*` prefix for all extension functions
+- `anofox_*_is_valid` suffix for validation functions
+- `anofox_*_format` suffix for formatting functions
+- `anofox_metric_*` prefix for data quality metrics
+- `anofox_diff_*` prefix for data diffing operations
+
+### Parameter Conventions
+
+**Important**: All functions use **positional parameters**, NOT named parameters (`:=` syntax).
+
+**Common Parameter Types**:
+- `email`: Email address - `VARCHAR`
+- `address`: Street address - `VARCHAR`
+- `number`: Phone number - `VARCHAR`
+- `region`: ISO region code - `VARCHAR`
+- `money`: Money struct - `STRUCT(amount DOUBLE, currency VARCHAR)`
+- `vat_string`: VAT number - `VARCHAR`
+- `table_name`: Source table - `VARCHAR`
+- `column_name`: Column name - `VARCHAR`
+
+---
+
+## Table of Contents
+
+1. [Email Validation](#email-validation)
+2. [Address Parsing & Normalization](#address-parsing--normalization)
+3. [Phone Number Validation](#phone-number-validation)
+4. [Money & Currency Operations](#money--currency-operations)
+5. [VAT Validation](#vat-validation)
+6. [Data Quality Metrics](#data-quality-metrics)
+7. [Anomaly Detection](#anomaly-detection)
+8. [Data Diffing](#data-diffing)
+9. [Configuration](#configuration)
+10. [Function Coverage Matrix](#function-coverage-matrix)
+11. [Notes](#notes)
+
+---
+
+## Email Validation
+
+Multi-stage email verification with configurable validation modes.
+
+### Functions
+
+#### `anofox_email_is_valid`
+
+Quick boolean validation of email addresses.
+
+**Signature:**
+```sql
+anofox_email_is_valid(email VARCHAR [, mode VARCHAR]) → BOOLEAN
+```
+
+**Parameters:**
+- `email`: Email address to validate
+- `mode`: Validation mode - `'regex'` (default), `'dns'`, or `'smtp'`
+
+**Returns:**
+- `BOOLEAN`: `true` if email is valid, `false` otherwise
+
+**Example:**
+```sql
+SELECT anofox_email_is_valid('user@example.com', 'regex');
+-- Returns: true
+```
+
+---
+
+#### `anofox_email_validate`
+
+Detailed email validation with stage information, failure reasons, MX hosts, and SMTP transcripts.
+
+**Signature:**
+```sql
+anofox_email_validate(email VARCHAR [, mode VARCHAR]) → STRUCT
+```
+
+**Returns:**
+```sql
+STRUCT(
+    valid BOOLEAN,
+    stage VARCHAR,           -- 'regex', 'dns', or 'smtp'
+    reason VARCHAR,          -- Failure reason if invalid
+    mx_hosts VARCHAR[],      -- MX record hosts (DNS/SMTP modes)
+    smtp_transcript VARCHAR[] -- SMTP conversation log (SMTP mode)
+)
+```
+
+**Example:**
+```sql
+SELECT anofox_email_validate('support@example.org', 'smtp');
+-- Returns: {valid: true, stage: 'smtp', reason: NULL, mx_hosts: [...], smtp_transcript: [...]}
+```
+
+---
+
+#### `anofox_email_config`
+
+Returns current email validation configuration settings.
+
+**Signature:**
+```sql
+anofox_email_config() → TABLE(key VARCHAR, value VARCHAR)
+```
+
+**Returns:**
+- Configuration keys: `dns_timeout_ms`, `dns_tries`, `smtp_port`, `smtp_connect_timeout_ms`, `smtp_read_timeout_ms`, `smtp_helo_domain`, `smtp_mail_from`, `trace_enabled`, `trace_level`
+
+**Example:**
+```sql
+SELECT * FROM anofox_email_config();
+```
+
+---
+
+## Address Parsing & Normalization
+
+Powered by **[libpostal](https://github.com/openvenues/libpostal)**, a statistical NLP library for parsing addresses.
+
+### Functions
+
+#### `anofox_postal_parse_address`
+
+Parse unstructured addresses into structured components.
+
+**Signature:**
+```sql
+anofox_postal_parse_address(address VARCHAR) → STRUCT
+```
+
+**Returns:**
+```sql
+STRUCT(
+    house_number VARCHAR,
+    road VARCHAR,
+    city VARCHAR,
+    state VARCHAR,
+    postcode VARCHAR,
+    country VARCHAR
+)
+```
+
+**Example:**
+```sql
+SELECT anofox_postal_parse_address('620 Bolger Place, The Burren, NSW 4726');
+-- Returns: {house_number: '620', road: 'Bolger Place', city: 'The Burren', state: 'NSW', postcode: '4726', country: NULL}
+```
+
+---
+
+#### `anofox_postal_expand_address`
+
+Generate normalized address variants for fuzzy matching.
+
+**Signature:**
+```sql
+anofox_postal_expand_address(address VARCHAR) → LIST<VARCHAR>
+```
+
+**Returns:**
+- `LIST<VARCHAR>`: Array of normalized address variants
+
+**Example:**
+```sql
+SELECT anofox_postal_expand_address('123 Main St');
+-- Returns: ['123 Main Street', '123 Main St', '123 main street', ...]
+```
+
+---
+
+#### `anofox_postal_status`
+
+Returns library initialization status and data availability.
+
+**Signature:**
+```sql
+anofox_postal_status() → TABLE
+```
+
+**Returns:**
+- Status information including `initialized`, `data_present`, `data_directory`
+
+**Example:**
+```sql
+SELECT * FROM anofox_postal_status();
+```
+
+---
+
+#### `anofox_postal_load_data`
+
+Download and extract libpostal data (~500MB) to the configured data directory.
+
+**Signature:**
+```sql
+anofox_postal_load_data() → BOOLEAN
+```
+
+**Returns:**
+- `BOOLEAN`: `true` if data was successfully loaded, `false` otherwise
+
+**Example:**
+```sql
+SELECT anofox_postal_load_data();
+```
+
+---
+
+## Phone Number Validation
+
+International phone parsing via **[libphonenumber](https://github.com/google/libphonenumber)**, Google's library for parsing and formatting phone numbers.
+
+### Functions
+
+#### `anofox_phonenumber_parse`
+
+Parse and validate phone numbers with detailed information.
+
+**Signature:**
+```sql
+anofox_phonenumber_parse(number VARCHAR, region VARCHAR) → STRUCT
+```
+
+**Returns:**
+```sql
+STRUCT(
+    valid BOOLEAN,
+    country_code INTEGER,
+    national_number VARCHAR,
+    region_code VARCHAR,
+    type VARCHAR
+)
+```
+
+**Example:**
+```sql
+SELECT anofox_phonenumber_parse('+1 (415) 555-1234', 'US');
+-- Returns: {valid: true, country_code: 1, national_number: '4155551234', region_code: 'US', type: 'FIXED_LINE_OR_MOBILE'}
+```
+
+---
+
+#### `anofox_phonenumber_format`
+
+Format phone numbers in different styles.
+
+**Signature:**
+```sql
+anofox_phonenumber_format(number VARCHAR, region VARCHAR, format VARCHAR) → VARCHAR
+```
+
+**Parameters:**
+- `format`: Format style - `'E164'`, `'INTERNATIONAL'`, `'NATIONAL'`, or `'RFC3966'`
+
+**Returns:**
+- `VARCHAR`: Formatted phone number
+
+**Example:**
+```sql
+SELECT anofox_phonenumber_format('4155551234', 'US', 'INTERNATIONAL');
+-- Returns: '+1 415-555-1234'
+```
+
+---
+
+#### `anofox_phonenumber_region`
+
+Extract ISO region code from phone number.
+
+**Signature:**
+```sql
+anofox_phonenumber_region(number VARCHAR, region VARCHAR) → VARCHAR
+```
+
+**Returns:**
+- `VARCHAR`: ISO region code (e.g., 'US', 'GB', 'DE')
+
+**Example:**
+```sql
+SELECT anofox_phonenumber_region('+1 415-555-1234', 'US');
+-- Returns: 'US'
+```
+
+---
+
+#### `anofox_phonenumber_is_valid`
+
+Full validation using length and prefix information.
+
+**Signature:**
+```sql
+anofox_phonenumber_is_valid(number VARCHAR, region VARCHAR) → BOOLEAN
+```
+
+**Returns:**
+- `BOOLEAN`: `true` if phone number is valid
+
+**Example:**
+```sql
+SELECT anofox_phonenumber_is_valid('+1 415-555-1234', 'US');
+-- Returns: true
+```
+
+---
+
+#### `anofox_phonenumber_is_possible`
+
+Quick possibility check using length-only analysis.
+
+**Signature:**
+```sql
+anofox_phonenumber_is_possible(number VARCHAR, region VARCHAR) → BOOLEAN
+```
+
+**Returns:**
+- `BOOLEAN`: `true` if phone number is possible (may not be valid)
+
+**Example:**
+```sql
+SELECT anofox_phonenumber_is_possible('4155551234', 'US');
+-- Returns: true
+```
+
+---
+
+#### `anofox_phonenumber_is_valid_for_region`
+
+Region-specific validation.
+
+**Signature:**
+```sql
+anofox_phonenumber_is_valid_for_region(number VARCHAR, region VARCHAR) → BOOLEAN
+```
+
+**Returns:**
+- `BOOLEAN`: `true` if phone number is valid for the specified region
+
+---
+
+#### `anofox_phonenumber_match`
+
+Fuzzy matching between two phone numbers.
+
+**Signature:**
+```sql
+anofox_phonenumber_match(number1 VARCHAR, number2 VARCHAR, region VARCHAR) → VARCHAR
+```
+
+**Returns:**
+- `VARCHAR`: Match type - `'EXACT_MATCH'`, `'NSN_MATCH'`, `'SHORT_NSN_MATCH'`, or `'NO_MATCH'`
+
+**Example:**
+```sql
+SELECT anofox_phonenumber_match('+1 415-555-1234', '4155551234', 'US');
+-- Returns: 'EXACT_MATCH'
+```
+
+---
+
+#### `anofox_phonenumber_example`
+
+Generate example phone number for a region.
+
+**Signature:**
+```sql
+anofox_phonenumber_example(region VARCHAR) → VARCHAR
+```
+
+**Returns:**
+- `VARCHAR`: Example phone number for the region
+
+**Example:**
+```sql
+SELECT anofox_phonenumber_example('US');
+-- Returns: '+1 650-253-0000'
+```
+
+---
+
+#### `anofox_phonenumber_status`
+
+Returns library status and default region.
+
+**Signature:**
+```sql
+anofox_phonenumber_status() → TABLE
+```
+
+**Returns:**
+- Status information including `initialized`, `default_region`
+
+---
+
+## Money & Currency Operations
+
+International monetary value handling with currency-aware arithmetic and formatting.
+
+### Supported Currencies
+
+10 major currencies: USD, EUR, GBP, JPY, CAD, AUD, CHF, CNY, INR, BRL
+
+### Basic Operations
+
+#### `anofox_money`
+
+Create a money value from amount and currency code.
+
+**Signature:**
+```sql
+anofox_money(amount DOUBLE, currency_code VARCHAR) → STRUCT(amount DOUBLE, currency VARCHAR)
+```
+
+**Example:**
+```sql
+SELECT anofox_money(100.50, 'USD');
+-- Returns: {amount: 100.5, currency: 'USD'}
+```
+
+---
+
+#### `anofox_money_from_cents`
+
+Create a money value from integer cents.
+
+**Signature:**
+```sql
+anofox_money_from_cents(cents BIGINT, currency_code VARCHAR) → STRUCT(amount DOUBLE, currency VARCHAR)
+```
+
+**Example:**
+```sql
+SELECT anofox_money_from_cents(10050, 'USD');
+-- Returns: {amount: 10050.0, currency: 'USD'}
+```
+
+---
+
+#### `anofox_money_amount`
+
+Extract amount from money struct.
+
+**Signature:**
+```sql
+anofox_money_amount(money STRUCT) → DOUBLE
+```
+
+**Example:**
+```sql
+SELECT anofox_money_amount(anofox_money(100.50, 'USD'));
+-- Returns: 100.5
+```
+
+---
+
+#### `anofox_money_currency`
+
+Extract currency code from money struct.
+
+**Signature:**
+```sql
+anofox_money_currency(money STRUCT) → VARCHAR
+```
+
+**Example:**
+```sql
+SELECT anofox_money_currency(anofox_money(100.50, 'USD'));
+-- Returns: 'USD'
+```
+
+---
+
+### Currency Information
+
+#### `anofox_is_valid_currency`
+
+Check if currency code is valid.
+
+**Signature:**
+```sql
+anofox_is_valid_currency(code VARCHAR) → BOOLEAN
+```
+
+**Example:**
+```sql
+SELECT anofox_is_valid_currency('USD');
+-- Returns: true
+```
+
+---
+
+#### `anofox_currency_symbol`
+
+Get currency symbol (e.g., '$', '€').
+
+**Signature:**
+```sql
+anofox_currency_symbol(code VARCHAR) → VARCHAR
+```
+
+**Example:**
+```sql
+SELECT anofox_currency_symbol('USD');
+-- Returns: '$'
+```
+
+---
+
+#### `anofox_currency_name`
+
+Get currency name (e.g., 'United States Dollar').
+
+**Signature:**
+```sql
+anofox_currency_name(code VARCHAR) → VARCHAR
+```
+
+**Example:**
+```sql
+SELECT anofox_currency_name('USD');
+-- Returns: 'United States Dollar'
+```
+
+---
+
+### Formatting
+
+#### `anofox_money_format`
+
+Format money for display.
+
+**Signature:**
+```sql
+anofox_money_format(money STRUCT, style VARCHAR) → VARCHAR
+```
+
+**Parameters:**
+- `style`: Format style - `'symbol'`, `'code'`, or `'long'`
+
+**Example:**
+```sql
+SELECT anofox_money_format(anofox_money(150.00, 'EUR'), 'symbol');
+-- Returns: '150,00 €'
+```
+
+---
+
+### Validation & Properties
+
+#### `anofox_money_is_positive`
+
+Check if amount > 0.
+
+**Signature:**
+```sql
+anofox_money_is_positive(money STRUCT) → BOOLEAN
+```
+
+---
+
+#### `anofox_money_is_negative`
+
+Check if amount < 0.
+
+**Signature:**
+```sql
+anofox_money_is_negative(money STRUCT) → BOOLEAN
+```
+
+---
+
+#### `anofox_money_is_zero`
+
+Check if amount == 0.
+
+**Signature:**
+```sql
+anofox_money_is_zero(money STRUCT) → BOOLEAN
+```
+
+---
+
+#### `anofox_money_abs`
+
+Get absolute value (sign removed).
+
+**Signature:**
+```sql
+anofox_money_abs(money STRUCT) → STRUCT(amount DOUBLE, currency VARCHAR)
+```
+
+---
+
+### Arithmetic Operations
+
+#### `anofox_money_add`
+
+Add two money values (same currency required).
+
+**Signature:**
+```sql
+anofox_money_add(money1 STRUCT, money2 STRUCT) → STRUCT(amount DOUBLE, currency VARCHAR)
+```
+
+**Example:**
+```sql
+SELECT anofox_money_add(
+    anofox_money(100.00, 'EUR'),
+    anofox_money(50.00, 'EUR')
+);
+-- Returns: {amount: 150.0, currency: 'EUR'}
+```
+
+---
+
+#### `anofox_money_subtract`
+
+Subtract money2 from money1 (same currency required).
+
+**Signature:**
+```sql
+anofox_money_subtract(money1 STRUCT, money2 STRUCT) → STRUCT(amount DOUBLE, currency VARCHAR)
+```
+
+---
+
+#### `anofox_money_multiply`
+
+Multiply money by a scalar factor.
+
+**Signature:**
+```sql
+anofox_money_multiply(money STRUCT, factor DOUBLE) → STRUCT(amount DOUBLE, currency VARCHAR)
+```
+
+---
+
+### Quality & Data Validation
+
+#### `anofox_money_in_range`
+
+Check if amount is within range.
+
+**Signature:**
+```sql
+anofox_money_in_range(money STRUCT, min DOUBLE, max DOUBLE) → BOOLEAN
+```
+
+**Example:**
+```sql
+SELECT anofox_money_in_range(anofox_money(100.00, 'USD'), 0.01, 99999.99);
+-- Returns: true
+```
+
+---
+
+#### `anofox_money_same_currency`
+
+Check if two money values have same currency.
+
+**Signature:**
+```sql
+anofox_money_same_currency(money1 STRUCT, money2 STRUCT) → BOOLEAN
+```
+
+---
+
+## VAT Validation
+
+European VAT number validation for regulatory compliance and data quality.
+
+### Supported Countries
+
+29 countries supported (28 EU + UK): AT, BE, BG, CY, CZ, DE, DK, EE, EL, ES, FI, FR, HR, HU, IE, IT, LT, LU, LV, MT, NL, PL, PT, RO, SE, SI, SK, UK
+
+### Basic Operations
+
+#### `anofox_vat`
+
+Parse VAT string into country and digits.
+
+**Signature:**
+```sql
+anofox_vat(vat_string VARCHAR) → STRUCT(country VARCHAR, digits VARCHAR)
+```
+
+**Example:**
+```sql
+SELECT anofox_vat('DE123456789');
+-- Returns: {country: 'DE', digits: '123456789'}
+```
+
+---
+
+#### `anofox_is_valid_vat_country`
+
+Check if country code is valid VAT country.
+
+**Signature:**
+```sql
+anofox_is_valid_vat_country(code VARCHAR) → BOOLEAN
+```
+
+**Example:**
+```sql
+SELECT anofox_is_valid_vat_country('DE');
+-- Returns: true
+```
+
+---
+
+#### `anofox_vat_normalize`
+
+Normalize VAT string (uppercase, remove punctuation).
+
+**Signature:**
+```sql
+anofox_vat_normalize(vat_string VARCHAR) → VARCHAR
+```
+
+**Example:**
+```sql
+SELECT anofox_vat_normalize('de 123-456-789');
+-- Returns: 'DE123456789'
+```
+
+---
+
+### Syntax Validation
+
+#### `anofox_vat_is_valid_syntax`
+
+Validate VAT syntax against country pattern.
+
+**Signature:**
+```sql
+anofox_vat_is_valid_syntax(vat_string VARCHAR) → BOOLEAN
+```
+
+---
+
+#### `anofox_vat_split`
+
+Parse VAT into country and normalized digits.
+
+**Signature:**
+```sql
+anofox_vat_split(vat_string VARCHAR) → STRUCT(country VARCHAR, digits VARCHAR)
+```
+
+---
+
+#### `anofox_vat_exists`
+
+Check if VAT has valid country prefix.
+
+**Signature:**
+```sql
+anofox_vat_exists(vat_string VARCHAR) → BOOLEAN
+```
+
+---
+
+### EU Utilities
+
+#### `anofox_vat_is_eu_member`
+
+Check if country is EU member.
+
+**Signature:**
+```sql
+anofox_vat_is_eu_member(country_code VARCHAR) → BOOLEAN
+```
+
+---
+
+#### `anofox_vat_country_name`
+
+Get full country name.
+
+**Signature:**
+```sql
+anofox_vat_country_name(country_code VARCHAR) → VARCHAR
+```
+
+**Example:**
+```sql
+SELECT anofox_vat_country_name('DE');
+-- Returns: 'Germany'
+```
+
+---
+
+#### `anofox_vat_format`
+
+Format VAT for display.
+
+**Signature:**
+```sql
+anofox_vat_format(vat_string VARCHAR, style VARCHAR) → VARCHAR
+```
+
+---
+
+### Combined Validation
+
+#### `anofox_vat_is_valid`
+
+Full validation (syntax + country check).
+
+**Signature:**
+```sql
+anofox_vat_is_valid(vat_string VARCHAR) → BOOLEAN
+```
+
+**Example:**
+```sql
+SELECT anofox_vat_is_valid('DE123456789');
+-- Returns: true
+```
+
+---
+
+## Data Quality Metrics
+
+Track essential data quality dimensions.
+
+### Functions
+
+#### `anofox_metric_volume`
+
+Validate row count against thresholds.
+
+**Signature:**
+```sql
+anofox_metric_volume(table_name VARCHAR [, min_rows BIGINT, max_rows BIGINT]) → TABLE
+```
+
+**Returns:**
+- `TABLE`: Row count validation results
+
+**Example:**
+```sql
+SELECT * FROM anofox_metric_volume('orders', 1000, 1000000);
+```
+
+---
+
+#### `anofox_metric_null_rate`
+
+Check null percentage in a column.
+
+**Signature:**
+```sql
+anofox_metric_null_rate(table_name VARCHAR, column_name VARCHAR [, max_null_rate DOUBLE]) → TABLE
+```
+
+**Returns:**
+- `TABLE`: Null rate validation results
+
+**Example:**
+```sql
+SELECT * FROM anofox_metric_null_rate('users', 'email', 0.05);
+```
+
+---
+
+#### `anofox_metric_distinct_count`
+
+Validate cardinality (distinct count) of a column.
+
+**Signature:**
+```sql
+anofox_metric_distinct_count(table_name VARCHAR, column_name VARCHAR [, min BIGINT, max BIGINT]) → TABLE
+```
+
+**Returns:**
+- `TABLE`: Distinct count validation results
+
+**Example:**
+```sql
+SELECT * FROM anofox_metric_distinct_count('products', 'sku', 100, NULL);
+```
+
+---
+
+#### `anofox_metric_schema`
+
+Check required columns exist in table.
+
+**Signature:**
+```sql
+anofox_metric_schema(table_name VARCHAR, required_cols LIST<VARCHAR>) → TABLE
+```
+
+**Returns:**
+- `TABLE`: Schema validation results
+
+**Example:**
+```sql
+SELECT * FROM anofox_metric_schema('table', ['id', 'created_at']);
+```
+
+---
+
+#### `anofox_metric_freshness`
+
+Validate data recency (maximum age check).
+
+**Signature:**
+```sql
+anofox_metric_freshness(table_name VARCHAR, ts_col VARCHAR, max_age INTERVAL [, ref_time TIMESTAMP]) → TABLE
+```
+
+**Returns:**
+- `TABLE`: Freshness validation results
+
+**Example:**
+```sql
+SELECT * FROM anofox_metric_freshness('events', 'timestamp', INTERVAL '1 hour');
+```
+
+---
+
+#### `anofox_metric_zscore`
+
+Detect outliers via z-score method (assumes normal distribution).
+
+**Signature:**
+```sql
+anofox_metric_zscore(table_name VARCHAR, column_name VARCHAR [, threshold DOUBLE]) → TABLE
+```
+
+**Parameters:**
+- `threshold`: Z-score threshold (default: 3.0)
+
+**Returns:**
+- `TABLE`: Outlier detection results with z-scores
+
+**Example:**
+```sql
+SELECT * FROM anofox_metric_zscore('transactions', 'amount', 3.0);
+```
+
+---
+
+#### `anofox_metric_iqr`
+
+Detect outliers via IQR method (non-parametric, robust to distribution).
+
+**Signature:**
+```sql
+anofox_metric_iqr(table_name VARCHAR, column_name VARCHAR [, multiplier DOUBLE]) → TABLE
+```
+
+**Parameters:**
+- `multiplier`: IQR multiplier (default: 1.5)
+
+**Returns:**
+- `TABLE`: Outlier detection results with IQR scores
+
+**Example:**
+```sql
+SELECT * FROM anofox_metric_iqr('transactions', 'amount', 1.5);
+```
+
+---
+
+## Anomaly Detection
+
+Unsupervised anomaly detection algorithms for finding outliers in data.
+
+### Isolation Forest
+
+#### `anofox_metric_isolation_forest`
+
+Univariate Isolation Forest for single column anomaly detection.
+
+**Signature:**
+```sql
+anofox_metric_isolation_forest(
+    table_name VARCHAR,
+    column_name VARCHAR,
+    n_trees BIGINT,
+    sample_size BIGINT,
+    contamination DOUBLE,
+    output_mode VARCHAR
+) → TABLE
+```
+
+**Parameters:**
+- `n_trees`: Number of isolation trees (1-500, default: 100)
+- `sample_size`: Subsample size per tree (1-10000, default: 256)
+- `contamination`: Expected anomaly fraction (0.0-0.5, default: 0.1)
+- `output_mode`: `'summary'` (aggregate stats) or `'scores'` (per-row results)
+
+**Returns:**
+- `TABLE`: Anomaly detection results with `row_id`, `anomaly_score`, `is_anomaly`
+
+**Example:**
+```sql
+SELECT * FROM anofox_metric_isolation_forest(
+    'sales_data', 'amount', 100, 256, 0.1, 'scores'
+) WHERE is_anomaly = true;
+```
+
+---
+
+#### `anofox_metric_isolation_forest_multivariate`
+
+Multivariate Isolation Forest for multiple column anomaly detection.
+
+**Signature:**
+```sql
+anofox_metric_isolation_forest_multivariate(
+    table_name VARCHAR,
+    columns VARCHAR,
+    n_trees BIGINT,
+    sample_size BIGINT,
+    contamination DOUBLE,
+    output_mode VARCHAR
+) → TABLE
+```
+
+**Parameters:**
+- `columns`: Comma-separated column names (e.g., `'amount, quantity, suspicious_amount'`)
+
+**Returns:**
+- `TABLE`: Anomaly detection results with `row_id`, `anomaly_score`, `is_anomaly`
+
+**Example:**
+```sql
+SELECT * FROM anofox_metric_isolation_forest_multivariate(
+    'customer_events', 'purchase_amount, session_duration, page_views',
+    100, 256, 0.1, 'scores'
+) ORDER BY anomaly_score DESC LIMIT 10;
+```
+
+---
+
+### DBSCAN Clustering
+
+#### `anofox_metric_dbscan`
+
+Univariate DBSCAN clustering for single column anomaly detection.
+
+**Signature:**
+```sql
+anofox_metric_dbscan(
+    table_name VARCHAR,
+    column_name VARCHAR,
+    eps DOUBLE,
+    min_pts BIGINT,
+    output_mode VARCHAR
+) → TABLE
+```
+
+**Parameters:**
+- `eps`: Neighborhood radius (default: 0.5)
+- `min_pts`: Minimum points for dense region (default: 5)
+- `output_mode`: `'summary'` (aggregate stats) or `'clusters'` (per-row results)
+
+**Returns:**
+- `TABLE`: Clustering results with `row_id`, `cluster_id`, `point_type`, `anomaly_score`
+- `point_type`: `'CORE'` (dense region), `'BORDER'` (cluster edge), or `'NOISE'` (outlier)
+
+**Example:**
+```sql
+SELECT * FROM anofox_metric_dbscan(
+    'transactions', 'amount', 10.0, 5, 'clusters'
+) WHERE point_type = 'NOISE';
+```
+
+---
+
+#### `anofox_metric_dbscan_multivariate`
+
+Multivariate DBSCAN clustering for multiple column anomaly detection.
+
+**Signature:**
+```sql
+anofox_metric_dbscan_multivariate(
+    table_name VARCHAR,
+    columns VARCHAR,
+    eps DOUBLE,
+    min_pts BIGINT,
+    output_mode VARCHAR
+) → TABLE
+```
+
+**Parameters:**
+- `columns`: Comma-separated column names
+
+**Returns:**
+- `TABLE`: Clustering results with `row_id`, `cluster_id`, `point_type`, `anomaly_score`
+
+---
+
+## Data Diffing
+
+Compare tables and identify changes for migration validation and regression testing.
+
+### Functions
+
+#### `anofox_diff_hashdiff`
+
+Fast hash-based summary diff (efficient for large tables).
+
+**Signature:**
+```sql
+anofox_diff_hashdiff(
+    source VARCHAR,
+    target VARCHAR,
+    pk_cols LIST<VARCHAR>
+    [, compare_cols LIST<VARCHAR>]
+) → TABLE
+```
+
+**Parameters:**
+- `source`: Source table name
+- `target`: Target table name
+- `pk_cols`: Primary key columns for matching rows
+- `compare_cols`: Optional list of columns to compare (default: all columns)
+
+**Returns:**
+```sql
+TABLE(
+    added BIGINT,
+    removed BIGINT,
+    changed BIGINT,
+    unchanged BIGINT
+)
+```
+
+**Example:**
+```sql
+SELECT * FROM anofox_diff_hashdiff('source_tbl', 'target_tbl', ['id']);
+-- Returns: {added: 150, removed: 25, changed: 300, unchanged: 10000}
+```
+
+---
+
+#### `anofox_diff_joindiff`
+
+Detailed row-level diff with source/target data (slower but comprehensive).
+
+**Signature:**
+```sql
+anofox_diff_joindiff(
+    source VARCHAR,
+    target VARCHAR,
+    pk_cols LIST<VARCHAR>
+    [, compare_cols LIST<VARCHAR>]
+) → TABLE
+```
+
+**Returns:**
+```sql
+TABLE(
+    diff_type VARCHAR,      -- 'added', 'removed', 'changed', 'unchanged'
+    row_id BIGINT,          -- Row identifier
+    source_* VARCHAR,       -- Source column values (prefixed with 'source_')
+    target_* VARCHAR        -- Target column values (prefixed with 'target_')
+)
+```
+
+**Example:**
+```sql
+SELECT * FROM anofox_diff_joindiff('source_tbl', 'target_tbl', ['user_id', 'date'])
+WHERE diff_type IN ('added', 'changed')
+LIMIT 100;
+```
+
+---
+
+## Configuration
+
+Set options via SQL or DuckDB's configuration file.
+
+### Email Settings
+
+```sql
+SET anofox_email_default_validation = 'regex';  -- Default: regex
+SET anofox_email_regex_pattern = '<your-pattern>';  -- RFC 5322 inspired
+SET anofox_email_dns_timeout_ms = 1000;  -- DNS timeout per try (1-5000ms)
+SET anofox_email_dns_tries = 1;  -- DNS retry count
+SET anofox_email_smtp_port = 25;  -- SMTP port
+SET anofox_email_smtp_connect_timeout_ms = 5000;  -- TCP connect timeout
+SET anofox_email_smtp_read_timeout_ms = 5000;  -- Read/write timeout
+SET anofox_email_smtp_helo_domain = 'duckdb.local';  -- HELO/EHLO domain
+SET anofox_email_smtp_mail_from = 'validator@duckdb.local';  -- MAIL FROM address
+```
+
+### Postal Settings
+
+```sql
+SET anofox_postal_data_path = '.duckdb/extensions/libpostal';  -- Data directory
+
+-- Download libpostal data on first use
+SELECT anofox_postal_load_data();
+```
+
+### Phone Settings
+
+```sql
+SET anofox_phonenumber_default_region = 'US';  -- Default region code
+```
+
+### Tracing
+
+```sql
+SET anofox_trace_enabled = true;  -- Enable/disable logging
+SET anofox_trace_level = 'info';  -- trace|debug|info|warn|error|critical|off
+```
+
+---
+
+## Function Coverage Matrix
+
+### Summary Statistics
+
+| Category | Count | Function Types |
+|----------|-------|----------------|
+| Email Validation | 3 | Scalar (2), Table (1) |
+| Address Parsing | 4 | Scalar (2), Table (2) |
+| Phone Numbers | 9 | Scalar (8), Table (1) |
+| Money & Currency | 17 | Scalar functions |
+| VAT Validation | 10 | Scalar functions |
+| Data Quality Metrics | 8 | Table functions |
+| Anomaly Detection | 4 | Table functions |
+| Data Diffing | 2 | Table functions |
+| **Total** | **57** | |
+
+### Function Type Breakdown
+
+| Type | Count | Examples |
+|------|-------|----------|
+| Scalar Functions | 45 | `anofox_email_is_valid`, `anofox_money_add`, `anofox_vat_is_valid` |
+| Table Functions | 12 | `anofox_metric_volume`, `anofox_metric_isolation_forest`, `anofox_diff_hashdiff` |
+
+### Module Status
+
+| Module | Functions | Status | Dependencies |
+|--------|-----------|--------|--------------|
+| Email Validation | 3 | Stable | c-ares (optional DNS), OpenSSL (optional SMTP) |
+| Address Parsing | 4 | Stable | libpostal (required) |
+| Phone Numbers | 9 | Stable | libphonenumber (embedded) |
+| Money & Currency | 17 | Stable | None |
+| VAT Validation | 10 | Stable | None |
+| Data Quality Metrics | 8 | Stable | None |
+| Anomaly Detection | 4 | Stable | None |
+| Data Diffing | 2 | Stable | None |
+
+---
+
+## Notes
+
+1. **All validation calculations** are performed by native C++ implementations with optional integration to external libraries (libpostal, libphonenumber).
+
+2. **Positional parameters only**: Functions do NOT support named parameters (`:=` syntax). Parameters must be provided in the order specified.
+
+3. **NULL handling**:
+   - Missing values in input will cause functions to return NULL
+   - Table functions handle NULLs explicitly in their output
+
+4. **Performance**:
+   - Scalar functions: Vectorized execution, optimized for large datasets
+   - Table functions: SQL-based implementation, efficient for large tables
+   - Automatic parallelization across CPU cores where applicable
+
+5. **External dependencies**:
+   - **libpostal**: Required for address parsing. Data (~500MB) is downloaded automatically on first use via `anofox_postal_load_data()`.
+   - **c-ares**: Optional for DNS email validation
+   - **OpenSSL**: Optional for SMTP email validation
+   - **libphonenumber**: Embedded implementation, no external dependencies
+
+6. **Money struct format**: All money functions use `STRUCT(amount DOUBLE, currency VARCHAR)` format. Currency codes must match supported currencies (USD, EUR, GBP, JPY, CAD, AUD, CHF, CNY, INR, BRL).
+
+7. **VAT country codes**: Use ISO 3166-1 alpha-2 country codes (e.g., 'DE', 'FR', 'GB'). The extension supports 29 countries (28 EU + UK).
+
+8. **Anomaly detection parameters**:
+   - Isolation Forest: Higher `n_trees` and `sample_size` improve accuracy but increase computation time
+   - DBSCAN: `eps` and `min_pts` should be tuned based on data density
+   - Use `'summary'` output mode for large tables to reduce memory usage
+
+9. **Data diffing**:
+   - `anofox_diff_hashdiff`: Fast, O(n) complexity, returns summary statistics only
+   - `anofox_diff_joindiff`: Slower, O(n log n) complexity, returns detailed row-level changes
+   - Both functions support compound primary keys
+
+---
+
+**Last Updated:** 2025-01-XX  
+**API Version:** 0.1.0
+
