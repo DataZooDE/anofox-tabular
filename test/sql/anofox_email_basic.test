@@ -4,19 +4,33 @@ statement ok
 LOAD anofox_tabular;
 
 query T
-SELECT anofox_email_is_valid('user@example.com');
+SELECT anofox_tab_email_is_valid('user@example.com');
 ----
 true
 
 query I
 SELECT CASE WHEN (result).valid AND (result).stage='regex' AND COALESCE((result).reason, '')='' THEN 1 ELSE 0 END
-FROM (SELECT anofox_email_validate('user@example.com', 'regex') AS result);
+FROM (SELECT anofox_tab_email_validate('user@example.com', 'regex') AS result);
+----
+1
+
+query I
+SELECT CASE WHEN (result).valid AND (result).stage='regex' AND COALESCE((result).reason, '')='' THEN 1 ELSE 0 END
+FROM (SELECT email_validate('user@example.com', 'regex') AS result);
 ----
 1
 
 query I
 SELECT COUNT(*)
-FROM anofox_email_config()
+FROM anofox_tab_email_config()
+WHERE key IN ('dns_timeout_ms', 'dns_tries', 'smtp_port', 'smtp_connect_timeout_ms', 'smtp_read_timeout_ms',
+              'smtp_helo_domain', 'smtp_mail_from', 'trace_enabled', 'trace_level');
+----
+9
+
+query I
+SELECT COUNT(*)
+FROM email_config()
 WHERE key IN ('dns_timeout_ms', 'dns_tries', 'smtp_port', 'smtp_connect_timeout_ms', 'smtp_read_timeout_ms',
               'smtp_helo_domain', 'smtp_mail_from', 'trace_enabled', 'trace_level');
 ----
@@ -24,85 +38,85 @@ WHERE key IN ('dns_timeout_ms', 'dns_tries', 'smtp_port', 'smtp_connect_timeout_
 
 query TTT
 SELECT (result).valid, (result).stage, COALESCE((result).reason, '')
-FROM (SELECT anofox_email_validate('not-an-email') AS result);
+FROM (SELECT anofox_tab_email_validate('not-an-email') AS result);
 ----
 false	regex	invalid_format
 
 statement ok
-SET anofox_trace_enabled=true;
+SET anofox_tab_trace_enabled=true;
 
 statement ok
-SET anofox_trace_level='debug';
+SET anofox_tab_trace_level='debug';
 
-statement error Unsupported anofox_trace_level value
-SET anofox_trace_level='verbose';
+statement error
+SET anofox_tab_trace_level='verbose';
 ----
 Unsupported anofox_trace_level value
 
 statement ok
-SET anofox_email_regex_pattern='^user@[A-Za-z0-9.-]+$';
+SET anofox_tab_email_regex_pattern='^user@[A-Za-z0-9.-]+$';
 
 query T
-SELECT anofox_email_is_valid('user@example.com');
+SELECT anofox_tab_email_is_valid('user@example.com');
 ----
 true
 
 query T
-SELECT anofox_email_is_valid('person@example.com');
+SELECT anofox_tab_email_is_valid('person@example.com');
 ----
 false
 
 query TTT
 SELECT (result).valid, (result).stage, COALESCE((result).reason, '') <> '' AS has_reason
-FROM (SELECT anofox_email_validate('user@invalid.invalid', 'dns') AS result);
+FROM (SELECT anofox_tab_email_validate('user@invalid.invalid', 'dns') AS result);
 ----
 false	dns	true
 
 statement ok
-SET anofox_email_smtp_connect_timeout_ms=50;
+SET anofox_tab_email_smtp_connect_timeout_ms=50;
 
 statement ok
-SET anofox_email_smtp_read_timeout_ms=50;
+SET anofox_tab_email_smtp_read_timeout_ms=50;
 
 query TTT
 SELECT (result).valid, (result).stage, COALESCE((result).reason, '') <> '' AS has_reason
-FROM (SELECT anofox_email_validate('user@localhost', 'smtp') AS result);
+FROM (SELECT anofox_tab_email_validate('user@localhost', 'smtp') AS result);
 ----
 false	smtp	true
 
 query T
 SELECT array_length((result).mx_hosts)
-FROM (SELECT anofox_email_validate('user@localhost', 'smtp') AS result);
+FROM (SELECT anofox_tab_email_validate('user@localhost', 'smtp') AS result);
 ----
 2
 
 query T
 SELECT array_length((result).smtp_debug.transcript) >= 1
-FROM (SELECT anofox_email_validate('user@localhost', 'smtp') AS result);
+FROM (SELECT anofox_tab_email_validate('user@localhost', 'smtp') AS result);
 ----
 true
 
 query TTT
 SELECT (result).valid, (result).stage, COALESCE((result).reason, '')
-FROM (SELECT anofox_email_validate('user@example.com', 'unknown') AS result);
+FROM (SELECT anofox_tab_email_validate('user@example.com', 'unknown') AS result);
 ----
 false	unsupported	validation_not_implemented
 
-statement error anofox_email_dns_timeout_ms must be between 1 and 5000
-SET anofox_email_dns_timeout_ms=0;
+statement error anofox_tab_email_dns_timeout_ms must be between 1 and 5000
+SET anofox_tab_email_dns_timeout_ms=0;
 ----
-anofox_email_dns_timeout_ms must be between 1 and 5000
+anofox_tab_email_dns_timeout_ms must be between 1 and 5000
 
-statement error anofox_email_smtp_connect_timeout_ms must be between 1 and 5000
-SET anofox_email_smtp_connect_timeout_ms=0;
+statement error anofox_tab_email_smtp_connect_timeout_ms must be between 1 and 5000
+SET anofox_tab_email_smtp_connect_timeout_ms=0;
 ----
-anofox_email_smtp_connect_timeout_ms must be between 1 and 5000
+anofox_tab_email_smtp_connect_timeout_ms must be between 1 and 5000
 
 statement ok
-SET anofox_trace_level='info';
+SET anofox_tab_trace_level='info';
 
 statement ok
-SET anofox_trace_enabled=false;
+SET anofox_tab_trace_enabled=false;
 
 statement ok
-SET anofox_trace_enabled=true;
+SET anofox_tab_trace_enabled=true;

@@ -2,6 +2,7 @@
 #include "anofox_email_dns.hpp"
 #include "anofox_email_smtp.hpp"
 #include "anofox_email_logging.hpp"
+#include "anofox_function_alias.hpp"
 
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/common/types/value.hpp"
@@ -132,7 +133,7 @@ public:
 	void SetDnsTimeout(uint32_t timeout_ms) {
 		if (timeout_ms < email::DnsOptions::MIN_TIMEOUT_MS || timeout_ms > email::DnsOptions::MAX_TIMEOUT_MS) {
 			throw InvalidInputException(
-			    "anofox_email_dns_timeout_ms must be between " +
+			    "anofox_tab_email_dns_timeout_ms must be between " +
 			    std::to_string(email::DnsOptions::MIN_TIMEOUT_MS) + " and " +
 			    std::to_string(email::DnsOptions::MAX_TIMEOUT_MS));
 		}
@@ -143,7 +144,7 @@ public:
 
 	void SetDnsTries(uint32_t tries) {
 		if (tries == 0) {
-			throw InvalidInputException("anofox_email_dns_tries must be greater than 0");
+			throw InvalidInputException("anofox_tab_email_dns_tries must be greater than 0");
 		}
 		std::lock_guard<std::mutex> lock(config_mutex);
 		dns_options.tries = tries;
@@ -156,7 +157,7 @@ public:
 
 	void SetSmtpPort(uint16_t port) {
 		if (port == 0) {
-			throw InvalidInputException("anofox_email_smtp_port must be between 1 and 65535");
+			throw InvalidInputException("anofox_tab_email_smtp_port must be between 1 and 65535");
 		}
 		std::lock_guard<std::mutex> lock(config_mutex);
 		smtp_options.port = port;
@@ -166,7 +167,7 @@ public:
 		if (timeout_ms < email::SmtpOptions::MIN_TIMEOUT_MS ||
 		    timeout_ms > email::SmtpOptions::MAX_CONNECT_TIMEOUT_MS) {
 			throw InvalidInputException(
-			    "anofox_email_smtp_connect_timeout_ms must be between " +
+			    "anofox_tab_email_smtp_connect_timeout_ms must be between " +
 			    std::to_string(email::SmtpOptions::MIN_TIMEOUT_MS) + " and " +
 			    std::to_string(email::SmtpOptions::MAX_CONNECT_TIMEOUT_MS));
 		}
@@ -180,7 +181,7 @@ public:
 		if (timeout_ms < email::SmtpOptions::MIN_TIMEOUT_MS ||
 		    timeout_ms > email::SmtpOptions::MAX_READ_TIMEOUT_MS) {
 			throw InvalidInputException(
-			    "anofox_email_smtp_read_timeout_ms must be between " +
+			    "anofox_tab_email_smtp_read_timeout_ms must be between " +
 			    std::to_string(email::SmtpOptions::MIN_TIMEOUT_MS) + " and " +
 			    std::to_string(email::SmtpOptions::MAX_READ_TIMEOUT_MS));
 		}
@@ -194,7 +195,7 @@ public:
 		auto cleaned = value;
 		StringUtil::Trim(cleaned);
 		if (cleaned.empty()) {
-			throw InvalidInputException("anofox_email_smtp_helo_domain cannot be empty");
+			throw InvalidInputException("anofox_tab_email_smtp_helo_domain cannot be empty");
 		}
 		std::lock_guard<std::mutex> lock(config_mutex);
 		smtp_options.helo_domain = cleaned;
@@ -204,7 +205,7 @@ public:
 		auto cleaned = value;
 		StringUtil::Trim(cleaned);
 		if (cleaned.empty()) {
-			throw InvalidInputException("anofox_email_smtp_mail_from cannot be empty");
+			throw InvalidInputException("anofox_tab_email_smtp_mail_from cannot be empty");
 		}
 		std::lock_guard<std::mutex> lock(config_mutex);
 		smtp_options.mail_from = cleaned;
@@ -529,7 +530,7 @@ void EmailConfigFunction(ClientContext &, TableFunctionInput &input, DataChunk &
 
 void SetDefaultValidationOption(ClientContext &, SetScope, Value &parameter) {
 	if (parameter.IsNull()) {
-		throw InvalidInputException("anofox_email_default_validation cannot be NULL");
+		throw InvalidInputException("anofox_tab_email_default_validation cannot be NULL");
 	}
 	EmailConfig::Get().SetDefaultValidation(parameter.ToString());
 	parameter = Value(EmailConfig::Get().GetDefaultValidation());
@@ -537,7 +538,7 @@ void SetDefaultValidationOption(ClientContext &, SetScope, Value &parameter) {
 
 void SetRegexPatternOption(ClientContext &, SetScope, Value &parameter) {
 	if (parameter.IsNull()) {
-		throw InvalidInputException("anofox_email_regex_pattern cannot be NULL");
+		throw InvalidInputException("anofox_tab_email_regex_pattern cannot be NULL");
 	}
 	EmailConfig::Get().SetRegexPattern(parameter.ToString());
 	parameter = Value(EmailConfig::Get().GetRegexPattern());
@@ -545,11 +546,11 @@ void SetRegexPatternOption(ClientContext &, SetScope, Value &parameter) {
 
 void SetDnsTimeoutOption(ClientContext &, SetScope, Value &parameter) {
 	if (parameter.IsNull()) {
-		throw InvalidInputException("anofox_email_dns_timeout_ms cannot be NULL");
+		throw InvalidInputException("anofox_tab_email_dns_timeout_ms cannot be NULL");
 	}
 	auto value = parameter.GetValue<int64_t>();
 	if (value < email::DnsOptions::MIN_TIMEOUT_MS || value > email::DnsOptions::MAX_TIMEOUT_MS) {
-		throw InvalidInputException("anofox_email_dns_timeout_ms must be between " +
+		throw InvalidInputException("anofox_tab_email_dns_timeout_ms must be between " +
 		                            std::to_string(email::DnsOptions::MIN_TIMEOUT_MS) + " and " +
 		                            std::to_string(email::DnsOptions::MAX_TIMEOUT_MS));
 	}
@@ -559,11 +560,11 @@ void SetDnsTimeoutOption(ClientContext &, SetScope, Value &parameter) {
 
 void SetDnsTriesOption(ClientContext &, SetScope, Value &parameter) {
 	if (parameter.IsNull()) {
-		throw InvalidInputException("anofox_email_dns_tries cannot be NULL");
+		throw InvalidInputException("anofox_tab_email_dns_tries cannot be NULL");
 	}
 	auto value = parameter.GetValue<int64_t>();
 	if (value <= 0 || value > std::numeric_limits<uint32_t>::max()) {
-		throw InvalidInputException("anofox_email_dns_tries must be between 1 and " +
+		throw InvalidInputException("anofox_tab_email_dns_tries must be between 1 and " +
 		                            std::to_string(std::numeric_limits<uint32_t>::max()));
 	}
 	EmailConfig::Get().SetDnsTries(static_cast<uint32_t>(value));
@@ -572,11 +573,11 @@ void SetDnsTriesOption(ClientContext &, SetScope, Value &parameter) {
 
 void SetSmtpPortOption(ClientContext &, SetScope, Value &parameter) {
 	if (parameter.IsNull()) {
-		throw InvalidInputException("anofox_email_smtp_port cannot be NULL");
+		throw InvalidInputException("anofox_tab_email_smtp_port cannot be NULL");
 	}
 	auto value = parameter.GetValue<int64_t>();
 	if (value <= 0 || value > std::numeric_limits<uint16_t>::max()) {
-		throw InvalidInputException("anofox_email_smtp_port must be between 1 and 65535");
+		throw InvalidInputException("anofox_tab_email_smtp_port must be between 1 and 65535");
 	}
 	EmailConfig::Get().SetSmtpPort(static_cast<uint16_t>(value));
 	parameter = Value::INTEGER(static_cast<int32_t>(EmailConfig::Get().GetSmtpOptions().port));
@@ -584,11 +585,11 @@ void SetSmtpPortOption(ClientContext &, SetScope, Value &parameter) {
 
 void SetSmtpConnectTimeoutOption(ClientContext &, SetScope, Value &parameter) {
 	if (parameter.IsNull()) {
-		throw InvalidInputException("anofox_email_smtp_connect_timeout_ms cannot be NULL");
+		throw InvalidInputException("anofox_tab_email_smtp_connect_timeout_ms cannot be NULL");
 	}
 	auto value = parameter.GetValue<int64_t>();
 	if (value < email::SmtpOptions::MIN_TIMEOUT_MS || value > email::SmtpOptions::MAX_CONNECT_TIMEOUT_MS) {
-		throw InvalidInputException("anofox_email_smtp_connect_timeout_ms must be between " +
+		throw InvalidInputException("anofox_tab_email_smtp_connect_timeout_ms must be between " +
 		                            std::to_string(email::SmtpOptions::MIN_TIMEOUT_MS) + " and " +
 		                            std::to_string(email::SmtpOptions::MAX_CONNECT_TIMEOUT_MS));
 	}
@@ -598,11 +599,11 @@ void SetSmtpConnectTimeoutOption(ClientContext &, SetScope, Value &parameter) {
 
 void SetSmtpReadTimeoutOption(ClientContext &, SetScope, Value &parameter) {
 	if (parameter.IsNull()) {
-		throw InvalidInputException("anofox_email_smtp_read_timeout_ms cannot be NULL");
+		throw InvalidInputException("anofox_tab_email_smtp_read_timeout_ms cannot be NULL");
 	}
 	auto value = parameter.GetValue<int64_t>();
 	if (value < email::SmtpOptions::MIN_TIMEOUT_MS || value > email::SmtpOptions::MAX_READ_TIMEOUT_MS) {
-		throw InvalidInputException("anofox_email_smtp_read_timeout_ms must be between " +
+		throw InvalidInputException("anofox_tab_email_smtp_read_timeout_ms must be between " +
 		                            std::to_string(email::SmtpOptions::MIN_TIMEOUT_MS) + " and " +
 		                            std::to_string(email::SmtpOptions::MAX_READ_TIMEOUT_MS));
 	}
@@ -612,7 +613,7 @@ void SetSmtpReadTimeoutOption(ClientContext &, SetScope, Value &parameter) {
 
 void SetSmtpHeloDomainOption(ClientContext &, SetScope, Value &parameter) {
 	if (parameter.IsNull()) {
-		throw InvalidInputException("anofox_email_smtp_helo_domain cannot be NULL");
+		throw InvalidInputException("anofox_tab_email_smtp_helo_domain cannot be NULL");
 	}
 	EmailConfig::Get().SetSmtpHeloDomain(parameter.ToString());
 	parameter = Value(EmailConfig::Get().GetSmtpOptions().helo_domain);
@@ -620,7 +621,7 @@ void SetSmtpHeloDomainOption(ClientContext &, SetScope, Value &parameter) {
 
 void SetSmtpMailFromOption(ClientContext &, SetScope, Value &parameter) {
 	if (parameter.IsNull()) {
-		throw InvalidInputException("anofox_email_smtp_mail_from cannot be NULL");
+		throw InvalidInputException("anofox_tab_email_smtp_mail_from cannot be NULL");
 	}
 	EmailConfig::Get().SetSmtpMailFrom(parameter.ToString());
 	parameter = Value(EmailConfig::Get().GetSmtpOptions().mail_from);
@@ -670,77 +671,85 @@ void EmailTrace(AnofoxLogLevel level, const std::string &message) {
 
 void RegisterEmailOptions(ExtensionLoader &loader) {
 	auto &config = DBConfig::GetConfig(loader.GetDatabaseInstance());
-	config.AddExtensionOption("anofox_email_default_validation",
-	                          "Default validation mode for anofox_email_is_valid (regex, dns, smtp)",
+	config.AddExtensionOption("anofox_tab_email_default_validation",
+	                          "Default validation mode for anofox_tab_email_is_valid (regex, dns, smtp)",
 	                          LogicalTypeId::VARCHAR, Value(DEFAULT_VALIDATION), SetDefaultValidationOption);
-	config.AddExtensionOption("anofox_email_regex_pattern",
+	config.AddExtensionOption("anofox_tab_email_regex_pattern",
 	                          "Regular expression used during email regex validation",
 	                          LogicalTypeId::VARCHAR, Value(DEFAULT_REGEX_PATTERN), SetRegexPatternOption);
 	auto dns_options = EmailConfig::Get().GetDnsOptions();
 	auto smtp_options = EmailConfig::Get().GetSmtpOptions();
-	config.AddExtensionOption("anofox_email_dns_timeout_ms",
+	config.AddExtensionOption("anofox_tab_email_dns_timeout_ms",
 	                          "DNS resolver timeout in milliseconds",
 	                          LogicalTypeId::BIGINT,
 	                          Value::BIGINT(static_cast<int64_t>(dns_options.timeout_ms)), SetDnsTimeoutOption);
-	config.AddExtensionOption("anofox_email_dns_tries",
+	config.AddExtensionOption("anofox_tab_email_dns_tries",
 	                          "Number of DNS queries to attempt before failing",
 	                          LogicalTypeId::INTEGER,
 	                          Value::INTEGER(static_cast<int32_t>(dns_options.tries)), SetDnsTriesOption);
-	config.AddExtensionOption("anofox_email_smtp_port",
+	config.AddExtensionOption("anofox_tab_email_smtp_port",
 	                          "SMTP port used when connecting to MX hosts",
 	                          LogicalTypeId::INTEGER,
 	                          Value::INTEGER(static_cast<int32_t>(smtp_options.port)), SetSmtpPortOption);
-	config.AddExtensionOption("anofox_email_smtp_connect_timeout_ms",
+	config.AddExtensionOption("anofox_tab_email_smtp_connect_timeout_ms",
 	                          "SMTP connect timeout in milliseconds",
 	                          LogicalTypeId::BIGINT,
 	                          Value::BIGINT(static_cast<int64_t>(smtp_options.connect_timeout_ms)),
 	                          SetSmtpConnectTimeoutOption);
-	config.AddExtensionOption("anofox_email_smtp_read_timeout_ms",
+	config.AddExtensionOption("anofox_tab_email_smtp_read_timeout_ms",
 	                          "SMTP read/write timeout in milliseconds",
 	                          LogicalTypeId::BIGINT,
 	                          Value::BIGINT(static_cast<int64_t>(smtp_options.read_timeout_ms)),
 	                          SetSmtpReadTimeoutOption);
-	config.AddExtensionOption("anofox_email_smtp_helo_domain",
+	config.AddExtensionOption("anofox_tab_email_smtp_helo_domain",
 	                          "Domain value used during SMTP EHLO negotiation",
 	                          LogicalTypeId::VARCHAR, Value(smtp_options.helo_domain), SetSmtpHeloDomainOption);
-	config.AddExtensionOption("anofox_email_smtp_mail_from",
+	config.AddExtensionOption("anofox_tab_email_smtp_mail_from",
 	                          "MAIL FROM address presented during SMTP verification",
 	                          LogicalTypeId::VARCHAR, Value(smtp_options.mail_from), SetSmtpMailFromOption);
-	config.AddExtensionOption("anofox_trace_enabled",
+	config.AddExtensionOption("anofox_tab_trace_enabled",
 	                          "Enable anofox tracing output",
 	                          LogicalTypeId::BOOLEAN, Value::BOOLEAN(AnofoxTraceConfig::Get().GetEnabled()),
 	                          SetTraceEnabledOption);
-	config.AddExtensionOption("anofox_trace_level",
+	config.AddExtensionOption("anofox_tab_trace_level",
 	                          "Minimum tracing level (trace/debug/info/warn/error/critical/off)",
 	                          LogicalTypeId::VARCHAR, Value(AnofoxTraceConfig::Get().GetLevelString()),
 	                          SetTraceLevelOption);
 }
 
 void RegisterEmailFunctions(ExtensionLoader &loader) {
-	ScalarFunction validate_fun("anofox_email_validate", {LogicalTypeId::VARCHAR, LogicalTypeId::VARCHAR}, GetEmailValidateReturnType(), EmailValidateFunction);
+	// Register email_validate with two overloads
+	ScalarFunctionSet validate_set("anofox_tab_email_validate");
+	ScalarFunction validate_fun("anofox_tab_email_validate", {LogicalTypeId::VARCHAR, LogicalTypeId::VARCHAR}, GetEmailValidateReturnType(), EmailValidateFunction);
 	validate_fun.null_handling = FunctionNullHandling::SPECIAL_HANDLING;
 	validate_fun.stability = FunctionStability::CONSISTENT;
+	validate_set.AddFunction(validate_fun);
 
-	ScalarFunction validate_single("anofox_email_validate", {LogicalTypeId::VARCHAR}, GetEmailValidateReturnType(), EmailValidateFunction);
+	ScalarFunction validate_single("anofox_tab_email_validate", {LogicalTypeId::VARCHAR}, GetEmailValidateReturnType(), EmailValidateFunction);
 	validate_single.null_handling = FunctionNullHandling::SPECIAL_HANDLING;
 	validate_single.stability = FunctionStability::CONSISTENT;
+	validate_set.AddFunction(validate_single);
+	
+	RegisterScalarFunctionSetWithAlias(loader, validate_set, "email_validate");
 
-	ScalarFunction is_valid_fun("anofox_email_is_valid", {LogicalTypeId::VARCHAR, LogicalTypeId::VARCHAR}, LogicalTypeId::BOOLEAN, EmailIsValidFunction);
+	// Register email_is_valid with two overloads
+	ScalarFunctionSet is_valid_set("anofox_tab_email_is_valid");
+	ScalarFunction is_valid_fun("anofox_tab_email_is_valid", {LogicalTypeId::VARCHAR, LogicalTypeId::VARCHAR}, LogicalTypeId::BOOLEAN, EmailIsValidFunction);
 	is_valid_fun.null_handling = FunctionNullHandling::SPECIAL_HANDLING;
 	is_valid_fun.stability = FunctionStability::CONSISTENT;
+	is_valid_set.AddFunction(is_valid_fun);
 
-	ScalarFunction is_valid_single("anofox_email_is_valid", {LogicalTypeId::VARCHAR}, LogicalTypeId::BOOLEAN, EmailIsValidFunction);
+	ScalarFunction is_valid_single("anofox_tab_email_is_valid", {LogicalTypeId::VARCHAR}, LogicalTypeId::BOOLEAN, EmailIsValidFunction);
 	is_valid_single.null_handling = FunctionNullHandling::SPECIAL_HANDLING;
 	is_valid_single.stability = FunctionStability::CONSISTENT;
+	is_valid_set.AddFunction(is_valid_single);
+	
+	RegisterScalarFunctionSetWithAlias(loader, is_valid_set, "email_is_valid");
 
-	loader.RegisterFunction(validate_fun);
-	loader.RegisterFunction(validate_single);
-	loader.RegisterFunction(is_valid_fun);
-	loader.RegisterFunction(is_valid_single);
-
-	TableFunction config_fun("anofox_email_config", {}, EmailConfigFunction, EmailConfigBind);
+	// Register email_config table function
+	TableFunction config_fun("anofox_tab_email_config", {}, EmailConfigFunction, EmailConfigBind);
 	config_fun.init_global = EmailConfigInit;
-	loader.RegisterFunction(config_fun);
+	RegisterTableFunctionWithAlias(loader, config_fun, "email_config");
 }
 
 } // namespace anofox

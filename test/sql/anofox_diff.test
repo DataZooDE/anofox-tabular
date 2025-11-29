@@ -33,7 +33,7 @@ INSERT INTO target_data VALUES
 
 # Test that function is registered
 query T
-SELECT COUNT(*) > 0 FROM duckdb_functions() WHERE function_name = 'anofox_diff_joindiff';
+SELECT COUNT(*) > 0 FROM duckdb_functions() WHERE function_name = 'anofox_tab_diff_joindiff' OR function_name = 'diff_joindiff';
 ----
 true
 
@@ -111,7 +111,7 @@ removed	3
 
 # Test 1: Basic JoinDiff with single primary key
 query IIII rowsort
-SELECT * FROM anofox_diff_joindiff('source_data', 'target_data', 'id');
+SELECT * FROM diff_joindiff('source_data', 'target_data', 'id');
 ----
 added	4	David	400
 changed	2	Bob	250
@@ -119,7 +119,7 @@ removed	3	NULL	NULL
 
 # Test 2: JoinDiff with include_all parameter
 query IIII rowsort
-SELECT * FROM anofox_diff_joindiff('source_data', 'target_data', 'id', NULL, true);
+SELECT * FROM diff_joindiff('source_data', 'target_data', 'id', NULL, true);
 ----
 added	4	David	400
 changed	2	Bob	250
@@ -156,7 +156,7 @@ INSERT INTO orders_target VALUES
     (3, '2024-01-03', 300.00, 'pending');
 
 query IIIII rowsort
-SELECT * FROM anofox_diff_joindiff('orders_source', 'orders_target', ['user_id', 'order_date']);
+SELECT * FROM diff_joindiff('orders_source', 'orders_target', ['user_id', 'order_date']);
 ----
 added	3	2024-01-03	300.00	pending
 changed	1	2024-01-02	200.00	completed
@@ -195,12 +195,12 @@ INSERT INTO products_target VALUES
 
 # Only compare price and stock, ignore name and updated_at
 query I
-SELECT COUNT(*) FROM anofox_diff_joindiff('products_source', 'products_target', 'id', ['price', 'stock']);
+SELECT COUNT(*) FROM diff_joindiff('products_source', 'products_target', 'id', ['price', 'stock']);
 ----
 2
 
 query IIIIII
-SELECT * FROM anofox_diff_joindiff('products_source', 'products_target', 'id', ['price', 'stock'])
+SELECT * FROM diff_joindiff('products_source', 'products_target', 'id', ['price', 'stock'])
 WHERE diff_type = 'changed' AND id = 2;
 ----
 changed	2	Gadget	25.00	50	2024-01-02 15:00:00
@@ -219,7 +219,7 @@ statement ok
 INSERT INTO identical_target VALUES (1, 'test'), (2, 'data');
 
 query I
-SELECT COUNT(*) FROM anofox_diff_joindiff('identical_source', 'identical_target', 'id');
+SELECT COUNT(*) FROM diff_joindiff('identical_source', 'identical_target', 'id');
 ----
 0
 
@@ -237,12 +237,12 @@ statement ok
 INSERT INTO all_diff_target VALUES (3, 300), (4, 400);
 
 query I
-SELECT COUNT(*) FROM anofox_diff_joindiff('all_diff_source', 'all_diff_target', 'id');
+SELECT COUNT(*) FROM diff_joindiff('all_diff_source', 'all_diff_target', 'id');
 ----
 4
 
 query II rowsort
-SELECT diff_type, COUNT(*) FROM anofox_diff_joindiff('all_diff_source', 'all_diff_target', 'id')
+SELECT diff_type, COUNT(*) FROM diff_joindiff('all_diff_source', 'all_diff_target', 'id')
 GROUP BY diff_type;
 ----
 added	2
@@ -265,7 +265,7 @@ statement ok
 INSERT INTO test_schema.schema_target VALUES (1, 'Bob');
 
 query III rowsort
-SELECT * FROM anofox_diff_joindiff('test_schema.schema_source', 'test_schema.schema_target', 'id');
+SELECT * FROM diff_joindiff('test_schema.schema_source', 'test_schema.schema_target', 'id');
 ----
 changed	1	Bob
 
@@ -275,13 +275,13 @@ changed	1	Bob
 
 # Test 1: Check HashDiff function registration
 query T
-SELECT COUNT(*) > 0 FROM duckdb_functions() WHERE function_name = 'anofox_diff_hashdiff';
+SELECT COUNT(*) > 0 FROM duckdb_functions() WHERE function_name = 'anofox_tab_diff_hashdiff' OR function_name = 'diff_hashdiff';
 ----
 true
 
 # Test 2: Basic HashDiff with single primary key
 query IIII rowsort
-SELECT * FROM anofox_diff_hashdiff('source_data', 'target_data', 'id');
+SELECT * FROM diff_hashdiff('source_data', 'target_data', 'id');
 ----
 added	4	David	400
 changed	2	Bob	250
@@ -289,7 +289,7 @@ removed	3	NULL	NULL
 
 # Test 3: HashDiff with compound primary key
 query IIIII rowsort
-SELECT * FROM anofox_diff_hashdiff('orders_source', 'orders_target', ['user_id', 'order_date']);
+SELECT * FROM diff_hashdiff('orders_source', 'orders_target', ['user_id', 'order_date']);
 ----
 added	3	2024-01-03	300.00	pending
 changed	1	2024-01-02	200.00	completed
@@ -297,13 +297,13 @@ removed	2	2024-01-01	NULL	NULL
 
 # Test 4: HashDiff with custom bisection_threshold
 query I
-SELECT COUNT(*) FROM anofox_diff_hashdiff('source_data', 'target_data', 'id', 1000);
+SELECT COUNT(*) FROM diff_hashdiff('source_data', 'target_data', 'id', 1000);
 ----
 3
 
 # Test 5: HashDiff with bisection_threshold and bisection_factor
 query I
-SELECT COUNT(*) FROM anofox_diff_hashdiff('source_data', 'target_data', 'id', 1000, 5);
+SELECT COUNT(*) FROM diff_hashdiff('source_data', 'target_data', 'id', 1000, 5);
 ----
 3
 
@@ -322,7 +322,7 @@ INSERT INTO verify_target VALUES (1, 'a'), (2, 'x'), (4, 'd');
 
 query T
 SELECT
-    (SELECT COUNT(*) FROM anofox_diff_joindiff('verify_source', 'verify_target', 'id')) =
-    (SELECT COUNT(*) FROM anofox_diff_hashdiff('verify_source', 'verify_target', 'id')) AS same_count;
+    (SELECT COUNT(*) FROM diff_joindiff('verify_source', 'verify_target', 'id')) =
+    (SELECT COUNT(*) FROM diff_hashdiff('verify_source', 'verify_target', 'id')) AS same_count;
 ----
 true

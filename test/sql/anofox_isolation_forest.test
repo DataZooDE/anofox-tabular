@@ -4,7 +4,7 @@ statement ok
 LOAD anofox_tabular
 
 statement ok
-SET anofox_trace_enabled = false
+SET anofox_tab_trace_enabled = false
 
 # ===--------------------------------------------------------------------===
 # Isolation Forest Test Suite
@@ -91,43 +91,43 @@ CREATE TEMP TABLE iso_empty (
 
 # Test 1: Basic summary mode with default parameters
 query TIIR
-SELECT status, outlier_count, total_count, n_trees FROM anofox_metric_isolation_forest('iso_normal_data', 'value', 100, 256, 0.1, 'summary')
+SELECT status, outlier_count, total_count, n_trees FROM metric_isolation_forest('iso_normal_data', 'value', 100, 256, 0.1, 'summary')
 ----
 fail	1	6	100
 
 # Test 2: Summary mode with different n_trees parameter
 query I
-SELECT n_trees FROM anofox_metric_isolation_forest('iso_normal_data', 'value', 50, 256, 0.1, 'summary')
+SELECT n_trees FROM metric_isolation_forest('iso_normal_data', 'value', 50, 256, 0.1, 'summary')
 ----
 50
 
 # Test 3: Summary mode with different sample_size parameter
 query I
-SELECT COUNT(*) FROM anofox_metric_isolation_forest('iso_normal_data', 'value', 100, 128, 0.1, 'summary')
+SELECT COUNT(*) FROM metric_isolation_forest('iso_normal_data', 'value', 100, 128, 0.1, 'summary')
 ----
 1
 
 # Test 4: Summary mode with higher contamination threshold
 query I
-SELECT outlier_count FROM anofox_metric_isolation_forest('iso_normal_data', 'value', 100, 256, 0.2, 'summary')
+SELECT outlier_count FROM metric_isolation_forest('iso_normal_data', 'value', 100, 256, 0.2, 'summary')
 ----
 1
 
 # Test 5: Check message field in summary mode
 query T
-SELECT message FROM anofox_metric_isolation_forest('iso_normal_data', 'value', 100, 256, 0.1, 'summary')
+SELECT message FROM metric_isolation_forest('iso_normal_data', 'value', 100, 256, 0.1, 'summary')
 ----
 1 anomalies detected
 
 # Test 6: Summary on data with no outliers (all normal values)
 query T
-SELECT status FROM anofox_metric_isolation_forest('iso_identical_values', 'value', 100, 256, 0.1, 'summary')
+SELECT status FROM metric_isolation_forest('iso_identical_values', 'value', 100, 256, 0.1, 'summary')
 ----
 pass
 
 # Test 7: Summary on small dataset
 query T
-SELECT status FROM anofox_metric_isolation_forest('iso_small_data', 'value', 100, 256, 0.1, 'summary')
+SELECT status FROM metric_isolation_forest('iso_small_data', 'value', 100, 256, 0.1, 'summary')
 ----
 pass
 
@@ -137,20 +137,20 @@ pass
 
 # Test 8: Basic scores mode returns per-row data
 query III
-SELECT COUNT(*), COUNT(DISTINCT row_id), COUNT(DISTINCT is_anomaly) FROM anofox_metric_isolation_forest('iso_normal_data', 'value', 100, 256, 0.1, 'scores')
+SELECT COUNT(*), COUNT(DISTINCT row_id), COUNT(DISTINCT is_anomaly) FROM metric_isolation_forest('iso_normal_data', 'value', 100, 256, 0.1, 'scores')
 ----
 6	6	2
 
 # Test 9: Scores mode - check anomaly_score range
 query I
-SELECT COUNT(*) FROM anofox_metric_isolation_forest('iso_normal_data', 'value', 100, 256, 0.1, 'scores')
+SELECT COUNT(*) FROM metric_isolation_forest('iso_normal_data', 'value', 100, 256, 0.1, 'scores')
 WHERE anomaly_score >= 0.0 AND anomaly_score <= 1.0
 ----
 6
 
 # Test 10: Scores mode - verify all rows included
 query I
-SELECT COUNT(*) FROM anofox_metric_isolation_forest('iso_normal_data', 'value', 100, 256, 0.1, 'scores')
+SELECT COUNT(*) FROM metric_isolation_forest('iso_normal_data', 'value', 100, 256, 0.1, 'scores')
 ----
 6
 
@@ -158,7 +158,7 @@ SELECT COUNT(*) FROM anofox_metric_isolation_forest('iso_normal_data', 'value', 
 query I
 SELECT COUNT(*) FROM (
   SELECT row_id, LAG(row_id) OVER (ORDER BY row_id) as prev_row
-  FROM anofox_metric_isolation_forest('iso_normal_data', 'value', 100, 256, 0.1, 'scores')
+  FROM metric_isolation_forest('iso_normal_data', 'value', 100, 256, 0.1, 'scores')
 ) WHERE row_id > prev_row OR prev_row IS NULL
 ----
 6
@@ -169,25 +169,25 @@ SELECT COUNT(*) FROM (
 
 # Test 12: Empty table - summary mode
 query T
-SELECT status FROM anofox_metric_isolation_forest('iso_empty', 'value', 100, 256, 0.1, 'summary')
+SELECT status FROM metric_isolation_forest('iso_empty', 'value', 100, 256, 0.1, 'summary')
 ----
 pass
 
 # Test 13: Empty table - scores mode
 query I
-SELECT COUNT(*) FROM anofox_metric_isolation_forest('iso_empty', 'value', 100, 256, 0.1, 'scores')
+SELECT COUNT(*) FROM metric_isolation_forest('iso_empty', 'value', 100, 256, 0.1, 'scores')
 ----
 0
 
 # Test 14: Single row - summary mode
 query T
-SELECT status FROM anofox_metric_isolation_forest('iso_single_row', 'value', 100, 256, 0.1, 'summary')
+SELECT status FROM metric_isolation_forest('iso_single_row', 'value', 100, 256, 0.1, 'summary')
 ----
 pass
 
 # Test 15: Single row - scores mode
 query I
-SELECT COUNT(*) FROM anofox_metric_isolation_forest('iso_single_row', 'value', 100, 256, 0.1, 'scores')
+SELECT COUNT(*) FROM metric_isolation_forest('iso_single_row', 'value', 100, 256, 0.1, 'scores')
 ----
 1
 
@@ -197,13 +197,13 @@ SELECT COUNT(*) FROM anofox_metric_isolation_forest('iso_single_row', 'value', 1
 
 # Test 16: Identical values - summary mode
 query T
-SELECT status FROM anofox_metric_isolation_forest('iso_identical_values', 'value', 100, 256, 0.1, 'summary')
+SELECT status FROM metric_isolation_forest('iso_identical_values', 'value', 100, 256, 0.1, 'summary')
 ----
 pass
 
 # Test 17: Identical values - scores mode
 query I
-SELECT COUNT(DISTINCT is_anomaly) FROM anofox_metric_isolation_forest('iso_identical_values', 'value', 100, 256, 0.1, 'scores')
+SELECT COUNT(DISTINCT is_anomaly) FROM metric_isolation_forest('iso_identical_values', 'value', 100, 256, 0.1, 'scores')
 ----
 1
 
@@ -213,13 +213,13 @@ SELECT COUNT(DISTINCT is_anomaly) FROM anofox_metric_isolation_forest('iso_ident
 
 # Test 18: Table with NULLs - summary mode (NULLs should be filtered)
 query I
-SELECT total_count FROM anofox_metric_isolation_forest('iso_with_nulls', 'value', 100, 256, 0.1, 'summary')
+SELECT total_count FROM metric_isolation_forest('iso_with_nulls', 'value', 100, 256, 0.1, 'summary')
 ----
 4
 
 # Test 19: Table with NULLs - scores mode (NULLs should be excluded)
 query I
-SELECT COUNT(*) FROM anofox_metric_isolation_forest('iso_with_nulls', 'value', 100, 256, 0.1, 'scores')
+SELECT COUNT(*) FROM metric_isolation_forest('iso_with_nulls', 'value', 100, 256, 0.1, 'scores')
 ----
 4
 
@@ -229,37 +229,37 @@ SELECT COUNT(*) FROM anofox_metric_isolation_forest('iso_with_nulls', 'value', 1
 
 # Test 20: n_trees too low (below 1)
 statement error
-SELECT * FROM anofox_metric_isolation_forest('iso_normal_data', 'value', 0, 256, 0.1, 'summary')
+SELECT * FROM metric_isolation_forest('iso_normal_data', 'value', 0, 256, 0.1, 'summary')
 ----
 n_trees must be between
 
 # Test 21: n_trees too high (above 500)
 statement error
-SELECT * FROM anofox_metric_isolation_forest('iso_normal_data', 'value', 501, 256, 0.1, 'summary')
+SELECT * FROM metric_isolation_forest('iso_normal_data', 'value', 501, 256, 0.1, 'summary')
 ----
 n_trees must be between
 
 # Test 22: sample_size too low (below 1)
 statement error
-SELECT * FROM anofox_metric_isolation_forest('iso_normal_data', 'value', 100, 0, 0.1, 'summary')
+SELECT * FROM metric_isolation_forest('iso_normal_data', 'value', 100, 0, 0.1, 'summary')
 ----
 sample_size must be between
 
 # Test 23: sample_size too high (above 10000)
 statement error
-SELECT * FROM anofox_metric_isolation_forest('iso_normal_data', 'value', 100, 10001, 0.1, 'summary')
+SELECT * FROM metric_isolation_forest('iso_normal_data', 'value', 100, 10001, 0.1, 'summary')
 ----
 sample_size must be between
 
 # Test 24: contamination too low (below 0.0)
 statement error
-SELECT * FROM anofox_metric_isolation_forest('iso_normal_data', 'value', 100, 256, -0.1, 'summary')
+SELECT * FROM metric_isolation_forest('iso_normal_data', 'value', 100, 256, -0.1, 'summary')
 ----
 contamination must be between
 
 # Test 25: contamination too high (above 0.5)
 statement error
-SELECT * FROM anofox_metric_isolation_forest('iso_normal_data', 'value', 100, 256, 0.6, 'summary')
+SELECT * FROM metric_isolation_forest('iso_normal_data', 'value', 100, 256, 0.6, 'summary')
 ----
 contamination must be between
 
@@ -269,19 +269,19 @@ contamination must be between
 
 # Test 26: Very low contamination (0.01) - stricter anomaly detection
 query I
-SELECT outlier_count FROM anofox_metric_isolation_forest('iso_normal_data', 'value', 100, 256, 0.01, 'summary')
+SELECT outlier_count FROM metric_isolation_forest('iso_normal_data', 'value', 100, 256, 0.01, 'summary')
 ----
 1
 
 # Test 27: Very high contamination (0.5) - most lenient anomaly detection
 query I
-SELECT outlier_count FROM anofox_metric_isolation_forest('iso_normal_data', 'value', 100, 256, 0.5, 'summary')
+SELECT outlier_count FROM metric_isolation_forest('iso_normal_data', 'value', 100, 256, 0.5, 'summary')
 ----
 1
 
 # Test 28: Mid-range contamination (0.25)
 query I
-SELECT outlier_count FROM anofox_metric_isolation_forest('iso_normal_data', 'value', 100, 256, 0.25, 'summary')
+SELECT outlier_count FROM metric_isolation_forest('iso_normal_data', 'value', 100, 256, 0.25, 'summary')
 ----
 1
 
@@ -291,19 +291,19 @@ SELECT outlier_count FROM anofox_metric_isolation_forest('iso_normal_data', 'val
 
 # Test 29: Minimal n_trees (1)
 query I
-SELECT n_trees FROM anofox_metric_isolation_forest('iso_normal_data', 'value', 1, 256, 0.1, 'summary')
+SELECT n_trees FROM metric_isolation_forest('iso_normal_data', 'value', 1, 256, 0.1, 'summary')
 ----
 1
 
 # Test 30: Maximum n_trees (500)
 query I
-SELECT n_trees FROM anofox_metric_isolation_forest('iso_normal_data', 'value', 500, 256, 0.1, 'summary')
+SELECT n_trees FROM metric_isolation_forest('iso_normal_data', 'value', 500, 256, 0.1, 'summary')
 ----
 500
 
 # Test 31: Mid-range n_trees (50)
 query I
-SELECT n_trees FROM anofox_metric_isolation_forest('iso_normal_data', 'value', 50, 256, 0.1, 'summary')
+SELECT n_trees FROM metric_isolation_forest('iso_normal_data', 'value', 50, 256, 0.1, 'summary')
 ----
 50
 
@@ -313,19 +313,19 @@ SELECT n_trees FROM anofox_metric_isolation_forest('iso_normal_data', 'value', 5
 
 # Test 32: Minimal sample_size (1)
 query T
-SELECT status FROM anofox_metric_isolation_forest('iso_normal_data', 'value', 100, 1, 0.1, 'summary')
+SELECT status FROM metric_isolation_forest('iso_normal_data', 'value', 100, 1, 0.1, 'summary')
 ----
 fail
 
 # Test 33: Maximum sample_size (10000)
 query T
-SELECT status FROM anofox_metric_isolation_forest('iso_normal_data', 'value', 100, 10000, 0.1, 'summary')
+SELECT status FROM metric_isolation_forest('iso_normal_data', 'value', 100, 10000, 0.1, 'summary')
 ----
 fail
 
 # Test 34: Mid-range sample_size (512)
 query T
-SELECT status FROM anofox_metric_isolation_forest('iso_normal_data', 'value', 100, 512, 0.1, 'summary')
+SELECT status FROM metric_isolation_forest('iso_normal_data', 'value', 100, 512, 0.1, 'summary')
 ----
 fail
 
@@ -335,13 +335,13 @@ fail
 
 # Test 35: Default output mode is 'summary' when not specified
 query I
-SELECT COUNT(*) FROM anofox_metric_isolation_forest('iso_normal_data', 'value', 100, 256, 0.1, 'summary')
+SELECT COUNT(*) FROM metric_isolation_forest('iso_normal_data', 'value', 100, 256, 0.1, 'summary')
 ----
 1
 
 # Test 36: Explicit 'scores' mode returns multiple rows
 query I
-SELECT COUNT(*) FROM anofox_metric_isolation_forest('iso_normal_data', 'value', 100, 256, 0.1, 'scores')
+SELECT COUNT(*) FROM metric_isolation_forest('iso_normal_data', 'value', 100, 256, 0.1, 'scores')
 ----
 6
 
@@ -351,7 +351,7 @@ SELECT COUNT(*) FROM anofox_metric_isolation_forest('iso_normal_data', 'value', 
 
 # Test 37: INT values should be converted to DOUBLE
 query I
-SELECT COUNT(*) FROM anofox_metric_isolation_forest('iso_normal_data', 'value', 100, 256, 0.1, 'summary')
+SELECT COUNT(*) FROM metric_isolation_forest('iso_normal_data', 'value', 100, 256, 0.1, 'summary')
 ----
 1
 
@@ -362,15 +362,15 @@ SELECT COUNT(*) FROM anofox_metric_isolation_forest('iso_normal_data', 'value', 
 # Test 38: Multiple calls with same parameters return consistent results
 query T
 SELECT s1.status FROM
-  (SELECT status FROM anofox_metric_isolation_forest('iso_normal_data', 'value', 100, 256, 0.1, 'summary')) s1,
-  (SELECT status FROM anofox_metric_isolation_forest('iso_normal_data', 'value', 100, 256, 0.1, 'summary')) s2
+  (SELECT status FROM metric_isolation_forest('iso_normal_data', 'value', 100, 256, 0.1, 'summary')) s1,
+  (SELECT status FROM metric_isolation_forest('iso_normal_data', 'value', 100, 256, 0.1, 'summary')) s2
 WHERE s1.status = s2.status
 ----
 fail
 
 # Test 39: Scores mode is reproducible with same parameters
 query I
-SELECT COUNT(DISTINCT is_anomaly) FROM anofox_metric_isolation_forest('iso_normal_data', 'value', 100, 256, 0.1, 'scores')
+SELECT COUNT(DISTINCT is_anomaly) FROM metric_isolation_forest('iso_normal_data', 'value', 100, 256, 0.1, 'scores')
 ----
 2
 
@@ -395,13 +395,13 @@ INSERT INTO iso_large_values VALUES
 
 # Test 40: Large values - summary mode
 query T
-SELECT status FROM anofox_metric_isolation_forest('iso_large_values', 'value', 100, 256, 0.1, 'summary')
+SELECT status FROM metric_isolation_forest('iso_large_values', 'value', 100, 256, 0.1, 'summary')
 ----
 fail
 
 # Test 41: Large values - scores mode should include all rows
 query I
-SELECT COUNT(*) FROM anofox_metric_isolation_forest('iso_large_values', 'value', 100, 256, 0.1, 'scores')
+SELECT COUNT(*) FROM metric_isolation_forest('iso_large_values', 'value', 100, 256, 0.1, 'scores')
 ----
 6
 
@@ -426,13 +426,13 @@ INSERT INTO iso_small_values VALUES
 
 # Test 42: Small values - summary mode (no anomalies detected with placeholder logic)
 query T
-SELECT status FROM anofox_metric_isolation_forest('iso_small_values', 'value', 100, 256, 0.1, 'summary')
+SELECT status FROM metric_isolation_forest('iso_small_values', 'value', 100, 256, 0.1, 'summary')
 ----
 pass
 
 # Test 43: Small values - scores mode
 query I
-SELECT COUNT(*) FROM anofox_metric_isolation_forest('iso_small_values', 'value', 100, 256, 0.1, 'scores')
+SELECT COUNT(*) FROM metric_isolation_forest('iso_small_values', 'value', 100, 256, 0.1, 'scores')
 ----
 6
 
@@ -457,13 +457,13 @@ INSERT INTO iso_negative_values VALUES
 
 # Test 44: Negative values - summary mode (no anomalies with placeholder logic)
 query T
-SELECT status FROM anofox_metric_isolation_forest('iso_negative_values', 'value', 100, 256, 0.1, 'summary')
+SELECT status FROM metric_isolation_forest('iso_negative_values', 'value', 100, 256, 0.1, 'summary')
 ----
 pass
 
 # Test 45: Negative values - scores mode
 query I
-SELECT COUNT(*) FROM anofox_metric_isolation_forest('iso_negative_values', 'value', 100, 256, 0.1, 'scores')
+SELECT COUNT(*) FROM metric_isolation_forest('iso_negative_values', 'value', 100, 256, 0.1, 'scores')
 ----
 6
 
@@ -488,13 +488,13 @@ INSERT INTO iso_mixed_sign_values VALUES
 
 # Test 46: Mixed sign values - summary mode (no anomalies with placeholder logic since 200.0 < 300)
 query T
-SELECT status FROM anofox_metric_isolation_forest('iso_mixed_sign_values', 'value', 100, 256, 0.1, 'summary')
+SELECT status FROM metric_isolation_forest('iso_mixed_sign_values', 'value', 100, 256, 0.1, 'summary')
 ----
 pass
 
 # Test 47: Mixed sign values - scores mode
 query I
-SELECT COUNT(*) FROM anofox_metric_isolation_forest('iso_mixed_sign_values', 'value', 100, 256, 0.1, 'scores')
+SELECT COUNT(*) FROM metric_isolation_forest('iso_mixed_sign_values', 'value', 100, 256, 0.1, 'scores')
 ----
 6
 
@@ -504,37 +504,37 @@ SELECT COUNT(*) FROM anofox_metric_isolation_forest('iso_mixed_sign_values', 'va
 
 # Test 48: Boundary - n_trees = 1 (minimum)
 query I
-SELECT n_trees FROM anofox_metric_isolation_forest('iso_normal_data', 'value', 1, 256, 0.1, 'summary')
+SELECT n_trees FROM metric_isolation_forest('iso_normal_data', 'value', 1, 256, 0.1, 'summary')
 ----
 1
 
 # Test 49: Boundary - n_trees = 500 (maximum)
 query I
-SELECT n_trees FROM anofox_metric_isolation_forest('iso_normal_data', 'value', 500, 256, 0.1, 'summary')
+SELECT n_trees FROM metric_isolation_forest('iso_normal_data', 'value', 500, 256, 0.1, 'summary')
 ----
 500
 
 # Test 50: Boundary - sample_size = 1 (minimum)
 query T
-SELECT status FROM anofox_metric_isolation_forest('iso_normal_data', 'value', 100, 1, 0.1, 'summary')
+SELECT status FROM metric_isolation_forest('iso_normal_data', 'value', 100, 1, 0.1, 'summary')
 ----
 fail
 
 # Test 51: Boundary - sample_size = 10000 (maximum)
 query T
-SELECT status FROM anofox_metric_isolation_forest('iso_normal_data', 'value', 100, 10000, 0.1, 'summary')
+SELECT status FROM metric_isolation_forest('iso_normal_data', 'value', 100, 10000, 0.1, 'summary')
 ----
 fail
 
 # Test 52: Boundary - contamination = 0.0 (minimum - very strict, marks value=500.0 as anomaly)
 query T
-SELECT status FROM anofox_metric_isolation_forest('iso_normal_data', 'value', 100, 256, 0.0, 'summary')
+SELECT status FROM metric_isolation_forest('iso_normal_data', 'value', 100, 256, 0.0, 'summary')
 ----
 fail
 
 # Test 53: Boundary - contamination = 0.5 (maximum)
 query T
-SELECT status FROM anofox_metric_isolation_forest('iso_normal_data', 'value', 100, 256, 0.5, 'summary')
+SELECT status FROM metric_isolation_forest('iso_normal_data', 'value', 100, 256, 0.5, 'summary')
 ----
 fail
 
@@ -544,32 +544,32 @@ fail
 
 # Test 54: Summary mode - status column is VARCHAR
 query T
-SELECT typeof(status) FROM anofox_metric_isolation_forest('iso_normal_data', 'value', 100, 256, 0.1, 'summary')
+SELECT typeof(status) FROM metric_isolation_forest('iso_normal_data', 'value', 100, 256, 0.1, 'summary')
 ----
 VARCHAR
 
 # Test 55: Summary mode - outlier_count is INTEGER
 query T
-SELECT typeof(outlier_count) FROM anofox_metric_isolation_forest('iso_normal_data', 'value', 100, 256, 0.1, 'summary')
+SELECT typeof(outlier_count) FROM metric_isolation_forest('iso_normal_data', 'value', 100, 256, 0.1, 'summary')
 ----
 BIGINT
 
 # Test 56: Summary mode - total_count is INTEGER
 query T
-SELECT typeof(total_count) FROM anofox_metric_isolation_forest('iso_normal_data', 'value', 100, 256, 0.1, 'summary')
+SELECT typeof(total_count) FROM metric_isolation_forest('iso_normal_data', 'value', 100, 256, 0.1, 'summary')
 ----
 BIGINT
 
 # Test 57: Summary mode - avg_value is DOUBLE
 query T
-SELECT typeof(avg_value) FROM anofox_metric_isolation_forest('iso_normal_data', 'value', 100, 256, 0.1, 'summary')
+SELECT typeof(avg_value) FROM metric_isolation_forest('iso_normal_data', 'value', 100, 256, 0.1, 'summary')
 ----
 DOUBLE
 
 # Test 58: Scores mode - row_id is INTEGER
 query T
 SELECT typeof(row_id) FROM (
-  SELECT * FROM anofox_metric_isolation_forest('iso_normal_data', 'value', 100, 256, 0.1, 'scores')
+  SELECT * FROM metric_isolation_forest('iso_normal_data', 'value', 100, 256, 0.1, 'scores')
   LIMIT 1
 )
 ----
@@ -578,7 +578,7 @@ BIGINT
 # Test 59: Scores mode - anomaly_score is numeric
 query T
 SELECT typeof(anomaly_score) FROM (
-  SELECT * FROM anofox_metric_isolation_forest('iso_normal_data', 'value', 100, 256, 0.1, 'scores')
+  SELECT * FROM metric_isolation_forest('iso_normal_data', 'value', 100, 256, 0.1, 'scores')
   LIMIT 1
 )
 ----
@@ -587,7 +587,7 @@ DECIMAL(3,2)
 # Test 60: Scores mode - is_anomaly is BOOLEAN
 query T
 SELECT typeof(is_anomaly) FROM (
-  SELECT * FROM anofox_metric_isolation_forest('iso_normal_data', 'value', 100, 256, 0.1, 'scores')
+  SELECT * FROM metric_isolation_forest('iso_normal_data', 'value', 100, 256, 0.1, 'scores')
   LIMIT 1
 )
 ----
@@ -631,25 +631,25 @@ INSERT INTO iso_multivar_3col VALUES
 
 # Test 61: Multivariate summary mode - basic test
 query TIIR
-SELECT status, outlier_count, total_count, n_columns FROM anofox_metric_isolation_forest_multivariate('iso_multivar_data', 'x,y', 100, 256, 0.1, 'summary')
+SELECT status, outlier_count, total_count, n_columns FROM metric_isolation_forest_multivariate('iso_multivar_data', 'x,y', 100, 256, 0.1, 'summary')
 ----
 fail	1	6	2
 
 # Test 62: Multivariate summary mode - two columns
 query I
-SELECT n_columns FROM anofox_metric_isolation_forest_multivariate('iso_multivar_data', 'x, y', 100, 256, 0.1, 'summary')
+SELECT n_columns FROM metric_isolation_forest_multivariate('iso_multivar_data', 'x, y', 100, 256, 0.1, 'summary')
 ----
 2
 
 # Test 63: Multivariate summary mode - three columns
 query I
-SELECT n_columns FROM anofox_metric_isolation_forest_multivariate('iso_multivar_3col', 'a,b,c', 100, 256, 0.1, 'summary')
+SELECT n_columns FROM metric_isolation_forest_multivariate('iso_multivar_3col', 'a,b,c', 100, 256, 0.1, 'summary')
 ----
 3
 
 # Test 64: Multivariate scores mode - returns per-row data
 query I
-SELECT COUNT(*) FROM anofox_metric_isolation_forest_multivariate('iso_multivar_data', 'x,y', 100, 256, 0.1, 'scores')
+SELECT COUNT(*) FROM metric_isolation_forest_multivariate('iso_multivar_data', 'x,y', 100, 256, 0.1, 'scores')
 ----
 6
 
@@ -657,67 +657,67 @@ SELECT COUNT(*) FROM anofox_metric_isolation_forest_multivariate('iso_multivar_d
 query I
 SELECT COUNT(*) FROM (
   SELECT row_id, LAG(row_id) OVER (ORDER BY row_id) as prev_row
-  FROM anofox_metric_isolation_forest_multivariate('iso_multivar_data', 'x,y', 100, 256, 0.1, 'scores')
+  FROM metric_isolation_forest_multivariate('iso_multivar_data', 'x,y', 100, 256, 0.1, 'scores')
 ) WHERE row_id > prev_row OR prev_row IS NULL
 ----
 6
 
 # Test 66: Multivariate with quoted column names
 query T
-SELECT status FROM anofox_metric_isolation_forest_multivariate('iso_multivar_data', '"x","y"', 100, 256, 0.1, 'summary')
+SELECT status FROM metric_isolation_forest_multivariate('iso_multivar_data', '"x","y"', 100, 256, 0.1, 'summary')
 ----
 fail
 
 # Test 67: Multivariate parameter validation - n_trees
 statement error
-SELECT * FROM anofox_metric_isolation_forest_multivariate('iso_multivar_data', 'x,y', 501, 256, 0.1, 'summary')
+SELECT * FROM metric_isolation_forest_multivariate('iso_multivar_data', 'x,y', 501, 256, 0.1, 'summary')
 ----
 n_trees must be between
 
 # Test 68: Multivariate parameter validation - sample_size
 statement error
-SELECT * FROM anofox_metric_isolation_forest_multivariate('iso_multivar_data', 'x,y', 100, 10001, 0.1, 'summary')
+SELECT * FROM metric_isolation_forest_multivariate('iso_multivar_data', 'x,y', 100, 10001, 0.1, 'summary')
 ----
 sample_size must be between
 
 # Test 69: Multivariate parameter validation - contamination
 statement error
-SELECT * FROM anofox_metric_isolation_forest_multivariate('iso_multivar_data', 'x,y', 100, 256, 0.6, 'summary')
+SELECT * FROM metric_isolation_forest_multivariate('iso_multivar_data', 'x,y', 100, 256, 0.6, 'summary')
 ----
 contamination must be between
 
 # Test 70: Multivariate empty column names should error
 statement error
-SELECT * FROM anofox_metric_isolation_forest_multivariate('iso_multivar_data', '', 100, 256, 0.1, 'summary')
+SELECT * FROM metric_isolation_forest_multivariate('iso_multivar_data', '', 100, 256, 0.1, 'summary')
 ----
 column_names must contain
 
 # Test 71: Multivariate single column (should work with multivar function too)
 query T
-SELECT status FROM anofox_metric_isolation_forest_multivariate('iso_multivar_data', 'x', 100, 256, 0.1, 'summary')
+SELECT status FROM metric_isolation_forest_multivariate('iso_multivar_data', 'x', 100, 256, 0.1, 'summary')
 ----
 fail
 
 # Test 72: Multivariate three columns summary
 query T
-SELECT status FROM anofox_metric_isolation_forest_multivariate('iso_multivar_3col', 'a,b,c', 100, 256, 0.1, 'summary')
+SELECT status FROM metric_isolation_forest_multivariate('iso_multivar_3col', 'a,b,c', 100, 256, 0.1, 'summary')
 ----
 fail
 
 # Test 73: Multivariate three columns scores count
 query I
-SELECT COUNT(*) FROM anofox_metric_isolation_forest_multivariate('iso_multivar_3col', 'a,b,c', 100, 256, 0.1, 'scores')
+SELECT COUNT(*) FROM metric_isolation_forest_multivariate('iso_multivar_3col', 'a,b,c', 100, 256, 0.1, 'scores')
 ----
 5
 
 # Test 74: Multivariate with whitespace in column names
 query T
-SELECT status FROM anofox_metric_isolation_forest_multivariate('iso_multivar_data', ' x , y ', 100, 256, 0.1, 'summary')
+SELECT status FROM metric_isolation_forest_multivariate('iso_multivar_data', ' x , y ', 100, 256, 0.1, 'summary')
 ----
 fail
 
 # Test 75: Multivariate scores mode - return types
 query I
-SELECT COUNT(DISTINCT is_anomaly) FROM anofox_metric_isolation_forest_multivariate('iso_multivar_data', 'x,y', 100, 256, 0.1, 'scores')
+SELECT COUNT(DISTINCT is_anomaly) FROM metric_isolation_forest_multivariate('iso_multivar_data', 'x,y', 100, 256, 0.1, 'scores')
 ----
 2

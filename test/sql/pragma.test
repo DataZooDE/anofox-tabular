@@ -8,6 +8,6 @@ LOAD anofox_tabular;
 # macOS CI builds skip libpostal due to long build times
 
 query T
-SELECT anofox_email_is_valid('user@example.com');
+SELECT email_is_valid('user@example.com');
 ----
 true

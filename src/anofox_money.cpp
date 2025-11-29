@@ -1,5 +1,6 @@
 #include "anofox_money.hpp"
 #include "anofox_money_currency.hpp"
+#include "anofox_function_alias.hpp"
 #include "anofox_trace.hpp"
 #include "duckdb/common/types/value.hpp"
 #include "duckdb/common/types/vector.hpp"
@@ -527,91 +528,91 @@ void RegisterMoneyOptions(ExtensionLoader &loader) {
 }
 
 void RegisterMoneyFunctions(ExtensionLoader &loader) {
-    // Scalar function: anofox_money(amount, currency_code) -> STRUCT
-    ScalarFunction money_func("anofox_money", {LogicalTypeId::DOUBLE, LogicalTypeId::VARCHAR}, GetMoneyType(),
+    // Scalar function: anofox_tab_money(amount, currency_code) -> STRUCT (alias: money)
+    ScalarFunction money_func("anofox_tab_money", {LogicalTypeId::DOUBLE, LogicalTypeId::VARCHAR}, GetMoneyType(),
                               AnofoxMoneyFunction);
-    loader.RegisterFunction(money_func);
+    RegisterScalarFunctionWithAlias(loader, money_func, "money");
 
-    // Scalar function: anofox_money_from_cents(cents, currency_code) -> STRUCT
-    ScalarFunction money_from_cents_func("anofox_money_from_cents", {LogicalTypeId::BIGINT, LogicalTypeId::VARCHAR},
+    // Scalar function: anofox_tab_money_from_cents(cents, currency_code) -> STRUCT (alias: money_from_cents)
+    ScalarFunction money_from_cents_func("anofox_tab_money_from_cents", {LogicalTypeId::BIGINT, LogicalTypeId::VARCHAR},
                                          GetMoneyType(), AnofoxMoneyFromCentsFunction);
-    loader.RegisterFunction(money_from_cents_func);
+    RegisterScalarFunctionWithAlias(loader, money_from_cents_func, "money_from_cents");
 
-    // Scalar function: anofox_money_amount(money) -> DOUBLE
-    ScalarFunction money_amount_func("anofox_money_amount", {GetMoneyType()},
+    // Scalar function: anofox_tab_money_amount(money) -> DOUBLE (alias: money_amount)
+    ScalarFunction money_amount_func("anofox_tab_money_amount", {GetMoneyType()},
                                      LogicalTypeId::DOUBLE, AnofoxMoneyAmountFunction);
-    loader.RegisterFunction(money_amount_func);
+    RegisterScalarFunctionWithAlias(loader, money_amount_func, "money_amount");
 
-    // Scalar function: anofox_money_currency(money) -> VARCHAR
-    ScalarFunction money_currency_func("anofox_money_currency", {GetMoneyType()}, LogicalTypeId::VARCHAR,
+    // Scalar function: anofox_tab_money_currency(money) -> VARCHAR (alias: money_currency)
+    ScalarFunction money_currency_func("anofox_tab_money_currency", {GetMoneyType()}, LogicalTypeId::VARCHAR,
                                        AnofoxMoneyCurrencyFunction);
-    loader.RegisterFunction(money_currency_func);
+    RegisterScalarFunctionWithAlias(loader, money_currency_func, "money_currency");
 
-    // Scalar function: anofox_is_valid_currency(code) -> BOOLEAN
-    ScalarFunction is_valid_currency_func("anofox_is_valid_currency", {LogicalTypeId::VARCHAR},
+    // Scalar function: anofox_tab_is_valid_currency(code) -> BOOLEAN (alias: is_valid_currency)
+    ScalarFunction is_valid_currency_func("anofox_tab_is_valid_currency", {LogicalTypeId::VARCHAR},
                                           LogicalTypeId::BOOLEAN, AnofoxIsValidCurrencyFunction);
-    loader.RegisterFunction(is_valid_currency_func);
+    RegisterScalarFunctionWithAlias(loader, is_valid_currency_func, "is_valid_currency");
 
-    // Scalar function: anofox_currency_symbol(code) -> VARCHAR
-    ScalarFunction currency_symbol_func("anofox_currency_symbol", {LogicalTypeId::VARCHAR}, LogicalTypeId::VARCHAR,
+    // Scalar function: anofox_tab_currency_symbol(code) -> VARCHAR (alias: currency_symbol)
+    ScalarFunction currency_symbol_func("anofox_tab_currency_symbol", {LogicalTypeId::VARCHAR}, LogicalTypeId::VARCHAR,
                                         AnofoxCurrencySymbolFunction);
-    loader.RegisterFunction(currency_symbol_func);
+    RegisterScalarFunctionWithAlias(loader, currency_symbol_func, "currency_symbol");
 
-    // Scalar function: anofox_currency_name(code) -> VARCHAR
-    ScalarFunction currency_name_func("anofox_currency_name", {LogicalTypeId::VARCHAR}, LogicalTypeId::VARCHAR,
+    // Scalar function: anofox_tab_currency_name(code) -> VARCHAR (alias: currency_name)
+    ScalarFunction currency_name_func("anofox_tab_currency_name", {LogicalTypeId::VARCHAR}, LogicalTypeId::VARCHAR,
                                       AnofoxCurrencyNameFunction);
-    loader.RegisterFunction(currency_name_func);
+    RegisterScalarFunctionWithAlias(loader, currency_name_func, "currency_name");
 
-    // Scalar function: anofox_money_format(money, format_style) -> VARCHAR
-    ScalarFunction money_format_func("anofox_money_format", {GetMoneyType(), LogicalTypeId::VARCHAR},
+    // Scalar function: anofox_tab_money_format(money, format_style) -> VARCHAR (alias: money_format)
+    ScalarFunction money_format_func("anofox_tab_money_format", {GetMoneyType(), LogicalTypeId::VARCHAR},
                                      LogicalTypeId::VARCHAR, AnofoxMoneyFormatFunction);
-    loader.RegisterFunction(money_format_func);
+    RegisterScalarFunctionWithAlias(loader, money_format_func, "money_format");
 
-    // Scalar function: anofox_money_is_positive(money) -> BOOLEAN
-    ScalarFunction money_is_positive_func("anofox_money_is_positive", {GetMoneyType()},
+    // Scalar function: anofox_tab_money_is_positive(money) -> BOOLEAN (alias: money_is_positive)
+    ScalarFunction money_is_positive_func("anofox_tab_money_is_positive", {GetMoneyType()},
                                           LogicalTypeId::BOOLEAN, AnofoxMoneyIsPositiveFunction);
-    loader.RegisterFunction(money_is_positive_func);
+    RegisterScalarFunctionWithAlias(loader, money_is_positive_func, "money_is_positive");
 
-    // Scalar function: anofox_money_is_negative(money) -> BOOLEAN
-    ScalarFunction money_is_negative_func("anofox_money_is_negative", {GetMoneyType()},
+    // Scalar function: anofox_tab_money_is_negative(money) -> BOOLEAN (alias: money_is_negative)
+    ScalarFunction money_is_negative_func("anofox_tab_money_is_negative", {GetMoneyType()},
                                           LogicalTypeId::BOOLEAN, AnofoxMoneyIsNegativeFunction);
-    loader.RegisterFunction(money_is_negative_func);
+    RegisterScalarFunctionWithAlias(loader, money_is_negative_func, "money_is_negative");
 
-    // Scalar function: anofox_money_is_zero(money) -> BOOLEAN
-    ScalarFunction money_is_zero_func("anofox_money_is_zero", {GetMoneyType()},
+    // Scalar function: anofox_tab_money_is_zero(money) -> BOOLEAN (alias: money_is_zero)
+    ScalarFunction money_is_zero_func("anofox_tab_money_is_zero", {GetMoneyType()},
                                       LogicalTypeId::BOOLEAN, AnofoxMoneyIsZeroFunction);
-    loader.RegisterFunction(money_is_zero_func);
+    RegisterScalarFunctionWithAlias(loader, money_is_zero_func, "money_is_zero");
 
-    // Scalar function: anofox_money_abs(money) -> STRUCT
-    ScalarFunction money_abs_func("anofox_money_abs", {GetMoneyType()}, GetMoneyType(),
+    // Scalar function: anofox_tab_money_abs(money) -> STRUCT (alias: money_abs)
+    ScalarFunction money_abs_func("anofox_tab_money_abs", {GetMoneyType()}, GetMoneyType(),
                                   AnofoxMoneyAbsFunction);
-    loader.RegisterFunction(money_abs_func);
+    RegisterScalarFunctionWithAlias(loader, money_abs_func, "money_abs");
 
-    // Scalar function: anofox_money_add(money1, money2) -> STRUCT
-    ScalarFunction money_add_func("anofox_money_add", {GetMoneyType(), GetMoneyType()},
+    // Scalar function: anofox_tab_money_add(money1, money2) -> STRUCT (alias: money_add)
+    ScalarFunction money_add_func("anofox_tab_money_add", {GetMoneyType(), GetMoneyType()},
                                   GetMoneyType(), AnofoxMoneyAddFunction);
-    loader.RegisterFunction(money_add_func);
+    RegisterScalarFunctionWithAlias(loader, money_add_func, "money_add");
 
-    // Scalar function: anofox_money_subtract(money1, money2) -> STRUCT
-    ScalarFunction money_subtract_func("anofox_money_subtract", {GetMoneyType(), GetMoneyType()},
+    // Scalar function: anofox_tab_money_subtract(money1, money2) -> STRUCT (alias: money_subtract)
+    ScalarFunction money_subtract_func("anofox_tab_money_subtract", {GetMoneyType(), GetMoneyType()},
                                        GetMoneyType(), AnofoxMoneySubtractFunction);
-    loader.RegisterFunction(money_subtract_func);
+    RegisterScalarFunctionWithAlias(loader, money_subtract_func, "money_subtract");
 
-    // Scalar function: anofox_money_multiply(money, factor) -> STRUCT
-    ScalarFunction money_multiply_func("anofox_money_multiply", {GetMoneyType(), LogicalTypeId::DOUBLE},
+    // Scalar function: anofox_tab_money_multiply(money, factor) -> STRUCT (alias: money_multiply)
+    ScalarFunction money_multiply_func("anofox_tab_money_multiply", {GetMoneyType(), LogicalTypeId::DOUBLE},
                                        GetMoneyType(), AnofoxMoneyMultiplyFunction);
-    loader.RegisterFunction(money_multiply_func);
+    RegisterScalarFunctionWithAlias(loader, money_multiply_func, "money_multiply");
 
-    // Scalar function: anofox_money_in_range(money, min, max) -> BOOLEAN
-    ScalarFunction money_in_range_func("anofox_money_in_range",
+    // Scalar function: anofox_tab_money_in_range(money, min, max) -> BOOLEAN (alias: money_in_range)
+    ScalarFunction money_in_range_func("anofox_tab_money_in_range",
                                        {GetMoneyType(), LogicalTypeId::DOUBLE, LogicalTypeId::DOUBLE},
                                        LogicalTypeId::BOOLEAN, AnofoxMoneyInRangeFunction);
-    loader.RegisterFunction(money_in_range_func);
+    RegisterScalarFunctionWithAlias(loader, money_in_range_func, "money_in_range");
 
-    // Scalar function: anofox_money_same_currency(money1, money2) -> BOOLEAN
-    ScalarFunction money_same_currency_func("anofox_money_same_currency", {GetMoneyType(), GetMoneyType()},
+    // Scalar function: anofox_tab_money_same_currency(money1, money2) -> BOOLEAN (alias: money_same_currency)
+    ScalarFunction money_same_currency_func("anofox_tab_money_same_currency", {GetMoneyType(), GetMoneyType()},
                                             LogicalTypeId::BOOLEAN, AnofoxMoneySameCurrencyFunction);
-    loader.RegisterFunction(money_same_currency_func);
+    RegisterScalarFunctionWithAlias(loader, money_same_currency_func, "money_same_currency");
 
     AnofoxTrace(AnofoxLogLevel::Info, "[anofox] Money module functions registered");
 }

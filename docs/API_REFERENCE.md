@@ -20,11 +20,15 @@ The Anofox Tabular extension provides comprehensive data quality validation, ano
 ### Function Naming Conventions
 
 Functions follow consistent naming patterns:
-- `anofox_*` prefix for all extension functions
-- `anofox_*_is_valid` suffix for validation functions
-- `anofox_*_format` suffix for formatting functions
-- `anofox_metric_*` prefix for data quality metrics
-- `anofox_diff_*` prefix for data diffing operations
+- `anofox_tab_*` prefix for all extension functions (with aliases without prefix)
+- `anofox_tab_*_is_valid` suffix for validation functions
+- `anofox_tab_*_format` suffix for formatting functions
+- `anofox_tab_metric_*` prefix for data quality metrics
+- `anofox_tab_diff_*` prefix for data diffing operations
+
+All functions have aliases without the `anofox_tab_` prefix. For example:
+- `anofox_tab_email_is_valid` can also be called as `email_is_valid`
+- `anofox_tab_vat` can also be called as `vat`
 
 ### Parameter Conventions
 
@@ -64,13 +68,13 @@ Multi-stage email verification with configurable validation modes.
 
 ### Functions
 
-#### `anofox_email_is_valid`
+#### `anofox_tab_email_is_valid` (alias: `email_is_valid`)
 
 Quick boolean validation of email addresses.
 
 **Signature:**
 ```sql
-anofox_email_is_valid(email VARCHAR [, mode VARCHAR]) → BOOLEAN
+anofox_tab_email_is_valid(email VARCHAR [, mode VARCHAR]) → BOOLEAN
 ```
 
 **Parameters:**
@@ -82,19 +86,21 @@ anofox_email_is_valid(email VARCHAR [, mode VARCHAR]) → BOOLEAN
 
 **Example:**
 ```sql
-SELECT anofox_email_is_valid('user@example.com', 'regex');
+SELECT anofox_tab_email_is_valid('user@example.com', 'regex');
+-- or using alias:
+SELECT email_is_valid('user@example.com', 'regex');
 -- Returns: true
 ```
 
 ---
 
-#### `anofox_email_validate`
+#### `anofox_tab_email_validate` (alias: `email_validate`)
 
 Detailed email validation with stage information, failure reasons, MX hosts, and SMTP transcripts.
 
 **Signature:**
 ```sql
-anofox_email_validate(email VARCHAR [, mode VARCHAR]) → STRUCT
+anofox_tab_email_validate(email VARCHAR [, mode VARCHAR]) → STRUCT
 ```
 
 **Returns:**
@@ -110,19 +116,21 @@ STRUCT(
 
 **Example:**
 ```sql
-SELECT anofox_email_validate('support@example.org', 'smtp');
+SELECT anofox_tab_email_validate('support@example.org', 'smtp');
+-- or using alias:
+SELECT email_validate('support@example.org', 'smtp');
 -- Returns: {valid: true, stage: 'smtp', reason: NULL, mx_hosts: [...], smtp_transcript: [...]}
 ```
 
 ---
 
-#### `anofox_email_config`
+#### `anofox_tab_email_config` (alias: `email_config`)
 
 Returns current email validation configuration settings.
 
 **Signature:**
 ```sql
-anofox_email_config() → TABLE(key VARCHAR, value VARCHAR)
+anofox_tab_email_config() → TABLE(key VARCHAR, value VARCHAR)
 ```
 
 **Returns:**
@@ -130,7 +138,9 @@ anofox_email_config() → TABLE(key VARCHAR, value VARCHAR)
 
 **Example:**
 ```sql
-SELECT * FROM anofox_email_config();
+SELECT * FROM anofox_tab_email_config();
+-- or using alias:
+SELECT * FROM email_config();
 ```
 
 ---
@@ -141,13 +151,13 @@ Powered by **[libpostal](https://github.com/openvenues/libpostal)**, a statistic
 
 ### Functions
 
-#### `anofox_postal_parse_address`
+#### `anofox_tab_postal_parse_address` (alias: `postal_parse_address`)
 
 Parse unstructured addresses into structured components.
 
 **Signature:**
 ```sql
-anofox_postal_parse_address(address VARCHAR) → STRUCT
+anofox_tab_postal_parse_address(address VARCHAR) → STRUCT
 ```
 
 **Returns:**
@@ -164,19 +174,19 @@ STRUCT(
 
 **Example:**
 ```sql
-SELECT anofox_postal_parse_address('620 Bolger Place, The Burren, NSW 4726');
+SELECT anofox_tab_postal_parse_address('620 Bolger Place, The Burren, NSW 4726');
 -- Returns: {house_number: '620', road: 'Bolger Place', city: 'The Burren', state: 'NSW', postcode: '4726', country: NULL}
 ```
 
 ---
 
-#### `anofox_postal_expand_address`
+#### `anofox_tab_postal_expand_address` (alias: `postal_expand_address`)
 
 Generate normalized address variants for fuzzy matching.
 
 **Signature:**
 ```sql
-anofox_postal_expand_address(address VARCHAR) → LIST<VARCHAR>
+anofox_tab_postal_expand_address(address VARCHAR) → LIST<VARCHAR>
 ```
 
 **Returns:**
@@ -184,19 +194,19 @@ anofox_postal_expand_address(address VARCHAR) → LIST<VARCHAR>
 
 **Example:**
 ```sql
-SELECT anofox_postal_expand_address('123 Main St');
+SELECT anofox_tab_postal_expand_address('123 Main St');
 -- Returns: ['123 Main Street', '123 Main St', '123 main street', ...]
 ```
 
 ---
 
-#### `anofox_postal_status`
+#### `anofox_tab_postal_status` (alias: `postal_status`)
 
 Returns library initialization status and data availability.
 
 **Signature:**
 ```sql
-anofox_postal_status() → TABLE
+anofox_tab_postal_status() → TABLE
 ```
 
 **Returns:**
@@ -204,18 +214,18 @@ anofox_postal_status() → TABLE
 
 **Example:**
 ```sql
-SELECT * FROM anofox_postal_status();
+SELECT * FROM anofox_tab_postal_status();
 ```
 
 ---
 
-#### `anofox_postal_load_data`
+#### `anofox_tab_postal_load_data` (alias: `postal_load_data`)
 
 Download and extract libpostal data (~500MB) to the configured data directory.
 
 **Signature:**
 ```sql
-anofox_postal_load_data() → BOOLEAN
+anofox_tab_postal_load_data() → BOOLEAN
 ```
 
 **Returns:**
@@ -223,7 +233,7 @@ anofox_postal_load_data() → BOOLEAN
 
 **Example:**
 ```sql
-SELECT anofox_postal_load_data();
+SELECT anofox_tab_postal_load_data();
 ```
 
 ---
@@ -234,13 +244,13 @@ International phone parsing via **[libphonenumber](https://github.com/google/lib
 
 ### Functions
 
-#### `anofox_phonenumber_parse`
+#### `anofox_tab_phonenumber_parse` (alias: `phonenumber_parse`)
 
 Parse and validate phone numbers with detailed information.
 
 **Signature:**
 ```sql
-anofox_phonenumber_parse(number VARCHAR, region VARCHAR) → STRUCT
+anofox_tab_phonenumber_parse(number VARCHAR, region VARCHAR) → STRUCT
 ```
 
 **Returns:**
@@ -256,19 +266,19 @@ STRUCT(
 
 **Example:**
 ```sql
-SELECT anofox_phonenumber_parse('+1 (415) 555-1234', 'US');
+SELECT anofox_tab_phonenumber_parse('+1 (415) 555-1234', 'US');
 -- Returns: {valid: true, country_code: 1, national_number: '4155551234', region_code: 'US', type: 'FIXED_LINE_OR_MOBILE'}
 ```
 
 ---
 
-#### `anofox_phonenumber_format`
+#### `anofox_tab_phonenumber_format` (alias: `phonenumber_format`)
 
 Format phone numbers in different styles.
 
 **Signature:**
 ```sql
-anofox_phonenumber_format(number VARCHAR, region VARCHAR, format VARCHAR) → VARCHAR
+anofox_tab_phonenumber_format(number VARCHAR, region VARCHAR, format VARCHAR) → VARCHAR
 ```
 
 **Parameters:**
@@ -279,19 +289,19 @@ anofox_phonenumber_format(number VARCHAR, region VARCHAR, format VARCHAR) → VA
 
 **Example:**
 ```sql
-SELECT anofox_phonenumber_format('4155551234', 'US', 'INTERNATIONAL');
+SELECT anofox_tab_phonenumber_format('4155551234', 'US', 'INTERNATIONAL');
 -- Returns: '+1 415-555-1234'
 ```
 
 ---
 
-#### `anofox_phonenumber_region`
+#### `anofox_tab_phonenumber_region` (alias: `phonenumber_region`)
 
 Extract ISO region code from phone number.
 
 **Signature:**
 ```sql
-anofox_phonenumber_region(number VARCHAR, region VARCHAR) → VARCHAR
+anofox_tab_phonenumber_region(number VARCHAR, region VARCHAR) → VARCHAR
 ```
 
 **Returns:**
@@ -299,19 +309,19 @@ anofox_phonenumber_region(number VARCHAR, region VARCHAR) → VARCHAR
 
 **Example:**
 ```sql
-SELECT anofox_phonenumber_region('+1 415-555-1234', 'US');
+SELECT anofox_tab_phonenumber_region('+1 415-555-1234', 'US');
 -- Returns: 'US'
 ```
 
 ---
 
-#### `anofox_phonenumber_is_valid`
+#### `anofox_tab_phonenumber_is_valid` (alias: `phonenumber_is_valid`)
 
 Full validation using length and prefix information.
 
 **Signature:**
 ```sql
-anofox_phonenumber_is_valid(number VARCHAR, region VARCHAR) → BOOLEAN
+anofox_tab_phonenumber_is_valid(number VARCHAR, region VARCHAR) → BOOLEAN
 ```
 
 **Returns:**
@@ -319,19 +329,19 @@ anofox_phonenumber_is_valid(number VARCHAR, region VARCHAR) → BOOLEAN
 
 **Example:**
 ```sql
-SELECT anofox_phonenumber_is_valid('+1 415-555-1234', 'US');
+SELECT anofox_tab_phonenumber_is_valid('+1 415-555-1234', 'US');
 -- Returns: true
 ```
 
 ---
 
-#### `anofox_phonenumber_is_possible`
+#### `anofox_tab_phonenumber_is_possible`
 
 Quick possibility check using length-only analysis.
 
 **Signature:**
 ```sql
-anofox_phonenumber_is_possible(number VARCHAR, region VARCHAR) → BOOLEAN
+anofox_tab_phonenumber_is_possible(number VARCHAR, region VARCHAR) → BOOLEAN
 ```
 
 **Returns:**
@@ -339,19 +349,19 @@ anofox_phonenumber_is_possible(number VARCHAR, region VARCHAR) → BOOLEAN
 
 **Example:**
 ```sql
-SELECT anofox_phonenumber_is_possible('4155551234', 'US');
+SELECT anofox_tab_phonenumber_is_possible('4155551234', 'US');
 -- Returns: true
 ```
 
 ---
 
-#### `anofox_phonenumber_is_valid_for_region`
+#### `anofox_tab_phonenumber_is_valid_for_region`
 
 Region-specific validation.
 
 **Signature:**
 ```sql
-anofox_phonenumber_is_valid_for_region(number VARCHAR, region VARCHAR) → BOOLEAN
+anofox_tab_phonenumber_is_valid_for_region(number VARCHAR, region VARCHAR) → BOOLEAN
 ```
 
 **Returns:**
@@ -359,13 +369,13 @@ anofox_phonenumber_is_valid_for_region(number VARCHAR, region VARCHAR) → BOOLE
 
 ---
 
-#### `anofox_phonenumber_match`
+#### `anofox_tab_phonenumber_match`
 
 Fuzzy matching between two phone numbers.
 
 **Signature:**
 ```sql
-anofox_phonenumber_match(number1 VARCHAR, number2 VARCHAR, region VARCHAR) → VARCHAR
+anofox_tab_phonenumber_match(number1 VARCHAR, number2 VARCHAR, region VARCHAR) → VARCHAR
 ```
 
 **Returns:**
@@ -373,19 +383,19 @@ anofox_phonenumber_match(number1 VARCHAR, number2 VARCHAR, region VARCHAR) → V
 
 **Example:**
 ```sql
-SELECT anofox_phonenumber_match('+1 415-555-1234', '4155551234', 'US');
+SELECT anofox_tab_phonenumber_match('+1 415-555-1234', '4155551234', 'US');
 -- Returns: 'EXACT_MATCH'
 ```
 
 ---
 
-#### `anofox_phonenumber_example`
+#### `anofox_tab_phonenumber_example`
 
 Generate example phone number for a region.
 
 **Signature:**
 ```sql
-anofox_phonenumber_example(region VARCHAR) → VARCHAR
+anofox_tab_phonenumber_example(region VARCHAR) → VARCHAR
 ```
 
 **Returns:**
@@ -393,19 +403,19 @@ anofox_phonenumber_example(region VARCHAR) → VARCHAR
 
 **Example:**
 ```sql
-SELECT anofox_phonenumber_example('US');
+SELECT anofox_tab_phonenumber_example('US');
 -- Returns: '+1 650-253-0000'
 ```
 
 ---
 
-#### `anofox_phonenumber_status`
+#### `anofox_tab_phonenumber_status`
 
 Returns library status and default region.
 
 **Signature:**
 ```sql
-anofox_phonenumber_status() → TABLE
+anofox_tab_phonenumber_status() → TABLE
 ```
 
 **Returns:**
@@ -423,69 +433,69 @@ International monetary value handling with currency-aware arithmetic and formatt
 
 ### Basic Operations
 
-#### `anofox_money`
+#### `anofox_tab_money (alias: money`
 
 Create a money value from amount and currency code.
 
 **Signature:**
 ```sql
-anofox_money(amount DOUBLE, currency_code VARCHAR) → STRUCT(amount DOUBLE, currency VARCHAR)
+anofox_tab_money (alias: money(amount DOUBLE, currency_code VARCHAR) → STRUCT(amount DOUBLE, currency VARCHAR)
 ```
 
 **Example:**
 ```sql
-SELECT anofox_money(100.50, 'USD');
+SELECT anofox_tab_money (alias: money(100.50, 'USD');
 -- Returns: {amount: 100.5, currency: 'USD'}
 ```
 
 ---
 
-#### `anofox_money_from_cents`
+#### `anofox_tab_money (alias: money_from_cents`
 
 Create a money value from integer cents.
 
 **Signature:**
 ```sql
-anofox_money_from_cents(cents BIGINT, currency_code VARCHAR) → STRUCT(amount DOUBLE, currency VARCHAR)
+anofox_tab_money (alias: money_from_cents(cents BIGINT, currency_code VARCHAR) → STRUCT(amount DOUBLE, currency VARCHAR)
 ```
 
 **Example:**
 ```sql
-SELECT anofox_money_from_cents(10050, 'USD');
+SELECT anofox_tab_money (alias: money_from_cents(10050, 'USD');
 -- Returns: {amount: 10050.0, currency: 'USD'}
 ```
 
 ---
 
-#### `anofox_money_amount`
+#### `anofox_tab_money (alias: money_amount`
 
 Extract amount from money struct.
 
 **Signature:**
 ```sql
-anofox_money_amount(money STRUCT) → DOUBLE
+anofox_tab_money (alias: money_amount(money STRUCT) → DOUBLE
 ```
 
 **Example:**
 ```sql
-SELECT anofox_money_amount(anofox_money(100.50, 'USD'));
+SELECT anofox_tab_money (alias: money_amount(anofox_tab_money (alias: money(100.50, 'USD'));
 -- Returns: 100.5
 ```
 
 ---
 
-#### `anofox_money_currency`
+#### `anofox_tab_money (alias: money_currency`
 
 Extract currency code from money struct.
 
 **Signature:**
 ```sql
-anofox_money_currency(money STRUCT) → VARCHAR
+anofox_tab_money (alias: money_currency(money STRUCT) → VARCHAR
 ```
 
 **Example:**
 ```sql
-SELECT anofox_money_currency(anofox_money(100.50, 'USD'));
+SELECT anofox_tab_money (alias: money_currency(anofox_tab_money (alias: money(100.50, 'USD'));
 -- Returns: 'USD'
 ```
 
@@ -493,52 +503,52 @@ SELECT anofox_money_currency(anofox_money(100.50, 'USD'));
 
 ### Currency Information
 
-#### `anofox_is_valid_currency`
+#### `anofox_tab_is_valid_currency (alias: is_valid_currency`
 
 Check if currency code is valid.
 
 **Signature:**
 ```sql
-anofox_is_valid_currency(code VARCHAR) → BOOLEAN
+anofox_tab_is_valid_currency (alias: is_valid_currency(code VARCHAR) → BOOLEAN
 ```
 
 **Example:**
 ```sql
-SELECT anofox_is_valid_currency('USD');
+SELECT anofox_tab_is_valid_currency (alias: is_valid_currency('USD');
 -- Returns: true
 ```
 
 ---
 
-#### `anofox_currency_symbol`
+#### `anofox_tab_currency_ (alias: currency_symbol`
 
 Get currency symbol (e.g., '$', '€').
 
 **Signature:**
 ```sql
-anofox_currency_symbol(code VARCHAR) → VARCHAR
+anofox_tab_currency_ (alias: currency_symbol(code VARCHAR) → VARCHAR
 ```
 
 **Example:**
 ```sql
-SELECT anofox_currency_symbol('USD');
+SELECT anofox_tab_currency_ (alias: currency_symbol('USD');
 -- Returns: '$'
 ```
 
 ---
 
-#### `anofox_currency_name`
+#### `anofox_tab_currency_ (alias: currency_name`
 
 Get currency name (e.g., 'United States Dollar').
 
 **Signature:**
 ```sql
-anofox_currency_name(code VARCHAR) → VARCHAR
+anofox_tab_currency_ (alias: currency_name(code VARCHAR) → VARCHAR
 ```
 
 **Example:**
 ```sql
-SELECT anofox_currency_name('USD');
+SELECT anofox_tab_currency_ (alias: currency_name('USD');
 -- Returns: 'United States Dollar'
 ```
 
@@ -546,13 +556,13 @@ SELECT anofox_currency_name('USD');
 
 ### Formatting
 
-#### `anofox_money_format`
+#### `anofox_tab_money (alias: money_format`
 
 Format money for display.
 
 **Signature:**
 ```sql
-anofox_money_format(money STRUCT, style VARCHAR) → VARCHAR
+anofox_tab_money (alias: money_format(money STRUCT, style VARCHAR) → VARCHAR
 ```
 
 **Parameters:**
@@ -560,7 +570,7 @@ anofox_money_format(money STRUCT, style VARCHAR) → VARCHAR
 
 **Example:**
 ```sql
-SELECT anofox_money_format(anofox_money(150.00, 'EUR'), 'symbol');
+SELECT anofox_tab_money (alias: money_format(anofox_tab_money (alias: money(150.00, 'EUR'), 'symbol');
 -- Returns: '150,00 €'
 ```
 
@@ -568,120 +578,120 @@ SELECT anofox_money_format(anofox_money(150.00, 'EUR'), 'symbol');
 
 ### Validation & Properties
 
-#### `anofox_money_is_positive`
+#### `anofox_tab_money (alias: money_is_positive`
 
 Check if amount > 0.
 
 **Signature:**
 ```sql
-anofox_money_is_positive(money STRUCT) → BOOLEAN
+anofox_tab_money (alias: money_is_positive(money STRUCT) → BOOLEAN
 ```
 
 ---
 
-#### `anofox_money_is_negative`
+#### `anofox_tab_money (alias: money_is_negative`
 
 Check if amount < 0.
 
 **Signature:**
 ```sql
-anofox_money_is_negative(money STRUCT) → BOOLEAN
+anofox_tab_money (alias: money_is_negative(money STRUCT) → BOOLEAN
 ```
 
 ---
 
-#### `anofox_money_is_zero`
+#### `anofox_tab_money (alias: money_is_zero`
 
 Check if amount == 0.
 
 **Signature:**
 ```sql
-anofox_money_is_zero(money STRUCT) → BOOLEAN
+anofox_tab_money (alias: money_is_zero(money STRUCT) → BOOLEAN
 ```
 
 ---
 
-#### `anofox_money_abs`
+#### `anofox_tab_money (alias: money_abs`
 
 Get absolute value (sign removed).
 
 **Signature:**
 ```sql
-anofox_money_abs(money STRUCT) → STRUCT(amount DOUBLE, currency VARCHAR)
+anofox_tab_money (alias: money_abs(money STRUCT) → STRUCT(amount DOUBLE, currency VARCHAR)
 ```
 
 ---
 
 ### Arithmetic Operations
 
-#### `anofox_money_add`
+#### `anofox_tab_money (alias: money_add`
 
 Add two money values (same currency required).
 
 **Signature:**
 ```sql
-anofox_money_add(money1 STRUCT, money2 STRUCT) → STRUCT(amount DOUBLE, currency VARCHAR)
+anofox_tab_money (alias: money_add(money1 STRUCT, money2 STRUCT) → STRUCT(amount DOUBLE, currency VARCHAR)
 ```
 
 **Example:**
 ```sql
-SELECT anofox_money_add(
-    anofox_money(100.00, 'EUR'),
-    anofox_money(50.00, 'EUR')
+SELECT anofox_tab_money (alias: money_add(
+    anofox_tab_money (alias: money(100.00, 'EUR'),
+    anofox_tab_money (alias: money(50.00, 'EUR')
 );
 -- Returns: {amount: 150.0, currency: 'EUR'}
 ```
 
 ---
 
-#### `anofox_money_subtract`
+#### `anofox_tab_money (alias: money_subtract`
 
 Subtract money2 from money1 (same currency required).
 
 **Signature:**
 ```sql
-anofox_money_subtract(money1 STRUCT, money2 STRUCT) → STRUCT(amount DOUBLE, currency VARCHAR)
+anofox_tab_money (alias: money_subtract(money1 STRUCT, money2 STRUCT) → STRUCT(amount DOUBLE, currency VARCHAR)
 ```
 
 ---
 
-#### `anofox_money_multiply`
+#### `anofox_tab_money (alias: money_multiply`
 
 Multiply money by a scalar factor.
 
 **Signature:**
 ```sql
-anofox_money_multiply(money STRUCT, factor DOUBLE) → STRUCT(amount DOUBLE, currency VARCHAR)
+anofox_tab_money (alias: money_multiply(money STRUCT, factor DOUBLE) → STRUCT(amount DOUBLE, currency VARCHAR)
 ```
 
 ---
 
 ### Quality & Data Validation
 
-#### `anofox_money_in_range`
+#### `anofox_tab_money (alias: money_in_range`
 
 Check if amount is within range.
 
 **Signature:**
 ```sql
-anofox_money_in_range(money STRUCT, min DOUBLE, max DOUBLE) → BOOLEAN
+anofox_tab_money (alias: money_in_range(money STRUCT, min DOUBLE, max DOUBLE) → BOOLEAN
 ```
 
 **Example:**
 ```sql
-SELECT anofox_money_in_range(anofox_money(100.00, 'USD'), 0.01, 99999.99);
+SELECT anofox_tab_money (alias: money_in_range(anofox_tab_money (alias: money(100.00, 'USD'), 0.01, 99999.99);
 -- Returns: true
 ```
 
 ---
 
-#### `anofox_money_same_currency`
+#### `anofox_tab_money (alias: money_same_currency`
 
 Check if two money values have same currency.
 
 **Signature:**
 ```sql
-anofox_money_same_currency(money1 STRUCT, money2 STRUCT) → BOOLEAN
+anofox_tab_money (alias: money_same_currency(money1 STRUCT, money2 STRUCT) → BOOLEAN
 ```
 
 ---
@@ -696,52 +706,52 @@ European VAT number validation for regulatory compliance and data quality.
 
 ### Basic Operations
 
-#### `anofox_vat`
+#### `anofox_tab_vat (alias: vat`
 
 Parse VAT string into country and digits.
 
 **Signature:**
 ```sql
-anofox_vat(vat_string VARCHAR) → STRUCT(country VARCHAR, digits VARCHAR)
+anofox_tab_vat (alias: vat(vat_string VARCHAR) → STRUCT(country VARCHAR, digits VARCHAR)
 ```
 
 **Example:**
 ```sql
-SELECT anofox_vat('DE123456789');
+SELECT anofox_tab_vat (alias: vat('DE123456789');
 -- Returns: {country: 'DE', digits: '123456789'}
 ```
 
 ---
 
-#### `anofox_is_valid_vat_country`
+#### `anofox_tab_is_valid_vat_country (alias: is_valid_vat_country`
 
 Check if country code is valid VAT country.
 
 **Signature:**
 ```sql
-anofox_is_valid_vat_country(code VARCHAR) → BOOLEAN
+anofox_tab_is_valid_vat_country (alias: is_valid_vat_country(code VARCHAR) → BOOLEAN
 ```
 
 **Example:**
 ```sql
-SELECT anofox_is_valid_vat_country('DE');
+SELECT anofox_tab_is_valid_vat_country (alias: is_valid_vat_country('DE');
 -- Returns: true
 ```
 
 ---
 
-#### `anofox_vat_normalize`
+#### `anofox_tab_vat (alias: vat_normalize`
 
 Normalize VAT string (uppercase, remove punctuation).
 
 **Signature:**
 ```sql
-anofox_vat_normalize(vat_string VARCHAR) → VARCHAR
+anofox_tab_vat (alias: vat_normalize(vat_string VARCHAR) → VARCHAR
 ```
 
 **Example:**
 ```sql
-SELECT anofox_vat_normalize('de 123-456-789');
+SELECT anofox_tab_vat (alias: vat_normalize('de 123-456-789');
 -- Returns: 'DE123456789'
 ```
 
@@ -749,94 +759,94 @@ SELECT anofox_vat_normalize('de 123-456-789');
 
 ### Syntax Validation
 
-#### `anofox_vat_is_valid_syntax`
+#### `anofox_tab_vat (alias: vat_is_valid_syntax`
 
 Validate VAT syntax against country pattern.
 
 **Signature:**
 ```sql
-anofox_vat_is_valid_syntax(vat_string VARCHAR) → BOOLEAN
+anofox_tab_vat (alias: vat_is_valid_syntax(vat_string VARCHAR) → BOOLEAN
 ```
 
 ---
 
-#### `anofox_vat_split`
+#### `anofox_tab_vat (alias: vat_split`
 
 Parse VAT into country and normalized digits.
 
 **Signature:**
 ```sql
-anofox_vat_split(vat_string VARCHAR) → STRUCT(country VARCHAR, digits VARCHAR)
+anofox_tab_vat (alias: vat_split(vat_string VARCHAR) → STRUCT(country VARCHAR, digits VARCHAR)
 ```
 
 ---
 
-#### `anofox_vat_exists`
+#### `anofox_tab_vat (alias: vat_exists`
 
 Check if VAT has valid country prefix.
 
 **Signature:**
 ```sql
-anofox_vat_exists(vat_string VARCHAR) → BOOLEAN
+anofox_tab_vat (alias: vat_exists(vat_string VARCHAR) → BOOLEAN
 ```
 
 ---
 
 ### EU Utilities
 
-#### `anofox_vat_is_eu_member`
+#### `anofox_tab_vat (alias: vat_is_eu_member`
 
 Check if country is EU member.
 
 **Signature:**
 ```sql
-anofox_vat_is_eu_member(country_code VARCHAR) → BOOLEAN
+anofox_tab_vat (alias: vat_is_eu_member(country_code VARCHAR) → BOOLEAN
 ```
 
 ---
 
-#### `anofox_vat_country_name`
+#### `anofox_tab_vat (alias: vat_country_name`
 
 Get full country name.
 
 **Signature:**
 ```sql
-anofox_vat_country_name(country_code VARCHAR) → VARCHAR
+anofox_tab_vat (alias: vat_country_name(country_code VARCHAR) → VARCHAR
 ```
 
 **Example:**
 ```sql
-SELECT anofox_vat_country_name('DE');
+SELECT anofox_tab_vat (alias: vat_country_name('DE');
 -- Returns: 'Germany'
 ```
 
 ---
 
-#### `anofox_vat_format`
+#### `anofox_tab_vat (alias: vat_format`
 
 Format VAT for display.
 
 **Signature:**
 ```sql
-anofox_vat_format(vat_string VARCHAR, style VARCHAR) → VARCHAR
+anofox_tab_vat (alias: vat_format(vat_string VARCHAR, style VARCHAR) → VARCHAR
 ```
 
 ---
 
 ### Combined Validation
 
-#### `anofox_vat_is_valid`
+#### `anofox_tab_vat (alias: vat_is_valid`
 
 Full validation (syntax + country check).
 
 **Signature:**
 ```sql
-anofox_vat_is_valid(vat_string VARCHAR) → BOOLEAN
+anofox_tab_vat (alias: vat_is_valid(vat_string VARCHAR) → BOOLEAN
 ```
 
 **Example:**
 ```sql
-SELECT anofox_vat_is_valid('DE123456789');
+SELECT anofox_tab_vat (alias: vat_is_valid('DE123456789');
 -- Returns: true
 ```
 
@@ -848,13 +858,13 @@ Track essential data quality dimensions.
 
 ### Functions
 
-#### `anofox_metric_volume`
+#### `anofox_tab_metric_ (alias: metric_volume`
 
 Validate row count against thresholds.
 
 **Signature:**
 ```sql
-anofox_metric_volume(table_name VARCHAR [, min_rows BIGINT, max_rows BIGINT]) → TABLE
+anofox_tab_metric_ (alias: metric_volume(table_name VARCHAR [, min_rows BIGINT, max_rows BIGINT]) → TABLE
 ```
 
 **Returns:**
@@ -862,18 +872,18 @@ anofox_metric_volume(table_name VARCHAR [, min_rows BIGINT, max_rows BIGINT]) �
 
 **Example:**
 ```sql
-SELECT * FROM anofox_metric_volume('orders', 1000, 1000000);
+SELECT * FROM anofox_tab_metric_ (alias: metric_volume('orders', 1000, 1000000);
 ```
 
 ---
 
-#### `anofox_metric_null_rate`
+#### `anofox_tab_metric_ (alias: metric_null_rate`
 
 Check null percentage in a column.
 
 **Signature:**
 ```sql
-anofox_metric_null_rate(table_name VARCHAR, column_name VARCHAR [, max_null_rate DOUBLE]) → TABLE
+anofox_tab_metric_ (alias: metric_null_rate(table_name VARCHAR, column_name VARCHAR [, max_null_rate DOUBLE]) → TABLE
 ```
 
 **Returns:**
@@ -881,18 +891,18 @@ anofox_metric_null_rate(table_name VARCHAR, column_name VARCHAR [, max_null_rate
 
 **Example:**
 ```sql
-SELECT * FROM anofox_metric_null_rate('users', 'email', 0.05);
+SELECT * FROM anofox_tab_metric_ (alias: metric_null_rate('users', 'email', 0.05);
 ```
 
 ---
 
-#### `anofox_metric_distinct_count`
+#### `anofox_tab_metric_ (alias: metric_distinct_count`
 
 Validate cardinality (distinct count) of a column.
 
 **Signature:**
 ```sql
-anofox_metric_distinct_count(table_name VARCHAR, column_name VARCHAR [, min BIGINT, max BIGINT]) → TABLE
+anofox_tab_metric_ (alias: metric_distinct_count(table_name VARCHAR, column_name VARCHAR [, min BIGINT, max BIGINT]) → TABLE
 ```
 
 **Returns:**
@@ -900,18 +910,18 @@ anofox_metric_distinct_count(table_name VARCHAR, column_name VARCHAR [, min BIGI
 
 **Example:**
 ```sql
-SELECT * FROM anofox_metric_distinct_count('products', 'sku', 100, NULL);
+SELECT * FROM anofox_tab_metric_ (alias: metric_distinct_count('products', 'sku', 100, NULL);
 ```
 
 ---
 
-#### `anofox_metric_schema`
+#### `anofox_tab_metric_ (alias: metric_schema`
 
 Check required columns exist in table.
 
 **Signature:**
 ```sql
-anofox_metric_schema(table_name VARCHAR, required_cols LIST<VARCHAR>) → TABLE
+anofox_tab_metric_ (alias: metric_schema(table_name VARCHAR, required_cols LIST<VARCHAR>) → TABLE
 ```
 
 **Returns:**
@@ -919,18 +929,18 @@ anofox_metric_schema(table_name VARCHAR, required_cols LIST<VARCHAR>) → TABLE
 
 **Example:**
 ```sql
-SELECT * FROM anofox_metric_schema('table', ['id', 'created_at']);
+SELECT * FROM anofox_tab_metric_ (alias: metric_schema('table', ['id', 'created_at']);
 ```
 
 ---
 
-#### `anofox_metric_freshness`
+#### `anofox_tab_metric_ (alias: metric_freshness`
 
 Validate data recency (maximum age check).
 
 **Signature:**
 ```sql
-anofox_metric_freshness(table_name VARCHAR, ts_col VARCHAR, max_age INTERVAL [, ref_time TIMESTAMP]) → TABLE
+anofox_tab_metric_ (alias: metric_freshness(table_name VARCHAR, ts_col VARCHAR, max_age INTERVAL [, ref_time TIMESTAMP]) → TABLE
 ```
 
 **Returns:**
@@ -938,18 +948,18 @@ anofox_metric_freshness(table_name VARCHAR, ts_col VARCHAR, max_age INTERVAL [, 
 
 **Example:**
 ```sql
-SELECT * FROM anofox_metric_freshness('events', 'timestamp', INTERVAL '1 hour');
+SELECT * FROM anofox_tab_metric_ (alias: metric_freshness('events', 'timestamp', INTERVAL '1 hour');
 ```
 
 ---
 
-#### `anofox_metric_zscore`
+#### `anofox_tab_metric_ (alias: metric_zscore`
 
 Detect outliers via z-score method (assumes normal distribution).
 
 **Signature:**
 ```sql
-anofox_metric_zscore(table_name VARCHAR, column_name VARCHAR [, threshold DOUBLE]) → TABLE
+anofox_tab_metric_ (alias: metric_zscore(table_name VARCHAR, column_name VARCHAR [, threshold DOUBLE]) → TABLE
 ```
 
 **Parameters:**
@@ -960,18 +970,18 @@ anofox_metric_zscore(table_name VARCHAR, column_name VARCHAR [, threshold DOUBLE
 
 **Example:**
 ```sql
-SELECT * FROM anofox_metric_zscore('transactions', 'amount', 3.0);
+SELECT * FROM anofox_tab_metric_ (alias: metric_zscore('transactions', 'amount', 3.0);
 ```
 
 ---
 
-#### `anofox_metric_iqr`
+#### `anofox_tab_metric_ (alias: metric_iqr`
 
 Detect outliers via IQR method (non-parametric, robust to distribution).
 
 **Signature:**
 ```sql
-anofox_metric_iqr(table_name VARCHAR, column_name VARCHAR [, multiplier DOUBLE]) → TABLE
+anofox_tab_metric_ (alias: metric_iqr(table_name VARCHAR, column_name VARCHAR [, multiplier DOUBLE]) → TABLE
 ```
 
 **Parameters:**
@@ -982,7 +992,7 @@ anofox_metric_iqr(table_name VARCHAR, column_name VARCHAR [, multiplier DOUBLE])
 
 **Example:**
 ```sql
-SELECT * FROM anofox_metric_iqr('transactions', 'amount', 1.5);
+SELECT * FROM anofox_tab_metric_ (alias: metric_iqr('transactions', 'amount', 1.5);
 ```
 
 ---
@@ -993,13 +1003,13 @@ Unsupervised anomaly detection algorithms for finding outliers in data.
 
 ### Isolation Forest
 
-#### `anofox_metric_isolation_forest`
+#### `anofox_tab_metric_ (alias: metric_isolation_forest`
 
 Univariate Isolation Forest for single column anomaly detection.
 
 **Signature:**
 ```sql
-anofox_metric_isolation_forest(
+anofox_tab_metric_ (alias: metric_isolation_forest(
     table_name VARCHAR,
     column_name VARCHAR,
     n_trees BIGINT,
@@ -1020,20 +1030,20 @@ anofox_metric_isolation_forest(
 
 **Example:**
 ```sql
-SELECT * FROM anofox_metric_isolation_forest(
+SELECT * FROM anofox_tab_metric_ (alias: metric_isolation_forest(
     'sales_data', 'amount', 100, 256, 0.1, 'scores'
 ) WHERE is_anomaly = true;
 ```
 
 ---
 
-#### `anofox_metric_isolation_forest_multivariate`
+#### `anofox_tab_metric_ (alias: metric_isolation_forest_multivariate`
 
 Multivariate Isolation Forest for multiple column anomaly detection.
 
 **Signature:**
 ```sql
-anofox_metric_isolation_forest_multivariate(
+anofox_tab_metric_ (alias: metric_isolation_forest_multivariate(
     table_name VARCHAR,
     columns VARCHAR,
     n_trees BIGINT,
@@ -1051,7 +1061,7 @@ anofox_metric_isolation_forest_multivariate(
 
 **Example:**
 ```sql
-SELECT * FROM anofox_metric_isolation_forest_multivariate(
+SELECT * FROM anofox_tab_metric_ (alias: metric_isolation_forest_multivariate(
     'customer_events', 'purchase_amount, session_duration, page_views',
     100, 256, 0.1, 'scores'
 ) ORDER BY anomaly_score DESC LIMIT 10;
@@ -1061,13 +1071,13 @@ SELECT * FROM anofox_metric_isolation_forest_multivariate(
 
 ### DBSCAN Clustering
 
-#### `anofox_metric_dbscan`
+#### `anofox_tab_metric_ (alias: metric_dbscan`
 
 Univariate DBSCAN clustering for single column anomaly detection.
 
 **Signature:**
 ```sql
-anofox_metric_dbscan(
+anofox_tab_metric_ (alias: metric_dbscan(
     table_name VARCHAR,
     column_name VARCHAR,
     eps DOUBLE,
@@ -1087,20 +1097,20 @@ anofox_metric_dbscan(
 
 **Example:**
 ```sql
-SELECT * FROM anofox_metric_dbscan(
+SELECT * FROM anofox_tab_metric_ (alias: metric_dbscan(
     'transactions', 'amount', 10.0, 5, 'clusters'
 ) WHERE point_type = 'NOISE';
 ```
 
 ---
 
-#### `anofox_metric_dbscan_multivariate`
+#### `anofox_tab_metric_ (alias: metric_dbscan_multivariate`
 
 Multivariate DBSCAN clustering for multiple column anomaly detection.
 
 **Signature:**
 ```sql
-anofox_metric_dbscan_multivariate(
+anofox_tab_metric_ (alias: metric_dbscan_multivariate(
     table_name VARCHAR,
     columns VARCHAR,
     eps DOUBLE,
@@ -1123,13 +1133,13 @@ Compare tables and identify changes for migration validation and regression test
 
 ### Functions
 
-#### `anofox_diff_hashdiff`
+#### `anofox_tab_diff_ (alias: diff_hashdiff`
 
 Fast hash-based summary diff (efficient for large tables).
 
 **Signature:**
 ```sql
-anofox_diff_hashdiff(
+anofox_tab_diff_ (alias: diff_hashdiff(
     source VARCHAR,
     target VARCHAR,
     pk_cols LIST<VARCHAR>
@@ -1155,19 +1165,19 @@ TABLE(
 
 **Example:**
 ```sql
-SELECT * FROM anofox_diff_hashdiff('source_tbl', 'target_tbl', ['id']);
+SELECT * FROM anofox_tab_diff_ (alias: diff_hashdiff('source_tbl', 'target_tbl', ['id']);
 -- Returns: {added: 150, removed: 25, changed: 300, unchanged: 10000}
 ```
 
 ---
 
-#### `anofox_diff_joindiff`
+#### `anofox_tab_diff_ (alias: diff_joindiff`
 
 Detailed row-level diff with source/target data (slower but comprehensive).
 
 **Signature:**
 ```sql
-anofox_diff_joindiff(
+anofox_tab_diff_ (alias: diff_joindiff(
     source VARCHAR,
     target VARCHAR,
     pk_cols LIST<VARCHAR>
@@ -1187,7 +1197,7 @@ TABLE(
 
 **Example:**
 ```sql
-SELECT * FROM anofox_diff_joindiff('source_tbl', 'target_tbl', ['user_id', 'date'])
+SELECT * FROM anofox_tab_diff_ (alias: diff_joindiff('source_tbl', 'target_tbl', ['user_id', 'date'])
 WHERE diff_type IN ('added', 'changed')
 LIMIT 100;
 ```
@@ -1201,37 +1211,39 @@ Set options via SQL or DuckDB's configuration file.
 ### Email Settings
 
 ```sql
-SET anofox_email_default_validation = 'regex';  -- Default: regex
-SET anofox_email_regex_pattern = '<your-pattern>';  -- RFC 5322 inspired
-SET anofox_email_dns_timeout_ms = 1000;  -- DNS timeout per try (1-5000ms)
-SET anofox_email_dns_tries = 1;  -- DNS retry count
-SET anofox_email_smtp_port = 25;  -- SMTP port
-SET anofox_email_smtp_connect_timeout_ms = 5000;  -- TCP connect timeout
-SET anofox_email_smtp_read_timeout_ms = 5000;  -- Read/write timeout
-SET anofox_email_smtp_helo_domain = 'duckdb.local';  -- HELO/EHLO domain
-SET anofox_email_smtp_mail_from = 'validator@duckdb.local';  -- MAIL FROM address
+SET anofox_tab_email_default_validation = 'regex';  -- Default: regex
+SET anofox_tab_email_regex_pattern = '<your-pattern>';  -- RFC 5322 inspired
+SET anofox_tab_email_dns_timeout_ms = 1000;  -- DNS timeout per try (1-5000ms)
+SET anofox_tab_email_dns_tries = 1;  -- DNS retry count
+SET anofox_tab_email_smtp_port = 25;  -- SMTP port
+SET anofox_tab_email_smtp_connect_timeout_ms = 5000;  -- TCP connect timeout
+SET anofox_tab_email_smtp_read_timeout_ms = 5000;  -- Read/write timeout
+SET anofox_tab_email_smtp_helo_domain = 'duckdb.local';  -- HELO/EHLO domain
+SET anofox_tab_email_smtp_mail_from = 'validator@duckdb.local';  -- MAIL FROM address
 ```
 
 ### Postal Settings
 
 ```sql
-SET anofox_postal_data_path = '.duckdb/extensions/libpostal';  -- Data directory
+SET anofox_tab_postal_data_path = '.duckdb/extensions/libpostal';  -- Data directory
 
 -- Download libpostal data on first use
-SELECT anofox_postal_load_data();
+SELECT anofox_tab_postal_load_data();
+-- or using alias:
+SELECT postal_load_data();
 ```
 
 ### Phone Settings
 
 ```sql
-SET anofox_phonenumber_default_region = 'US';  -- Default region code
+SET anofox_tab_phonenumber_default_region = 'US';  -- Default region code
 ```
 
 ### Tracing
 
 ```sql
-SET anofox_trace_enabled = true;  -- Enable/disable logging
-SET anofox_trace_level = 'info';  -- trace|debug|info|warn|error|critical|off
+SET anofox_tab_trace_enabled = true;  -- Enable/disable logging
+SET anofox_tab_trace_level = 'info';  -- trace|debug|info|warn|error|critical|off
 ```
 
 ---
@@ -1256,8 +1268,8 @@ SET anofox_trace_level = 'info';  -- trace|debug|info|warn|error|critical|off
 
 | Type | Count | Examples |
 |------|-------|----------|
-| Scalar Functions | 45 | `anofox_email_is_valid`, `anofox_money_add`, `anofox_vat_is_valid` |
-| Table Functions | 12 | `anofox_metric_volume`, `anofox_metric_isolation_forest`, `anofox_diff_hashdiff` |
+| Scalar Functions | 45 | `anofox_tab_email_is_valid (alias: email_is_valid)`, `anofox_tab_money (alias: money_add`, `anofox_tab_vat (alias: vat_is_valid` |
+| Table Functions | 12 | `anofox_tab_metric_ (alias: metric_volume`, `anofox_tab_metric_ (alias: metric_isolation_forest`, `anofox_tab_diff_ (alias: diff_hashdiff` |
 
 ### Module Status
 
@@ -1290,7 +1302,7 @@ SET anofox_trace_level = 'info';  -- trace|debug|info|warn|error|critical|off
    - Automatic parallelization across CPU cores where applicable
 
 5. **External dependencies**:
-   - **libpostal**: Required for address parsing. Data (~500MB) is downloaded automatically on first use via `anofox_postal_load_data()`.
+   - **libpostal**: Required for address parsing. Data (~500MB) is downloaded automatically on first use via `anofox_tab_postal_load_data()`.
    - **c-ares**: Optional for DNS email validation
    - **OpenSSL**: Optional for SMTP email validation
    - **libphonenumber**: Embedded implementation, no external dependencies
@@ -1305,8 +1317,8 @@ SET anofox_trace_level = 'info';  -- trace|debug|info|warn|error|critical|off
    - Use `'summary'` output mode for large tables to reduce memory usage
 
 9. **Data diffing**:
-   - `anofox_diff_hashdiff`: Fast, O(n) complexity, returns summary statistics only
-   - `anofox_diff_joindiff`: Slower, O(n log n) complexity, returns detailed row-level changes
+   - `anofox_tab_diff_ (alias: diff_hashdiff`: Fast, O(n) complexity, returns summary statistics only
+   - `anofox_tab_diff_ (alias: diff_joindiff`: Slower, O(n log n) complexity, returns detailed row-level changes
    - Both functions support compound primary keys
 
 ---

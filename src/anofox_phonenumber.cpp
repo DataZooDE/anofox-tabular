@@ -1,5 +1,6 @@
 #include "anofox_phonenumber.hpp"
 #include "anofox_phonenumber_metadata.hpp"
+#include "anofox_function_alias.hpp"
 
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/string_util.hpp"
@@ -993,22 +994,49 @@ TableFunction CreateStatusTable(const string& name) {
 
 void RegisterPhonenumberOptions(ExtensionLoader& loader) {
 	auto& config = DBConfig::GetConfig(loader.GetDatabaseInstance());
-	config.AddExtensionOption("anofox_phonenumber_default_region",
+	config.AddExtensionOption("anofox_tab_phonenumber_default_region",
 	                          "Default region code used when the region hint is NULL",
 	                          LogicalTypeId::VARCHAR, Value("US"), SetPhonenumberDefaultRegionOption);
 }
 
 void RegisterPhonenumberFunctions(ExtensionLoader& loader) {
 	RegisterPhonenumberOptions(loader);
-	loader.RegisterFunction(CreateParseScalar("anofox_phonenumber_parse"));
-	loader.RegisterFunction(CreateFormatScalar("anofox_phonenumber_format"));
-	loader.RegisterFunction(CreateRegionScalar("anofox_phonenumber_region"));
-	loader.RegisterFunction(CreateIsValidScalar("anofox_phonenumber_is_valid"));
-	loader.RegisterFunction(CreateIsPossibleScalar("anofox_phonenumber_is_possible"));
-	loader.RegisterFunction(CreateIsValidForRegionScalar("anofox_phonenumber_is_valid_for_region"));
-	loader.RegisterFunction(CreateMatchScalar("anofox_phonenumber_match"));
-	loader.RegisterFunction(CreateExampleScalar("anofox_phonenumber_example"));
-	loader.RegisterFunction(CreateStatusTable("anofox_phonenumber_status"));
+	
+	// Register phonenumber_parse
+	ScalarFunction parse_func = CreateParseScalar("anofox_tab_phonenumber_parse");
+	RegisterScalarFunctionWithAlias(loader, parse_func, "phonenumber_parse");
+	
+	// Register phonenumber_format
+	ScalarFunction format_func = CreateFormatScalar("anofox_tab_phonenumber_format");
+	RegisterScalarFunctionWithAlias(loader, format_func, "phonenumber_format");
+	
+	// Register phonenumber_region
+	ScalarFunction region_func = CreateRegionScalar("anofox_tab_phonenumber_region");
+	RegisterScalarFunctionWithAlias(loader, region_func, "phonenumber_region");
+	
+	// Register phonenumber_is_valid
+	ScalarFunction is_valid_func = CreateIsValidScalar("anofox_tab_phonenumber_is_valid");
+	RegisterScalarFunctionWithAlias(loader, is_valid_func, "phonenumber_is_valid");
+	
+	// Register phonenumber_is_possible
+	ScalarFunction is_possible_func = CreateIsPossibleScalar("anofox_tab_phonenumber_is_possible");
+	RegisterScalarFunctionWithAlias(loader, is_possible_func, "phonenumber_is_possible");
+	
+	// Register phonenumber_is_valid_for_region
+	ScalarFunction is_valid_for_region_func = CreateIsValidForRegionScalar("anofox_tab_phonenumber_is_valid_for_region");
+	RegisterScalarFunctionWithAlias(loader, is_valid_for_region_func, "phonenumber_is_valid_for_region");
+	
+	// Register phonenumber_match
+	ScalarFunction match_func = CreateMatchScalar("anofox_tab_phonenumber_match");
+	RegisterScalarFunctionWithAlias(loader, match_func, "phonenumber_match");
+	
+	// Register phonenumber_example
+	ScalarFunction example_func = CreateExampleScalar("anofox_tab_phonenumber_example");
+	RegisterScalarFunctionWithAlias(loader, example_func, "phonenumber_example");
+	
+	// Register phonenumber_status
+	TableFunction status_func = CreateStatusTable("anofox_tab_phonenumber_status");
+	RegisterTableFunctionWithAlias(loader, status_func, "phonenumber_status");
 }
 
 } // namespace anofox
