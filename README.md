@@ -10,7 +10,14 @@
 
 SQL-native validation, anomaly detection, and data diffing—all without leaving your database.
 
-> **⚠️ Breaking Change in v0.2.0:** All function names have been updated. The old `anofox_*` names no longer exist. Use either the new primary names with `anofox_tab_*` prefix (e.g., `anofox_tab_email_is_valid`) or convenient aliases without prefix (e.g., `email_is_valid`). See [API Reference](docs/API_REFERENCE.md) for complete details.
+> **⚠️ Breaking Change in v0.2.0:** Function names updated from `anofox_*` to `anofox_tab_*` prefix with convenient aliases (e.g., `email_is_valid`). See [API Reference](docs/API_REFERENCE.md) for details.
+
+### Important Notes
+
+- **Naming Convention:** Functions use `anofox_tab_*` prefix with shorter aliases available
+- **Positional Parameters:** All functions use positional parameters, NOT named parameters (`:=` syntax)
+- **Backward Compatible:** New isolation forest parameters are optional; existing queries work unchanged
+- **Enhanced in v0.2.0:** Isolation Forest now supports categorical columns, Extended IF, SCiForest, density scoring
 
 ```sql
 -- Email validation with DNS verification
@@ -39,6 +46,32 @@ WHERE vat_is_valid(vat_id)
 
 **vs. Python Libraries:** No context switching, no data movement, 10-100x faster
 **vs. External APIs:** No latency, no rate limits, works offline, data stays local
+
+---
+
+## Key Features
+
+**Validation & Normalization:**
+- Email validation with DNS/SMTP verification
+- International address parsing via libpostal
+- Phone number handling via libphonenumber
+- European VAT compliance (29 countries)
+- Multi-currency arithmetic (10 currencies)
+
+**Data Quality & Anomaly Detection:**
+- 8 data quality metrics (volume, nulls, freshness, schema)
+- Enhanced Isolation Forest with categorical support, Extended IF, SCiForest
+- DBSCAN density-based clustering
+- Statistical outliers via Z-Score and IQR
+
+**Data Operations:**
+- Hash-based and join-based table diffing
+- Migration validation and change detection
+
+**Performance:**
+- Native DuckDB vectorized execution
+- Zero external API dependencies
+- Millions of rows per second throughput
 
 ---
 
@@ -79,7 +112,7 @@ WHERE vat_is_valid(vat_id)
 | 💰 **Money & Currency** | 17 | Multi-currency operations, 10 currencies | ✨ New |
 | 💼 **VAT Validation** | 10 | European VAT compliance, 29 countries | ✨ New |
 | 🔍 **Quality Metrics** | 8 | Volume, nulls, freshness, schema checks | Stable |
-| 🤖 **Anomaly Detection** | 4 | Isolation Forest, DBSCAN, outliers | Stable |
+| 🤖 **Anomaly Detection** | 4 | Enhanced Isolation Forest, DBSCAN, categorical support | ✨ Enhanced |
 | 🔄 **Data Diffing** | 2 | Table comparison, migration validation | Stable |
 
 **Total: 57 SQL Functions** | **Zero Required Dependencies***
@@ -128,13 +161,16 @@ uv run postal_verification.py
 
 ## 📦 Installation
 
-### Prerequisites
+### Technical Requirements
 
-**System Requirements:**
-- C++17 compatible compiler (GCC 8+, Clang 7+, MSVC 2019+)
-- CMake 3.21+
-- Ninja (recommended for faster builds)
-- vcpkg (for dependency management)
+| Requirement | Version | Notes |
+|-------------|---------|-------|
+| **DuckDB** | ≥ v1.4.2 | Required |
+| **C++ Compiler** | GCC 8+, Clang 7+, MSVC 2019+ | C++17 compatible |
+| **CMake** | ≥ 3.21 | Build system |
+| **Ninja** | Any | Recommended for faster builds |
+| **vcpkg** | Latest | Dependency management |
+| **libpostal** | Optional | For address parsing (~500MB data) |
 
 **vcpkg Setup:**
 
@@ -175,6 +211,15 @@ uv sync  # or: pip install -r requirements.txt
 uv run email_verification.py
 uv run postal_verification.py
 ```
+
+### Multi-Language Accessibility
+
+Works with any DuckDB language binding:
+- **Python**: `duckdb` package
+- **R**: `duckdb` package
+- **Node.js**: `duckdb` package
+- **Java**: DuckDB JDBC driver
+- **Go, Rust, Julia, C++**: Native DuckDB bindings
 
 ---
 
@@ -340,12 +385,19 @@ SELECT * FROM metric_iqr('transactions', 'amount', 1.5);
 
 ### 🤖 Anomaly Detection
 
-#### Isolation Forest
+#### Isolation Forest (Enhanced)
 
-A unsupervised anomaly detection that scales to high dimensions:
+Industry-grade anomaly detection with [isotree](https://github.com/david-cortes/isotree)-inspired features:
+
+**Core Capabilities:**
+- **Categorical Support** - Auto-detect VARCHAR columns with random subset splitting
+- **Extended IF (ndim)** - Hyperplane splits for diagonal/curved anomaly patterns
+- **Density Scoring** - Alternative metric based on points-to-volume ratio
+- **Sample Weights** - Weighted sampling for imbalanced datasets
+- **SCiForest** - Information-gain guided splitting with configurable candidates
 
 ```sql
--- Univariate: detect outliers in single column
+-- Basic univariate detection
 SELECT * FROM metric_isolation_forest(
     'sales_data',
     'amount',
@@ -355,12 +407,26 @@ SELECT * FROM metric_isolation_forest(
     'scores'    -- output mode: 'summary' or 'scores'
 ) WHERE is_anomaly = true;
 
--- Multivariate: detect anomalies across multiple features
+-- Extended IF with hyperplane splits (ndim=3)
+SELECT * FROM metric_isolation_forest_multivariate(
+    'transactions',
+    'amount, quantity, duration',
+    100, 256, 0.1, 'scores',
+    3,          -- ndim: hyperplane dimensions
+    'normal',   -- coef_type: coefficient distribution
+    'depth'     -- scoring_metric
+);
+
+-- SCiForest with gain-based split selection
 SELECT * FROM metric_isolation_forest_multivariate(
     'customer_events',
-    'purchase_amount, session_duration, page_views',
-    100, 256, 0.1, 'scores'
-) ORDER BY anomaly_score DESC LIMIT 10;
+    'purchase_amount, session_duration',
+    100, 256, 0.05, 'scores',
+    1, 'uniform', 'depth',
+    NULL,       -- weight_column
+    10,         -- ntry: split candidates
+    0.5         -- prob_pick_avg_gain
+);
 ```
 
 **Why Isolation Forest?**
@@ -368,6 +434,16 @@ SELECT * FROM metric_isolation_forest_multivariate(
 - Excellent for high-dimensional data
 - Detects both global and local anomalies
 - Fast training and prediction (O(n log n))
+
+**New Parameters (v0.2.0):**
+| Parameter | Values | Description |
+|-----------|--------|-------------|
+| `ndim` | 1-N (default: 1) | Dimensions for hyperplane splits |
+| `coef_type` | 'uniform', 'normal' | Coefficient distribution |
+| `scoring_metric` | 'depth', 'density', 'adj_depth' | Scoring method |
+| `weight_column` | column name | Sample weight column |
+| `ntry` | 1-100 (default: 1) | Split candidates per node |
+| `prob_pick_avg_gain` | 0.0-1.0 (default: 0.0) | Gain-based selection probability |
 
 #### DBSCAN Clustering
 
@@ -686,20 +762,49 @@ WHERE money_in_range(amount, 0.01, 99999.99)
 
 ### Anomaly Detection Functions
 
-| Function | Signature | Description |
-|----------|-----------|-------------|
-| `anofox_tab_metric_isolation_forest` | `(table VARCHAR, column VARCHAR [, n_trees BIGINT, sample_size BIGINT, contamination DOUBLE, output_mode VARCHAR]) → TABLE` | Univariate Isolation Forest |
-| `anofox_tab_metric_isolation_forest_multivariate` | `(table VARCHAR, columns VARCHAR [, n_trees BIGINT, sample_size BIGINT, contamination DOUBLE, output_mode VARCHAR]) → TABLE` | Multivariate Isolation Forest |
-| `anofox_tab_metric_dbscan` | `(table VARCHAR, column VARCHAR [, eps DOUBLE, min_pts BIGINT, output_mode VARCHAR]) → TABLE` | Univariate DBSCAN clustering |
-| `anofox_tab_metric_dbscan_multivariate` | `(table VARCHAR, columns VARCHAR [, eps DOUBLE, min_pts BIGINT, output_mode VARCHAR]) → TABLE` | Multivariate DBSCAN clustering |
+| Function | Description |
+|----------|-------------|
+| `anofox_tab_metric_isolation_forest` | Univariate Isolation Forest with all enhancements |
+| `anofox_tab_metric_isolation_forest_multivariate` | Multivariate Isolation Forest |
+| `anofox_tab_metric_dbscan` | Univariate DBSCAN clustering |
+| `anofox_tab_metric_dbscan_multivariate` | Multivariate DBSCAN clustering |
+
+**Isolation Forest Full Signature:**
+```sql
+metric_isolation_forest(
+    table_name VARCHAR,
+    column_name VARCHAR,
+    n_trees BIGINT,           -- 1-500, default 100
+    sample_size BIGINT,       -- 1-10000, default 256
+    contamination DOUBLE,     -- 0.0-0.5, default 0.1
+    output_mode VARCHAR,      -- 'summary' or 'scores'
+    ndim BIGINT,              -- 1-N, default 1 (Extended IF)
+    coef_type VARCHAR,        -- 'uniform' or 'normal'
+    scoring_metric VARCHAR,   -- 'depth', 'density', or 'adj_depth'
+    weight_column VARCHAR,    -- Column for sample weights (NULL = uniform)
+    ntry BIGINT,              -- 1-100, default 1 (SCiForest)
+    prob_pick_avg_gain DOUBLE -- 0.0-1.0, default 0.0
+) → TABLE
+```
 
 **Parameters:**
-- **n_trees** (1-500, default 100): Number of isolation trees
-- **sample_size** (1-10000, default 256): Subsample size per tree
-- **contamination** (0.0-0.5, default 0.1): Expected anomaly fraction
-- **eps** (default 0.5): DBSCAN neighborhood radius
-- **min_pts** (default 5): DBSCAN minimum points for dense region
-- **output_mode**: `summary` (aggregate stats) or `scores`/`clusters` (per-row results)
+| Parameter | Range | Default | Description |
+|-----------|-------|---------|-------------|
+| `n_trees` | 1-500 | 100 | Number of isolation trees |
+| `sample_size` | 1-10000 | 256 | Subsample size per tree |
+| `contamination` | 0.0-0.5 | 0.1 | Expected anomaly fraction |
+| `output_mode` | - | 'scores' | `'summary'` or `'scores'` |
+| `ndim` | 1-N | 1 | Hyperplane dimensions (Extended IF) |
+| `coef_type` | - | 'uniform' | `'uniform'` or `'normal'` |
+| `scoring_metric` | - | 'depth' | `'depth'`, `'density'`, `'adj_depth'` |
+| `weight_column` | - | NULL | Sample weight column name |
+| `ntry` | 1-100 | 1 | Split candidates (SCiForest) |
+| `prob_pick_avg_gain` | 0.0-1.0 | 0.0 | Gain-based selection probability |
+
+**DBSCAN Parameters:**
+- **eps** (default 0.5): Neighborhood radius
+- **min_pts** (default 5): Minimum points for dense region
+- **output_mode**: `'summary'` or `'clusters'`
 
 ### Data Diffing Functions
 
@@ -947,12 +1052,16 @@ WHERE valid AND created_at > NOW() - INTERVAL '1 day';
 
 ## 📜 License
 
-This project is licensed under the Business Source License (BSL) 1.1 - see the [LICENSE](LICENSE) file for details.
+This project is licensed under the **Business Source License (BSL) 1.1**.
 
-**Key Points:**
-- ✅ Free for production use
-- ❌ Cannot be offered to third parties on a hosted or embedded basis
-- 🔄 Converts to MPL 2.0 after 5 years from first publication
+| Permission | Status |
+|------------|--------|
+| Production use | ✅ Permitted |
+| Development & testing | ✅ Permitted |
+| Hosted/embedded service | ❌ Restricted |
+| MPL 2.0 conversion | 🔄 After 5 years |
+
+See [LICENSE](LICENSE) for full details.
 
 ---
 
@@ -972,6 +1081,7 @@ This project incorporates third-party libraries and their respective licenses. F
 ## 🙏 Acknowledgments
 
 - **[DuckDB Team](https://duckdb.org/)** - For the amazing embedded analytics database
+- **[isotree](https://github.com/david-cortes/isotree)** - Inspiration for Enhanced Isolation Forest features (Extended IF, SCiForest, density scoring)
 - **[libpostal](https://github.com/openvenues/libpostal)** - Statistical NLP library for parsing world addresses
 - **[libphonenumber](https://github.com/google/libphonenumber)** - Google's comprehensive phone number handling library (custom implementation)
 - **c-ares** - Asynchronous DNS resolver library
