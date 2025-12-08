@@ -1350,73 +1350,73 @@ void RegisterMetricFunctions(ExtensionLoader &loader) {
 	// Register metric table functions using bind_replace pattern
 	// This generates SQL queries dynamically for stateless data quality validation
 
-	// anofox_tab_metric_volume(table_name, min_rows, max_rows) (alias: metric_volume)
-	TableFunction volume_func("anofox_tab_metric_volume",
+	// anofox_tab_volume(table_name, min_rows, max_rows) (alias: volume)
+	TableFunction volume_func("anofox_tab_volume",
 	                           {LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::BIGINT), LogicalType(LogicalTypeId::BIGINT)},
 	                           nullptr, nullptr);
 	volume_func.bind_replace = MetricVolumeBindReplace;
-	RegisterTableFunctionWithAlias(loader, volume_func, "metric_volume");
+	RegisterTableFunctionWithAlias(loader, volume_func, "volume");
 
-	// anofox_tab_metric_null_rate(table_name, column_name, max_null_rate) (alias: metric_null_rate)
-	TableFunction null_rate_func("anofox_tab_metric_null_rate",
+	// anofox_tab_null_rate(table_name, column_name, max_null_rate) (alias: null_rate)
+	TableFunction null_rate_func("anofox_tab_null_rate",
 	                              {LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::DOUBLE)},
 	                              nullptr, nullptr);
 	null_rate_func.bind_replace = MetricNullRateBindReplace;
-	RegisterTableFunctionWithAlias(loader, null_rate_func, "metric_null_rate");
+	RegisterTableFunctionWithAlias(loader, null_rate_func, "null_rate");
 
-	// anofox_tab_metric_distinct_count(table_name, column_name, min_distinct, max_distinct) (alias: metric_distinct_count)
-	TableFunction distinct_func("anofox_tab_metric_distinct_count",
+	// anofox_tab_distinct_count(table_name, column_name, min_distinct, max_distinct) (alias: distinct_count)
+	TableFunction distinct_func("anofox_tab_distinct_count",
 	                             {LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::VARCHAR),
 	                              LogicalType(LogicalTypeId::BIGINT), LogicalType(LogicalTypeId::BIGINT)},
 	                             nullptr, nullptr);
 	distinct_func.bind_replace = MetricDistinctCountBindReplace;
-	RegisterTableFunctionWithAlias(loader, distinct_func, "metric_distinct_count");
+	RegisterTableFunctionWithAlias(loader, distinct_func, "distinct_count");
 
-	// anofox_tab_metric_zscore(table_name, column_name, threshold) (alias: metric_zscore)
-	TableFunction zscore_func("anofox_tab_metric_zscore",
+	// anofox_tab_zscore(table_name, column_name, threshold) (alias: zscore)
+	TableFunction zscore_func("anofox_tab_zscore",
 	                           {LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::DOUBLE)},
 	                           nullptr, nullptr);
 	zscore_func.bind_replace = MetricZscoreBindReplace;
-	RegisterTableFunctionWithAlias(loader, zscore_func, "metric_zscore");
+	RegisterTableFunctionWithAlias(loader, zscore_func, "zscore");
 
-	// anofox_tab_metric_iqr(table_name, column_name, iqr_multiplier) (alias: metric_iqr)
-	TableFunction iqr_func("anofox_tab_metric_iqr",
+	// anofox_tab_iqr(table_name, column_name, iqr_multiplier) (alias: iqr)
+	TableFunction iqr_func("anofox_tab_iqr",
 	                        {LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::DOUBLE)},
 	                        nullptr, nullptr);
 	iqr_func.bind_replace = MetricIQRBindReplace;
-	RegisterTableFunctionWithAlias(loader, iqr_func, "metric_iqr");
+	RegisterTableFunctionWithAlias(loader, iqr_func, "iqr");
 
-	// anofox_tab_metric_schema(table_name, required_columns) (alias: metric_schema)
-	TableFunction schema_func("anofox_tab_metric_schema",
+	// anofox_tab_schema_check(table_name, required_columns) (alias: schema_check)
+	TableFunction schema_func("anofox_tab_schema_check",
 	                           {LogicalType(LogicalTypeId::VARCHAR), LogicalType::LIST(LogicalType(LogicalTypeId::VARCHAR))},
 	                           nullptr, nullptr);
 	schema_func.bind_replace = MetricSchemaBindReplace;
-	RegisterTableFunctionWithAlias(loader, schema_func, "metric_schema");
+	RegisterTableFunctionWithAlias(loader, schema_func, "schema_check");
 
-	// anofox_tab_metric_freshness(table_name, timestamp_column, max_age) or (table_name, timestamp_column, max_age, reference_time) (alias: metric_freshness)
-	TableFunctionSet freshness_set("anofox_tab_metric_freshness");
-	
+	// anofox_tab_freshness(table_name, timestamp_column, max_age) or (table_name, timestamp_column, max_age, reference_time) (alias: freshness)
+	TableFunctionSet freshness_set("anofox_tab_freshness");
+
 	// Basic overload with 3 parameters
-	TableFunction freshness_func_basic("anofox_tab_metric_freshness",
+	TableFunction freshness_func_basic("anofox_tab_freshness",
 	                                    {LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::INTERVAL)},
 	                                    nullptr, nullptr);
 	freshness_func_basic.bind_replace = MetricFreshnessBindReplace;
 	freshness_set.AddFunction(freshness_func_basic);
-	
+
 	// Full overload with 4 parameters (includes reference_time)
-	TableFunction freshness_func_full("anofox_tab_metric_freshness",
+	TableFunction freshness_func_full("anofox_tab_freshness",
 	                                   {LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::VARCHAR),
 	                                    LogicalType(LogicalTypeId::INTERVAL), LogicalType(LogicalTypeId::TIMESTAMP)},
 	                                   nullptr, nullptr);
 	freshness_func_full.bind_replace = MetricFreshnessBindReplace;
 	freshness_set.AddFunction(freshness_func_full);
-	
+
 	loader.RegisterFunction(freshness_set);
-	
+
 	// Register alias
-	TableFunctionSet alias_freshness_set("metric_freshness");
+	TableFunctionSet alias_freshness_set("freshness");
 	for (const auto &func : freshness_set.functions) {
-		TableFunction alias_func("metric_freshness", func.arguments, func.function, func.bind, func.init_global, func.init_local);
+		TableFunction alias_func("freshness", func.arguments, func.function, func.bind, func.init_global, func.init_local);
 		alias_func.init_global = func.init_global;
 		alias_func.init_local = func.init_local;
 		alias_func.bind_replace = func.bind_replace;
@@ -1424,16 +1424,16 @@ void RegisterMetricFunctions(ExtensionLoader &loader) {
 		alias_freshness_set.AddFunction(alias_func);
 	}
 	CreateTableFunctionInfo alias_freshness_info(alias_freshness_set);
-	alias_freshness_info.alias_of = "anofox_tab_metric_freshness";
+	alias_freshness_info.alias_of = "anofox_tab_freshness";
 	loader.RegisterFunction(alias_freshness_info);
 
-	// anofox_tab_metric_isolation_forest(table_name, column_name, n_trees=100, sample_size=256, contamination=0.1, output_mode='summary', seed=NULL)
-	// (alias: metric_isolation_forest)
+	// anofox_tab_isolation_forest(table_name, column_name, n_trees=100, sample_size=256, contamination=0.1, output_mode='summary', seed=NULL)
+	// (alias: isolation_forest)
 	// Uses actual C++ isolation forest algorithm
-	TableFunctionSet iso_forest_set("anofox_tab_metric_isolation_forest");
+	TableFunctionSet iso_forest_set("anofox_tab_isolation_forest");
 
 	// 6-parameter version (without seed)
-	TableFunction iso_forest_6("anofox_tab_metric_isolation_forest",
+	TableFunction iso_forest_6("anofox_tab_isolation_forest",
 	                           {LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::VARCHAR),
 	                            LogicalType(LogicalTypeId::BIGINT), LogicalType(LogicalTypeId::BIGINT),
 	                            LogicalType(LogicalTypeId::DOUBLE), LogicalType(LogicalTypeId::VARCHAR)},
@@ -1441,7 +1441,7 @@ void RegisterMetricFunctions(ExtensionLoader &loader) {
 	iso_forest_set.AddFunction(iso_forest_6);
 
 	// 7-parameter version (with seed)
-	TableFunction iso_forest_7("anofox_tab_metric_isolation_forest",
+	TableFunction iso_forest_7("anofox_tab_isolation_forest",
 	                           {LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::VARCHAR),
 	                            LogicalType(LogicalTypeId::BIGINT), LogicalType(LogicalTypeId::BIGINT),
 	                            LogicalType(LogicalTypeId::DOUBLE), LogicalType(LogicalTypeId::VARCHAR),
@@ -1452,21 +1452,21 @@ void RegisterMetricFunctions(ExtensionLoader &loader) {
 	CreateTableFunctionInfo iso_forest_info(iso_forest_set);
 	loader.RegisterFunction(iso_forest_info);
 
-	// Register alias: metric_isolation_forest
-	TableFunctionSet alias_iso_forest_set("metric_isolation_forest");
+	// Register alias: isolation_forest
+	TableFunctionSet alias_iso_forest_set("isolation_forest");
 	alias_iso_forest_set.AddFunction(iso_forest_6);
 	alias_iso_forest_set.AddFunction(iso_forest_7);
 	CreateTableFunctionInfo alias_iso_forest_info(alias_iso_forest_set);
-	alias_iso_forest_info.alias_of = "anofox_tab_metric_isolation_forest";
+	alias_iso_forest_info.alias_of = "anofox_tab_isolation_forest";
 	loader.RegisterFunction(alias_iso_forest_info);
 
-	// anofox_tab_metric_isolation_forest_multivariate(table_name, column_names (comma-separated), n_trees=100, sample_size=256, contamination=0.1, output_mode='summary', seed=NULL)
-	// (alias: metric_isolation_forest_multivariate)
+	// anofox_tab_isolation_forest_mv(table_name, column_names (comma-separated), n_trees=100, sample_size=256, contamination=0.1, output_mode='summary', seed=NULL)
+	// (alias: isolation_forest_mv)
 	// Uses actual C++ isolation forest algorithm
-	TableFunctionSet iso_forest_mv_set("anofox_tab_metric_isolation_forest_multivariate");
+	TableFunctionSet iso_forest_mv_set("anofox_tab_isolation_forest_mv");
 
 	// 6-parameter version (without seed)
-	TableFunction iso_forest_mv_6("anofox_tab_metric_isolation_forest_multivariate",
+	TableFunction iso_forest_mv_6("anofox_tab_isolation_forest_mv",
 	                              {LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::VARCHAR),
 	                               LogicalType(LogicalTypeId::BIGINT), LogicalType(LogicalTypeId::BIGINT),
 	                               LogicalType(LogicalTypeId::DOUBLE), LogicalType(LogicalTypeId::VARCHAR)},
@@ -1474,7 +1474,7 @@ void RegisterMetricFunctions(ExtensionLoader &loader) {
 	iso_forest_mv_set.AddFunction(iso_forest_mv_6);
 
 	// 7-parameter version (with seed)
-	TableFunction iso_forest_mv_7("anofox_tab_metric_isolation_forest_multivariate",
+	TableFunction iso_forest_mv_7("anofox_tab_isolation_forest_mv",
 	                              {LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::VARCHAR),
 	                               LogicalType(LogicalTypeId::BIGINT), LogicalType(LogicalTypeId::BIGINT),
 	                               LogicalType(LogicalTypeId::DOUBLE), LogicalType(LogicalTypeId::VARCHAR),
@@ -1483,7 +1483,7 @@ void RegisterMetricFunctions(ExtensionLoader &loader) {
 	iso_forest_mv_set.AddFunction(iso_forest_mv_7);
 
 	// 8-parameter version (with seed and ndim for Extended IF)
-	TableFunction iso_forest_mv_8("anofox_tab_metric_isolation_forest_multivariate",
+	TableFunction iso_forest_mv_8("anofox_tab_isolation_forest_mv",
 	                              {LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::VARCHAR),
 	                               LogicalType(LogicalTypeId::BIGINT), LogicalType(LogicalTypeId::BIGINT),
 	                               LogicalType(LogicalTypeId::DOUBLE), LogicalType(LogicalTypeId::VARCHAR),
@@ -1492,7 +1492,7 @@ void RegisterMetricFunctions(ExtensionLoader &loader) {
 	iso_forest_mv_set.AddFunction(iso_forest_mv_8);
 
 	// 9-parameter version (with seed, ndim, and coef_type for Extended IF)
-	TableFunction iso_forest_mv_9("anofox_tab_metric_isolation_forest_multivariate",
+	TableFunction iso_forest_mv_9("anofox_tab_isolation_forest_mv",
 	                              {LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::VARCHAR),
 	                               LogicalType(LogicalTypeId::BIGINT), LogicalType(LogicalTypeId::BIGINT),
 	                               LogicalType(LogicalTypeId::DOUBLE), LogicalType(LogicalTypeId::VARCHAR),
@@ -1502,7 +1502,7 @@ void RegisterMetricFunctions(ExtensionLoader &loader) {
 	iso_forest_mv_set.AddFunction(iso_forest_mv_9);
 
 	// 10-parameter version (with scoring_metric)
-	TableFunction iso_forest_mv_10("anofox_tab_metric_isolation_forest_multivariate",
+	TableFunction iso_forest_mv_10("anofox_tab_isolation_forest_mv",
 	                               {LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::VARCHAR),
 	                                LogicalType(LogicalTypeId::BIGINT), LogicalType(LogicalTypeId::BIGINT),
 	                                LogicalType(LogicalTypeId::DOUBLE), LogicalType(LogicalTypeId::VARCHAR),
@@ -1512,7 +1512,7 @@ void RegisterMetricFunctions(ExtensionLoader &loader) {
 	iso_forest_mv_set.AddFunction(iso_forest_mv_10);
 
 	// 11-parameter version (with weight_column)
-	TableFunction iso_forest_mv_11("anofox_tab_metric_isolation_forest_multivariate",
+	TableFunction iso_forest_mv_11("anofox_tab_isolation_forest_mv",
 	                               {LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::VARCHAR),
 	                                LogicalType(LogicalTypeId::BIGINT), LogicalType(LogicalTypeId::BIGINT),
 	                                LogicalType(LogicalTypeId::DOUBLE), LogicalType(LogicalTypeId::VARCHAR),
@@ -1523,7 +1523,7 @@ void RegisterMetricFunctions(ExtensionLoader &loader) {
 	iso_forest_mv_set.AddFunction(iso_forest_mv_11);
 
 	// 12-parameter version (with ntry for SCiForest)
-	TableFunction iso_forest_mv_12("anofox_tab_metric_isolation_forest_multivariate",
+	TableFunction iso_forest_mv_12("anofox_tab_isolation_forest_mv",
 	                               {LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::VARCHAR),
 	                                LogicalType(LogicalTypeId::BIGINT), LogicalType(LogicalTypeId::BIGINT),
 	                                LogicalType(LogicalTypeId::DOUBLE), LogicalType(LogicalTypeId::VARCHAR),
@@ -1534,7 +1534,7 @@ void RegisterMetricFunctions(ExtensionLoader &loader) {
 	iso_forest_mv_set.AddFunction(iso_forest_mv_12);
 
 	// 13-parameter version (with ntry and prob_pick_avg_gain for SCiForest)
-	TableFunction iso_forest_mv_13("anofox_tab_metric_isolation_forest_multivariate",
+	TableFunction iso_forest_mv_13("anofox_tab_isolation_forest_mv",
 	                               {LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::VARCHAR),
 	                                LogicalType(LogicalTypeId::BIGINT), LogicalType(LogicalTypeId::BIGINT),
 	                                LogicalType(LogicalTypeId::DOUBLE), LogicalType(LogicalTypeId::VARCHAR),
@@ -1548,8 +1548,8 @@ void RegisterMetricFunctions(ExtensionLoader &loader) {
 	CreateTableFunctionInfo iso_forest_mv_info(iso_forest_mv_set);
 	loader.RegisterFunction(iso_forest_mv_info);
 
-	// Register alias: metric_isolation_forest_multivariate
-	TableFunctionSet alias_iso_forest_mv_set("metric_isolation_forest_multivariate");
+	// Register alias: isolation_forest_mv
+	TableFunctionSet alias_iso_forest_mv_set("isolation_forest_mv");
 	alias_iso_forest_mv_set.AddFunction(iso_forest_mv_6);
 	alias_iso_forest_mv_set.AddFunction(iso_forest_mv_7);
 	alias_iso_forest_mv_set.AddFunction(iso_forest_mv_8);
@@ -1559,26 +1559,26 @@ void RegisterMetricFunctions(ExtensionLoader &loader) {
 	alias_iso_forest_mv_set.AddFunction(iso_forest_mv_12);
 	alias_iso_forest_mv_set.AddFunction(iso_forest_mv_13);
 	CreateTableFunctionInfo alias_iso_forest_mv_info(alias_iso_forest_mv_set);
-	alias_iso_forest_mv_info.alias_of = "anofox_tab_metric_isolation_forest_multivariate";
+	alias_iso_forest_mv_info.alias_of = "anofox_tab_isolation_forest_mv";
 	loader.RegisterFunction(alias_iso_forest_mv_info);
 
-	// anofox_tab_metric_dbscan(table_name, column_name, eps=0.5, min_pts=5, output_mode='summary') (alias: metric_dbscan)
-	TableFunction dbscan_func("anofox_tab_metric_dbscan",
+	// anofox_tab_dbscan(table_name, column_name, eps=0.5, min_pts=5, output_mode='summary') (alias: dbscan)
+	TableFunction dbscan_func("anofox_tab_dbscan",
 	                           {LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::VARCHAR),
 	                            LogicalType(LogicalTypeId::DOUBLE), LogicalType(LogicalTypeId::BIGINT),
 	                            LogicalType(LogicalTypeId::VARCHAR)},
 	                           nullptr, nullptr);
 	dbscan_func.bind_replace = MetricDBSCANBindReplace;
-	RegisterTableFunctionWithAlias(loader, dbscan_func, "metric_dbscan");
+	RegisterTableFunctionWithAlias(loader, dbscan_func, "dbscan");
 
-	// anofox_tab_metric_dbscan_multivariate(table_name, column_names (comma-separated), eps=0.5, min_pts=5, output_mode='summary') (alias: metric_dbscan_multivariate)
-	TableFunction dbscan_mv_func("anofox_tab_metric_dbscan_multivariate",
+	// anofox_tab_dbscan_mv(table_name, column_names (comma-separated), eps=0.5, min_pts=5, output_mode='summary') (alias: dbscan_mv)
+	TableFunction dbscan_mv_func("anofox_tab_dbscan_mv",
 	                              {LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::VARCHAR),
 	                               LogicalType(LogicalTypeId::DOUBLE), LogicalType(LogicalTypeId::BIGINT),
 	                               LogicalType(LogicalTypeId::VARCHAR)},
 	                              nullptr, nullptr);
 	dbscan_mv_func.bind_replace = MetricDBSCANMultivariateBindReplace;
-	RegisterTableFunctionWithAlias(loader, dbscan_mv_func, "metric_dbscan_multivariate");
+	RegisterTableFunctionWithAlias(loader, dbscan_mv_func, "dbscan_mv");
 }
 
 } // namespace anofox

@@ -63,74 +63,74 @@ INSERT INTO test_numeric VALUES
     (6, 500.0)
 
 # ===--------------------------------------------------------------------===
-# Volume Metrics - metric_volume() function
+# Volume Metrics - volume() function
 # ===--------------------------------------------------------------------===
 
 # Test 1: Volume metric - should pass (5 rows within 5-10 range)
 query T
-SELECT status FROM metric_volume('test_orders', 5, 10)
+SELECT status FROM volume('test_orders', 5, 10)
 ----
 pass
 
 # Test 2: Volume metric - should fail (5 rows exceeds max of 4)
 query T
-SELECT status FROM metric_volume('test_orders', 1, 4)
+SELECT status FROM volume('test_orders', 1, 4)
 ----
 fail
 
 # Test 3: Volume metric - should pass (5 rows above minimum of 3)
 query T
-SELECT status FROM metric_volume('test_orders', 3, NULL)
+SELECT status FROM volume('test_orders', 3, NULL)
 ----
 pass
 
 # Test 4: Check row_count is correctly reported
 query I
-SELECT row_count FROM metric_volume('test_orders', 1, 100)
+SELECT row_count FROM volume('test_orders', 1, 100)
 ----
 5
 
 # ===--------------------------------------------------------------------===
-# Null Rate Metrics - metric_null_rate() function
+# Null Rate Metrics - null_rate() function
 # ===--------------------------------------------------------------------===
 
 # Test 1: Null rate - should pass (40% nulls <= 50% threshold)
 query T
-SELECT status FROM metric_null_rate('test_nulls', 'email', 0.5)
+SELECT status FROM null_rate('test_nulls', 'email', 0.5)
 ----
 pass
 
 # Test 2: Null rate - should fail (40% nulls > 10% threshold)
 query T
-SELECT status FROM metric_null_rate('test_nulls', 'email', 0.1)
+SELECT status FROM null_rate('test_nulls', 'email', 0.1)
 ----
 fail
 
 # Test 3: Check null_rate is correctly reported
 query R
-SELECT null_rate FROM metric_null_rate('test_nulls', 'email', 1.0)
+SELECT null_rate FROM null_rate('test_nulls', 'email', 1.0)
 ----
 0.400000
 
 # ===--------------------------------------------------------------------===
-# Distinct Count Metrics - metric_distinct_count() function
+# Distinct Count Metrics - distinct_count() function
 # ===--------------------------------------------------------------------===
 
 # Test 1: Distinct count - should pass (3 distinct statuses >= 3)
 query T
-SELECT status FROM metric_distinct_count('test_orders', 'status', 3, NULL)
+SELECT status FROM distinct_count('test_orders', 'status', 3, NULL)
 ----
 pass
 
 # Test 2: Distinct count - should fail (3 distinct statuses < 5)
 query T
-SELECT status FROM metric_distinct_count('test_orders', 'status', 1, 2)
+SELECT status FROM distinct_count('test_orders', 'status', 1, 2)
 ----
 fail
 
 # Test 3: Check distinct_count is correctly reported
 query I
-SELECT distinct_count FROM metric_distinct_count('test_orders', 'status', 1, 100)
+SELECT distinct_count FROM distinct_count('test_orders', 'status', 1, 100)
 ----
 3
 
@@ -142,77 +142,77 @@ SELECT distinct_count FROM metric_distinct_count('test_orders', 'status', 1, 100
 
 # Test 1: Z-Score metric - should fail (one outlier detected at 2 std devs)
 query T
-SELECT status FROM metric_zscore('test_numeric', 'value', 2)
+SELECT status FROM zscore('test_numeric', 'value', 2)
 ----
 fail
 
 # Test 2: Z-Score metric - should pass (one outlier but threshold is 3 std devs)
 query T
-SELECT status FROM metric_zscore('test_numeric', 'value', 3)
+SELECT status FROM zscore('test_numeric', 'value', 3)
 ----
 pass
 
 # Test 3: Check z-score mean is correctly reported
 query R
-SELECT mean FROM metric_zscore('test_numeric', 'value', 2)
+SELECT mean FROM zscore('test_numeric', 'value', 2)
 ----
 168.5
 
 # Test 4: Check z-score outlier_count is correctly reported
 query I
-SELECT outlier_count FROM metric_zscore('test_numeric', 'value', 2)
+SELECT outlier_count FROM zscore('test_numeric', 'value', 2)
 ----
 1
 
 # Test 5: IQR metric - should fail (one outlier detected outside bounds)
 query T
-SELECT status FROM metric_iqr('test_numeric', 'value', 1.5)
+SELECT status FROM iqr('test_numeric', 'value', 1.5)
 ----
 fail
 
 # Test 6: IQR metric - should pass (no outliers in smaller dataset)
 query T
-SELECT status FROM metric_iqr('test_nulls', 'age', 1.5)
+SELECT status FROM iqr('test_nulls', 'age', 1.5)
 ----
 pass
 
 # Test 7: Check IQR q1 is correctly reported
 query R
-SELECT q1 FROM metric_iqr('test_numeric', 'value', 1.5)
+SELECT q1 FROM iqr('test_numeric', 'value', 1.5)
 ----
 101.25
 
 # Test 8: Check IQR q3 is correctly reported
 query R
-SELECT q3 FROM metric_iqr('test_numeric', 'value', 1.5)
+SELECT q3 FROM iqr('test_numeric', 'value', 1.5)
 ----
 104.5
 
 # Test 9: Check IQR outlier_count is correctly reported
 query I
-SELECT outlier_count FROM metric_iqr('test_numeric', 'value', 1.5)
+SELECT outlier_count FROM iqr('test_numeric', 'value', 1.5)
 ----
 1
 
 # ===--------------------------------------------------------------------===
-# Freshness Metrics - metric_freshness() function
+# Freshness Metrics - freshness() function
 # ===--------------------------------------------------------------------===
 
 # Test 1: Freshness - should pass (data is fresh - 1 hour old <= 1 hour threshold)
 query T
-SELECT status FROM metric_freshness('test_orders', 'created_at', INTERVAL '1 hour', TIMESTAMP '2025-10-19 13:00:00')
+SELECT status FROM freshness('test_orders', 'created_at', INTERVAL '1 hour', TIMESTAMP '2025-10-19 13:00:00')
 ----
 pass
 
 # Test 2: Freshness - should fail (data is stale - 1 hour old > 1 minute threshold)
 query T
-SELECT status FROM metric_freshness('test_orders', 'created_at', INTERVAL '1 minute', TIMESTAMP '2025-10-19 13:00:00')
+SELECT status FROM freshness('test_orders', 'created_at', INTERVAL '1 minute', TIMESTAMP '2025-10-19 13:00:00')
 ----
 fail
 
 # Test 3: Check metric_value (latest timestamp) is correctly reported
 query T
-SELECT metric_value FROM metric_freshness('test_orders', 'created_at', INTERVAL '1 day', TIMESTAMP '2025-10-19 13:00:00')
+SELECT metric_value FROM freshness('test_orders', 'created_at', INTERVAL '1 day', TIMESTAMP '2025-10-19 13:00:00')
 ----
 2025-10-19 12:00:00
 
@@ -225,22 +225,22 @@ CREATE TEMP TABLE test_empty (id INTEGER, value INTEGER)
 
 # Test 1: Volume metric on empty table - should fail (0 rows < min of 1)
 query T
-SELECT status FROM metric_volume('test_empty', 1, 100)
+SELECT status FROM volume('test_empty', 1, 100)
 ----
 fail
 
 # ===--------------------------------------------------------------------===
-# Schema Metrics - metric_schema() function
+# Schema Metrics - schema_check() function
 # ===--------------------------------------------------------------------===
 
 # Test 1: Schema validation - should pass (both columns exist)
 query T
-SELECT status FROM metric_schema('test_orders', ['order_id', 'customer_id'])
+SELECT status FROM schema_check('test_orders', ['order_id', 'customer_id'])
 ----
 pass
 
 # Test 2: Schema validation - should fail (missing column)
 query T
-SELECT status FROM metric_schema('test_orders', ['order_id', 'nonexistent_column'])
+SELECT status FROM schema_check('test_orders', ['order_id', 'nonexistent_column'])
 ----
 fail

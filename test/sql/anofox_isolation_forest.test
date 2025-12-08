@@ -91,43 +91,43 @@ CREATE TABLE iso_empty (
 
 # Test 1: Basic summary mode with default parameters
 query TIIR
-SELECT status, outlier_count, total_count, n_trees FROM metric_isolation_forest('iso_normal_data', 'value', 100, 256, 0.1, 'summary')
+SELECT status, outlier_count, total_count, n_trees FROM isolation_forest('iso_normal_data', 'value', 100, 256, 0.1, 'summary')
 ----
 fail	1	6	100
 
 # Test 2: Summary mode with different n_trees parameter
 query I
-SELECT n_trees FROM metric_isolation_forest('iso_normal_data', 'value', 50, 256, 0.1, 'summary')
+SELECT n_trees FROM isolation_forest('iso_normal_data', 'value', 50, 256, 0.1, 'summary')
 ----
 50
 
 # Test 3: Summary mode with different sample_size parameter
 query I
-SELECT COUNT(*) FROM metric_isolation_forest('iso_normal_data', 'value', 100, 128, 0.1, 'summary')
+SELECT COUNT(*) FROM isolation_forest('iso_normal_data', 'value', 100, 128, 0.1, 'summary')
 ----
 1
 
 # Test 4: Summary mode with higher contamination threshold
 query I
-SELECT outlier_count FROM metric_isolation_forest('iso_normal_data', 'value', 100, 256, 0.2, 'summary')
+SELECT outlier_count FROM isolation_forest('iso_normal_data', 'value', 100, 256, 0.2, 'summary')
 ----
 1
 
 # Test 5: Check message field in summary mode
 query T
-SELECT message FROM metric_isolation_forest('iso_normal_data', 'value', 100, 256, 0.1, 'summary')
+SELECT message FROM isolation_forest('iso_normal_data', 'value', 100, 256, 0.1, 'summary')
 ----
 1 anomalies detected
 
 # Test 6: Summary on data with no outliers (all normal values)
 query T
-SELECT status FROM metric_isolation_forest('iso_identical_values', 'value', 100, 256, 0.1, 'summary')
+SELECT status FROM isolation_forest('iso_identical_values', 'value', 100, 256, 0.1, 'summary')
 ----
 pass
 
 # Test 7: Summary on small dataset
 query T
-SELECT status FROM metric_isolation_forest('iso_small_data', 'value', 100, 256, 0.1, 'summary')
+SELECT status FROM isolation_forest('iso_small_data', 'value', 100, 256, 0.1, 'summary')
 ----
 pass
 
@@ -137,20 +137,20 @@ pass
 
 # Test 8: Basic scores mode returns per-row data
 query III
-SELECT COUNT(*), COUNT(DISTINCT row_id), COUNT(DISTINCT is_anomaly) FROM metric_isolation_forest('iso_normal_data', 'value', 100, 256, 0.1, 'scores')
+SELECT COUNT(*), COUNT(DISTINCT row_id), COUNT(DISTINCT is_anomaly) FROM isolation_forest('iso_normal_data', 'value', 100, 256, 0.1, 'scores')
 ----
 6	6	2
 
 # Test 9: Scores mode - check anomaly_score range
 query I
-SELECT COUNT(*) FROM metric_isolation_forest('iso_normal_data', 'value', 100, 256, 0.1, 'scores')
+SELECT COUNT(*) FROM isolation_forest('iso_normal_data', 'value', 100, 256, 0.1, 'scores')
 WHERE anomaly_score >= 0.0 AND anomaly_score <= 1.0
 ----
 6
 
 # Test 10: Scores mode - verify all rows included
 query I
-SELECT COUNT(*) FROM metric_isolation_forest('iso_normal_data', 'value', 100, 256, 0.1, 'scores')
+SELECT COUNT(*) FROM isolation_forest('iso_normal_data', 'value', 100, 256, 0.1, 'scores')
 ----
 6
 
@@ -158,7 +158,7 @@ SELECT COUNT(*) FROM metric_isolation_forest('iso_normal_data', 'value', 100, 25
 query I
 SELECT COUNT(*) FROM (
   SELECT row_id, LAG(row_id) OVER (ORDER BY row_id) as prev_row
-  FROM metric_isolation_forest('iso_normal_data', 'value', 100, 256, 0.1, 'scores')
+  FROM isolation_forest('iso_normal_data', 'value', 100, 256, 0.1, 'scores')
 ) WHERE row_id > prev_row OR prev_row IS NULL
 ----
 6
@@ -169,25 +169,25 @@ SELECT COUNT(*) FROM (
 
 # Test 12: Empty table - summary mode
 query T
-SELECT status FROM metric_isolation_forest('iso_empty', 'value', 100, 256, 0.1, 'summary')
+SELECT status FROM isolation_forest('iso_empty', 'value', 100, 256, 0.1, 'summary')
 ----
 pass
 
 # Test 13: Empty table - scores mode
 query I
-SELECT COUNT(*) FROM metric_isolation_forest('iso_empty', 'value', 100, 256, 0.1, 'scores')
+SELECT COUNT(*) FROM isolation_forest('iso_empty', 'value', 100, 256, 0.1, 'scores')
 ----
 0
 
 # Test 14: Single row - summary mode
 query T
-SELECT status FROM metric_isolation_forest('iso_single_row', 'value', 100, 256, 0.1, 'summary')
+SELECT status FROM isolation_forest('iso_single_row', 'value', 100, 256, 0.1, 'summary')
 ----
 pass
 
 # Test 15: Single row - scores mode
 query I
-SELECT COUNT(*) FROM metric_isolation_forest('iso_single_row', 'value', 100, 256, 0.1, 'scores')
+SELECT COUNT(*) FROM isolation_forest('iso_single_row', 'value', 100, 256, 0.1, 'scores')
 ----
 1
 
@@ -197,13 +197,13 @@ SELECT COUNT(*) FROM metric_isolation_forest('iso_single_row', 'value', 100, 256
 
 # Test 16: Identical values - summary mode
 query T
-SELECT status FROM metric_isolation_forest('iso_identical_values', 'value', 100, 256, 0.1, 'summary')
+SELECT status FROM isolation_forest('iso_identical_values', 'value', 100, 256, 0.1, 'summary')
 ----
 pass
 
 # Test 17: Identical values - scores mode
 query I
-SELECT COUNT(DISTINCT is_anomaly) FROM metric_isolation_forest('iso_identical_values', 'value', 100, 256, 0.1, 'scores')
+SELECT COUNT(DISTINCT is_anomaly) FROM isolation_forest('iso_identical_values', 'value', 100, 256, 0.1, 'scores')
 ----
 1
 
@@ -213,13 +213,13 @@ SELECT COUNT(DISTINCT is_anomaly) FROM metric_isolation_forest('iso_identical_va
 
 # Test 18: Table with NULLs - summary mode (NULLs should be filtered)
 query I
-SELECT total_count FROM metric_isolation_forest('iso_with_nulls', 'value', 100, 256, 0.1, 'summary')
+SELECT total_count FROM isolation_forest('iso_with_nulls', 'value', 100, 256, 0.1, 'summary')
 ----
 4
 
 # Test 19: Table with NULLs - scores mode (NULLs should be excluded)
 query I
-SELECT COUNT(*) FROM metric_isolation_forest('iso_with_nulls', 'value', 100, 256, 0.1, 'scores')
+SELECT COUNT(*) FROM isolation_forest('iso_with_nulls', 'value', 100, 256, 0.1, 'scores')
 ----
 4
 
@@ -229,37 +229,37 @@ SELECT COUNT(*) FROM metric_isolation_forest('iso_with_nulls', 'value', 100, 256
 
 # Test 20: n_trees too low (below 1)
 statement error
-SELECT * FROM metric_isolation_forest('iso_normal_data', 'value', 0, 256, 0.1, 'summary')
+SELECT * FROM isolation_forest('iso_normal_data', 'value', 0, 256, 0.1, 'summary')
 ----
 n_trees must be between
 
 # Test 21: n_trees too high (above 500)
 statement error
-SELECT * FROM metric_isolation_forest('iso_normal_data', 'value', 501, 256, 0.1, 'summary')
+SELECT * FROM isolation_forest('iso_normal_data', 'value', 501, 256, 0.1, 'summary')
 ----
 n_trees must be between
 
 # Test 22: sample_size too low (below 1)
 statement error
-SELECT * FROM metric_isolation_forest('iso_normal_data', 'value', 100, 0, 0.1, 'summary')
+SELECT * FROM isolation_forest('iso_normal_data', 'value', 100, 0, 0.1, 'summary')
 ----
 sample_size must be between
 
 # Test 23: sample_size too high (above 10000)
 statement error
-SELECT * FROM metric_isolation_forest('iso_normal_data', 'value', 100, 10001, 0.1, 'summary')
+SELECT * FROM isolation_forest('iso_normal_data', 'value', 100, 10001, 0.1, 'summary')
 ----
 sample_size must be between
 
 # Test 24: contamination too low (below 0.0)
 statement error
-SELECT * FROM metric_isolation_forest('iso_normal_data', 'value', 100, 256, -0.1, 'summary')
+SELECT * FROM isolation_forest('iso_normal_data', 'value', 100, 256, -0.1, 'summary')
 ----
 contamination must be between
 
 # Test 25: contamination too high (above 0.5)
 statement error
-SELECT * FROM metric_isolation_forest('iso_normal_data', 'value', 100, 256, 0.6, 'summary')
+SELECT * FROM isolation_forest('iso_normal_data', 'value', 100, 256, 0.6, 'summary')
 ----
 contamination must be between
 
@@ -269,19 +269,19 @@ contamination must be between
 
 # Test 26: Very low contamination (0.01) - stricter anomaly detection
 query I
-SELECT outlier_count FROM metric_isolation_forest('iso_normal_data', 'value', 100, 256, 0.01, 'summary')
+SELECT outlier_count FROM isolation_forest('iso_normal_data', 'value', 100, 256, 0.01, 'summary')
 ----
 1
 
 # Test 27: Very high contamination (0.5) - allows up to 50% anomalies (3 of 6)
 query I
-SELECT outlier_count FROM metric_isolation_forest('iso_normal_data', 'value', 100, 256, 0.5, 'summary', 42)
+SELECT outlier_count FROM isolation_forest('iso_normal_data', 'value', 100, 256, 0.5, 'summary', 42)
 ----
 3
 
 # Test 28: Mid-range contamination (0.25) - allows up to 25% anomalies (about 1-2 of 6)
 query I
-SELECT outlier_count FROM metric_isolation_forest('iso_normal_data', 'value', 100, 256, 0.25, 'summary', 42)
+SELECT outlier_count FROM isolation_forest('iso_normal_data', 'value', 100, 256, 0.25, 'summary', 42)
 ----
 2
 
@@ -291,19 +291,19 @@ SELECT outlier_count FROM metric_isolation_forest('iso_normal_data', 'value', 10
 
 # Test 29: Minimal n_trees (1)
 query I
-SELECT n_trees FROM metric_isolation_forest('iso_normal_data', 'value', 1, 256, 0.1, 'summary')
+SELECT n_trees FROM isolation_forest('iso_normal_data', 'value', 1, 256, 0.1, 'summary')
 ----
 1
 
 # Test 30: Maximum n_trees (500)
 query I
-SELECT n_trees FROM metric_isolation_forest('iso_normal_data', 'value', 500, 256, 0.1, 'summary')
+SELECT n_trees FROM isolation_forest('iso_normal_data', 'value', 500, 256, 0.1, 'summary')
 ----
 500
 
 # Test 31: Mid-range n_trees (50)
 query I
-SELECT n_trees FROM metric_isolation_forest('iso_normal_data', 'value', 50, 256, 0.1, 'summary')
+SELECT n_trees FROM isolation_forest('iso_normal_data', 'value', 50, 256, 0.1, 'summary')
 ----
 50
 
@@ -313,19 +313,19 @@ SELECT n_trees FROM metric_isolation_forest('iso_normal_data', 'value', 50, 256,
 
 # Test 32: Minimal sample_size (1) - with sample_size=1, algorithm can't compute meaningful scores
 query T
-SELECT status FROM metric_isolation_forest('iso_normal_data', 'value', 100, 1, 0.1, 'summary', 42)
+SELECT status FROM isolation_forest('iso_normal_data', 'value', 100, 1, 0.1, 'summary', 42)
 ----
 pass
 
 # Test 33: Maximum sample_size (10000)
 query T
-SELECT status FROM metric_isolation_forest('iso_normal_data', 'value', 100, 10000, 0.1, 'summary')
+SELECT status FROM isolation_forest('iso_normal_data', 'value', 100, 10000, 0.1, 'summary')
 ----
 fail
 
 # Test 34: Mid-range sample_size (512)
 query T
-SELECT status FROM metric_isolation_forest('iso_normal_data', 'value', 100, 512, 0.1, 'summary')
+SELECT status FROM isolation_forest('iso_normal_data', 'value', 100, 512, 0.1, 'summary')
 ----
 fail
 
@@ -335,13 +335,13 @@ fail
 
 # Test 35: Default output mode is 'summary' when not specified
 query I
-SELECT COUNT(*) FROM metric_isolation_forest('iso_normal_data', 'value', 100, 256, 0.1, 'summary')
+SELECT COUNT(*) FROM isolation_forest('iso_normal_data', 'value', 100, 256, 0.1, 'summary')
 ----
 1
 
 # Test 36: Explicit 'scores' mode returns multiple rows
 query I
-SELECT COUNT(*) FROM metric_isolation_forest('iso_normal_data', 'value', 100, 256, 0.1, 'scores')
+SELECT COUNT(*) FROM isolation_forest('iso_normal_data', 'value', 100, 256, 0.1, 'scores')
 ----
 6
 
@@ -351,7 +351,7 @@ SELECT COUNT(*) FROM metric_isolation_forest('iso_normal_data', 'value', 100, 25
 
 # Test 37: INT values should be converted to DOUBLE
 query I
-SELECT COUNT(*) FROM metric_isolation_forest('iso_normal_data', 'value', 100, 256, 0.1, 'summary')
+SELECT COUNT(*) FROM isolation_forest('iso_normal_data', 'value', 100, 256, 0.1, 'summary')
 ----
 1
 
@@ -362,15 +362,15 @@ SELECT COUNT(*) FROM metric_isolation_forest('iso_normal_data', 'value', 100, 25
 # Test 38: Multiple calls with same parameters return consistent results
 query T
 SELECT s1.status FROM
-  (SELECT status FROM metric_isolation_forest('iso_normal_data', 'value', 100, 256, 0.1, 'summary')) s1,
-  (SELECT status FROM metric_isolation_forest('iso_normal_data', 'value', 100, 256, 0.1, 'summary')) s2
+  (SELECT status FROM isolation_forest('iso_normal_data', 'value', 100, 256, 0.1, 'summary')) s1,
+  (SELECT status FROM isolation_forest('iso_normal_data', 'value', 100, 256, 0.1, 'summary')) s2
 WHERE s1.status = s2.status
 ----
 fail
 
 # Test 39: Scores mode is reproducible with same parameters
 query I
-SELECT COUNT(DISTINCT is_anomaly) FROM metric_isolation_forest('iso_normal_data', 'value', 100, 256, 0.1, 'scores')
+SELECT COUNT(DISTINCT is_anomaly) FROM isolation_forest('iso_normal_data', 'value', 100, 256, 0.1, 'scores')
 ----
 2
 
@@ -395,13 +395,13 @@ INSERT INTO iso_large_values VALUES
 
 # Test 40: Large values - summary mode
 query T
-SELECT status FROM metric_isolation_forest('iso_large_values', 'value', 100, 256, 0.1, 'summary')
+SELECT status FROM isolation_forest('iso_large_values', 'value', 100, 256, 0.1, 'summary')
 ----
 fail
 
 # Test 41: Large values - scores mode should include all rows
 query I
-SELECT COUNT(*) FROM metric_isolation_forest('iso_large_values', 'value', 100, 256, 0.1, 'scores')
+SELECT COUNT(*) FROM isolation_forest('iso_large_values', 'value', 100, 256, 0.1, 'scores')
 ----
 6
 
@@ -426,13 +426,13 @@ INSERT INTO iso_small_values VALUES
 
 # Test 42: Small values - summary mode (1e-5 is an outlier vs other values at 1e-10)
 query T
-SELECT status FROM metric_isolation_forest('iso_small_values', 'value', 100, 256, 0.1, 'summary', 42)
+SELECT status FROM isolation_forest('iso_small_values', 'value', 100, 256, 0.1, 'summary', 42)
 ----
 fail
 
 # Test 43: Small values - scores mode
 query I
-SELECT COUNT(*) FROM metric_isolation_forest('iso_small_values', 'value', 100, 256, 0.1, 'scores')
+SELECT COUNT(*) FROM isolation_forest('iso_small_values', 'value', 100, 256, 0.1, 'scores')
 ----
 6
 
@@ -457,13 +457,13 @@ INSERT INTO iso_negative_values VALUES
 
 # Test 44: Negative values - summary mode (-500 is an outlier vs values around -100)
 query T
-SELECT status FROM metric_isolation_forest('iso_negative_values', 'value', 100, 256, 0.1, 'summary', 42)
+SELECT status FROM isolation_forest('iso_negative_values', 'value', 100, 256, 0.1, 'summary', 42)
 ----
 fail
 
 # Test 45: Negative values - scores mode
 query I
-SELECT COUNT(*) FROM metric_isolation_forest('iso_negative_values', 'value', 100, 256, 0.1, 'scores')
+SELECT COUNT(*) FROM isolation_forest('iso_negative_values', 'value', 100, 256, 0.1, 'scores')
 ----
 6
 
@@ -488,13 +488,13 @@ INSERT INTO iso_mixed_sign_values VALUES
 
 # Test 46: Mixed sign values - summary mode (200 is an outlier vs values around -50 to 50)
 query T
-SELECT status FROM metric_isolation_forest('iso_mixed_sign_values', 'value', 100, 256, 0.1, 'summary', 42)
+SELECT status FROM isolation_forest('iso_mixed_sign_values', 'value', 100, 256, 0.1, 'summary', 42)
 ----
 fail
 
 # Test 47: Mixed sign values - scores mode
 query I
-SELECT COUNT(*) FROM metric_isolation_forest('iso_mixed_sign_values', 'value', 100, 256, 0.1, 'scores')
+SELECT COUNT(*) FROM isolation_forest('iso_mixed_sign_values', 'value', 100, 256, 0.1, 'scores')
 ----
 6
 
@@ -504,37 +504,37 @@ SELECT COUNT(*) FROM metric_isolation_forest('iso_mixed_sign_values', 'value', 1
 
 # Test 48: Boundary - n_trees = 1 (minimum)
 query I
-SELECT n_trees FROM metric_isolation_forest('iso_normal_data', 'value', 1, 256, 0.1, 'summary')
+SELECT n_trees FROM isolation_forest('iso_normal_data', 'value', 1, 256, 0.1, 'summary')
 ----
 1
 
 # Test 49: Boundary - n_trees = 500 (maximum)
 query I
-SELECT n_trees FROM metric_isolation_forest('iso_normal_data', 'value', 500, 256, 0.1, 'summary')
+SELECT n_trees FROM isolation_forest('iso_normal_data', 'value', 500, 256, 0.1, 'summary')
 ----
 500
 
 # Test 50: Boundary - sample_size = 1 (minimum) - can't compute meaningful scores
 query T
-SELECT status FROM metric_isolation_forest('iso_normal_data', 'value', 100, 1, 0.1, 'summary', 42)
+SELECT status FROM isolation_forest('iso_normal_data', 'value', 100, 1, 0.1, 'summary', 42)
 ----
 pass
 
 # Test 51: Boundary - sample_size = 10000 (maximum)
 query T
-SELECT status FROM metric_isolation_forest('iso_normal_data', 'value', 100, 10000, 0.1, 'summary')
+SELECT status FROM isolation_forest('iso_normal_data', 'value', 100, 10000, 0.1, 'summary')
 ----
 fail
 
 # Test 52: Boundary - contamination = 0.0 (no anomalies expected)
 query T
-SELECT status FROM metric_isolation_forest('iso_normal_data', 'value', 100, 256, 0.0, 'summary', 42)
+SELECT status FROM isolation_forest('iso_normal_data', 'value', 100, 256, 0.0, 'summary', 42)
 ----
 pass
 
 # Test 53: Boundary - contamination = 0.5 (maximum)
 query T
-SELECT status FROM metric_isolation_forest('iso_normal_data', 'value', 100, 256, 0.5, 'summary')
+SELECT status FROM isolation_forest('iso_normal_data', 'value', 100, 256, 0.5, 'summary')
 ----
 fail
 
@@ -544,32 +544,32 @@ fail
 
 # Test 54: Summary mode - status column is VARCHAR
 query T
-SELECT typeof(status) FROM metric_isolation_forest('iso_normal_data', 'value', 100, 256, 0.1, 'summary')
+SELECT typeof(status) FROM isolation_forest('iso_normal_data', 'value', 100, 256, 0.1, 'summary')
 ----
 VARCHAR
 
 # Test 55: Summary mode - outlier_count is INTEGER
 query T
-SELECT typeof(outlier_count) FROM metric_isolation_forest('iso_normal_data', 'value', 100, 256, 0.1, 'summary')
+SELECT typeof(outlier_count) FROM isolation_forest('iso_normal_data', 'value', 100, 256, 0.1, 'summary')
 ----
 BIGINT
 
 # Test 56: Summary mode - total_count is INTEGER
 query T
-SELECT typeof(total_count) FROM metric_isolation_forest('iso_normal_data', 'value', 100, 256, 0.1, 'summary')
+SELECT typeof(total_count) FROM isolation_forest('iso_normal_data', 'value', 100, 256, 0.1, 'summary')
 ----
 BIGINT
 
 # Test 57: Summary mode - avg_value is DOUBLE
 query T
-SELECT typeof(avg_value) FROM metric_isolation_forest('iso_normal_data', 'value', 100, 256, 0.1, 'summary')
+SELECT typeof(avg_value) FROM isolation_forest('iso_normal_data', 'value', 100, 256, 0.1, 'summary')
 ----
 DOUBLE
 
 # Test 58: Scores mode - row_id is INTEGER
 query T
 SELECT typeof(row_id) FROM (
-  SELECT * FROM metric_isolation_forest('iso_normal_data', 'value', 100, 256, 0.1, 'scores')
+  SELECT * FROM isolation_forest('iso_normal_data', 'value', 100, 256, 0.1, 'scores')
   LIMIT 1
 )
 ----
@@ -578,7 +578,7 @@ BIGINT
 # Test 59: Scores mode - anomaly_score is DOUBLE
 query T
 SELECT typeof(anomaly_score) FROM (
-  SELECT * FROM metric_isolation_forest('iso_normal_data', 'value', 100, 256, 0.1, 'scores', 42)
+  SELECT * FROM isolation_forest('iso_normal_data', 'value', 100, 256, 0.1, 'scores', 42)
   LIMIT 1
 )
 ----
@@ -587,7 +587,7 @@ DOUBLE
 # Test 60: Scores mode - is_anomaly is BOOLEAN
 query T
 SELECT typeof(is_anomaly) FROM (
-  SELECT * FROM metric_isolation_forest('iso_normal_data', 'value', 100, 256, 0.1, 'scores')
+  SELECT * FROM isolation_forest('iso_normal_data', 'value', 100, 256, 0.1, 'scores')
   LIMIT 1
 )
 ----
@@ -631,25 +631,25 @@ INSERT INTO iso_multivar_3col VALUES
 
 # Test 61: Multivariate summary mode - basic test
 query TIIR
-SELECT status, outlier_count, total_count, n_columns FROM metric_isolation_forest_multivariate('iso_multivar_data', 'x,y', 100, 256, 0.1, 'summary')
+SELECT status, outlier_count, total_count, n_columns FROM isolation_forest_mv('iso_multivar_data', 'x,y', 100, 256, 0.1, 'summary')
 ----
 fail	1	6	2
 
 # Test 62: Multivariate summary mode - two columns
 query I
-SELECT n_columns FROM metric_isolation_forest_multivariate('iso_multivar_data', 'x, y', 100, 256, 0.1, 'summary')
+SELECT n_columns FROM isolation_forest_mv('iso_multivar_data', 'x, y', 100, 256, 0.1, 'summary')
 ----
 2
 
 # Test 63: Multivariate summary mode - three columns
 query I
-SELECT n_columns FROM metric_isolation_forest_multivariate('iso_multivar_3col', 'a,b,c', 100, 256, 0.1, 'summary')
+SELECT n_columns FROM isolation_forest_mv('iso_multivar_3col', 'a,b,c', 100, 256, 0.1, 'summary')
 ----
 3
 
 # Test 64: Multivariate scores mode - returns per-row data
 query I
-SELECT COUNT(*) FROM metric_isolation_forest_multivariate('iso_multivar_data', 'x,y', 100, 256, 0.1, 'scores')
+SELECT COUNT(*) FROM isolation_forest_mv('iso_multivar_data', 'x,y', 100, 256, 0.1, 'scores')
 ----
 6
 
@@ -657,68 +657,68 @@ SELECT COUNT(*) FROM metric_isolation_forest_multivariate('iso_multivar_data', '
 query I
 SELECT COUNT(*) FROM (
   SELECT row_id, LAG(row_id) OVER (ORDER BY row_id) as prev_row
-  FROM metric_isolation_forest_multivariate('iso_multivar_data', 'x,y', 100, 256, 0.1, 'scores')
+  FROM isolation_forest_mv('iso_multivar_data', 'x,y', 100, 256, 0.1, 'scores')
 ) WHERE row_id > prev_row OR prev_row IS NULL
 ----
 6
 
 # Test 66: Multivariate with quoted column names
 query T
-SELECT status FROM metric_isolation_forest_multivariate('iso_multivar_data', '"x","y"', 100, 256, 0.1, 'summary')
+SELECT status FROM isolation_forest_mv('iso_multivar_data', '"x","y"', 100, 256, 0.1, 'summary')
 ----
 fail
 
 # Test 67: Multivariate parameter validation - n_trees
 statement error
-SELECT * FROM metric_isolation_forest_multivariate('iso_multivar_data', 'x,y', 501, 256, 0.1, 'summary')
+SELECT * FROM isolation_forest_mv('iso_multivar_data', 'x,y', 501, 256, 0.1, 'summary')
 ----
 n_trees must be between
 
 # Test 68: Multivariate parameter validation - sample_size
 statement error
-SELECT * FROM metric_isolation_forest_multivariate('iso_multivar_data', 'x,y', 100, 10001, 0.1, 'summary')
+SELECT * FROM isolation_forest_mv('iso_multivar_data', 'x,y', 100, 10001, 0.1, 'summary')
 ----
 sample_size must be between
 
 # Test 69: Multivariate parameter validation - contamination
 statement error
-SELECT * FROM metric_isolation_forest_multivariate('iso_multivar_data', 'x,y', 100, 256, 0.6, 'summary')
+SELECT * FROM isolation_forest_mv('iso_multivar_data', 'x,y', 100, 256, 0.6, 'summary')
 ----
 contamination must be between
 
 # Test 70: Multivariate empty column names should error
 statement error
-SELECT * FROM metric_isolation_forest_multivariate('iso_multivar_data', '', 100, 256, 0.1, 'summary')
+SELECT * FROM isolation_forest_mv('iso_multivar_data', '', 100, 256, 0.1, 'summary')
 ----
 column_names must contain
 
 # Test 71: Multivariate single column (should work with multivar function too)
 query T
-SELECT status FROM metric_isolation_forest_multivariate('iso_multivar_data', 'x', 100, 256, 0.1, 'summary')
+SELECT status FROM isolation_forest_mv('iso_multivar_data', 'x', 100, 256, 0.1, 'summary')
 ----
 fail
 
 # Test 72: Multivariate three columns summary
 query T
-SELECT status FROM metric_isolation_forest_multivariate('iso_multivar_3col', 'a,b,c', 100, 256, 0.1, 'summary')
+SELECT status FROM isolation_forest_mv('iso_multivar_3col', 'a,b,c', 100, 256, 0.1, 'summary')
 ----
 fail
 
 # Test 73: Multivariate three columns scores count
 query I
-SELECT COUNT(*) FROM metric_isolation_forest_multivariate('iso_multivar_3col', 'a,b,c', 100, 256, 0.1, 'scores')
+SELECT COUNT(*) FROM isolation_forest_mv('iso_multivar_3col', 'a,b,c', 100, 256, 0.1, 'scores')
 ----
 5
 
 # Test 74: Multivariate with whitespace in column names
 query T
-SELECT status FROM metric_isolation_forest_multivariate('iso_multivar_data', ' x , y ', 100, 256, 0.1, 'summary')
+SELECT status FROM isolation_forest_mv('iso_multivar_data', ' x , y ', 100, 256, 0.1, 'summary')
 ----
 fail
 
 # Test 75: Multivariate scores mode - return types
 query I
-SELECT COUNT(DISTINCT is_anomaly) FROM metric_isolation_forest_multivariate('iso_multivar_data', 'x,y', 100, 256, 0.1, 'scores')
+SELECT COUNT(DISTINCT is_anomaly) FROM isolation_forest_mv('iso_multivar_data', 'x,y', 100, 256, 0.1, 'scores')
 ----
 2
 
@@ -738,19 +738,19 @@ INSERT INTO iso_issue7_regression VALUES
 
 # Test 76: Issue #7 - similar values should NOT all be anomalies
 query TI
-SELECT status, outlier_count FROM metric_isolation_forest('iso_issue7_regression', 'value', 100, 256, 0.1, 'summary', 42)
+SELECT status, outlier_count FROM isolation_forest('iso_issue7_regression', 'value', 100, 256, 0.1, 'summary', 42)
 ----
 pass	0
 
 # Test 77: Issue #7 - all scores should be identical for identical values
 query I
-SELECT COUNT(DISTINCT ROUND(anomaly_score, 4)) FROM metric_isolation_forest('iso_issue7_regression', 'value', 100, 256, 0.1, 'scores', 42)
+SELECT COUNT(DISTINCT ROUND(anomaly_score, 4)) FROM isolation_forest('iso_issue7_regression', 'value', 100, 256, 0.1, 'scores', 42)
 ----
 1
 
 # Test 78: Issue #7 - no individual row should be marked as anomaly
 query I
-SELECT COUNT(*) FROM metric_isolation_forest('iso_issue7_regression', 'value', 100, 256, 0.1, 'scores', 42) WHERE is_anomaly = true
+SELECT COUNT(*) FROM isolation_forest('iso_issue7_regression', 'value', 100, 256, 0.1, 'scores', 42) WHERE is_anomaly = true
 ----
 0
 
@@ -767,7 +767,7 @@ INSERT INTO iso_obvious_outlier VALUES
     (1, 10.0), (2, 10.5), (3, 9.8), (4, 10.2), (5, 9.9), (6, 100.0)
 
 query I
-SELECT row_id FROM metric_isolation_forest('iso_obvious_outlier', 'value', 100, 256, 0.1, 'scores', 42)
+SELECT row_id FROM isolation_forest('iso_obvious_outlier', 'value', 100, 256, 0.1, 'scores', 42)
 ORDER BY anomaly_score DESC LIMIT 1
 ----
 6
@@ -776,8 +776,8 @@ ORDER BY anomaly_score DESC LIMIT 1
 query I
 SELECT COUNT(*) FROM (
     SELECT a.anomaly_score - b.anomaly_score as diff
-    FROM metric_isolation_forest('iso_obvious_outlier', 'value', 100, 256, 0.1, 'scores', 42) a
-    JOIN metric_isolation_forest('iso_obvious_outlier', 'value', 100, 256, 0.1, 'scores', 42) b
+    FROM isolation_forest('iso_obvious_outlier', 'value', 100, 256, 0.1, 'scores', 42) a
+    JOIN isolation_forest('iso_obvious_outlier', 'value', 100, 256, 0.1, 'scores', 42) b
     ON a.row_id = b.row_id
     WHERE ABS(a.anomaly_score - b.anomaly_score) > 0.0001
 )
@@ -786,7 +786,7 @@ SELECT COUNT(*) FROM (
 
 # Test 81: Scores should be in valid [0,1] range
 query I
-SELECT COUNT(*) FROM metric_isolation_forest('iso_obvious_outlier', 'value', 100, 256, 0.1, 'scores', 42)
+SELECT COUNT(*) FROM isolation_forest('iso_obvious_outlier', 'value', 100, 256, 0.1, 'scores', 42)
 WHERE anomaly_score < 0.0 OR anomaly_score > 1.0
 ----
 0
@@ -801,7 +801,7 @@ INSERT INTO iso_multivar_outlier VALUES
     (5, -0.05, 0.05), (6, 10.0, 10.0)
 
 query I
-SELECT row_id FROM metric_isolation_forest_multivariate('iso_multivar_outlier', 'x,y', 100, 256, 0.1, 'scores', 42)
+SELECT row_id FROM isolation_forest_mv('iso_multivar_outlier', 'x,y', 100, 256, 0.1, 'scores', 42)
 ORDER BY anomaly_score DESC LIMIT 1
 ----
 6
@@ -827,7 +827,7 @@ INSERT INTO iso_canonical VALUES
 
 # Outlier (row 21) should have highest score
 query I
-SELECT row_id FROM metric_isolation_forest_multivariate('iso_canonical', 'x,y', 100, 256, 0.1, 'scores', 42)
+SELECT row_id FROM isolation_forest_mv('iso_canonical', 'x,y', 100, 256, 0.1, 'scores', 42)
 ORDER BY anomaly_score DESC LIMIT 1
 ----
 21
@@ -847,7 +847,7 @@ INSERT INTO iso_two_clusters VALUES
 
 # Outlier (row 17) should have highest score
 query I
-SELECT row_id FROM metric_isolation_forest_multivariate('iso_two_clusters', 'x,y', 100, 256, 0.1, 'scores', 42)
+SELECT row_id FROM isolation_forest_mv('iso_two_clusters', 'x,y', 100, 256, 0.1, 'scores', 42)
 ORDER BY anomaly_score DESC LIMIT 1
 ----
 17
@@ -863,14 +863,14 @@ INSERT INTO iso_multiple_outliers VALUES
 
 # Extreme outlier (row 8, value 500) should have highest score
 query I
-SELECT row_id FROM metric_isolation_forest('iso_multiple_outliers', 'value', 100, 256, 0.1, 'scores', 42)
+SELECT row_id FROM isolation_forest('iso_multiple_outliers', 'value', 100, 256, 0.1, 'scores', 42)
 ORDER BY anomaly_score DESC LIMIT 1
 ----
 8
 
 # Moderate outlier (row 7, value 100) should have second highest score
 query I
-SELECT row_id FROM metric_isolation_forest('iso_multiple_outliers', 'value', 100, 256, 0.1, 'scores', 42)
+SELECT row_id FROM isolation_forest('iso_multiple_outliers', 'value', 100, 256, 0.1, 'scores', 42)
 ORDER BY anomaly_score DESC LIMIT 1 OFFSET 1
 ----
 7
@@ -889,14 +889,14 @@ INSERT INTO iso_pure_normal VALUES
 # All scores should be similar (max - min < 0.3)
 query I
 SELECT CASE WHEN (MAX(anomaly_score) - MIN(anomaly_score)) < 0.3 THEN 1 ELSE 0 END
-FROM metric_isolation_forest('iso_pure_normal', 'value', 100, 256, 0.1, 'scores', 42)
+FROM isolation_forest('iso_pure_normal', 'value', 100, 256, 0.1, 'scores', 42)
 ----
 1
 
 # No anomalies should be detected with contamination=0.0
 # (contamination=0.1 would flag top 10% = 1 row even if no true anomalies)
 query I
-SELECT COUNT(*) FROM metric_isolation_forest('iso_pure_normal', 'value', 100, 256, 0.0, 'scores', 42)
+SELECT COUNT(*) FROM isolation_forest('iso_pure_normal', 'value', 100, 256, 0.0, 'scores', 42)
 WHERE is_anomaly = true
 ----
 0
@@ -905,13 +905,13 @@ WHERE is_anomaly = true
 # With same seed, results should be identical (already tested in #80)
 # With different seeds on same data, outlier detection should still work
 query I
-SELECT row_id FROM metric_isolation_forest('iso_obvious_outlier', 'value', 100, 256, 0.1, 'scores', 123)
+SELECT row_id FROM isolation_forest('iso_obvious_outlier', 'value', 100, 256, 0.1, 'scores', 123)
 ORDER BY anomaly_score DESC LIMIT 1
 ----
 6
 
 query I
-SELECT row_id FROM metric_isolation_forest('iso_obvious_outlier', 'value', 100, 256, 0.1, 'scores', 456)
+SELECT row_id FROM isolation_forest('iso_obvious_outlier', 'value', 100, 256, 0.1, 'scores', 456)
 ORDER BY anomaly_score DESC LIMIT 1
 ----
 6
@@ -929,14 +929,14 @@ INSERT INTO iso_large_dataset VALUES (51, 1000.0)
 
 # Outlier (row 51) should be detected
 query I
-SELECT row_id FROM metric_isolation_forest('iso_large_dataset', 'value', 100, 256, 0.1, 'scores', 42)
+SELECT row_id FROM isolation_forest('iso_large_dataset', 'value', 100, 256, 0.1, 'scores', 42)
 ORDER BY anomaly_score DESC LIMIT 1
 ----
 51
 
 # Total count should be 51
 query I
-SELECT total_count FROM metric_isolation_forest('iso_large_dataset', 'value', 100, 256, 0.1, 'summary', 42)
+SELECT total_count FROM isolation_forest('iso_large_dataset', 'value', 100, 256, 0.1, 'summary', 42)
 ----
 51
 
@@ -950,13 +950,13 @@ SELECT i, 42.0 FROM range(1, 11) t(i)
 
 # All scores should be identical
 query I
-SELECT COUNT(DISTINCT ROUND(anomaly_score, 6)) FROM metric_isolation_forest('iso_all_identical', 'value', 100, 256, 0.1, 'scores', 42)
+SELECT COUNT(DISTINCT ROUND(anomaly_score, 6)) FROM isolation_forest('iso_all_identical', 'value', 100, 256, 0.1, 'scores', 42)
 ----
 1
 
 # No anomalies should be detected
 query I
-SELECT outlier_count FROM metric_isolation_forest('iso_all_identical', 'value', 100, 256, 0.1, 'summary', 42)
+SELECT outlier_count FROM isolation_forest('iso_all_identical', 'value', 100, 256, 0.1, 'summary', 42)
 ----
 0
 
@@ -970,13 +970,13 @@ INSERT INTO iso_wide_range VALUES
 
 # Algorithm should handle wide ranges without crashing
 query I
-SELECT COUNT(*) FROM metric_isolation_forest('iso_wide_range', 'value', 100, 256, 0.1, 'scores', 42)
+SELECT COUNT(*) FROM isolation_forest('iso_wide_range', 'value', 100, 256, 0.1, 'scores', 42)
 ----
 5
 
 # All scores should be in valid range
 query I
-SELECT COUNT(*) FROM metric_isolation_forest('iso_wide_range', 'value', 100, 256, 0.1, 'scores', 42)
+SELECT COUNT(*) FROM isolation_forest('iso_wide_range', 'value', 100, 256, 0.1, 'scores', 42)
 WHERE anomaly_score >= 0.0 AND anomaly_score <= 1.0
 ----
 5
@@ -997,14 +997,14 @@ INSERT INTO iso_categorical VALUES
 
 # Test 91: Categorical column is accepted
 query I
-SELECT COUNT(*) FROM metric_isolation_forest_multivariate('iso_categorical',
+SELECT COUNT(*) FROM isolation_forest_mv('iso_categorical',
     'category,value', 100, 256, 0.1, 'scores', 42)
 ----
 7
 
 # Test 92: Rare category detected as anomaly
 query I
-SELECT row_id FROM metric_isolation_forest_multivariate('iso_categorical',
+SELECT row_id FROM isolation_forest_mv('iso_categorical',
     'category,value', 100, 256, 0.1, 'scores', 42)
 ORDER BY anomaly_score DESC LIMIT 1
 ----
@@ -1021,7 +1021,7 @@ INSERT INTO iso_pure_categ VALUES
     (9, 'common'), (10, 'rare')
 
 query I
-SELECT row_id FROM metric_isolation_forest_multivariate('iso_pure_categ',
+SELECT row_id FROM isolation_forest_mv('iso_pure_categ',
     'category', 100, 256, 0.1, 'scores', 42)
 ORDER BY anomaly_score DESC LIMIT 1
 ----
@@ -1038,7 +1038,7 @@ INSERT INTO iso_multi_categ VALUES
     (7, 'Z', 'R', 100.0)
 
 query I
-SELECT row_id FROM metric_isolation_forest_multivariate('iso_multi_categ',
+SELECT row_id FROM isolation_forest_mv('iso_multi_categ',
     'cat1,cat2,value', 100, 256, 0.1, 'scores', 42)
 ORDER BY anomaly_score DESC LIMIT 1
 ----
@@ -1046,7 +1046,7 @@ ORDER BY anomaly_score DESC LIMIT 1
 
 # Test 95: Scores in valid range for categorical
 query I
-SELECT COUNT(*) FROM metric_isolation_forest_multivariate('iso_categorical',
+SELECT COUNT(*) FROM isolation_forest_mv('iso_categorical',
     'category,value', 100, 256, 0.1, 'scores', 42)
 WHERE anomaly_score < 0.0 OR anomaly_score > 1.0
 ----
@@ -1056,9 +1056,9 @@ WHERE anomaly_score < 0.0 OR anomaly_score > 1.0
 query I
 SELECT COUNT(*) FROM (
     SELECT a.anomaly_score - b.anomaly_score as diff
-    FROM metric_isolation_forest_multivariate('iso_categorical', 'category,value',
+    FROM isolation_forest_mv('iso_categorical', 'category,value',
         100, 256, 0.1, 'scores', 42) a
-    JOIN metric_isolation_forest_multivariate('iso_categorical', 'category,value',
+    JOIN isolation_forest_mv('iso_categorical', 'category,value',
         100, 256, 0.1, 'scores', 42) b
     ON a.row_id = b.row_id
     WHERE ABS(a.anomaly_score - b.anomaly_score) > 0.0001
@@ -1071,7 +1071,7 @@ statement ok
 CREATE TABLE iso_empty_categ (id INTEGER, category VARCHAR)
 
 query I
-SELECT COUNT(*) FROM metric_isolation_forest_multivariate('iso_empty_categ',
+SELECT COUNT(*) FROM isolation_forest_mv('iso_empty_categ',
     'category', 100, 256, 0.1, 'scores', 42)
 ----
 0
@@ -1085,7 +1085,7 @@ INSERT INTO iso_single_categ VALUES
     (1, 'only'), (2, 'only'), (3, 'only'), (4, 'only'), (5, 'only')
 
 query I
-SELECT outlier_count FROM metric_isolation_forest_multivariate('iso_single_categ',
+SELECT outlier_count FROM isolation_forest_mv('iso_single_categ',
     'category', 100, 256, 0.1, 'summary', 42)
 ----
 0
@@ -1100,7 +1100,7 @@ INSERT INTO iso_categ_nulls VALUES
     (4, 'B', NULL), (5, 'B', 21.0), (6, 'B', 20.5)
 
 query I
-SELECT total_count FROM metric_isolation_forest_multivariate('iso_categ_nulls',
+SELECT total_count FROM isolation_forest_mv('iso_categ_nulls',
     'category,value', 100, 256, 0.1, 'summary', 42)
 ----
 4
@@ -1117,7 +1117,7 @@ statement ok
 INSERT INTO iso_high_card VALUES (21, 'cat_1')
 
 query I
-SELECT COUNT(*) FROM metric_isolation_forest_multivariate('iso_high_card',
+SELECT COUNT(*) FROM isolation_forest_mv('iso_high_card',
     'category', 100, 256, 0.1, 'scores', 42)
 ----
 21
@@ -1150,49 +1150,49 @@ INSERT INTO eif_5d VALUES
 
 # Test 101: ndim=2 hyperplane split works
 query I
-SELECT COUNT(*) FROM metric_isolation_forest_multivariate('eif_2d',
+SELECT COUNT(*) FROM isolation_forest_mv('eif_2d',
     'x,y', 100, 256, 0.1, 'scores', 42, 2)
 ----
 6
 
 # Test 102: Default ndim=1 (backward compatible - existing call syntax)
 query I
-SELECT COUNT(*) FROM metric_isolation_forest_multivariate('eif_2d',
+SELECT COUNT(*) FROM isolation_forest_mv('eif_2d',
     'x,y', 100, 256, 0.1, 'scores', 42)
 ----
 6
 
 # Test 103: ndim > n_features (should use min(ndim, n_features))
 query I
-SELECT outlier_count FROM metric_isolation_forest_multivariate('eif_2d',
+SELECT outlier_count FROM isolation_forest_mv('eif_2d',
     'x,y', 100, 256, 0.1, 'summary', 42, 5)
 ----
 1
 
 # Test 104: coef_type='normal' works
 query I
-SELECT COUNT(*) FROM metric_isolation_forest_multivariate('eif_2d',
+SELECT COUNT(*) FROM isolation_forest_mv('eif_2d',
     'x,y', 100, 256, 0.1, 'scores', 42, 2, 'normal')
 ----
 6
 
 # Test 105: coef_type='uniform' (explicit default)
 query I
-SELECT COUNT(*) FROM metric_isolation_forest_multivariate('eif_2d',
+SELECT COUNT(*) FROM isolation_forest_mv('eif_2d',
     'x,y', 100, 256, 0.1, 'scores', 42, 2, 'uniform')
 ----
 6
 
 # Test 106: High-dim data with ndim=3 hyperplane
 query I
-SELECT outlier_count FROM metric_isolation_forest_multivariate('eif_5d',
+SELECT outlier_count FROM isolation_forest_mv('eif_5d',
     'a,b,c,d,e', 100, 256, 0.1, 'summary', 42, 3)
 ----
 1
 
 # Test 107: Scores in valid range [0,1] with ndim=2
 query I
-SELECT COUNT(*) FROM metric_isolation_forest_multivariate('eif_2d',
+SELECT COUNT(*) FROM isolation_forest_mv('eif_2d',
     'x,y', 100, 256, 0.1, 'scores', 42, 2)
 WHERE anomaly_score < 0 OR anomaly_score > 1
 ----
@@ -1202,9 +1202,9 @@ WHERE anomaly_score < 0 OR anomaly_score > 1
 query I
 SELECT COUNT(*) FROM (
     SELECT a.anomaly_score - b.anomaly_score as diff
-    FROM metric_isolation_forest_multivariate('eif_2d', 'x,y',
+    FROM isolation_forest_mv('eif_2d', 'x,y',
         100, 256, 0.1, 'scores', 42, 2) a
-    JOIN metric_isolation_forest_multivariate('eif_2d', 'x,y',
+    JOIN isolation_forest_mv('eif_2d', 'x,y',
         100, 256, 0.1, 'scores', 42, 2) b
     ON a.row_id = b.row_id
     WHERE ABS(a.anomaly_score - b.anomaly_score) > 0.0001
@@ -1218,14 +1218,14 @@ SELECT COUNT(*) FROM (
 
 # Test 109: scoring_metric='depth' (default, backward compatible)
 query I
-SELECT COUNT(*) FROM metric_isolation_forest_multivariate('eif_2d',
+SELECT COUNT(*) FROM isolation_forest_mv('eif_2d',
     'x,y', 100, 256, 0.1, 'scores', 42, 1, 'uniform', 'depth')
 ----
 6
 
 # Test 110: scoring_metric='density' returns valid scores
 query I
-SELECT COUNT(*) FROM metric_isolation_forest_multivariate('eif_2d',
+SELECT COUNT(*) FROM isolation_forest_mv('eif_2d',
     'x,y', 100, 256, 0.1, 'scores', 42, 1, 'uniform', 'density')
 ----
 6
@@ -1234,7 +1234,7 @@ SELECT COUNT(*) FROM metric_isolation_forest_multivariate('eif_2d',
 # For density, positive score = anomaly, negative = normal
 # We just verify the function returns without error
 query I
-SELECT COUNT(*) FROM metric_isolation_forest_multivariate('iso_normal_data',
+SELECT COUNT(*) FROM isolation_forest_mv('iso_normal_data',
     'value', 100, 256, 0.1, 'scores', 42, 1, 'uniform', 'density')
 ----
 6
@@ -1243,7 +1243,7 @@ SELECT COUNT(*) FROM metric_isolation_forest_multivariate('iso_normal_data',
 query I
 SELECT CASE WHEN max_score > min_score THEN 1 ELSE 0 END as anomaly_detected FROM (
     SELECT MAX(anomaly_score) as max_score, MIN(anomaly_score) as min_score
-    FROM metric_isolation_forest_multivariate('iso_normal_data',
+    FROM isolation_forest_mv('iso_normal_data',
         'value', 100, 256, 0.1, 'scores', 42, 1, 'uniform', 'density')
 )
 ----
@@ -1251,7 +1251,7 @@ SELECT CASE WHEN max_score > min_score THEN 1 ELSE 0 END as anomaly_detected FRO
 
 # Test 113: scoring_metric='adj_depth' works
 query I
-SELECT COUNT(*) FROM metric_isolation_forest_multivariate('eif_2d',
+SELECT COUNT(*) FROM isolation_forest_mv('eif_2d',
     'x,y', 100, 256, 0.1, 'scores', 42, 1, 'uniform', 'adj_depth')
 ----
 6
@@ -1260,9 +1260,9 @@ SELECT COUNT(*) FROM metric_isolation_forest_multivariate('eif_2d',
 query I
 SELECT COUNT(*) FROM (
     SELECT a.anomaly_score - b.anomaly_score as diff
-    FROM metric_isolation_forest_multivariate('eif_2d', 'x,y',
+    FROM isolation_forest_mv('eif_2d', 'x,y',
         100, 256, 0.1, 'scores', 42, 1, 'uniform', 'density') a
-    JOIN metric_isolation_forest_multivariate('eif_2d', 'x,y',
+    JOIN isolation_forest_mv('eif_2d', 'x,y',
         100, 256, 0.1, 'scores', 42, 1, 'uniform', 'density') b
     ON a.row_id = b.row_id
     WHERE ABS(a.anomaly_score - b.anomaly_score) > 0.0001
@@ -1272,14 +1272,14 @@ SELECT COUNT(*) FROM (
 
 # Test 115: Density scoring with categorical columns
 query I
-SELECT COUNT(*) FROM metric_isolation_forest_multivariate('iso_categorical',
+SELECT COUNT(*) FROM isolation_forest_mv('iso_categorical',
     'category,value', 100, 256, 0.1, 'scores', 42, 1, 'uniform', 'density')
 ----
 7
 
 # Test 116: Invalid scoring_metric throws error
 statement error
-SELECT * FROM metric_isolation_forest_multivariate('eif_2d',
+SELECT * FROM isolation_forest_mv('eif_2d',
     'x,y', 100, 256, 0.1, 'scores', 42, 1, 'uniform', 'invalid_metric')
 ----
 scoring_metric must be
@@ -1303,7 +1303,7 @@ INSERT INTO iso_weighted VALUES
 
 # Test 117: weight_column parameter accepted
 query I
-SELECT COUNT(*) FROM metric_isolation_forest_multivariate('iso_weighted',
+SELECT COUNT(*) FROM isolation_forest_mv('iso_weighted',
     'value', 100, 256, 0.1, 'scores', 42, 1, 'uniform', 'depth', 'weight')
 ----
 6
@@ -1312,7 +1312,7 @@ SELECT COUNT(*) FROM metric_isolation_forest_multivariate('iso_weighted',
 # The outlier with high weight should have a LOWER anomaly score than without weights
 # We can't test exact values, so we just verify the function works
 query I
-SELECT COUNT(*) FROM metric_isolation_forest_multivariate('iso_weighted',
+SELECT COUNT(*) FROM isolation_forest_mv('iso_weighted',
     'value', 100, 256, 0.1, 'scores', 42, 1, 'uniform', 'depth', 'weight')
 WHERE anomaly_score >= 0
 ----
@@ -1331,7 +1331,7 @@ INSERT INTO iso_zero_weight VALUES
     (5, 500.0, 1.0)
 
 query I
-SELECT COUNT(*) FROM metric_isolation_forest_multivariate('iso_zero_weight',
+SELECT COUNT(*) FROM isolation_forest_mv('iso_zero_weight',
     'value', 100, 256, 0.1, 'scores', 42, 1, 'uniform', 'depth', 'weight')
 ----
 5
@@ -1346,14 +1346,14 @@ INSERT INTO iso_neg_weight VALUES
     (2, 101.0, -1.0)
 
 statement error
-SELECT * FROM metric_isolation_forest_multivariate('iso_neg_weight',
+SELECT * FROM isolation_forest_mv('iso_neg_weight',
     'value', 100, 256, 0.1, 'scores', 42, 1, 'uniform', 'depth', 'weight')
 ----
 sample_weights cannot contain negative
 
 # Test 121: NULL weight_column = uniform weights (backward compatible)
 query I
-SELECT COUNT(*) FROM metric_isolation_forest_multivariate('iso_weighted',
+SELECT COUNT(*) FROM isolation_forest_mv('iso_weighted',
     'value', 100, 256, 0.1, 'scores', 42, 1, 'uniform', 'depth', NULL)
 ----
 6
@@ -1370,7 +1370,7 @@ INSERT INTO iso_null_weight VALUES
     (4, 500.0, 1.0)
 
 query I
-SELECT COUNT(*) FROM metric_isolation_forest_multivariate('iso_null_weight',
+SELECT COUNT(*) FROM isolation_forest_mv('iso_null_weight',
     'value', 100, 256, 0.1, 'scores', 42, 1, 'uniform', 'depth', 'weight')
 ----
 3
@@ -1379,9 +1379,9 @@ SELECT COUNT(*) FROM metric_isolation_forest_multivariate('iso_null_weight',
 query I
 SELECT COUNT(*) FROM (
     SELECT a.anomaly_score - b.anomaly_score as diff
-    FROM metric_isolation_forest_multivariate('iso_weighted', 'value',
+    FROM isolation_forest_mv('iso_weighted', 'value',
         100, 256, 0.1, 'scores', 42, 1, 'uniform', 'depth', 'weight') a
-    JOIN metric_isolation_forest_multivariate('iso_weighted', 'value',
+    JOIN isolation_forest_mv('iso_weighted', 'value',
         100, 256, 0.1, 'scores', 42, 1, 'uniform', 'depth', 'weight') b
     ON a.row_id = b.row_id
     WHERE ABS(a.anomaly_score - b.anomaly_score) > 0.0001
@@ -1402,7 +1402,7 @@ INSERT INTO iso_categ_weighted VALUES
     (5, 'C', 500.0, 5.0)
 
 query I
-SELECT COUNT(*) FROM metric_isolation_forest_multivariate('iso_categ_weighted',
+SELECT COUNT(*) FROM isolation_forest_mv('iso_categ_weighted',
     'category,value', 100, 256, 0.1, 'scores', 42, 1, 'uniform', 'depth', 'weight')
 ----
 5
@@ -1414,35 +1414,35 @@ SELECT COUNT(*) FROM metric_isolation_forest_multivariate('iso_categ_weighted',
 
 # Test 125: ntry parameter accepted (default=1)
 query I
-SELECT COUNT(*) FROM metric_isolation_forest_multivariate('eif_2d',
+SELECT COUNT(*) FROM isolation_forest_mv('eif_2d',
     'x,y', 100, 256, 0.1, 'scores', 42, 1, 'uniform', 'depth', NULL, 1)
 ----
 6
 
 # Test 126: ntry=10 works (SCiForest mode)
 query I
-SELECT COUNT(*) FROM metric_isolation_forest_multivariate('eif_2d',
+SELECT COUNT(*) FROM isolation_forest_mv('eif_2d',
     'x,y', 100, 256, 0.1, 'scores', 42, 1, 'uniform', 'depth', NULL, 10)
 ----
 6
 
 # Test 127: prob_pick_avg_gain parameter accepted
 query I
-SELECT COUNT(*) FROM metric_isolation_forest_multivariate('eif_2d',
+SELECT COUNT(*) FROM isolation_forest_mv('eif_2d',
     'x,y', 100, 256, 0.1, 'scores', 42, 1, 'uniform', 'depth', NULL, 10, 0.5)
 ----
 6
 
 # Test 128: Full SCiForest (ntry=10, prob=1.0) detects outlier
 query I
-SELECT outlier_count FROM metric_isolation_forest_multivariate('eif_2d',
+SELECT outlier_count FROM isolation_forest_mv('eif_2d',
     'x,y', 100, 256, 0.1, 'summary', 42, 1, 'uniform', 'depth', NULL, 10, 1.0)
 ----
 1
 
 # Test 129: Scores in valid range [0,1]
 query I
-SELECT COUNT(*) FROM metric_isolation_forest_multivariate('eif_2d',
+SELECT COUNT(*) FROM isolation_forest_mv('eif_2d',
     'x,y', 100, 256, 0.1, 'scores', 42, 1, 'uniform', 'depth', NULL, 10, 1.0)
 WHERE anomaly_score < 0 OR anomaly_score > 1
 ----
@@ -1451,36 +1451,36 @@ WHERE anomaly_score < 0 OR anomaly_score > 1
 # Test 130: Reproducibility with same seed
 query I
 SELECT SUM(CASE WHEN a.anomaly_score = b.anomaly_score THEN 1 ELSE 0 END)
-FROM metric_isolation_forest_multivariate('eif_2d', 'x,y', 100, 256, 0.1, 'scores', 42, 1, 'uniform', 'depth', NULL, 10, 0.5) a
-JOIN metric_isolation_forest_multivariate('eif_2d', 'x,y', 100, 256, 0.1, 'scores', 42, 1, 'uniform', 'depth', NULL, 10, 0.5) b
+FROM isolation_forest_mv('eif_2d', 'x,y', 100, 256, 0.1, 'scores', 42, 1, 'uniform', 'depth', NULL, 10, 0.5) a
+JOIN isolation_forest_mv('eif_2d', 'x,y', 100, 256, 0.1, 'scores', 42, 1, 'uniform', 'depth', NULL, 10, 0.5) b
 ON a.row_id = b.row_id
 ----
 6
 
 # Test 131: SCiForest with categorical columns
 query I
-SELECT COUNT(*) FROM metric_isolation_forest_multivariate('iso_categorical',
+SELECT COUNT(*) FROM isolation_forest_mv('iso_categorical',
     'category,value', 100, 256, 0.1, 'scores', 42, 1, 'uniform', 'depth', NULL, 5, 0.5)
 ----
 7
 
 # Test 132: SCiForest with Extended IF (ndim=2 + ntry=10)
 query I
-SELECT outlier_count FROM metric_isolation_forest_multivariate('eif_2d',
+SELECT outlier_count FROM isolation_forest_mv('eif_2d',
     'x,y', 100, 256, 0.1, 'summary', 42, 2, 'uniform', 'depth', NULL, 10, 1.0)
 ----
 1
 
 # Test 133: Invalid ntry (0 or negative) defaults to 1
 query I
-SELECT COUNT(*) FROM metric_isolation_forest_multivariate('eif_2d',
+SELECT COUNT(*) FROM isolation_forest_mv('eif_2d',
     'x,y', 100, 256, 0.1, 'scores', 42, 1, 'uniform', 'depth', NULL, 0)
 ----
 6
 
 # Test 134: Invalid prob_pick_avg_gain (>1) throws error
 statement error
-SELECT * FROM metric_isolation_forest_multivariate('eif_2d',
+SELECT * FROM isolation_forest_mv('eif_2d',
     'x,y', 100, 256, 0.1, 'scores', 42, 1, 'uniform', 'depth', NULL, 10, 1.5)
 ----
 prob_pick_avg_gain must be
