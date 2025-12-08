@@ -931,14 +931,10 @@ double IsolationForest::AveragePathLength(size_t n) {
     if (n <= 1) return 0.0;
 
     // Formula: 2 * H(n-1) - (2 * (n-1) / n)
-    // Where H(n) is the harmonic number
-    double harmonic = 0.0;
-    for (size_t i = 1; i < n; i++) {
-        harmonic += 1.0 / static_cast<double>(i);
-    }
-
-    double log_approx = std::log(static_cast<double>(n - 1)) + 0.5772156649; // Euler-Mascheroni
-    return 2.0 * log_approx - (2.0 * static_cast<double>(n - 1) / static_cast<double>(n));
+    // Where H(n) is the harmonic number, approximated as ln(n) + γ (Euler-Mascheroni constant)
+    // This approximation is accurate and O(1) instead of O(n)
+    double h_approx = std::log(static_cast<double>(n - 1)) + 0.5772156649;
+    return 2.0 * h_approx - (2.0 * static_cast<double>(n - 1) / static_cast<double>(n));
 }
 
 void IsolationForest::Fit(const std::vector<std::vector<double>>& data) {

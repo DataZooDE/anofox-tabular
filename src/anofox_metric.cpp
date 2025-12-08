@@ -660,6 +660,7 @@ static void IsolationForestExecute(ClientContext &context, TableFunctionInput &d
 		}
 
 		// Step 2: Build data query - keep VARCHAR as-is, cast numeric to DOUBLE
+		// Include weight column in the same query to guarantee row alignment
 		string column_list;
 		for (size_t i = 0; i < bind_data.column_names.size(); ++i) {
 			if (i > 0) column_list += ", ";
@@ -668,6 +669,11 @@ static void IsolationForestExecute(ClientContext &context, TableFunctionInput &d
 			} else {
 				column_list += "CAST(\"" + bind_data.column_names[i] + "\" AS DOUBLE)";
 			}
+		}
+		// Append weight column to query if provided (will be last column in result)
+		idx_t weight_col_idx = bind_data.column_names.size();  // Index of weight column in result
+		if (bind_data.has_weight_column) {
+			column_list += ", CAST(\"" + bind_data.weight_column + "\" AS DOUBLE)";
 		}
 
 		string null_checks;
@@ -711,8 +717,10 @@ static void IsolationForestExecute(ClientContext &context, TableFunctionInput &d
 			}
 
 			double sum_first_col = 0.0;
+			std::vector<double> sample_weights;  // Collected during data fetch if weight column provided
 
 			// Read data and build category mappings
+			// Weight column (if present) is the last column in the result
 			while (true) {
 				auto chunk = result->Fetch();
 				if (!chunk || chunk->size() == 0) break;
@@ -728,7 +736,8 @@ static void IsolationForestExecute(ClientContext &context, TableFunctionInput &d
 					}
 					if (!valid_row) continue;
 
-					for (idx_t col = 0; col < chunk->ColumnCount(); ++col) {
+					// Process feature columns (not including weight column)
+					for (idx_t col = 0; col < bind_data.column_names.size(); ++col) {
 						auto val = chunk->GetValue(col, row);
 						if (is_categorical[col]) {
 							string cat_val = val.ToString();
@@ -741,6 +750,12 @@ static void IsolationForestExecute(ClientContext &context, TableFunctionInput &d
 								sum_first_col += num_val;
 							}
 						}
+					}
+
+					// Extract weight value if weight column is present (last column in result)
+					if (bind_data.has_weight_column) {
+						auto weight_val = chunk->GetValue(weight_col_idx, row);
+						sample_weights.push_back(weight_val.GetValue<double>());
 					}
 				}
 			}
@@ -759,41 +774,7 @@ static void IsolationForestExecute(ClientContext &context, TableFunctionInput &d
 				                       actual_seed, bind_data.ndim, bind_data.coef_type, bind_data.scoring_metric,
 				                       bind_data.ntry, bind_data.prob_pick_avg_gain);
 
-				// Handle sample weights if provided
-				std::vector<double> sample_weights;
-				if (bind_data.has_weight_column) {
-					// Fetch weight column values using same null_checks as data query
-					Connection weight_con(*context.db);
-
-					// Rebuild null_checks to include weight column (same as data query)
-					string all_null_checks;
-					for (size_t i = 0; i < bind_data.column_names.size(); ++i) {
-						if (i > 0) all_null_checks += " AND ";
-						all_null_checks += "\"" + bind_data.column_names[i] + "\" IS NOT NULL";
-					}
-					all_null_checks += " AND \"" + bind_data.weight_column + "\" IS NOT NULL";
-
-					string weight_query = "SELECT CAST(\"" + bind_data.weight_column + "\" AS DOUBLE) FROM query_table('" +
-					               bind_data.table_name + "') WHERE " + all_null_checks;
-
-					auto weight_result = weight_con.Query(weight_query);
-					if (weight_result->HasError()) {
-						throw InvalidInputException("Failed to query weight column: %s", weight_result->GetError());
-					}
-
-					sample_weights.reserve(n_rows);
-					while (true) {
-						auto chunk = weight_result->Fetch();
-						if (!chunk || chunk->size() == 0) break;
-						for (idx_t row = 0; row < chunk->size(); ++row) {
-							auto val = chunk->GetValue(0, row);
-							if (!val.IsNull()) {
-								sample_weights.push_back(val.GetValue<double>());
-							}
-						}
-					}
-				}
-
+				// sample_weights was already collected during data fetch (guarantees correct row alignment)
 				forest.FitMixed(data, column_info, sample_weights);
 
 				// Score all points
