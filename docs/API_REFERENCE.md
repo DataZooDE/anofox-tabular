@@ -1001,70 +1001,128 @@ SELECT * FROM anofox_tab_metric_ (alias: metric_iqr('transactions', 'amount', 1.
 
 Unsupervised anomaly detection algorithms for finding outliers in data.
 
-### Isolation Forest
+### Isolation Forest (Enhanced)
 
-#### `anofox_tab_metric_ (alias: metric_isolation_forest`
+Industry-grade anomaly detection with [isotree](https://github.com/david-cortes/isotree)-inspired features:
+
+**Core Capabilities:**
+- **Categorical Support** - Auto-detect VARCHAR columns with random subset splitting
+- **Extended IF (ndim)** - Hyperplane splits for diagonal/curved anomaly patterns
+- **Density Scoring** - Alternative metric based on points-to-volume ratio
+- **Sample Weights** - Weighted sampling for imbalanced datasets
+- **SCiForest** - Information-gain guided splitting with configurable candidates
+
+#### `anofox_tab_metric_isolation_forest` (alias: `metric_isolation_forest`)
 
 Univariate Isolation Forest for single column anomaly detection.
 
-**Signature:**
+**Full Signature:**
 ```sql
-anofox_tab_metric_ (alias: metric_isolation_forest(
+metric_isolation_forest(
     table_name VARCHAR,
     column_name VARCHAR,
-    n_trees BIGINT,
-    sample_size BIGINT,
-    contamination DOUBLE,
-    output_mode VARCHAR
+    n_trees BIGINT,           -- 1-500, default 100
+    sample_size BIGINT,       -- 1-10000, default 256
+    contamination DOUBLE,     -- 0.0-0.5, default 0.1
+    output_mode VARCHAR,      -- 'summary' or 'scores'
+    ndim BIGINT,              -- 1-N, default 1 (Extended IF)
+    coef_type VARCHAR,        -- 'uniform' or 'normal'
+    scoring_metric VARCHAR,   -- 'depth', 'density', or 'adj_depth'
+    weight_column VARCHAR,    -- Column for sample weights (NULL = uniform)
+    ntry BIGINT,              -- 1-100, default 1 (SCiForest)
+    prob_pick_avg_gain DOUBLE -- 0.0-1.0, default 0.0
 ) → TABLE
 ```
 
 **Parameters:**
-- `n_trees`: Number of isolation trees (1-500, default: 100)
-- `sample_size`: Subsample size per tree (1-10000, default: 256)
-- `contamination`: Expected anomaly fraction (0.0-0.5, default: 0.1)
-- `output_mode`: `'summary'` (aggregate stats) or `'scores'` (per-row results)
+| Parameter | Range | Default | Description |
+|-----------|-------|---------|-------------|
+| `n_trees` | 1-500 | 100 | Number of isolation trees |
+| `sample_size` | 1-10000 | 256 | Subsample size per tree |
+| `contamination` | 0.0-0.5 | 0.1 | Expected anomaly fraction |
+| `output_mode` | - | 'scores' | `'summary'` or `'scores'` |
+| `ndim` | 1-N | 1 | Hyperplane dimensions (Extended IF) |
+| `coef_type` | - | 'uniform' | `'uniform'` or `'normal'` |
+| `scoring_metric` | - | 'depth' | `'depth'`, `'density'`, `'adj_depth'` |
+| `weight_column` | - | NULL | Sample weight column name |
+| `ntry` | 1-100 | 1 | Split candidates (SCiForest) |
+| `prob_pick_avg_gain` | 0.0-1.0 | 0.0 | Gain-based selection probability |
 
 **Returns:**
 - `TABLE`: Anomaly detection results with `row_id`, `anomaly_score`, `is_anomaly`
 
-**Example:**
+**Examples:**
 ```sql
-SELECT * FROM anofox_tab_metric_ (alias: metric_isolation_forest(
+-- Basic usage (backward compatible)
+SELECT * FROM metric_isolation_forest(
     'sales_data', 'amount', 100, 256, 0.1, 'scores'
 ) WHERE is_anomaly = true;
+
+-- Extended IF with hyperplane splits
+SELECT * FROM metric_isolation_forest(
+    'transactions', 'amount', 100, 256, 0.1, 'scores',
+    3,          -- ndim: 3-dimensional hyperplanes
+    'normal',   -- coef_type: normal distribution
+    'depth'     -- scoring_metric
+);
+
+-- SCiForest with gain-based selection
+SELECT * FROM metric_isolation_forest(
+    'events', 'value', 100, 256, 0.05, 'scores',
+    1, 'uniform', 'depth',
+    NULL,       -- weight_column
+    10,         -- ntry: evaluate 10 candidates
+    0.5         -- prob_pick_avg_gain: 50% gain-based
+);
 ```
 
 ---
 
-#### `anofox_tab_metric_ (alias: metric_isolation_forest_multivariate`
+#### `anofox_tab_metric_isolation_forest_multivariate` (alias: `metric_isolation_forest_multivariate`)
 
 Multivariate Isolation Forest for multiple column anomaly detection.
 
-**Signature:**
+**Full Signature:**
 ```sql
-anofox_tab_metric_ (alias: metric_isolation_forest_multivariate(
+metric_isolation_forest_multivariate(
     table_name VARCHAR,
-    columns VARCHAR,
+    columns VARCHAR,          -- Comma-separated column names
     n_trees BIGINT,
     sample_size BIGINT,
     contamination DOUBLE,
-    output_mode VARCHAR
+    output_mode VARCHAR,
+    ndim BIGINT,
+    coef_type VARCHAR,
+    scoring_metric VARCHAR,
+    weight_column VARCHAR,
+    ntry BIGINT,
+    prob_pick_avg_gain DOUBLE
 ) → TABLE
 ```
 
 **Parameters:**
 - `columns`: Comma-separated column names (e.g., `'amount, quantity, suspicious_amount'`)
+- All other parameters same as univariate version
 
 **Returns:**
 - `TABLE`: Anomaly detection results with `row_id`, `anomaly_score`, `is_anomaly`
 
-**Example:**
+**Examples:**
 ```sql
-SELECT * FROM anofox_tab_metric_ (alias: metric_isolation_forest_multivariate(
+-- Basic multivariate
+SELECT * FROM metric_isolation_forest_multivariate(
     'customer_events', 'purchase_amount, session_duration, page_views',
     100, 256, 0.1, 'scores'
 ) ORDER BY anomaly_score DESC LIMIT 10;
+
+-- Extended IF with density scoring
+SELECT * FROM metric_isolation_forest_multivariate(
+    'transactions', 'amount, quantity, duration',
+    100, 256, 0.05, 'scores',
+    3,          -- ndim
+    'normal',   -- coef_type
+    'density'   -- scoring_metric: density-based scoring
+);
 ```
 
 ---
