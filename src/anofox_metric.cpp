@@ -395,7 +395,7 @@ static unique_ptr<GlobalTableFunctionState> IsolationForestInit(ClientContext &,
 static unique_ptr<FunctionData> IsolationForestBind(ClientContext &context, TableFunctionBindInput &input,
                                                     vector<LogicalType> &return_types, vector<string> &names) {
 	if (input.inputs.size() < 2) {
-		throw BinderException("metric_isolation_forest requires at least 2 arguments: table_name, column_name");
+		throw BinderException("isolation_forest requires at least 2 arguments: table_name, column_name");
 	}
 
 	string table_name = input.inputs[0].ToString();
@@ -463,7 +463,7 @@ static unique_ptr<FunctionData> IsolationForestBind(ClientContext &context, Tabl
 static unique_ptr<FunctionData> IsolationForestMultivariateBind(ClientContext &context, TableFunctionBindInput &input,
                                                                  vector<LogicalType> &return_types, vector<string> &names) {
 	if (input.inputs.size() < 2) {
-		throw BinderException("metric_isolation_forest_multivariate requires at least 2 arguments: table_name, column_names");
+		throw BinderException("isolation_forest_mv requires at least 2 arguments: table_name, column_names");
 	}
 
 	string table_name = input.inputs[0].ToString();
