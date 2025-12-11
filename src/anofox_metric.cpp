@@ -697,9 +697,20 @@ static void IsolationForestExecute(ClientContext &context, TableFunctionInput &d
 		uint64_t actual_seed = bind_data.has_seed ? bind_data.seed :
 			static_cast<uint64_t>(std::chrono::high_resolution_clock::now().time_since_epoch().count());
 
-		// Use mixed-type path if: has categorical columns OR has weight column
-		// (FitMixed is the only method that supports sample weights)
-		if (has_categorical || bind_data.has_weight_column) {
+		// Use mixed-type path if:
+		// - has categorical columns, OR
+		// - has weight column, OR
+		// - uses Extended IF (ndim > 1), OR
+		// - uses non-default scoring metric, OR
+		// - uses SCiForest (ntry > 1 or prob_pick_avg_gain > 0)
+		// Note: FitMixed/ScoreBatchMixed are required for all advanced parameters
+		bool use_mixed_path = has_categorical ||
+		                      bind_data.has_weight_column ||
+		                      bind_data.ndim > 1 ||
+		                      bind_data.scoring_metric != anofox::ScoringMetric::Depth ||
+		                      bind_data.ntry > 1 ||
+		                      bind_data.prob_pick_avg_gain > 0.0;
+		if (use_mixed_path) {
 			// Mixed-type path: use ColumnData and FitMixed
 			std::vector<ColumnInfo> column_info(bind_data.column_names.size());
 			std::vector<ColumnData> data(bind_data.column_names.size());
