@@ -14,10 +14,13 @@ concurrency:
 jobs:
   duckdb-stable-build:
     name: Build extension binaries
-    uses: duckdb/extension-ci-tools/.github/workflows/_extension_distribution.yml@v1.4.2
+    strategy:
+      matrix:
+        duckdb_version: [v1.4.2, v1.4.3]
+    uses: duckdb/extension-ci-tools/.github/workflows/_extension_distribution.yml@${{ matrix.duckdb_version }}
     with:
-      duckdb_version: v1.4.2
-      ci_tools_version: v1.4.2
+      duckdb_version: ${{ matrix.duckdb_version }}
+      ci_tools_version: ${{ matrix.duckdb_version }}
       extension_name: anofox_tabular
       # Exclude WASM builds - extension uses features not compatible with WASM
       # (libpostal, libphonenumber, DNS/SMTP network operations)
