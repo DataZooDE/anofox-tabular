@@ -103,6 +103,24 @@ else()
     add_compile_definitions(HAVE_LIBPOSTAL=0)
 endif()
 
+# --- Telemetry ---
+# Build telemetry as OBJECT library to avoid link order issues with DuckDB symbols
+# The telemetry library uses DuckDB's StringUtil::Format which depends on exception symbols
+find_package(OpenSSL REQUIRED)
+
+add_library(posthog_telemetry_obj OBJECT
+    ${CMAKE_CURRENT_SOURCE_DIR}/posthog-telemetry/src/telemetry.cpp
+)
+
+target_include_directories(posthog_telemetry_obj PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/posthog-telemetry/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/duckdb/src/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/duckdb/third_party
+    ${CMAKE_CURRENT_SOURCE_DIR}/duckdb/third_party/httplib
+    ${OPENSSL_INCLUDE_DIR}
+)
+
+target_compile_features(posthog_telemetry_obj PUBLIC cxx_std_17)
 
 # --- Build ---
 
@@ -134,6 +152,14 @@ build_loadable_extension(${TARGET_NAME} " " ${EXTENSION_SOURCES})
 target_sources(${EXTENSION_NAME} PRIVATE $<TARGET_OBJECTS:anofox_trace_obj>)
 target_sources(${LOADABLE_EXTENSION_NAME} PRIVATE $<TARGET_OBJECTS:anofox_trace_obj>)
 
+# Add telemetry objects to both extension targets
+target_sources(${EXTENSION_NAME} PRIVATE $<TARGET_OBJECTS:posthog_telemetry_obj>)
+target_sources(${LOADABLE_EXTENSION_NAME} PRIVATE $<TARGET_OBJECTS:posthog_telemetry_obj>)
+
+# Add telemetry include path for telemetry.hpp header
+target_include_directories(${EXTENSION_NAME} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/posthog-telemetry/include)
+target_include_directories(${LOADABLE_EXTENSION_NAME} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/posthog-telemetry/include)
+
 
 # --- Linking ---
 
@@ -143,6 +169,8 @@ target_link_libraries(${EXTENSION_NAME}
     spdlog::spdlog_header_only
     CURL::libcurl
     ${LIBPOSTAL_LDFLAGS}
+    OpenSSL::SSL
+    OpenSSL::Crypto
 )
 
 # Add include directories from dependencies
@@ -165,6 +193,8 @@ target_link_libraries(${LOADABLE_EXTENSION_NAME}
     spdlog::spdlog_header_only
     CURL::libcurl
     ${LIBPOSTAL_LDFLAGS}
+    OpenSSL::SSL
+    OpenSSL::Crypto
 )
 
 # Add include directories from dependencies

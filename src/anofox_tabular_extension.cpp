@@ -10,10 +10,54 @@
 #include "anofox_metric.hpp"
 #include "anofox_money.hpp"
 #include "anofox_vat.hpp"
+#include "telemetry.hpp"
 
 namespace duckdb {
 
+namespace {
+
+void OnTelemetryEnabled(ClientContext &context, SetScope scope, Value &parameter) {
+	auto &telemetry = PostHogTelemetry::Instance();
+	telemetry.SetEnabled(BooleanValue::Get(parameter));
+}
+
+void OnTelemetryKey(ClientContext &context, SetScope scope, Value &parameter) {
+	auto &telemetry = PostHogTelemetry::Instance();
+	telemetry.SetAPIKey(StringValue::Get(parameter));
+}
+
+} // anonymous namespace
+
+static void RegisterTelemetryOptions(ExtensionLoader &loader) {
+	auto &config = DBConfig::GetConfig(loader.GetDatabaseInstance());
+
+	config.AddExtensionOption("anofox_telemetry_enabled",
+	                          "Enable or disable anonymous usage telemetry",
+	                          LogicalType::BOOLEAN, Value::BOOLEAN(true), OnTelemetryEnabled);
+
+	config.AddExtensionOption("anofox_telemetry_key",
+	                          "PostHog API key for telemetry",
+	                          LogicalType::VARCHAR,
+	                          Value("phc_t3wwRLtpyEmLHYaZCSszG0MqVr74J6wnCrj9D41zk2t"),
+	                          OnTelemetryKey);
+}
+
 void LoadInternal(ExtensionLoader &loader) {
+	// Initialize telemetry
+	auto &telemetry = PostHogTelemetry::Instance();
+	telemetry.SetAPIKey("phc_t3wwRLtpyEmLHYaZCSszG0MqVr74J6wnCrj9D41zk2t");
+
+	std::string version;
+#ifdef EXT_VERSION_ANOFOX_TABULAR
+	version = EXT_VERSION_ANOFOX_TABULAR;
+#else
+	version = "0.1.0";
+#endif
+	telemetry.CaptureExtensionLoad("anofox_tabular", version);
+
+	// Register telemetry options (allows users to disable)
+	RegisterTelemetryOptions(loader);
+
 #if HAVE_LIBPOSTAL
 	anofox::RegisterPostalOptions(loader);
 	anofox::RegisterPostalFunctions(loader);
