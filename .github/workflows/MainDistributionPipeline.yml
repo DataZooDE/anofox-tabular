@@ -21,7 +21,8 @@ jobs:
       extension_name: anofox_tabular
       # Exclude WASM builds - extension uses features not compatible with WASM
       # (libpostal, libphonenumber, DNS/SMTP network operations)
-      exclude_archs: wasm_mvp;wasm_eh;wasm_threads
+      # Exclude WASM and MinGW builds - WASM lacks required features, MinGW has vcpkg OpenSSL build issues
+      exclude_archs: wasm_mvp;wasm_eh;wasm_threads;windows_amd64_mingw
 
   duckdb-v1_4_3-build:
     name: Build extension binaries (v1.4.3)
@@ -32,7 +33,8 @@ jobs:
       extension_name: anofox_tabular
       # Exclude WASM builds - extension uses features not compatible with WASM
       # (libpostal, libphonenumber, DNS/SMTP network operations)
-      exclude_archs: wasm_mvp;wasm_eh;wasm_threads
+      # Exclude WASM and MinGW builds - WASM lacks required features, MinGW has vcpkg OpenSSL build issues
+      exclude_archs: wasm_mvp;wasm_eh;wasm_threads;windows_amd64_mingw
 
   # Disabled format and tidy checks - local development environment doesn't match CI formatter versions
   # code-quality-check:
