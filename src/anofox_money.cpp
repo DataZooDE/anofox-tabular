@@ -2,6 +2,7 @@
 #include "anofox_money_currency.hpp"
 #include "anofox_function_alias.hpp"
 #include "anofox_trace.hpp"
+#include "telemetry.hpp"
 #include "duckdb/common/types/value.hpp"
 #include "duckdb/common/types/vector.hpp"
 #include "duckdb/common/types/decimal.hpp"
@@ -523,6 +524,92 @@ static void AnofoxCurrencyNameFunction(DataChunk &args, ExpressionState &state, 
 // Registration Functions
 //----------------------------------------------------------------------------------------------------------------------
 
+// Telemetry bind functions for scalar functions
+unique_ptr<FunctionData> MoneyBind(ClientContext &, ScalarFunction &, vector<unique_ptr<Expression>> &) {
+    PostHogTelemetry::Instance().CaptureFunctionExecution("money");
+    return nullptr;
+}
+
+unique_ptr<FunctionData> MoneyFromCentsBind(ClientContext &, ScalarFunction &, vector<unique_ptr<Expression>> &) {
+    PostHogTelemetry::Instance().CaptureFunctionExecution("money_from_cents");
+    return nullptr;
+}
+
+unique_ptr<FunctionData> MoneyAmountBind(ClientContext &, ScalarFunction &, vector<unique_ptr<Expression>> &) {
+    PostHogTelemetry::Instance().CaptureFunctionExecution("money_amount");
+    return nullptr;
+}
+
+unique_ptr<FunctionData> MoneyCurrencyBind(ClientContext &, ScalarFunction &, vector<unique_ptr<Expression>> &) {
+    PostHogTelemetry::Instance().CaptureFunctionExecution("money_currency");
+    return nullptr;
+}
+
+unique_ptr<FunctionData> IsValidCurrencyBind(ClientContext &, ScalarFunction &, vector<unique_ptr<Expression>> &) {
+    PostHogTelemetry::Instance().CaptureFunctionExecution("is_valid_currency");
+    return nullptr;
+}
+
+unique_ptr<FunctionData> CurrencySymbolBind(ClientContext &, ScalarFunction &, vector<unique_ptr<Expression>> &) {
+    PostHogTelemetry::Instance().CaptureFunctionExecution("currency_symbol");
+    return nullptr;
+}
+
+unique_ptr<FunctionData> CurrencyNameBind(ClientContext &, ScalarFunction &, vector<unique_ptr<Expression>> &) {
+    PostHogTelemetry::Instance().CaptureFunctionExecution("currency_name");
+    return nullptr;
+}
+
+unique_ptr<FunctionData> MoneyFormatBind(ClientContext &, ScalarFunction &, vector<unique_ptr<Expression>> &) {
+    PostHogTelemetry::Instance().CaptureFunctionExecution("money_format");
+    return nullptr;
+}
+
+unique_ptr<FunctionData> MoneyIsPositiveBind(ClientContext &, ScalarFunction &, vector<unique_ptr<Expression>> &) {
+    PostHogTelemetry::Instance().CaptureFunctionExecution("money_is_positive");
+    return nullptr;
+}
+
+unique_ptr<FunctionData> MoneyIsNegativeBind(ClientContext &, ScalarFunction &, vector<unique_ptr<Expression>> &) {
+    PostHogTelemetry::Instance().CaptureFunctionExecution("money_is_negative");
+    return nullptr;
+}
+
+unique_ptr<FunctionData> MoneyIsZeroBind(ClientContext &, ScalarFunction &, vector<unique_ptr<Expression>> &) {
+    PostHogTelemetry::Instance().CaptureFunctionExecution("money_is_zero");
+    return nullptr;
+}
+
+unique_ptr<FunctionData> MoneyAbsBind(ClientContext &, ScalarFunction &, vector<unique_ptr<Expression>> &) {
+    PostHogTelemetry::Instance().CaptureFunctionExecution("money_abs");
+    return nullptr;
+}
+
+unique_ptr<FunctionData> MoneyAddBind(ClientContext &, ScalarFunction &, vector<unique_ptr<Expression>> &) {
+    PostHogTelemetry::Instance().CaptureFunctionExecution("money_add");
+    return nullptr;
+}
+
+unique_ptr<FunctionData> MoneySubtractBind(ClientContext &, ScalarFunction &, vector<unique_ptr<Expression>> &) {
+    PostHogTelemetry::Instance().CaptureFunctionExecution("money_subtract");
+    return nullptr;
+}
+
+unique_ptr<FunctionData> MoneyMultiplyBind(ClientContext &, ScalarFunction &, vector<unique_ptr<Expression>> &) {
+    PostHogTelemetry::Instance().CaptureFunctionExecution("money_multiply");
+    return nullptr;
+}
+
+unique_ptr<FunctionData> MoneyInRangeBind(ClientContext &, ScalarFunction &, vector<unique_ptr<Expression>> &) {
+    PostHogTelemetry::Instance().CaptureFunctionExecution("money_in_range");
+    return nullptr;
+}
+
+unique_ptr<FunctionData> MoneySameCurrencyBind(ClientContext &, ScalarFunction &, vector<unique_ptr<Expression>> &) {
+    PostHogTelemetry::Instance().CaptureFunctionExecution("money_same_currency");
+    return nullptr;
+}
+
 void RegisterMoneyOptions(ExtensionLoader &loader) {
     // Configuration options would go here
 }
@@ -531,87 +618,104 @@ void RegisterMoneyFunctions(ExtensionLoader &loader) {
     // Scalar function: anofox_tab_money(amount, currency_code) -> STRUCT (alias: money)
     ScalarFunction money_func("anofox_tab_money", {LogicalTypeId::DOUBLE, LogicalTypeId::VARCHAR}, GetMoneyType(),
                               AnofoxMoneyFunction);
+    money_func.bind = MoneyBind;
     RegisterScalarFunctionWithAlias(loader, money_func, "money");
 
     // Scalar function: anofox_tab_money_from_cents(cents, currency_code) -> STRUCT (alias: money_from_cents)
     ScalarFunction money_from_cents_func("anofox_tab_money_from_cents", {LogicalTypeId::BIGINT, LogicalTypeId::VARCHAR},
                                          GetMoneyType(), AnofoxMoneyFromCentsFunction);
+    money_from_cents_func.bind = MoneyFromCentsBind;
     RegisterScalarFunctionWithAlias(loader, money_from_cents_func, "money_from_cents");
 
     // Scalar function: anofox_tab_money_amount(money) -> DOUBLE (alias: money_amount)
     ScalarFunction money_amount_func("anofox_tab_money_amount", {GetMoneyType()},
                                      LogicalTypeId::DOUBLE, AnofoxMoneyAmountFunction);
+    money_amount_func.bind = MoneyAmountBind;
     RegisterScalarFunctionWithAlias(loader, money_amount_func, "money_amount");
 
     // Scalar function: anofox_tab_money_currency(money) -> VARCHAR (alias: money_currency)
     ScalarFunction money_currency_func("anofox_tab_money_currency", {GetMoneyType()}, LogicalTypeId::VARCHAR,
                                        AnofoxMoneyCurrencyFunction);
+    money_currency_func.bind = MoneyCurrencyBind;
     RegisterScalarFunctionWithAlias(loader, money_currency_func, "money_currency");
 
     // Scalar function: anofox_tab_is_valid_currency(code) -> BOOLEAN (alias: is_valid_currency)
     ScalarFunction is_valid_currency_func("anofox_tab_is_valid_currency", {LogicalTypeId::VARCHAR},
                                           LogicalTypeId::BOOLEAN, AnofoxIsValidCurrencyFunction);
+    is_valid_currency_func.bind = IsValidCurrencyBind;
     RegisterScalarFunctionWithAlias(loader, is_valid_currency_func, "is_valid_currency");
 
     // Scalar function: anofox_tab_currency_symbol(code) -> VARCHAR (alias: currency_symbol)
     ScalarFunction currency_symbol_func("anofox_tab_currency_symbol", {LogicalTypeId::VARCHAR}, LogicalTypeId::VARCHAR,
                                         AnofoxCurrencySymbolFunction);
+    currency_symbol_func.bind = CurrencySymbolBind;
     RegisterScalarFunctionWithAlias(loader, currency_symbol_func, "currency_symbol");
 
     // Scalar function: anofox_tab_currency_name(code) -> VARCHAR (alias: currency_name)
     ScalarFunction currency_name_func("anofox_tab_currency_name", {LogicalTypeId::VARCHAR}, LogicalTypeId::VARCHAR,
                                       AnofoxCurrencyNameFunction);
+    currency_name_func.bind = CurrencyNameBind;
     RegisterScalarFunctionWithAlias(loader, currency_name_func, "currency_name");
 
     // Scalar function: anofox_tab_money_format(money, format_style) -> VARCHAR (alias: money_format)
     ScalarFunction money_format_func("anofox_tab_money_format", {GetMoneyType(), LogicalTypeId::VARCHAR},
                                      LogicalTypeId::VARCHAR, AnofoxMoneyFormatFunction);
+    money_format_func.bind = MoneyFormatBind;
     RegisterScalarFunctionWithAlias(loader, money_format_func, "money_format");
 
     // Scalar function: anofox_tab_money_is_positive(money) -> BOOLEAN (alias: money_is_positive)
     ScalarFunction money_is_positive_func("anofox_tab_money_is_positive", {GetMoneyType()},
                                           LogicalTypeId::BOOLEAN, AnofoxMoneyIsPositiveFunction);
+    money_is_positive_func.bind = MoneyIsPositiveBind;
     RegisterScalarFunctionWithAlias(loader, money_is_positive_func, "money_is_positive");
 
     // Scalar function: anofox_tab_money_is_negative(money) -> BOOLEAN (alias: money_is_negative)
     ScalarFunction money_is_negative_func("anofox_tab_money_is_negative", {GetMoneyType()},
                                           LogicalTypeId::BOOLEAN, AnofoxMoneyIsNegativeFunction);
+    money_is_negative_func.bind = MoneyIsNegativeBind;
     RegisterScalarFunctionWithAlias(loader, money_is_negative_func, "money_is_negative");
 
     // Scalar function: anofox_tab_money_is_zero(money) -> BOOLEAN (alias: money_is_zero)
     ScalarFunction money_is_zero_func("anofox_tab_money_is_zero", {GetMoneyType()},
                                       LogicalTypeId::BOOLEAN, AnofoxMoneyIsZeroFunction);
+    money_is_zero_func.bind = MoneyIsZeroBind;
     RegisterScalarFunctionWithAlias(loader, money_is_zero_func, "money_is_zero");
 
     // Scalar function: anofox_tab_money_abs(money) -> STRUCT (alias: money_abs)
     ScalarFunction money_abs_func("anofox_tab_money_abs", {GetMoneyType()}, GetMoneyType(),
                                   AnofoxMoneyAbsFunction);
+    money_abs_func.bind = MoneyAbsBind;
     RegisterScalarFunctionWithAlias(loader, money_abs_func, "money_abs");
 
     // Scalar function: anofox_tab_money_add(money1, money2) -> STRUCT (alias: money_add)
     ScalarFunction money_add_func("anofox_tab_money_add", {GetMoneyType(), GetMoneyType()},
                                   GetMoneyType(), AnofoxMoneyAddFunction);
+    money_add_func.bind = MoneyAddBind;
     RegisterScalarFunctionWithAlias(loader, money_add_func, "money_add");
 
     // Scalar function: anofox_tab_money_subtract(money1, money2) -> STRUCT (alias: money_subtract)
     ScalarFunction money_subtract_func("anofox_tab_money_subtract", {GetMoneyType(), GetMoneyType()},
                                        GetMoneyType(), AnofoxMoneySubtractFunction);
+    money_subtract_func.bind = MoneySubtractBind;
     RegisterScalarFunctionWithAlias(loader, money_subtract_func, "money_subtract");
 
     // Scalar function: anofox_tab_money_multiply(money, factor) -> STRUCT (alias: money_multiply)
     ScalarFunction money_multiply_func("anofox_tab_money_multiply", {GetMoneyType(), LogicalTypeId::DOUBLE},
                                        GetMoneyType(), AnofoxMoneyMultiplyFunction);
+    money_multiply_func.bind = MoneyMultiplyBind;
     RegisterScalarFunctionWithAlias(loader, money_multiply_func, "money_multiply");
 
     // Scalar function: anofox_tab_money_in_range(money, min, max) -> BOOLEAN (alias: money_in_range)
     ScalarFunction money_in_range_func("anofox_tab_money_in_range",
                                        {GetMoneyType(), LogicalTypeId::DOUBLE, LogicalTypeId::DOUBLE},
                                        LogicalTypeId::BOOLEAN, AnofoxMoneyInRangeFunction);
+    money_in_range_func.bind = MoneyInRangeBind;
     RegisterScalarFunctionWithAlias(loader, money_in_range_func, "money_in_range");
 
     // Scalar function: anofox_tab_money_same_currency(money1, money2) -> BOOLEAN (alias: money_same_currency)
     ScalarFunction money_same_currency_func("anofox_tab_money_same_currency", {GetMoneyType(), GetMoneyType()},
                                             LogicalTypeId::BOOLEAN, AnofoxMoneySameCurrencyFunction);
+    money_same_currency_func.bind = MoneySameCurrencyBind;
     RegisterScalarFunctionWithAlias(loader, money_same_currency_func, "money_same_currency");
 
     AnofoxTrace(AnofoxLogLevel::Info, "[anofox] Money module functions registered");

@@ -3,6 +3,7 @@
 #if HAVE_LIBPOSTAL
 
 #include "anofox_function_alias.hpp"
+#include "telemetry.hpp"
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/file_system.hpp"
 #include "duckdb/common/types/string_type.hpp"
@@ -424,12 +425,29 @@ unique_ptr<GlobalTableFunctionState> PostalStatusInit(ClientContext &, TableFunc
 
 unique_ptr<FunctionData> PostalStatusBind(ClientContext &, TableFunctionBindInput &, vector<LogicalType> &return_types,
                                           vector<string> &names) {
+	PostHogTelemetry::Instance().CaptureFunctionExecution("postal_status");
 	names.emplace_back("initialized");
 	return_types.emplace_back(LogicalTypeId::BOOLEAN);
 	names.emplace_back("data_present");
 	return_types.emplace_back(LogicalTypeId::BOOLEAN);
 	names.emplace_back("data_dir");
 	return_types.emplace_back(LogicalTypeId::VARCHAR);
+	return nullptr;
+}
+
+// Telemetry bind functions for scalar functions
+unique_ptr<FunctionData> PostalParseAddressBind(ClientContext &, ScalarFunction &, vector<unique_ptr<Expression>> &) {
+	PostHogTelemetry::Instance().CaptureFunctionExecution("postal_parse_address");
+	return nullptr;
+}
+
+unique_ptr<FunctionData> PostalExpandAddressBind(ClientContext &, ScalarFunction &, vector<unique_ptr<Expression>> &) {
+	PostHogTelemetry::Instance().CaptureFunctionExecution("postal_expand_address");
+	return nullptr;
+}
+
+unique_ptr<FunctionData> PostalLoadDataBind(ClientContext &, ScalarFunction &, vector<unique_ptr<Expression>> &) {
+	PostHogTelemetry::Instance().CaptureFunctionExecution("postal_load_data");
 	return nullptr;
 }
 
@@ -478,22 +496,25 @@ void RegisterPostalOptions(ExtensionLoader &loader) {
 
 void RegisterPostalFunctions(ExtensionLoader &loader) {
 	RegisterPostalOptions(loader);
-	
+
 	// Register postal_parse_address
 	ScalarFunction parse_func = CreateParseFunction("anofox_tab_postal_parse_address");
+	parse_func.bind = PostalParseAddressBind;
 	RegisterScalarFunctionWithAlias(loader, parse_func, "postal_parse_address");
-	
+
 	// Register postal_expand_address
 	ScalarFunction expand_func = CreateExpandFunction("anofox_tab_postal_expand_address");
+	expand_func.bind = PostalExpandAddressBind;
 	RegisterScalarFunctionWithAlias(loader, expand_func, "postal_expand_address");
-	
-	// Register postal_status
+
+	// Register postal_status (telemetry in PostalStatusBind)
 	TableFunction status_func = CreateStatusFunction("anofox_tab_postal_status");
 	RegisterTableFunctionWithAlias(loader, status_func, "postal_status");
-	
+
 	// Register postal_load_data
 	ScalarFunction load_func = CreateLoadFunction();
 	load_func.name = "anofox_tab_postal_load_data";
+	load_func.bind = PostalLoadDataBind;
 	RegisterScalarFunctionWithAlias(loader, load_func, "postal_load_data");
 }
 

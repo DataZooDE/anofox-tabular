@@ -1,5 +1,6 @@
 #include "anofox_vat.hpp"
 #include "anofox_function_alias.hpp"
+#include "telemetry.hpp"
 #include "duckdb/function/scalar_function.hpp"
 #include "duckdb/parser/parsed_expression.hpp"
 #include "duckdb/common/string_util.hpp"
@@ -176,6 +177,57 @@ static void VATIsValidFunc(DataChunk& args, ExpressionState& state,
 // Extension registration
 // ============================================================================
 
+// Telemetry bind functions for scalar functions
+unique_ptr<FunctionData> VatBind(ClientContext &, ScalarFunction &, vector<unique_ptr<Expression>> &) {
+  PostHogTelemetry::Instance().CaptureFunctionExecution("vat");
+  return nullptr;
+}
+
+unique_ptr<FunctionData> IsValidVatCountryBind(ClientContext &, ScalarFunction &, vector<unique_ptr<Expression>> &) {
+  PostHogTelemetry::Instance().CaptureFunctionExecution("is_valid_vat_country");
+  return nullptr;
+}
+
+unique_ptr<FunctionData> VatNormalizeBind(ClientContext &, ScalarFunction &, vector<unique_ptr<Expression>> &) {
+  PostHogTelemetry::Instance().CaptureFunctionExecution("vat_normalize");
+  return nullptr;
+}
+
+unique_ptr<FunctionData> VatIsValidSyntaxBind(ClientContext &, ScalarFunction &, vector<unique_ptr<Expression>> &) {
+  PostHogTelemetry::Instance().CaptureFunctionExecution("vat_is_valid_syntax");
+  return nullptr;
+}
+
+unique_ptr<FunctionData> VatSplitBind(ClientContext &, ScalarFunction &, vector<unique_ptr<Expression>> &) {
+  PostHogTelemetry::Instance().CaptureFunctionExecution("vat_split");
+  return nullptr;
+}
+
+unique_ptr<FunctionData> VatExistsBind(ClientContext &, ScalarFunction &, vector<unique_ptr<Expression>> &) {
+  PostHogTelemetry::Instance().CaptureFunctionExecution("vat_exists");
+  return nullptr;
+}
+
+unique_ptr<FunctionData> VatIsEuMemberBind(ClientContext &, ScalarFunction &, vector<unique_ptr<Expression>> &) {
+  PostHogTelemetry::Instance().CaptureFunctionExecution("vat_is_eu_member");
+  return nullptr;
+}
+
+unique_ptr<FunctionData> VatCountryNameBind(ClientContext &, ScalarFunction &, vector<unique_ptr<Expression>> &) {
+  PostHogTelemetry::Instance().CaptureFunctionExecution("vat_country_name");
+  return nullptr;
+}
+
+unique_ptr<FunctionData> VatFormatBind(ClientContext &, ScalarFunction &, vector<unique_ptr<Expression>> &) {
+  PostHogTelemetry::Instance().CaptureFunctionExecution("vat_format");
+  return nullptr;
+}
+
+unique_ptr<FunctionData> VatIsValidBind(ClientContext &, ScalarFunction &, vector<unique_ptr<Expression>> &) {
+  PostHogTelemetry::Instance().CaptureFunctionExecution("vat_is_valid");
+  return nullptr;
+}
+
 void RegisterVATOptions(ExtensionLoader& loader) {
   // No specific options needed for VAT module for now
 }
@@ -184,17 +236,20 @@ void RegisterVATFunctions(ExtensionLoader& loader) {
   // Phase 2: Basic VAT Operations
   ScalarFunction vat_func("anofox_tab_vat", {LogicalTypeId::VARCHAR}, GetVATType(),
                          VATParseFunc);
+  vat_func.bind = VatBind;
   anofox::RegisterScalarFunctionWithAlias(loader, vat_func, "vat");
 
   ScalarFunction is_valid_country_func("anofox_tab_is_valid_vat_country",
                                        {LogicalTypeId::VARCHAR},
                                        LogicalTypeId::BOOLEAN,
                                        IsValidVATCountryFunc);
+  is_valid_country_func.bind = IsValidVatCountryBind;
   anofox::RegisterScalarFunctionWithAlias(loader, is_valid_country_func, "is_valid_vat_country");
 
   ScalarFunction normalize_func("anofox_tab_vat_normalize",
                                {LogicalTypeId::VARCHAR},
                                LogicalTypeId::VARCHAR, VATNormalizeFunc);
+  normalize_func.bind = VatNormalizeBind;
   anofox::RegisterScalarFunctionWithAlias(loader, normalize_func, "vat_normalize");
 
   // Phase 3: Syntax Validation
@@ -202,35 +257,42 @@ void RegisterVATFunctions(ExtensionLoader& loader) {
                                       {LogicalTypeId::VARCHAR},
                                       LogicalTypeId::BOOLEAN,
                                       VATIsValidSyntaxFunc);
+  is_valid_syntax_func.bind = VatIsValidSyntaxBind;
   anofox::RegisterScalarFunctionWithAlias(loader, is_valid_syntax_func, "vat_is_valid_syntax");
 
   ScalarFunction split_func("anofox_tab_vat_split", {LogicalTypeId::VARCHAR},
                            GetVATType(), VATSplitFunc);
+  split_func.bind = VatSplitBind;
   anofox::RegisterScalarFunctionWithAlias(loader, split_func, "vat_split");
 
   ScalarFunction exists_func("anofox_tab_vat_exists", {LogicalTypeId::VARCHAR},
                             LogicalTypeId::BOOLEAN, VATExistsFunc);
+  exists_func.bind = VatExistsBind;
   anofox::RegisterScalarFunctionWithAlias(loader, exists_func, "vat_exists");
 
   // Phase 5: EU Utilities
   ScalarFunction is_eu_member_func("anofox_tab_vat_is_eu_member",
                                    {LogicalTypeId::VARCHAR},
                                    LogicalTypeId::BOOLEAN, VATIsEUMemberFunc);
+  is_eu_member_func.bind = VatIsEuMemberBind;
   anofox::RegisterScalarFunctionWithAlias(loader, is_eu_member_func, "vat_is_eu_member");
 
   ScalarFunction country_name_func("anofox_tab_vat_country_name",
                                    {LogicalTypeId::VARCHAR},
                                    LogicalTypeId::VARCHAR, VATCountryNameFunc);
+  country_name_func.bind = VatCountryNameBind;
   anofox::RegisterScalarFunctionWithAlias(loader, country_name_func, "vat_country_name");
 
   ScalarFunction format_func("anofox_tab_vat_format",
                             {LogicalTypeId::VARCHAR, LogicalTypeId::VARCHAR},
                             LogicalTypeId::VARCHAR, VATFormatFunc);
+  format_func.bind = VatFormatBind;
   anofox::RegisterScalarFunctionWithAlias(loader, format_func, "vat_format");
 
   // Phase 6: Combined Validation
   ScalarFunction is_valid_func("anofox_tab_vat_is_valid", {LogicalTypeId::VARCHAR},
                               LogicalTypeId::BOOLEAN, VATIsValidFunc);
+  is_valid_func.bind = VatIsValidBind;
   anofox::RegisterScalarFunctionWithAlias(loader, is_valid_func, "vat_is_valid");
 }
 

@@ -3,6 +3,7 @@
 #include "anofox_email_smtp.hpp"
 #include "anofox_email_logging.hpp"
 #include "anofox_function_alias.hpp"
+#include "telemetry.hpp"
 
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/common/types/value.hpp"
@@ -494,6 +495,7 @@ struct EmailConfigState : public GlobalTableFunctionState {
 
 unique_ptr<FunctionData> EmailConfigBind(ClientContext &, TableFunctionBindInput &, vector<LogicalType> &return_types,
                                          vector<string> &names) {
+    PostHogTelemetry::Instance().CaptureFunctionExecution("email_config");
     auto bind_data = make_uniq<EmailConfigBindData>();
     bind_data->entries = EmailConfig::Get().List();
     return_types = {LogicalTypeId::VARCHAR, LogicalTypeId::VARCHAR};
@@ -717,19 +719,32 @@ void RegisterEmailOptions(ExtensionLoader &loader) {
 	                          SetTraceLevelOption);
 }
 
+// Telemetry bind functions for scalar functions
+unique_ptr<FunctionData> EmailValidateBind(ClientContext &, ScalarFunction &, vector<unique_ptr<Expression>> &) {
+	PostHogTelemetry::Instance().CaptureFunctionExecution("email_validate");
+	return nullptr;
+}
+
+unique_ptr<FunctionData> EmailIsValidBind(ClientContext &, ScalarFunction &, vector<unique_ptr<Expression>> &) {
+	PostHogTelemetry::Instance().CaptureFunctionExecution("email_is_valid");
+	return nullptr;
+}
+
 void RegisterEmailFunctions(ExtensionLoader &loader) {
 	// Register email_validate with two overloads
 	ScalarFunctionSet validate_set("anofox_tab_email_validate");
 	ScalarFunction validate_fun("anofox_tab_email_validate", {LogicalTypeId::VARCHAR, LogicalTypeId::VARCHAR}, GetEmailValidateReturnType(), EmailValidateFunction);
 	validate_fun.null_handling = FunctionNullHandling::SPECIAL_HANDLING;
 	validate_fun.stability = FunctionStability::CONSISTENT;
+	validate_fun.bind = EmailValidateBind;
 	validate_set.AddFunction(validate_fun);
 
 	ScalarFunction validate_single("anofox_tab_email_validate", {LogicalTypeId::VARCHAR}, GetEmailValidateReturnType(), EmailValidateFunction);
 	validate_single.null_handling = FunctionNullHandling::SPECIAL_HANDLING;
 	validate_single.stability = FunctionStability::CONSISTENT;
+	validate_single.bind = EmailValidateBind;
 	validate_set.AddFunction(validate_single);
-	
+
 	RegisterScalarFunctionSetWithAlias(loader, validate_set, "email_validate");
 
 	// Register email_is_valid with two overloads
@@ -737,13 +752,15 @@ void RegisterEmailFunctions(ExtensionLoader &loader) {
 	ScalarFunction is_valid_fun("anofox_tab_email_is_valid", {LogicalTypeId::VARCHAR, LogicalTypeId::VARCHAR}, LogicalTypeId::BOOLEAN, EmailIsValidFunction);
 	is_valid_fun.null_handling = FunctionNullHandling::SPECIAL_HANDLING;
 	is_valid_fun.stability = FunctionStability::CONSISTENT;
+	is_valid_fun.bind = EmailIsValidBind;
 	is_valid_set.AddFunction(is_valid_fun);
 
 	ScalarFunction is_valid_single("anofox_tab_email_is_valid", {LogicalTypeId::VARCHAR}, LogicalTypeId::BOOLEAN, EmailIsValidFunction);
 	is_valid_single.null_handling = FunctionNullHandling::SPECIAL_HANDLING;
 	is_valid_single.stability = FunctionStability::CONSISTENT;
+	is_valid_single.bind = EmailIsValidBind;
 	is_valid_set.AddFunction(is_valid_single);
-	
+
 	RegisterScalarFunctionSetWithAlias(loader, is_valid_set, "email_is_valid");
 
 	// Register email_config table function
