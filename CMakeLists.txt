@@ -106,6 +106,8 @@ endif()
 # --- Telemetry ---
 # Build telemetry as OBJECT library to avoid link order issues with DuckDB symbols
 # The telemetry library uses DuckDB's StringUtil::Format which depends on exception symbols
+find_package(OpenSSL REQUIRED)
+
 add_library(posthog_telemetry_obj OBJECT
     ${CMAKE_CURRENT_SOURCE_DIR}/posthog-telemetry/src/telemetry.cpp
 )
@@ -115,6 +117,7 @@ target_include_directories(posthog_telemetry_obj PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/duckdb/src/include
     ${CMAKE_CURRENT_SOURCE_DIR}/duckdb/third_party
     ${CMAKE_CURRENT_SOURCE_DIR}/duckdb/third_party/httplib
+    ${OPENSSL_INCLUDE_DIR}
 )
 
 target_compile_features(posthog_telemetry_obj PUBLIC cxx_std_17)

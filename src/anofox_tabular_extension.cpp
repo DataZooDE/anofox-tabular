@@ -17,11 +17,17 @@ namespace duckdb {
 namespace {
 
 void OnTelemetryEnabled(ClientContext &context, SetScope scope, Value &parameter) {
+	if (parameter.IsNull()) {
+		throw InvalidInputException("anofox_telemetry_enabled cannot be NULL");
+	}
 	auto &telemetry = PostHogTelemetry::Instance();
 	telemetry.SetEnabled(BooleanValue::Get(parameter));
 }
 
 void OnTelemetryKey(ClientContext &context, SetScope scope, Value &parameter) {
+	if (parameter.IsNull()) {
+		throw InvalidInputException("anofox_telemetry_key cannot be NULL");
+	}
 	auto &telemetry = PostHogTelemetry::Instance();
 	telemetry.SetAPIKey(StringValue::Get(parameter));
 }
@@ -43,7 +49,11 @@ static void RegisterTelemetryOptions(ExtensionLoader &loader) {
 }
 
 void LoadInternal(ExtensionLoader &loader) {
-	// Initialize telemetry
+	// Register telemetry options FIRST (allows users to disable via SQL settings)
+	// Note: Environment variable DATAZOO_DISABLE_TELEMETRY is always checked by posthog-telemetry
+	RegisterTelemetryOptions(loader);
+
+	// Initialize and capture extension load event
 	auto &telemetry = PostHogTelemetry::Instance();
 	telemetry.SetAPIKey("phc_t3wwRLtpyEmLHYaZCSszG0MqVr74J6wnCrj9D41zk2t");
 
@@ -54,9 +64,6 @@ void LoadInternal(ExtensionLoader &loader) {
 	version = "0.1.0";
 #endif
 	telemetry.CaptureExtensionLoad("anofox_tabular", version);
-
-	// Register telemetry options (allows users to disable)
-	RegisterTelemetryOptions(loader);
 
 #if HAVE_LIBPOSTAL
 	anofox::RegisterPostalOptions(loader);

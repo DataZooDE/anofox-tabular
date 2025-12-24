@@ -98,6 +98,7 @@ WHERE vat_is_valid(vat_id)
 - [Contributing](#-contributing)
 - [Troubleshooting](#-troubleshooting)
 - [Performance Tips](#-performance-tips)
+- [Telemetry](#-telemetry)
 - [License](#-license)
 
 ---
@@ -1046,6 +1047,34 @@ FROM (
     FROM large_table
 )
 WHERE valid AND created_at > NOW() - INTERVAL '1 day';
+```
+
+---
+
+## 📡 Telemetry
+
+Anofox Tabular collects **anonymous usage data** to help improve the extension. This is enabled by default.
+
+### What We Collect
+
+- Extension load events (name, version, platform)
+- Anonymized device identifier (hashed MAC address)
+- Timestamp of events
+
+**We do NOT collect:** query content, table data, file paths, or any personally identifiable information.
+
+### Disabling Telemetry
+
+**Option 1: Environment Variable** (recommended for CI/Docker)
+
+```bash
+export DATAZOO_DISABLE_TELEMETRY=1
+```
+
+**Option 2: SQL Setting**
+
+```sql
+SET anofox_telemetry_enabled = false;
 ```
 
 ---
