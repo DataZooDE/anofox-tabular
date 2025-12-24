@@ -1304,6 +1304,29 @@ SET anofox_tab_trace_enabled = true;  -- Enable/disable logging
 SET anofox_tab_trace_level = 'info';  -- trace|debug|info|warn|error|critical|off
 ```
 
+### Telemetry
+
+Anonymous usage telemetry helps improve the extension. No personal data or query content is collected.
+
+**What is collected:**
+- Extension load events (extension name, version, platform)
+- Function execution counts (function name only, no arguments or data)
+
+**Disable via environment variable (before loading extension):**
+```bash
+export DATAZOO_DISABLE_TELEMETRY=1
+```
+
+**Disable via SQL (after loading extension):**
+```sql
+SET anofox_telemetry_enabled = false;
+```
+
+**Configure API key (advanced):**
+```sql
+SET anofox_telemetry_key = 'your_custom_key';
+```
+
 ---
 
 ## Function Coverage Matrix
