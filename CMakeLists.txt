@@ -136,6 +136,7 @@ set(EXTENSION_SOURCES
         src/anofox_metric.cpp
         src/anofox_isolation_forest.cpp
         src/anofox_dbscan.cpp
+        src/anofox_outlier_tree.cpp
         src/anofox_money.cpp
         src/anofox_money_currency.cpp
         src/anofox_vat.cpp

@@ -113,10 +113,10 @@ WHERE vat_is_valid(vat_id)
 | 💰 **Money & Currency** | 17 | Multi-currency operations, 10 currencies | ✨ New |
 | 💼 **VAT Validation** | 10 | European VAT compliance, 29 countries | ✨ New |
 | 🔍 **Quality Metrics** | 8 | Volume, nulls, freshness, schema checks | Stable |
-| 🤖 **Anomaly Detection** | 4 | Enhanced Isolation Forest, DBSCAN, categorical support | ✨ Enhanced |
+| 🤖 **Anomaly Detection** | 5 | Isolation Forest, DBSCAN, OutlierTree (explainable) | ✨ Enhanced |
 | 🔄 **Data Diffing** | 2 | Table comparison, migration validation | Stable |
 
-**Total: 57 SQL Functions** | **Zero Required Dependencies***
+**Total: 58 SQL Functions** | **Zero Required Dependencies***
 
 <sub>*Except libpostal (address parsing) and optional DNS/SMTP for email</sub>
 
@@ -468,6 +468,30 @@ SELECT * FROM metric_dbscan(
 
 [📖 See complete Anomaly Detection module documentation](#anomaly-detection-functions)
 
+#### OutlierTree (Explainable Anomaly Detection)
+
+Unlike Isolation Forest which provides anomaly scores, OutlierTree generates **human-readable explanations** for why specific values are outliers based on conditional distributions.
+
+**Key Features:**
+- Detects outliers in context (e.g., "salary is high *for a Junior Developer*")
+- Returns natural language explanations with statistical backing
+- Uses robust statistics (median + MAD) resistant to outliers
+- Supports both numeric and categorical columns
+
+```sql
+-- Detect salary outliers conditioned on job title
+SELECT row_id, column_name, outlier_value, explanation
+FROM outlier_tree('employees', 'job_title,salary,years_exp', 'outliers');
+
+-- Returns explanations like:
+-- "Value 150000 for column 'salary' is unusually high (expected: 52333 ± 7413)
+--  when job_title = 'Junior Developer'"
+```
+
+**Output Modes:**
+- `'summary'`: Single row with pass/fail status and outlier count
+- `'outliers'`: Per-outlier rows with z-scores, bounds, and explanations
+
 ---
 
 ### 🔄 Data Diffing
@@ -769,6 +793,7 @@ WHERE money_in_range(amount, 0.01, 99999.99)
 | `anofox_tab_metric_isolation_forest_multivariate` | Multivariate Isolation Forest |
 | `anofox_tab_metric_dbscan` | Univariate DBSCAN clustering |
 | `anofox_tab_metric_dbscan_multivariate` | Multivariate DBSCAN clustering |
+| `outlier_tree` | Explainable outlier detection with conditional distributions |
 
 **Isolation Forest Full Signature:**
 ```sql

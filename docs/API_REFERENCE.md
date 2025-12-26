@@ -12,7 +12,7 @@ The Anofox Tabular extension provides comprehensive data quality validation, ano
 ### Key Features
 
 - **8 Production-Ready Modules**: Email, postal, phone, money, VAT, metrics, anomalies, and diffing
-- **57 SQL Functions**: Complete validation and analysis toolkit
+- **58 SQL Functions**: Complete validation and analysis toolkit
 - **Zero Friction**: SQL-native with no external services required (except optional libpostal for address parsing)
 - **Blazing Fast**: Vectorized C++17 implementation processes millions of rows per second
 - **Self-Contained**: Embedded validation patterns; no API keys or network calls required
@@ -1185,6 +1185,105 @@ anofox_tab_metric_ (alias: metric_dbscan_multivariate(
 
 ---
 
+### OutlierTree (Explainable Anomaly Detection)
+
+Detects outliers using decision tree conditioning, providing human-readable explanations for why specific values are anomalous based on conditional distributions.
+
+**Key Features:**
+- Detects outliers in context (e.g., "salary is high *for a Junior Developer*")
+- Returns natural language explanations with statistical backing
+- Uses robust statistics (median + MAD) resistant to outliers
+- Supports both numeric and categorical columns
+
+#### `anofox_tab_outlier_tree` (alias: `outlier_tree`)
+
+Explainable outlier detection with conditional distributions.
+
+**Signature:**
+```sql
+-- Simple (3 params, uses defaults)
+outlier_tree(table_name VARCHAR, columns VARCHAR, output_mode VARCHAR) → TABLE
+
+-- Full (9 params)
+outlier_tree(
+    table_name VARCHAR,
+    columns VARCHAR,
+    output_mode VARCHAR,
+    max_depth INTEGER,
+    max_perc_outliers DOUBLE,
+    min_size_numeric INTEGER,
+    min_size_categ INTEGER,
+    z_norm DOUBLE,
+    z_outlier DOUBLE
+) → TABLE
+```
+
+**Parameters:**
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `table_name` | VARCHAR | required | Source table name |
+| `columns` | VARCHAR | required | Comma-separated column names to analyze |
+| `output_mode` | VARCHAR | 'summary' | `'summary'` or `'outliers'` |
+| `max_depth` | INTEGER | 4 | Maximum tree depth |
+| `max_perc_outliers` | DOUBLE | 0.01 | Max fraction of outliers per cluster |
+| `min_size_numeric` | INTEGER | 25 | Min cluster size for numeric targets |
+| `min_size_categ` | INTEGER | 75 | Min cluster size for categorical targets |
+| `z_norm` | DOUBLE | 2.67 | Z-threshold for confidence intervals |
+| `z_outlier` | DOUBLE | 8.0 | Z-threshold for outlier flagging |
+
+**Summary Mode Returns:**
+| Column | Type | Description |
+|--------|------|-------------|
+| `status` | VARCHAR | `'pass'` or `'fail'` |
+| `total_rows` | BIGINT | Rows analyzed |
+| `outlier_count` | BIGINT | Outliers detected |
+| `columns_analyzed` | INTEGER | Columns analyzed |
+| `clusters_evaluated` | BIGINT | Clusters evaluated |
+| `max_depth_reached` | INTEGER | Max tree depth reached |
+| `message` | VARCHAR | Summary message |
+
+**Outliers Mode Returns:**
+| Column | Type | Description |
+|--------|------|-------------|
+| `row_id` | BIGINT | Row index (1-indexed) |
+| `column_name` | VARCHAR | Column with outlier |
+| `outlier_value` | VARCHAR | The anomalous value |
+| `cluster_mean` | DOUBLE | Mean in cluster |
+| `cluster_sd` | DOUBLE | SD in cluster |
+| `cluster_size` | BIGINT | Rows in cluster |
+| `z_score` | DOUBLE | Robust z-score |
+| `lower_bound` | DOUBLE | Lower CI bound |
+| `upper_bound` | DOUBLE | Upper CI bound |
+| `conditions` | VARCHAR | JSON array of split conditions |
+| `explanation` | VARCHAR | Human-readable explanation |
+
+**Examples:**
+```sql
+-- Summary mode: quick pass/fail check
+SELECT * FROM outlier_tree('employees', 'department,salary', 'summary');
+
+-- Outliers mode: get detailed explanations
+SELECT row_id, column_name, outlier_value, explanation
+FROM outlier_tree('employees', 'department,salary,years_exp', 'outliers');
+
+-- Returns explanations like:
+-- "Value 150000 for column 'salary' is unusually high (expected: 52333 ± 7413)
+--  when job_title = 'Junior Developer'"
+
+-- With custom parameters for small datasets
+SELECT * FROM outlier_tree(
+    'test_data', 'category,value', 'outliers',
+    4,          -- max_depth
+    0.5,        -- max_perc_outliers
+    3,          -- min_size_numeric
+    2,          -- min_size_categ
+    2.67,       -- z_norm
+    3.0         -- z_outlier
+);
+```
+
+---
+
 ## Data Diffing
 
 Compare tables and identify changes for migration validation and regression testing.
@@ -1341,16 +1440,16 @@ SET anofox_telemetry_key = 'your_custom_key';
 | Money & Currency | 17 | Scalar functions |
 | VAT Validation | 10 | Scalar functions |
 | Data Quality Metrics | 8 | Table functions |
-| Anomaly Detection | 4 | Table functions |
+| Anomaly Detection | 5 | Table functions |
 | Data Diffing | 2 | Table functions |
-| **Total** | **57** | |
+| **Total** | **58** | |
 
 ### Function Type Breakdown
 
 | Type | Count | Examples |
 |------|-------|----------|
 | Scalar Functions | 45 | `anofox_tab_email_is_valid (alias: email_is_valid)`, `anofox_tab_money (alias: money_add`, `anofox_tab_vat (alias: vat_is_valid` |
-| Table Functions | 12 | `anofox_tab_metric_ (alias: metric_volume`, `anofox_tab_metric_ (alias: metric_isolation_forest`, `anofox_tab_diff_ (alias: diff_hashdiff` |
+| Table Functions | 13 | `anofox_tab_metric_ (alias: metric_volume`, `anofox_tab_metric_ (alias: metric_isolation_forest`, `outlier_tree` |
 
 ### Module Status
 
@@ -1362,7 +1461,7 @@ SET anofox_telemetry_key = 'your_custom_key';
 | Money & Currency | 17 | Stable | None |
 | VAT Validation | 10 | Stable | None |
 | Data Quality Metrics | 8 | Stable | None |
-| Anomaly Detection | 4 | Stable | None |
+| Anomaly Detection | 5 | Stable | None |
 | Data Diffing | 2 | Stable | None |
 
 ---

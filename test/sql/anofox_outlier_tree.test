@@ -1,0 +1,432 @@
+# name: test/sql/anofox_outlier_tree.test
+# description: Test OutlierTree explainable anomaly detection
+# group: [anofox_tabular]
+
+require anofox_tabular
+
+statement ok
+LOAD anofox_tabular
+
+statement ok
+SET anofox_tab_trace_enabled = false
+
+# ===--------------------------------------------------------------------===
+# Test Setup: Create test tables
+# ===--------------------------------------------------------------------===
+
+# Table with obvious numeric outlier conditioned on category
+statement ok
+CREATE TABLE ot_salary_data (
+    id INTEGER,
+    job_title VARCHAR,
+    salary DOUBLE,
+    years_exp INTEGER
+)
+
+statement ok
+INSERT INTO ot_salary_data VALUES
+    (1, 'Junior Developer', 50000.0, 2),
+    (2, 'Junior Developer', 55000.0, 3),
+    (3, 'Junior Developer', 52000.0, 1),
+    (4, 'Junior Developer', 150000.0, 2),
+    (5, 'Senior Developer', 120000.0, 8),
+    (6, 'Senior Developer', 125000.0, 10),
+    (7, 'Senior Developer', 130000.0, 12)
+
+# ===--------------------------------------------------------------------===
+# Basic Functionality Tests - Summary Mode
+# ===--------------------------------------------------------------------===
+
+# Test 1: Summary mode returns single row
+# Note: min_size_numeric=3 for small test datasets (all 9 params required when specifying optional ones)
+query I
+SELECT COUNT(*) FROM outlier_tree('ot_salary_data', 'job_title,salary,years_exp', 'summary', 4, 0.5::DOUBLE, 3, 2, 2.67, 8.0)
+----
+1
+
+# Test 2: Summary mode detects outlier (status = fail when outliers found)
+query T
+SELECT status FROM outlier_tree('ot_salary_data', 'job_title,salary,years_exp', 'summary', 4, 0.5::DOUBLE, 3, 2, 2.67, 8.0)
+----
+fail
+
+# Test 3: Summary mode reports correct outlier count
+query I
+SELECT outlier_count FROM outlier_tree('ot_salary_data', 'job_title,salary,years_exp', 'summary', 4, 0.5::DOUBLE, 3, 2, 2.67, 8.0)
+----
+1
+
+# Test 4: Summary mode reports total rows
+query I
+SELECT total_rows FROM outlier_tree('ot_salary_data', 'job_title,salary,years_exp', 'summary', 4, 0.5::DOUBLE, 3, 2, 2.67, 8.0)
+----
+7
+
+# ===--------------------------------------------------------------------===
+# Basic Functionality Tests - Outliers Mode
+# ===--------------------------------------------------------------------===
+
+# Test 5: Outliers mode returns outlier rows
+query I
+SELECT COUNT(*) FROM outlier_tree('ot_salary_data', 'job_title,salary,years_exp', 'outliers', 4, 0.5::DOUBLE, 3, 2, 2.67, 8.0)
+----
+1
+
+# Test 6: Outlier is the correct row (row 4 with salary 150000)
+query I
+SELECT row_id FROM outlier_tree('ot_salary_data', 'job_title,salary,years_exp', 'outliers', 4, 0.5::DOUBLE, 3, 2, 2.67, 8.0)
+----
+4
+
+# Test 7: Outlier is detected in salary column
+query T
+SELECT column_name FROM outlier_tree('ot_salary_data', 'job_title,salary,years_exp', 'outliers', 4, 0.5::DOUBLE, 3, 2, 2.67, 8.0)
+----
+salary
+
+# Test 8: Outlier value is correct
+query T
+SELECT outlier_value FROM outlier_tree('ot_salary_data', 'job_title,salary,years_exp', 'outliers', 4, 0.5::DOUBLE, 3, 2, 2.67, 8.0)
+----
+150000
+
+# ===--------------------------------------------------------------------===
+# Edge Cases
+# ===--------------------------------------------------------------------===
+
+# Test 9: Empty table - summary mode returns pass
+statement ok
+CREATE TABLE ot_empty (id INTEGER, value DOUBLE)
+
+query T
+SELECT status FROM outlier_tree('ot_empty', 'id,value', 'summary')
+----
+pass
+
+# Test 10: Single row table - no outliers possible
+statement ok
+CREATE TABLE ot_single (id INTEGER, value DOUBLE)
+
+statement ok
+INSERT INTO ot_single VALUES (1, 100.0)
+
+query T
+SELECT status FROM outlier_tree('ot_single', 'id,value', 'summary')
+----
+pass
+
+# Test 11: All identical values - no outliers
+statement ok
+CREATE TABLE ot_identical (id INTEGER, value DOUBLE)
+
+statement ok
+INSERT INTO ot_identical VALUES (1, 50.0), (2, 50.0), (3, 50.0), (4, 50.0)
+
+query I
+SELECT outlier_count FROM outlier_tree('ot_identical', 'id,value', 'summary', 4, 0.01::DOUBLE, 2, 2, 2.67, 2.0)
+----
+0
+
+# Test 12: NULL handling - NULLs excluded from analysis
+statement ok
+CREATE TABLE ot_nulls (id INTEGER, category VARCHAR, value DOUBLE)
+
+statement ok
+INSERT INTO ot_nulls VALUES (1, 'A', 10.0), (2, NULL, 11.0), (3, 'A', 12.0)
+
+# Should only analyze 2 rows (excluding NULL category)
+query I
+SELECT total_rows FROM outlier_tree('ot_nulls', 'category,value', 'summary', 4, 0.01::DOUBLE, 2, 2, 2.67, 2.0)
+----
+2
+
+# ===--------------------------------------------------------------------===
+# Parameter Validation
+# ===--------------------------------------------------------------------===
+
+# Test 13: max_depth must be positive (must use all 9 params)
+statement error
+SELECT * FROM outlier_tree('ot_salary_data', 'salary', 'summary', 0, 0.01::DOUBLE, 25, 75, 2.67, 8.0)
+----
+max_depth must be >= 1
+
+# Test 14: max_perc_outliers must be in (0, 1]
+statement error
+SELECT * FROM outlier_tree('ot_salary_data', 'salary', 'summary', 4, 1.5::DOUBLE, 25, 75, 2.67, 8.0)
+----
+max_perc_outliers must be between 0 and 1
+
+# Test 15: z_outlier must be positive
+statement error
+SELECT * FROM outlier_tree('ot_salary_data', 'salary', 'summary', 4, 0.01::DOUBLE, 25, 75, 2.67, -1.0)
+----
+z_outlier must be positive
+
+# ===--------------------------------------------------------------------===
+# Explanation Quality Tests
+# ===--------------------------------------------------------------------===
+
+# Test 16: Explanation mentions the conditioning variable
+query I
+SELECT CASE WHEN explanation LIKE '%job_title%' THEN 1 ELSE 0 END
+FROM outlier_tree('ot_salary_data', 'job_title,salary', 'outliers', 4, 0.5::DOUBLE, 3, 2, 2.67, 8.0)
+----
+1
+
+# Test 17: Explanation mentions the category value
+query I
+SELECT CASE WHEN explanation LIKE '%Junior%' THEN 1 ELSE 0 END
+FROM outlier_tree('ot_salary_data', 'job_title,salary', 'outliers', 4, 0.5::DOUBLE, 3, 2, 2.67, 8.0)
+----
+1
+
+# ===--------------------------------------------------------------------===
+# Multi-Column Conditioning Tests
+# ===--------------------------------------------------------------------===
+
+# Test 18: Multi-column outlier detection
+# Note: With robust statistics (median+MAD), this outlier has z=3.82 even in full dataset
+statement ok
+CREATE TABLE ot_multi_cond (dept VARCHAR, level VARCHAR, salary DOUBLE)
+
+statement ok
+INSERT INTO ot_multi_cond VALUES
+    ('Eng', 'L1', 60000), ('Eng', 'L1', 65000), ('Eng', 'L1', 62000),
+    ('Eng', 'L2', 80000), ('Eng', 'L2', 85000), ('Eng', 'L2', 82000),
+    ('Sales', 'L1', 50000), ('Sales', 'L1', 52000), ('Sales', 'L1', 51000),
+    ('Sales', 'L1', 150000)
+
+query T
+SELECT status FROM outlier_tree('ot_multi_cond', 'dept,level,salary', 'summary', 4, 0.5::DOUBLE, 3, 2, 2.67, 3.5)
+----
+fail
+
+# ===--------------------------------------------------------------------===
+# Output Schema Tests
+# ===--------------------------------------------------------------------===
+
+# Test 19: Summary mode has all expected columns (typeof returns VARCHAR)
+query TTTTTT
+SELECT
+    typeof(status),
+    typeof(total_rows),
+    typeof(outlier_count),
+    typeof(columns_analyzed),
+    typeof(clusters_evaluated),
+    typeof(max_depth_reached)
+FROM outlier_tree('ot_salary_data', 'salary', 'summary', 4, 0.5::DOUBLE, 3, 2, 2.67, 8.0)
+----
+VARCHAR	BIGINT	BIGINT	INTEGER	BIGINT	INTEGER
+
+# Test 20: Outliers mode has all expected columns (typeof returns VARCHAR)
+query TTTTTTTTTTT
+SELECT
+    typeof(row_id),
+    typeof(column_name),
+    typeof(outlier_value),
+    typeof(cluster_mean),
+    typeof(cluster_sd),
+    typeof(cluster_size),
+    typeof(z_score),
+    typeof(lower_bound),
+    typeof(upper_bound),
+    typeof(conditions),
+    typeof(explanation)
+FROM outlier_tree('ot_salary_data', 'job_title,salary', 'outliers', 4, 0.5::DOUBLE, 3, 2, 2.67, 8.0)
+----
+BIGINT	VARCHAR	VARCHAR	DOUBLE	DOUBLE	BIGINT	DOUBLE	DOUBLE	DOUBLE	VARCHAR	VARCHAR
+
+# ===--------------------------------------------------------------------===
+# Reproducibility Tests
+# ===--------------------------------------------------------------------===
+
+# Test 21: Results are deterministic (no randomness)
+query I
+SELECT COUNT(*) FROM (
+    SELECT a.row_id, a.z_score - b.z_score as diff
+    FROM outlier_tree('ot_salary_data', 'job_title,salary', 'outliers', 4, 0.5::DOUBLE, 3, 2, 2.67, 8.0) a
+    JOIN outlier_tree('ot_salary_data', 'job_title,salary', 'outliers', 4, 0.5::DOUBLE, 3, 2, 2.67, 8.0) b
+    ON a.row_id = b.row_id
+    WHERE ABS(a.z_score - b.z_score) > 0.0001
+)
+----
+0
+
+# ===--------------------------------------------------------------------===
+# Real-world Pattern: Titanic-style fare outliers
+# Inspired by david-cortes/outliertree test cases
+# ===--------------------------------------------------------------------===
+
+# Test 22: Detect zero-fare passengers as outliers in third class
+# Using only third-class passengers to test conditional detection
+statement ok
+CREATE TABLE ot_titanic_fares (
+    pclass INTEGER,
+    fare DOUBLE,
+    embarked VARCHAR
+)
+
+statement ok
+INSERT INTO ot_titanic_fares VALUES
+    (3, 7.25, 'S'), (3, 8.05, 'S'), (3, 7.75, 'Q'), (3, 8.50, 'S'),
+    (3, 7.85, 'S'), (3, 7.50, 'Q'), (3, 7.65, 'S'), (3, 8.15, 'Q'),
+    (3, 7.95, 'S'), (3, 0.00, 'S')
+
+# Zero fare (0.00) should be detected as outlier
+query T
+SELECT status FROM outlier_tree('ot_titanic_fares', 'pclass,fare,embarked', 'summary', 4, 0.5::DOUBLE, 3, 2, 2.67, 8.0)
+----
+fail
+
+# Test 23: The zero-fare row should be flagged
+query I
+SELECT COUNT(*) FROM outlier_tree('ot_titanic_fares', 'pclass,fare', 'outliers', 4, 0.5::DOUBLE, 3, 2, 2.67, 8.0)
+----
+1
+
+# Test 24: Outlier is in fare column
+query T
+SELECT column_name FROM outlier_tree('ot_titanic_fares', 'pclass,fare', 'outliers', 4, 0.5::DOUBLE, 3, 2, 2.67, 8.0)
+----
+fare
+
+statement ok
+DROP TABLE ot_titanic_fares
+
+# ===--------------------------------------------------------------------===
+# Real-world Pattern: High fare for third class (Titanic row 1147)
+# Original: Fare=29.12 is outlier when Pclass=3, SibSp=0, Embarked=Q
+# ===--------------------------------------------------------------------===
+
+# Test 25: High fare in third class is detected as outlier
+statement ok
+CREATE TABLE ot_titanic_high_fare (
+    pclass INTEGER,
+    sibsp INTEGER,
+    embarked VARCHAR,
+    fare DOUBLE
+)
+
+statement ok
+INSERT INTO ot_titanic_high_fare VALUES
+    (3, 0, 'Q', 7.75), (3, 0, 'Q', 7.50), (3, 0, 'Q', 7.85),
+    (3, 0, 'Q', 8.05), (3, 0, 'Q', 7.25), (3, 0, 'Q', 7.65),
+    (3, 0, 'Q', 8.15), (3, 0, 'Q', 7.95), (3, 0, 'Q', 8.50),
+    (3, 0, 'Q', 29.12)
+
+query T
+SELECT status FROM outlier_tree('ot_titanic_high_fare', 'pclass,sibsp,embarked,fare', 'summary', 4, 0.5::DOUBLE, 3, 2, 2.67, 8.0)
+----
+fail
+
+# Test 26: High fare outlier is in fare column
+query T
+SELECT column_name FROM outlier_tree('ot_titanic_high_fare', 'pclass,sibsp,embarked,fare', 'outliers', 4, 0.5::DOUBLE, 3, 2, 2.67, 8.0)
+----
+fare
+
+statement ok
+DROP TABLE ot_titanic_high_fare
+
+# ===--------------------------------------------------------------------===
+# Real-world Pattern: Hypothyroid-style (pregnancy at unusual age)
+# Original: row 1138 - age=75 when pregnant=TRUE (mean: 31.46, sd: 5.28)
+# ===--------------------------------------------------------------------===
+
+# Test 27: Unusual age for pregnancy detected as outlier
+statement ok
+CREATE TABLE ot_pregnancy_age (
+    pregnant VARCHAR,
+    age DOUBLE,
+    thyroid_status VARCHAR
+)
+
+statement ok
+INSERT INTO ot_pregnancy_age VALUES
+    ('TRUE', 28.0, 'normal'), ('TRUE', 32.0, 'normal'), ('TRUE', 30.0, 'normal'),
+    ('TRUE', 35.0, 'normal'), ('TRUE', 29.0, 'normal'), ('TRUE', 31.0, 'normal'),
+    ('TRUE', 33.0, 'normal'), ('TRUE', 27.0, 'normal'), ('TRUE', 34.0, 'normal'),
+    ('TRUE', 75.0, 'normal'),
+    ('FALSE', 45.0, 'normal'), ('FALSE', 55.0, 'normal'), ('FALSE', 65.0, 'normal')
+
+query T
+SELECT status FROM outlier_tree('ot_pregnancy_age', 'pregnant,age,thyroid_status', 'summary', 4, 0.5::DOUBLE, 3, 2, 2.67, 8.0)
+----
+fail
+
+# Test 28: Outlier is age column
+query T
+SELECT column_name FROM outlier_tree('ot_pregnancy_age', 'pregnant,age', 'outliers', 4, 0.5::DOUBLE, 3, 2, 2.67, 8.0)
+----
+age
+
+# Test 29: Explanation mentions pregnancy condition
+query I
+SELECT CASE WHEN explanation LIKE '%pregnant%' THEN 1 ELSE 0 END
+FROM outlier_tree('ot_pregnancy_age', 'pregnant,age', 'outliers', 4, 0.5::DOUBLE, 3, 2, 2.67, 8.0)
+----
+1
+
+statement ok
+DROP TABLE ot_pregnancy_age
+
+# ===--------------------------------------------------------------------===
+# Synthetic Pattern: Extreme value in normal distribution
+# Based on original outliertree examples with 1e6 outlier
+# ===--------------------------------------------------------------------===
+
+# Test 30: Extreme value detected in otherwise normal data
+statement ok
+CREATE TABLE ot_extreme_value (
+    categ_col VARCHAR,
+    numeric_col DOUBLE
+)
+
+statement ok
+INSERT INTO ot_extreme_value VALUES
+    ('A', 0.5), ('A', -0.3), ('A', 1.2), ('A', -0.8), ('A', 0.1),
+    ('B', 0.7), ('B', -0.5), ('B', 0.9), ('B', -0.2), ('B', 0.4),
+    ('C', 0.3), ('C', -0.6), ('C', 0.8), ('C', -0.1), ('C', 0.6),
+    ('A', 1000000.0)
+
+query T
+SELECT status FROM outlier_tree('ot_extreme_value', 'categ_col,numeric_col', 'summary', 4, 0.5::DOUBLE, 3, 2, 2.67, 8.0)
+----
+fail
+
+# Test 31: Extreme value outlier count
+query I
+SELECT outlier_count FROM outlier_tree('ot_extreme_value', 'categ_col,numeric_col', 'summary', 4, 0.5::DOUBLE, 3, 2, 2.67, 8.0)
+----
+1
+
+# Test 32: Outlier is in numeric column
+query T
+SELECT column_name FROM outlier_tree('ot_extreme_value', 'categ_col,numeric_col', 'outliers', 4, 0.5::DOUBLE, 3, 2, 2.67, 8.0)
+----
+numeric_col
+
+statement ok
+DROP TABLE ot_extreme_value
+
+# ===--------------------------------------------------------------------===
+# Cleanup
+# ===--------------------------------------------------------------------===
+
+statement ok
+DROP TABLE ot_salary_data
+
+statement ok
+DROP TABLE ot_empty
+
+statement ok
+DROP TABLE ot_single
+
+statement ok
+DROP TABLE ot_identical
+
+statement ok
+DROP TABLE ot_nulls
+
+statement ok
+DROP TABLE ot_multi_cond
