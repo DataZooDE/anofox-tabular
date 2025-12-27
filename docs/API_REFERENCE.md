@@ -11,8 +11,8 @@ The Anofox Tabular extension provides comprehensive data quality validation, ano
 
 ### Key Features
 
-- **8 Production-Ready Modules**: Email, postal, phone, money, VAT, metrics, anomalies, and diffing
-- **58 SQL Functions**: Complete validation and analysis toolkit
+- **9 Production-Ready Modules**: Email, postal, phone, money, VAT, PII, metrics, anomalies, and diffing
+- **62 SQL Functions**: Complete validation and analysis toolkit
 - **Zero Friction**: SQL-native with no external services required (except optional libpostal for address parsing)
 - **Blazing Fast**: Vectorized C++17 implementation processes millions of rows per second
 - **Self-Contained**: Embedded validation patterns; no API keys or network calls required
@@ -53,12 +53,13 @@ All functions have aliases without the `anofox_tab_` prefix. For example:
 3. [Phone Number Validation](#phone-number-validation)
 4. [Money & Currency Operations](#money--currency-operations)
 5. [VAT Validation](#vat-validation)
-6. [Data Quality Metrics](#data-quality-metrics)
-7. [Anomaly Detection](#anomaly-detection)
-8. [Data Diffing](#data-diffing)
-9. [Configuration](#configuration)
-10. [Function Coverage Matrix](#function-coverage-matrix)
-11. [Notes](#notes)
+6. [PII Detection](#pii-detection)
+7. [Data Quality Metrics](#data-quality-metrics)
+8. [Anomaly Detection](#anomaly-detection)
+9. [Data Diffing](#data-diffing)
+10. [Configuration](#configuration)
+11. [Function Coverage Matrix](#function-coverage-matrix)
+12. [Notes](#notes)
 
 ---
 
@@ -852,6 +853,129 @@ SELECT anofox_tab_vat (alias: vat_is_valid('DE123456789');
 
 ---
 
+## PII Detection
+
+Detect and mask Personally Identifiable Information (PII) in text data. Supports multiple PII types with configurable masking strategies.
+
+### Supported PII Types
+
+| Type | Description | Example |
+|------|-------------|---------|
+| EMAIL | Email addresses | `user@example.com` |
+| CREDIT_CARD | Credit card numbers (Visa, MC, Amex, Discover) | `4111-1111-1111-1111` |
+| US_SSN | US Social Security Numbers | `123-45-6789` |
+| IBAN | International Bank Account Numbers | `DE89370400440532013000` |
+| IP_ADDRESS | IPv4 addresses | `192.168.1.100` |
+| URL | HTTP/HTTPS URLs | `https://example.com` |
+| DE_TAX_ID | German Tax ID (Steueridentifikationsnummer) | `12345678901` |
+
+### Masking Strategies
+
+| Strategy | Description | Example Output |
+|----------|-------------|----------------|
+| `redact` | Replace with type label | `[EMAIL]`, `[US_SSN]` |
+| `partial` | Show partial value | `te**@example.com`, `***-**-6789` |
+| `asterisk` | Replace with asterisks (same length) | `****************` |
+| `hash` | Replace with SHA-256 hash (truncated) | `a1b2c3d4e5f6...` |
+
+### Functions
+
+#### `anofox_tab_pii_detect` (alias: `pii_detect`)
+
+Detect all PII in input text and return matches as JSON.
+
+**Signature:**
+```sql
+anofox_tab_pii_detect(text VARCHAR) → VARCHAR
+```
+
+**Returns:**
+- `VARCHAR`: JSON array of detected PII matches with type, position, and confidence
+
+**Example:**
+```sql
+SELECT pii_detect('Contact: john.doe@example.com, SSN: 123-45-6789');
+-- Returns: [{"type":"EMAIL","start":9,"end":29,"confidence":1.00},{"type":"US_SSN","start":36,"end":47,"confidence":1.00}]
+```
+
+---
+
+#### `anofox_tab_pii_mask` (alias: `pii_mask`)
+
+Mask all detected PII in text using specified strategy.
+
+**Signature:**
+```sql
+anofox_tab_pii_mask(text VARCHAR [, strategy VARCHAR]) → VARCHAR
+```
+
+**Parameters:**
+- `text`: Input text containing potential PII
+- `strategy`: Masking strategy - `'redact'` (default), `'partial'`, `'asterisk'`, or `'hash'`
+
+**Returns:**
+- `VARCHAR`: Text with PII masked according to strategy
+
+**Examples:**
+```sql
+-- Default (redact) strategy
+SELECT pii_mask('Email: test@example.com');
+-- Returns: 'Email: [EMAIL]'
+
+-- Partial masking
+SELECT pii_mask('SSN: 123-45-6789', 'partial');
+-- Returns: 'SSN: ***-**-6789'
+
+-- Asterisk masking
+SELECT pii_mask('Card: 4111111111111111', 'asterisk');
+-- Returns: 'Card: ****************'
+```
+
+---
+
+#### `anofox_tab_pii_contains` (alias: `pii_contains`)
+
+Check if text contains any PII.
+
+**Signature:**
+```sql
+anofox_tab_pii_contains(text VARCHAR) → BOOLEAN
+```
+
+**Returns:**
+- `BOOLEAN`: `true` if any PII detected, `false` otherwise
+
+**Example:**
+```sql
+SELECT pii_contains('Contact us at support@company.com');
+-- Returns: true
+
+SELECT pii_contains('Hello, world!');
+-- Returns: false
+```
+
+---
+
+#### `anofox_tab_pii_count` (alias: `pii_count`)
+
+Count the number of PII matches in text.
+
+**Signature:**
+```sql
+anofox_tab_pii_count(text VARCHAR) → BIGINT
+```
+
+**Returns:**
+- `BIGINT`: Number of PII instances detected
+
+**Example:**
+```sql
+SELECT pii_count('Email: a@b.com, SSN: 123-45-6789, Card: 4111111111111111');
+-- Returns: 3
+```
+
+---
+
 ## Data Quality Metrics
 
 Track essential data quality dimensions.
@@ -1440,17 +1564,18 @@ SET anofox_telemetry_key = 'your_custom_key';
 | Phone Numbers | 9 | Scalar (8), Table (1) |
 | Money & Currency | 17 | Scalar functions |
 | VAT Validation | 10 | Scalar functions |
+| PII Detection | 4 | Scalar functions |
 | Data Quality Metrics | 8 | Table functions |
 | Anomaly Detection | 5 | Table functions |
 | Data Diffing | 2 | Table functions |
-| **Total** | **58** | |
+| **Total** | **62** | |
 
 ### Function Type Breakdown
 
 | Type | Count | Examples |
 |------|-------|----------|
-| Scalar Functions | 45 | `anofox_tab_email_is_valid (alias: email_is_valid)`, `anofox_tab_money (alias: money_add`, `anofox_tab_vat (alias: vat_is_valid` |
-| Table Functions | 13 | `anofox_tab_metric_ (alias: metric_volume`, `anofox_tab_metric_ (alias: metric_isolation_forest`, `outlier_tree` |
+| Scalar Functions | 49 | `anofox_tab_email_is_valid` (alias: `email_is_valid`), `anofox_tab_pii_detect` (alias: `pii_detect`), `anofox_tab_vat_is_valid` (alias: `vat_is_valid`) |
+| Table Functions | 13 | `anofox_tab_metric_volume` (alias: `volume`), `anofox_tab_metric_isolation_forest` (alias: `isolation_forest`), `anofox_tab_outlier_tree` (alias: `outlier_tree`) |
 
 ### Module Status
 
@@ -1461,6 +1586,7 @@ SET anofox_telemetry_key = 'your_custom_key';
 | Phone Numbers | 9 | Stable | libphonenumber (embedded) |
 | Money & Currency | 17 | Stable | None |
 | VAT Validation | 10 | Stable | None |
+| PII Detection | 4 | Stable | OpenSSL (for hash masking) |
 | Data Quality Metrics | 8 | Stable | None |
 | Anomaly Detection | 5 | Stable | None |
 | Data Diffing | 2 | Stable | None |

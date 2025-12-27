@@ -1,0 +1,211 @@
+# name: test/sql/anofox_pii.test
+# description: Test PII detection and masking functions
+# group: [anofox_tabular]
+
+require anofox_tabular
+
+statement ok
+LOAD anofox_tabular
+
+# ============================================================================
+# Basic PII Detection Tests
+# ============================================================================
+
+# Test email detection
+query I
+SELECT pii_detect('Contact: john.doe@example.com') LIKE '%EMAIL%';
+----
+true
+
+# Test SSN detection
+query I
+SELECT pii_detect('SSN: 123-45-6789') LIKE '%US_SSN%';
+----
+true
+
+# Test credit card detection
+query I
+SELECT pii_detect('Card: 4111111111111111') LIKE '%CREDIT_CARD%';
+----
+true
+
+# Test IBAN detection
+query I
+SELECT pii_detect('IBAN: DE89370400440532013000') LIKE '%IBAN%';
+----
+true
+
+# Test IP address detection
+query I
+SELECT pii_detect('Server: 192.168.1.100') LIKE '%IP_ADDRESS%';
+----
+true
+
+# Test URL detection
+query I
+SELECT pii_detect('Visit https://example.com/page') LIKE '%URL%';
+----
+true
+
+# Test multiple PII types in one string
+query I
+SELECT pii_detect('Email: test@test.com, SSN: 123-45-6789') LIKE '%EMAIL%'
+   AND pii_detect('Email: test@test.com, SSN: 123-45-6789') LIKE '%US_SSN%';
+----
+true
+
+# Test no PII detected
+query I
+SELECT pii_detect('This is a normal text with no PII');
+----
+[]
+
+# Test NULL input
+query I
+SELECT pii_detect(NULL);
+----
+NULL
+
+# ============================================================================
+# PII Masking Tests
+# ============================================================================
+
+# Test REDACT masking strategy (replaces with [TYPE] where TYPE is EMAIL, SSN, etc.)
+query I
+SELECT pii_mask('Email: test@example.com', 'redact') LIKE '%[EMAIL]%';
+----
+true
+
+# Test PARTIAL masking for email
+query I
+SELECT pii_mask('Email: test@example.com', 'partial');
+----
+Email: te**@example.com
+
+# Test PARTIAL masking for SSN
+query I
+SELECT pii_mask('SSN: 123-45-6789', 'partial');
+----
+SSN: ***-**-6789
+
+# Test ASTERISK masking
+query I
+SELECT pii_mask('Email: test@example.com', 'asterisk');
+----
+Email: ****************
+
+# Test HASH masking (should contain hash characters)
+query I
+SELECT length(pii_mask('Email: test@example.com', 'hash')) > 0;
+----
+true
+
+# Test masking with no PII
+query I
+SELECT pii_mask('Normal text', 'redact');
+----
+Normal text
+
+# Test NULL input for masking
+query I
+SELECT pii_mask(NULL, 'redact');
+----
+NULL
+
+# ============================================================================
+# PII Contains and Count Tests
+# ============================================================================
+
+# Test pii_contains
+query I
+SELECT pii_contains('Email: test@example.com');
+----
+true
+
+query I
+SELECT pii_contains('Normal text without PII');
+----
+false
+
+# Test pii_count
+query I
+SELECT pii_count('Email: test@example.com and SSN: 123-45-6789');
+----
+2
+
+query I
+SELECT pii_count('No PII here');
+----
+0
+
+# ============================================================================
+# Credit Card Validation Tests
+# ============================================================================
+
+# Visa card (valid format)
+query I
+SELECT pii_detect('Card: 4111111111111111') LIKE '%CREDIT_CARD%';
+----
+true
+
+# Mastercard (valid format)
+query I
+SELECT pii_detect('Card: 5500000000000004') LIKE '%CREDIT_CARD%';
+----
+true
+
+# Amex (valid format)
+query I
+SELECT pii_detect('Card: 340000000000009') LIKE '%CREDIT_CARD%';
+----
+true
+
+# Card with spaces
+query I
+SELECT pii_detect('Card: 4111 1111 1111 1111') LIKE '%CREDIT_CARD%';
+----
+true
+
+# Card with dashes
+query I
+SELECT pii_detect('Card: 4111-1111-1111-1111') LIKE '%CREDIT_CARD%';
+----
+true
+
+# ============================================================================
+# IBAN Validation Tests
+# ============================================================================
+
+# German IBAN
+query I
+SELECT pii_detect('IBAN: DE89370400440532013000') LIKE '%IBAN%';
+----
+true
+
+# UK IBAN
+query I
+SELECT pii_detect('IBAN: GB82WEST12345698765432') LIKE '%IBAN%';
+----
+true
+
+# ============================================================================
+# Edge Cases
+# ============================================================================
+
+# Empty string
+query I
+SELECT pii_detect('');
+----
+[]
+
+# String with only whitespace
+query I
+SELECT pii_detect('   ');
+----
+[]
+
+# Very long text with PII at the end
+query I
+SELECT pii_detect(repeat('x', 1000) || ' email: test@example.com') LIKE '%EMAIL%';
+----
+true
