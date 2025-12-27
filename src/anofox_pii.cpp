@@ -14,6 +14,7 @@
 #include <sstream>
 #include <iomanip>
 #include <cctype>
+#include <cmath>
 #include <openssl/sha.h>
 
 namespace duckdb {
@@ -36,6 +37,8 @@ std::string PIITypeToString(PIIType type) {
         case PIIType::US_PASSPORT: return "US_PASSPORT";
         case PIIType::CRYPTO_ADDRESS: return "CRYPTO_ADDRESS";
         case PIIType::UK_NINO: return "UK_NINO";
+        case PIIType::MAC_ADDRESS: return "MAC_ADDRESS";
+        case PIIType::API_KEY: return "API_KEY";
         default: return "UNKNOWN";
     }
 }
@@ -52,9 +55,11 @@ PIIType StringToPIIType(const std::string &str) {
     if (upper == "IBAN") return PIIType::IBAN;
     if (upper == "DE_TAX_ID" || upper == "STEUER_ID" || upper == "GERMAN_TAX_ID") return PIIType::DE_TAX_ID;
     if (upper == "URL") return PIIType::URL;
-    if (upper == "US_PASSPORT") return PIIType::US_PASSPORT;
+    if (upper == "US_PASSPORT" || upper == "PASSPORT") return PIIType::US_PASSPORT;
     if (upper == "CRYPTO_ADDRESS" || upper == "CRYPTO") return PIIType::CRYPTO_ADDRESS;
     if (upper == "UK_NINO" || upper == "NINO") return PIIType::UK_NINO;
+    if (upper == "MAC_ADDRESS" || upper == "MAC") return PIIType::MAC_ADDRESS;
+    if (upper == "API_KEY" || upper == "APIKEY" || upper == "KEY") return PIIType::API_KEY;
     return PIIType::UNKNOWN;
 }
 
@@ -527,6 +532,252 @@ std::string EmailRecognizer::GetPartialMask(const std::string &text) const {
 }
 
 // ============================================================================
+// MAC Address Recognizer
+// ============================================================================
+
+MACAddressRecognizer::MACAddressRecognizer()
+    : RegexRecognizer(
+        PIIType::MAC_ADDRESS,
+        "MAC Address",
+        // Matches: XX:XX:XX:XX:XX:XX, XX-XX-XX-XX-XX-XX, XXXX.XXXX.XXXX, XXXXXXXXXXXX
+        R"(\b(?:[0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}\b|\b(?:[0-9A-Fa-f]{4}\.){2}[0-9A-Fa-f]{4}\b|\b[0-9A-Fa-f]{12}\b)"
+    ) {}
+
+MACAddressRecognizer::~MACAddressRecognizer() {
+    (void)type_;
+}
+
+std::string MACAddressRecognizer::GetPartialMask(const std::string &text) const {
+    // Show first octet (manufacturer OUI), mask rest
+    // Detect separator style
+    if (text.find(':') != std::string::npos) {
+        // XX:XX:XX:XX:XX:XX -> XX:XX:**:**:**:**
+        if (text.length() >= 8) {
+            return text.substr(0, 5) + ":**:**:**:**";
+        }
+    } else if (text.find('-') != std::string::npos) {
+        // XX-XX-XX-XX-XX-XX -> XX-XX-**-**-**-**
+        if (text.length() >= 8) {
+            return text.substr(0, 5) + "-**-**-**-**";
+        }
+    } else if (text.find('.') != std::string::npos) {
+        // XXXX.XXXX.XXXX -> XXXX.****.****
+        if (text.length() >= 4) {
+            return text.substr(0, 4) + ".****.****.";
+        }
+    } else {
+        // XXXXXXXXXXXX -> XXXX********
+        if (text.length() >= 4) {
+            return text.substr(0, 4) + std::string(text.length() - 4, '*');
+        }
+    }
+    return std::string(text.length(), '*');
+}
+
+// ============================================================================
+// UK NINO Recognizer
+// ============================================================================
+
+UKNINORecognizer::UKNINORecognizer()
+    : RegexRecognizer(
+        PIIType::UK_NINO,
+        "UK National Insurance Number",
+        // Matches: AB123456C or AB 12 34 56 C (with optional spaces)
+        R"(\b[A-CEGHJ-PR-TW-Z][A-CEGHJ-NPR-TW-Z]\s?\d{2}\s?\d{2}\s?\d{2}\s?[A-D]\b)"
+    ) {}
+
+UKNINORecognizer::~UKNINORecognizer() {
+    (void)type_;
+}
+
+bool UKNINORecognizer::Validate(const std::string &text) const {
+    // Remove spaces and uppercase
+    std::string clean;
+    for (char c : text) {
+        if (c != ' ') {
+            clean += static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+        }
+    }
+
+    if (clean.length() != 9) return false;
+
+    // Extract prefix (first 2 chars)
+    std::string prefix = clean.substr(0, 2);
+
+    // Forbidden prefixes
+    static const std::vector<std::string> forbidden = {
+        "BG", "GB", "NK", "KN", "TN", "NT", "ZZ"
+    };
+    for (const auto &fb : forbidden) {
+        if (prefix == fb) return false;
+    }
+
+    // Suffix must be A, B, C, or D
+    char suffix = clean[8];
+    if (suffix != 'A' && suffix != 'B' && suffix != 'C' && suffix != 'D') {
+        return false;
+    }
+
+    return true;
+}
+
+std::string UKNINORecognizer::GetPartialMask(const std::string &text) const {
+    // Remove spaces and uppercase
+    std::string clean;
+    for (char c : text) {
+        if (c != ' ') {
+            clean += static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+        }
+    }
+
+    if (clean.length() < 9) {
+        return "** ** ** ** *";
+    }
+
+    // Show first 2 and last 1: AB ** ** ** C
+    return clean.substr(0, 2) + " ** ** ** " + clean.substr(8, 1);
+}
+
+// ============================================================================
+// US Passport Recognizer
+// ============================================================================
+
+USPassportRecognizer::USPassportRecognizer()
+    : RegexRecognizer(
+        PIIType::US_PASSPORT,
+        "US Passport",
+        // Matches: 9 digits (current) or 1 letter + 8 digits (legacy)
+        R"(\b(?:[A-Z]\d{8}|\d{9})\b)"
+    ) {}
+
+USPassportRecognizer::~USPassportRecognizer() {
+    (void)type_;
+}
+
+std::string USPassportRecognizer::GetPartialMask(const std::string &text) const {
+    // Show first character, mask rest
+    if (text.length() < 2) {
+        return std::string(text.length(), '*');
+    }
+    return text.substr(0, 1) + std::string(text.length() - 1, '*');
+}
+
+// ============================================================================
+// Phone Recognizer (pattern-based, lightweight)
+// ============================================================================
+
+PhoneRecognizer::PhoneRecognizer()
+    : RegexRecognizer(
+        PIIType::PHONE,
+        "Phone Number",
+        // Matches phone formats requiring distinctive features to avoid SSN overlap:
+        // - International prefix (+1, +44, etc.) with 7+ digits following
+        // - US with parentheses: (555) 123-4567
+        // Note: No leading \b for international since + is not a word char
+        R"((?:^|[\s])(\+\d{1,4}[\s\-\.]?\(?\d{1,4}\)?[\s\-\.]?\d{1,4}[\s\-\.]?\d{2,4}[\s\-\.]?\d{2,4})(?:$|[\s])|(\(\d{3}\)[\s\-\.]?\d{3}[\s\-\.]?\d{4}))"
+    ) {}
+
+PhoneRecognizer::~PhoneRecognizer() {
+    (void)type_;
+}
+
+std::string PhoneRecognizer::GetPartialMask(const std::string &text) const {
+    // Extract digits only
+    std::string digits;
+    bool has_plus = (!text.empty() && text[0] == '+');
+    for (char c : text) {
+        if (std::isdigit(static_cast<unsigned char>(c))) {
+            digits += c;
+        }
+    }
+
+    if (digits.length() < 4) {
+        return std::string(text.length(), '*');
+    }
+
+    // Show last 4 digits
+    std::string prefix = has_plus ? "+***-***-" : "***-***-";
+    return prefix + digits.substr(digits.length() - 4);
+}
+
+// ============================================================================
+// API Key Recognizer
+// ============================================================================
+
+APIKeyRecognizer::APIKeyRecognizer()
+    : RegexRecognizer(
+        PIIType::API_KEY,
+        "API Key",
+        // Matches: AWS keys (AKIA...), GitHub tokens (ghp_, gho_, ghs_, ghr_), generic high-entropy
+        R"(\bAKIA[0-9A-Z]{16}\b|\bgh[pors]_[A-Za-z0-9]{36,255}\b|\b[A-Za-z0-9_\-]{32,64}\b)"
+    ) {}
+
+APIKeyRecognizer::~APIKeyRecognizer() {
+    (void)type_;
+}
+
+double APIKeyRecognizer::CalculateShannonEntropy(const std::string &text) {
+    if (text.empty()) return 0.0;
+
+    std::unordered_map<char, int> freq;
+    for (char c : text) {
+        freq[c]++;
+    }
+
+    double entropy = 0.0;
+    double len = static_cast<double>(text.length());
+    for (const auto &pair : freq) {
+        double p = static_cast<double>(pair.second) / len;
+        entropy -= p * std::log2(p);
+    }
+    return entropy;
+}
+
+bool APIKeyRecognizer::Validate(const std::string &text) const {
+    // AWS keys - specific prefix, always valid
+    if (text.length() >= 4 && text.substr(0, 4) == "AKIA") {
+        return true;
+    }
+
+    // GitHub tokens - specific prefix patterns
+    if (text.length() >= 4 && text.substr(0, 2) == "gh") {
+        char type_char = text[2];
+        if ((type_char == 'p' || type_char == 'o' || type_char == 's' || type_char == 'r') &&
+            text[3] == '_') {
+            return true;
+        }
+    }
+
+    // Generic pattern - require high entropy to reduce false positives
+    // Minimum 32 chars and entropy >= 3.5 bits/char
+    if (text.length() >= 32) {
+        double entropy = CalculateShannonEntropy(text);
+        return entropy >= 3.5;
+    }
+
+    return false;
+}
+
+std::string APIKeyRecognizer::GetPartialMask(const std::string &text) const {
+    // AWS keys: show AKIA prefix
+    if (text.length() >= 4 && text.substr(0, 4) == "AKIA") {
+        return "AKIA" + std::string(text.length() - 4, '*');
+    }
+
+    // GitHub tokens: show gh*_ prefix
+    if (text.length() >= 4 && text.substr(0, 2) == "gh" && text[3] == '_') {
+        return text.substr(0, 4) + std::string(text.length() - 4, '*');
+    }
+
+    // Generic: show first 4 chars
+    if (text.length() > 8) {
+        return text.substr(0, 4) + std::string(text.length() - 4, '*');
+    }
+
+    return std::string(text.length(), '*');
+}
+
+// ============================================================================
 // PIIEngine Implementation
 // ============================================================================
 
@@ -540,6 +791,7 @@ PIIEngine& PIIEngine::Instance() {
 }
 
 void PIIEngine::InitializeDefaultRecognizers() {
+    // Original 7 recognizers
     recognizers_.push_back(std::make_unique<EmailRecognizer>());
     recognizers_.push_back(std::make_unique<CreditCardRecognizer>());
     recognizers_.push_back(std::make_unique<USSSNRecognizer>());
@@ -547,6 +799,13 @@ void PIIEngine::InitializeDefaultRecognizers() {
     recognizers_.push_back(std::make_unique<DETaxIDRecognizer>());
     recognizers_.push_back(std::make_unique<IPAddressRecognizer>());
     recognizers_.push_back(std::make_unique<URLRecognizer>());
+
+    // New recognizers (Phase 2 expansion)
+    recognizers_.push_back(std::make_unique<MACAddressRecognizer>());
+    recognizers_.push_back(std::make_unique<UKNINORecognizer>());
+    recognizers_.push_back(std::make_unique<USPassportRecognizer>());
+    recognizers_.push_back(std::make_unique<PhoneRecognizer>());
+    recognizers_.push_back(std::make_unique<APIKeyRecognizer>());
 }
 
 std::vector<PIIType> PIIEngine::GetSupportedTypes() const {

@@ -29,6 +29,8 @@ enum class PIIType {
     US_PASSPORT,
     CRYPTO_ADDRESS,
     UK_NINO,
+    MAC_ADDRESS,     // Network hardware addresses
+    API_KEY,         // API keys (AWS, GitHub, generic)
     UNKNOWN
 };
 
@@ -222,6 +224,61 @@ public:
     EmailRecognizer();
     ~EmailRecognizer() override;
     std::string GetPartialMask(const std::string &text) const override;
+};
+
+/**
+ * MAC Address recognizer (network hardware addresses)
+ */
+class MACAddressRecognizer : public RegexRecognizer {
+public:
+    MACAddressRecognizer();
+    ~MACAddressRecognizer() override;
+    std::string GetPartialMask(const std::string &text) const override;
+};
+
+/**
+ * UK National Insurance Number recognizer
+ */
+class UKNINORecognizer : public RegexRecognizer {
+public:
+    UKNINORecognizer();
+    ~UKNINORecognizer() override;
+    bool Validate(const std::string &text) const override;
+    std::string GetPartialMask(const std::string &text) const override;
+};
+
+/**
+ * US Passport number recognizer
+ */
+class USPassportRecognizer : public RegexRecognizer {
+public:
+    USPassportRecognizer();
+    ~USPassportRecognizer() override;
+    std::string GetPartialMask(const std::string &text) const override;
+};
+
+/**
+ * Phone number recognizer (pattern-based, lightweight)
+ */
+class PhoneRecognizer : public RegexRecognizer {
+public:
+    PhoneRecognizer();
+    ~PhoneRecognizer() override;
+    std::string GetPartialMask(const std::string &text) const override;
+};
+
+/**
+ * API Key recognizer (AWS, GitHub, generic high-entropy)
+ */
+class APIKeyRecognizer : public RegexRecognizer {
+public:
+    APIKeyRecognizer();
+    ~APIKeyRecognizer() override;
+    bool Validate(const std::string &text) const override;
+    std::string GetPartialMask(const std::string &text) const override;
+
+private:
+    static double CalculateShannonEntropy(const std::string &text);
 };
 
 /**

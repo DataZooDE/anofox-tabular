@@ -209,3 +209,220 @@ query I
 SELECT pii_detect(repeat('x', 1000) || ' email: test@example.com') LIKE '%EMAIL%';
 ----
 true
+
+# ============================================================================
+# MAC Address Detection Tests
+# ============================================================================
+
+# Colon-separated format
+query I
+SELECT pii_detect('Device MAC: 00:1A:2B:3C:4D:5E') LIKE '%MAC_ADDRESS%';
+----
+true
+
+# Hyphen-separated format
+query I
+SELECT pii_detect('NIC: 00-1A-2B-3C-4D-5E') LIKE '%MAC_ADDRESS%';
+----
+true
+
+# Dot-separated format (Cisco style)
+query I
+SELECT pii_detect('Switch: 001A.2B3C.4D5E') LIKE '%MAC_ADDRESS%';
+----
+true
+
+# No separator format
+query I
+SELECT pii_detect('MAC 001A2B3C4D5E') LIKE '%MAC_ADDRESS%';
+----
+true
+
+# MAC masking - REDACT
+query I
+SELECT pii_mask('MAC: 00:1A:2B:3C:4D:5E', 'redact') LIKE '%[MAC_ADDRESS]%';
+----
+true
+
+# MAC masking - PARTIAL (shows vendor prefix)
+query I
+SELECT pii_mask('MAC: 00:1A:2B:3C:4D:5E', 'partial');
+----
+MAC: 00:1A:**:**:**:**
+
+# MAC masking - ASTERISK
+query I
+SELECT pii_mask('MAC: 00:1A:2B:3C:4D:5E', 'asterisk');
+----
+MAC: *****************
+
+# ============================================================================
+# UK National Insurance Number (NINO) Tests
+# ============================================================================
+
+# Standard format without spaces
+query I
+SELECT pii_detect('NINO: AB123456C') LIKE '%UK_NINO%';
+----
+true
+
+# Format with spaces
+query I
+SELECT pii_detect('NI Number: AB 12 34 56 C') LIKE '%UK_NINO%';
+----
+true
+
+# NINO masking - REDACT
+query I
+SELECT pii_mask('NINO: AB123456C', 'redact') LIKE '%[UK_NINO]%';
+----
+true
+
+# NINO masking - PARTIAL (shows first 2 and last 1, formatted with spaces)
+query I
+SELECT pii_mask('NINO: AB123456C', 'partial');
+----
+NINO: AB ** ** ** C
+
+# Invalid prefix - should not match (D is forbidden as first char)
+query I
+SELECT pii_detect('Invalid: DA123456C') LIKE '%UK_NINO%';
+----
+false
+
+# Invalid prefix - BG is forbidden
+query I
+SELECT pii_detect('Invalid: BG123456C') LIKE '%UK_NINO%';
+----
+false
+
+# ============================================================================
+# US Passport Tests
+# ============================================================================
+
+# Current format (9 digits)
+query I
+SELECT pii_detect('Passport: 123456789') LIKE '%US_PASSPORT%';
+----
+true
+
+# Legacy format (letter + 8 digits)
+query I
+SELECT pii_detect('Passport: A12345678') LIKE '%US_PASSPORT%';
+----
+true
+
+# US Passport masking - REDACT
+query I
+SELECT pii_mask('Passport: A12345678', 'redact') LIKE '%[US_PASSPORT]%';
+----
+true
+
+# US Passport masking - PARTIAL
+query I
+SELECT pii_mask('Passport: A12345678', 'partial');
+----
+Passport: A********
+
+# Should NOT match 10 digits (too long for passport)
+query I
+SELECT pii_detect('Not passport: 1234567890') LIKE '%US_PASSPORT%';
+----
+false
+
+# ============================================================================
+# Phone Number Tests
+# ============================================================================
+
+# International format with + prefix
+query I
+SELECT pii_detect('Call me at +1-555-123-4567 anytime') LIKE '%PHONE%';
+----
+true
+
+# UK international format
+query I
+SELECT pii_detect('UK: +44 20 7946 0958 today') LIKE '%PHONE%';
+----
+true
+
+# US format with parentheses
+query I
+SELECT pii_detect('Phone: (555) 123-4567') LIKE '%PHONE%';
+----
+true
+
+# Phone masking - REDACT
+query I
+SELECT pii_mask('Call +1-555-123-4567 now', 'redact') LIKE '%[PHONE]%';
+----
+true
+
+# Phone masking - PARTIAL (shows last 4 digits)
+query I
+SELECT pii_mask('Phone: (555) 123-4567', 'partial');
+----
+Phone: ***-***-4567
+
+# SSN should NOT be detected as phone
+query I
+SELECT pii_detect('SSN: 123-45-6789') LIKE '%PHONE%';
+----
+false
+
+# ============================================================================
+# API Key Tests
+# ============================================================================
+
+# AWS Access Key ID
+query I
+SELECT pii_detect('Key: AKIAIOSFODNN7EXAMPLE') LIKE '%API_KEY%';
+----
+true
+
+# GitHub Personal Access Token
+query I
+SELECT pii_detect('Token: ghp_1234567890abcdefghijklmnopqrstuvwxyz') LIKE '%API_KEY%';
+----
+true
+
+# GitHub OAuth Token
+query I
+SELECT pii_detect('OAuth: gho_abcdefghijklmnopqrstuvwxyz012345') LIKE '%API_KEY%';
+----
+true
+
+# API Key masking - REDACT
+query I
+SELECT pii_mask('Key: AKIAIOSFODNN7EXAMPLE', 'redact') LIKE '%[API_KEY]%';
+----
+true
+
+# API Key masking - PARTIAL (AWS shows AKIA prefix)
+query I
+SELECT pii_mask('Key: AKIAIOSFODNN7EXAMPLE', 'partial');
+----
+Key: AKIA****************
+
+# Low entropy string should NOT match (repetitive)
+query I
+SELECT pii_detect('Not a key: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa') LIKE '%API_KEY%';
+----
+false
+
+# ============================================================================
+# Multiple New PII Types in One String
+# ============================================================================
+
+# Multiple new types detected
+query I
+SELECT pii_detect('MAC: 00:1A:2B:3C:4D:5E, Call +44-20-7946-0958 now') LIKE '%MAC_ADDRESS%'
+   AND pii_detect('MAC: 00:1A:2B:3C:4D:5E, Call +44-20-7946-0958 now') LIKE '%PHONE%';
+----
+true
+
+# Mixed old and new types
+query I
+SELECT pii_count('Email: test@test.com, MAC: 00:1A:2B:3C:4D:5E, SSN: 123-45-6789');
+----
+3

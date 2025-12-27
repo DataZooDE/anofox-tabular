@@ -868,6 +868,28 @@ Detect and mask Personally Identifiable Information (PII) in text data. Supports
 | IP_ADDRESS | IPv4 addresses | `192.168.1.100` |
 | URL | HTTP/HTTPS URLs | `https://example.com` |
 | DE_TAX_ID | German Tax ID (Steueridentifikationsnummer) | `12345678901` |
+| MAC_ADDRESS | Network hardware addresses (MAC) | `00:1A:2B:3C:4D:5E` |
+| UK_NINO | UK National Insurance Number | `AB123456C` |
+| US_PASSPORT | US Passport numbers | `A12345678` |
+| PHONE | International phone numbers | `+1-555-123-4567` |
+| API_KEY | API keys (AWS, GitHub, generic) | `AKIAIOSFODNN7EXAMPLE` |
+
+### Known Limitations
+
+**US_PASSPORT:**
+- May match 9-digit sequences (invoice numbers, IDs)
+- No checksum validation available (passport numbers have none)
+- Use context to interpret overlapping matches with US_SSN
+
+**PHONE:**
+- Requires distinctive features (+ prefix or parentheses format)
+- Pattern-based detection only, not full libphonenumber validation
+- For comprehensive phone parsing, use `anofox_phonenumber_parse()`
+
+**API_KEY:**
+- Generic pattern uses entropy threshold (≥3.5 bits/char for 32+ chars)
+- AWS (`AKIA...`) and GitHub (`ghp_`, `gho_`, etc.) patterns are highly specific
+- Possible false positives with random high-entropy strings
 
 ### Masking Strategies
 
