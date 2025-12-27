@@ -185,4 +185,33 @@ DataZoo GmbH received such material are set forth below.
 
 ---
 
+## OutlierTree Algorithm
+
+   <https://github.com/david-cortes/outliertree>
+
+   The OutlierTree anomaly detection functionality in this extension implements
+   the algorithm described in the following academic paper:
+
+   Cortes, David. "Explainable outlier detection through decision tree
+   conditioning." arXiv preprint arXiv:2001.00636 (2020).
+   https://arxiv.org/abs/2001.00636
+
+   This is an independent C++ implementation based on the published algorithm
+   description. No code was copied from the original GPL-licensed implementation.
+
+   The original outliertree package by David Cortes is available at:
+   https://github.com/david-cortes/outliertree (GPL-3.0 License)
+
+   Test cases were inspired by examples from the original package using
+   Titanic and Hypothyroid dataset patterns.
+
+   Components implemented:
+
+   - Decision tree conditioning for explainable outlier detection
+     (`src/anofox_outlier_tree.cpp`)
+   - Robust statistics using median and MAD (Median Absolute Deviation)
+   - Human-readable explanation generation
+
+---
+
 

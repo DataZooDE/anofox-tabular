@@ -1256,6 +1256,7 @@ outlier_tree(
 | `upper_bound` | DOUBLE | Upper CI bound |
 | `conditions` | VARCHAR | JSON array of split conditions |
 | `explanation` | VARCHAR | Human-readable explanation |
+| `outlier_score` | DOUBLE | Rarity score (lower = more anomalous) |
 
 **Examples:**
 ```sql
