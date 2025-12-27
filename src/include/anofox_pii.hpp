@@ -282,6 +282,22 @@ private:
 };
 
 /**
+ * Cryptocurrency Address recognizer (Bitcoin, Ethereum)
+ */
+class CryptoAddressRecognizer : public RegexRecognizer {
+public:
+    CryptoAddressRecognizer();
+    ~CryptoAddressRecognizer() override;
+    bool Validate(const std::string &text) const override;
+    std::string GetPartialMask(const std::string &text) const override;
+
+private:
+    static bool ValidateBitcoinAddress(const std::string &address);
+    static std::vector<uint8_t> DecodeBase58(const std::string &input);
+    static bool ValidateEthereumAddress(const std::string &address);
+};
+
+/**
  * PII Detection Engine
  * Main class for detecting and masking PII in text
  */

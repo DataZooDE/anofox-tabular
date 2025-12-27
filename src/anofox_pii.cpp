@@ -3,12 +3,16 @@
 #include "anofox_function_alias.hpp"
 #include "telemetry.hpp"
 
+#include "duckdb/catalog/catalog.hpp"
+#include "duckdb/catalog/catalog_entry/table_catalog_entry.hpp"
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/common/types/value.hpp"
 #include "duckdb/common/types/vector.hpp"
 #include "duckdb/function/scalar_function.hpp"
 #include "duckdb/function/table_function.hpp"
 #include "duckdb/main/client_context.hpp"
+#include "duckdb/main/connection.hpp"
+#include "duckdb/parser/qualified_name.hpp"
 
 #include <algorithm>
 #include <sstream>
@@ -778,6 +782,153 @@ std::string APIKeyRecognizer::GetPartialMask(const std::string &text) const {
 }
 
 // ============================================================================
+// Cryptocurrency Address Recognizer (Bitcoin, Ethereum)
+// ============================================================================
+
+CryptoAddressRecognizer::CryptoAddressRecognizer()
+    : RegexRecognizer(
+        PIIType::CRYPTO_ADDRESS,
+        "Crypto Address",
+        // Three patterns combined:
+        // Bitcoin legacy/P2SH (starts with 1 or 3)
+        // Bitcoin SegWit (starts with bc1)
+        // Ethereum (starts with 0x)
+        R"(\b([13][a-km-zA-HJ-NP-Z1-9]{25,34})\b|\b(bc1[a-z0-9]{39,87})\b|\b(0x[0-9a-fA-F]{40})\b)"
+    ) {}
+
+CryptoAddressRecognizer::~CryptoAddressRecognizer() {
+    (void)type_;  // Force vtable emission
+}
+
+bool CryptoAddressRecognizer::Validate(const std::string &text) const {
+    if (text.empty()) return false;
+
+    // Bitcoin legacy/P2SH (starts with 1 or 3)
+    if (text[0] == '1' || text[0] == '3') {
+        return ValidateBitcoinAddress(text);
+    }
+
+    // Bitcoin SegWit (starts with bc1)
+    if (text.length() >= 3 && text.substr(0, 3) == "bc1") {
+        // Bech32 checksum validation is complex - accept format match
+        return text.length() >= 42 && text.length() <= 90;
+    }
+
+    // Ethereum (starts with 0x)
+    if (text.length() >= 2 && text.substr(0, 2) == "0x") {
+        return ValidateEthereumAddress(text);
+    }
+
+    return false;
+}
+
+bool CryptoAddressRecognizer::ValidateBitcoinAddress(const std::string &address) {
+    try {
+        std::vector<uint8_t> decoded = DecodeBase58(address);
+
+        // Need at least 25 bytes: 1 version + 20 hash + 4 checksum
+        if (decoded.size() < 25) return false;
+
+        // Split into payload and checksum
+        size_t payload_size = decoded.size() - 4;
+        std::vector<uint8_t> payload(decoded.begin(), decoded.begin() + payload_size);
+        std::vector<uint8_t> expected_checksum(decoded.end() - 4, decoded.end());
+
+        // Double SHA-256 hash
+        unsigned char hash1[SHA256_DIGEST_LENGTH];
+        SHA256(payload.data(), payload.size(), hash1);
+
+        unsigned char hash2[SHA256_DIGEST_LENGTH];
+        SHA256(hash1, SHA256_DIGEST_LENGTH, hash2);
+
+        // Compare first 4 bytes of hash2 with checksum
+        return std::equal(expected_checksum.begin(), expected_checksum.end(), hash2);
+
+    } catch (...) {
+        return false;
+    }
+}
+
+std::vector<uint8_t> CryptoAddressRecognizer::DecodeBase58(const std::string &input) {
+    static const char* BASE58_ALPHABET =
+        "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+
+    // Build reverse lookup (lazy init)
+    static std::unordered_map<char, int> base58_map;
+    if (base58_map.empty()) {
+        for (int i = 0; i < 58; ++i) {
+            base58_map[BASE58_ALPHABET[i]] = i;
+        }
+    }
+
+    // Count leading '1's (represent leading zeros in output)
+    size_t leading_zeros = 0;
+    for (char c : input) {
+        if (c == '1') leading_zeros++;
+        else break;
+    }
+
+    // Convert Base58 to big integer then to bytes
+    std::vector<uint8_t> result;
+    result.reserve(input.size() * 733 / 1000 + 1);  // log(58) / log(256)
+
+    for (char c : input) {
+        auto it = base58_map.find(c);
+        if (it == base58_map.end()) {
+            throw std::invalid_argument("Invalid Base58 character");
+        }
+
+        int carry = it->second;
+        for (size_t i = 0; i < result.size(); ++i) {
+            carry += 58 * result[i];
+            result[i] = carry % 256;
+            carry /= 256;
+        }
+        while (carry > 0) {
+            result.push_back(carry % 256);
+            carry /= 256;
+        }
+    }
+
+    // Reverse to get big-endian
+    std::reverse(result.begin(), result.end());
+
+    // Add leading zeros
+    result.insert(result.begin(), leading_zeros, 0);
+
+    return result;
+}
+
+bool CryptoAddressRecognizer::ValidateEthereumAddress(const std::string &address) {
+    // Must be exactly 42 chars: 0x + 40 hex
+    if (address.length() != 42 || address.substr(0, 2) != "0x") {
+        return false;
+    }
+
+    // Validate hex characters
+    for (size_t i = 2; i < address.length(); ++i) {
+        char c = address[i];
+        if (!((c >= '0' && c <= '9') ||
+              (c >= 'a' && c <= 'f') ||
+              (c >= 'A' && c <= 'F'))) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+std::string CryptoAddressRecognizer::GetPartialMask(const std::string &text) const {
+    // Show first 4 and last 4 characters: bc1q****...****5mdq
+    if (text.length() <= 8) {
+        return std::string(text.length(), '*');
+    }
+
+    return text.substr(0, 4) + std::string(text.length() - 8, '*') +
+           text.substr(text.length() - 4);
+}
+
+// ============================================================================
 // PIIEngine Implementation
 // ============================================================================
 
@@ -805,6 +956,9 @@ void PIIEngine::InitializeDefaultRecognizers() {
     recognizers_.push_back(std::make_unique<UKNINORecognizer>());
     recognizers_.push_back(std::make_unique<USPassportRecognizer>());
     recognizers_.push_back(std::make_unique<PhoneRecognizer>());
+    // CryptoAddress must be before APIKey - crypto addresses are high-entropy
+    // strings that would otherwise match the generic API_KEY pattern
+    recognizers_.push_back(std::make_unique<CryptoAddressRecognizer>());
     recognizers_.push_back(std::make_unique<APIKeyRecognizer>());
 }
 
@@ -1039,6 +1193,342 @@ struct PIICountFunction {
     }
 };
 
+// ============================================================================
+// pii_status() Table Function
+// ============================================================================
+
+struct PIIStatusState : public GlobalTableFunctionState {
+    idx_t current_index = 0;
+    std::vector<PIIType> types;
+
+    PIIStatusState() {
+        types = PIIEngine::Instance().GetSupportedTypes();
+    }
+};
+
+unique_ptr<GlobalTableFunctionState> PIIStatusInit(ClientContext &, TableFunctionInitInput &) {
+    return make_uniq<PIIStatusState>();
+}
+
+unique_ptr<FunctionData> PIIStatusBind(ClientContext &, TableFunctionBindInput &,
+                                        vector<LogicalType> &return_types, vector<string> &names) {
+    PostHogTelemetry::Instance().CaptureFunctionExecution("pii_status");
+
+    names.emplace_back("pii_type");
+    return_types.emplace_back(LogicalTypeId::VARCHAR);
+
+    names.emplace_back("recognizer_name");
+    return_types.emplace_back(LogicalTypeId::VARCHAR);
+
+    names.emplace_back("enabled");
+    return_types.emplace_back(LogicalTypeId::BOOLEAN);
+
+    names.emplace_back("pattern_info");
+    return_types.emplace_back(LogicalTypeId::VARCHAR);
+
+    return nullptr;
+}
+
+void PIIStatusFunction(ClientContext &, TableFunctionInput &input, DataChunk &output) {
+    auto &state = input.global_state->Cast<PIIStatusState>();
+
+    if (state.current_index >= state.types.size()) {
+        output.SetCardinality(0);
+        return;
+    }
+
+    // Static maps for recognizer metadata
+    static const std::unordered_map<PIIType, std::string> recognizer_names = {
+        {PIIType::EMAIL, "Email"},
+        {PIIType::PHONE, "Phone"},
+        {PIIType::CREDIT_CARD, "Credit Card"},
+        {PIIType::US_SSN, "US SSN"},
+        {PIIType::IP_ADDRESS, "IP Address"},
+        {PIIType::IBAN, "IBAN"},
+        {PIIType::DE_TAX_ID, "German Tax ID"},
+        {PIIType::URL, "URL"},
+        {PIIType::US_PASSPORT, "US Passport"},
+        {PIIType::CRYPTO_ADDRESS, "Crypto Address"},
+        {PIIType::UK_NINO, "UK NINO"},
+        {PIIType::MAC_ADDRESS, "MAC Address"},
+        {PIIType::API_KEY, "API Key"},
+        {PIIType::UNKNOWN, "Unknown"}
+    };
+
+    static const std::unordered_map<PIIType, std::string> pattern_info = {
+        {PIIType::EMAIL, "RFC 5322 email pattern"},
+        {PIIType::PHONE, "International phone formats (+XX, parentheses, dashes)"},
+        {PIIType::CREDIT_CARD, "Visa/MC/Amex/Discover with Luhn validation"},
+        {PIIType::US_SSN, "XXX-XX-XXXX format with area validation"},
+        {PIIType::IP_ADDRESS, "IPv4 and IPv6 formats"},
+        {PIIType::IBAN, "ISO 13616 with MOD-97 checksum"},
+        {PIIType::DE_TAX_ID, "11-digit Steueridentifikationsnummer"},
+        {PIIType::URL, "HTTP/HTTPS URLs"},
+        {PIIType::US_PASSPORT, "9 digits or letter + 8 digits"},
+        {PIIType::CRYPTO_ADDRESS, "Bitcoin (P2PKH/P2SH/SegWit) and Ethereum"},
+        {PIIType::UK_NINO, "UK National Insurance Number format"},
+        {PIIType::MAC_ADDRESS, "Colon/hyphen/dot/no-separator formats"},
+        {PIIType::API_KEY, "AWS/GitHub tokens and high-entropy strings"},
+        {PIIType::UNKNOWN, "Unknown pattern"}
+    };
+
+    // Calculate how many rows to output in this batch
+    idx_t remaining = state.types.size() - state.current_index;
+    idx_t count = MinValue<idx_t>(remaining, STANDARD_VECTOR_SIZE);
+
+    output.SetCardinality(count);
+
+    for (idx_t i = 0; i < count; i++) {
+        PIIType type = state.types[state.current_index + i];
+
+        // Column 0: pii_type
+        output.SetValue(0, i, Value(PIITypeToString(type)));
+
+        // Column 1: recognizer_name
+        auto name_it = recognizer_names.find(type);
+        std::string name = (name_it != recognizer_names.end()) ? name_it->second : "Unknown";
+        output.SetValue(1, i, Value(name));
+
+        // Column 2: enabled (always true - no disable mechanism)
+        output.SetValue(2, i, Value::BOOLEAN(true));
+
+        // Column 3: pattern_info
+        auto info_it = pattern_info.find(type);
+        std::string info = (info_it != pattern_info.end()) ? info_it->second : "No description";
+        output.SetValue(3, i, Value(info));
+    }
+
+    state.current_index += count;
+}
+
+TableFunction CreatePIIStatusFunction() {
+    return TableFunction("anofox_tab_pii_status", {}, PIIStatusFunction, PIIStatusBind, PIIStatusInit);
+}
+
+// ============================================================================
+// pii_scan_table() Table Function
+// ============================================================================
+
+struct PIIScanTableBindData : public TableFunctionData {
+    std::string table_name;
+    std::vector<std::string> column_filter;  // Empty = all VARCHAR columns
+
+    PIIScanTableBindData(const std::string &table, const std::vector<std::string> &cols)
+        : table_name(table), column_filter(cols) {}
+};
+
+struct PIIScanTableResult {
+    std::string column_name;
+    PIIType pii_type;
+    int64_t match_count;
+    std::vector<std::string> sample_values;
+    double confidence;
+
+    PIIScanTableResult() : pii_type(PIIType::UNKNOWN), match_count(0), confidence(1.0) {}
+};
+
+struct PIIScanTableState : public GlobalTableFunctionState {
+    idx_t current_index = 0;
+    std::vector<PIIScanTableResult> results;
+    bool scanned = false;
+};
+
+unique_ptr<GlobalTableFunctionState> PIIScanTableInit(ClientContext &, TableFunctionInitInput &) {
+    return make_uniq<PIIScanTableState>();
+}
+
+unique_ptr<FunctionData> PIIScanTableBind(ClientContext &context, TableFunctionBindInput &input,
+                                           vector<LogicalType> &return_types, vector<string> &names) {
+    PostHogTelemetry::Instance().CaptureFunctionExecution("pii_scan_table");
+
+    // Get table name (required)
+    if (input.inputs.empty()) {
+        throw BinderException("pii_scan_table requires a table name");
+    }
+    auto table_name = input.inputs[0].GetValue<std::string>();
+
+    // Get optional column filter
+    std::vector<std::string> column_filter;
+    if (input.inputs.size() > 1 && !input.inputs[1].IsNull()) {
+        auto cols_str = input.inputs[1].GetValue<std::string>();
+        // Parse comma-separated column names
+        std::stringstream ss(cols_str);
+        std::string col;
+        while (std::getline(ss, col, ',')) {
+            // Trim whitespace
+            col.erase(0, col.find_first_not_of(" \t"));
+            col.erase(col.find_last_not_of(" \t") + 1);
+            if (!col.empty()) {
+                column_filter.push_back(col);
+            }
+        }
+    }
+
+    // Define output columns
+    names.emplace_back("column_name");
+    return_types.emplace_back(LogicalTypeId::VARCHAR);
+
+    names.emplace_back("pii_type");
+    return_types.emplace_back(LogicalTypeId::VARCHAR);
+
+    names.emplace_back("match_count");
+    return_types.emplace_back(LogicalTypeId::BIGINT);
+
+    names.emplace_back("sample_values");
+    return_types.emplace_back(LogicalType::LIST(LogicalTypeId::VARCHAR));
+
+    names.emplace_back("confidence");
+    return_types.emplace_back(LogicalTypeId::DOUBLE);
+
+    return make_uniq<PIIScanTableBindData>(table_name, column_filter);
+}
+
+void PIIScanTableFunction(ClientContext &context, TableFunctionInput &input, DataChunk &output) {
+    auto &state = input.global_state->Cast<PIIScanTableState>();
+    auto &bind_data = input.bind_data->Cast<PIIScanTableBindData>();
+
+    // On first call, scan the table
+    if (!state.scanned) {
+        state.scanned = true;
+
+        try {
+            // Get table metadata from catalog
+            auto qname = QualifiedName::Parse(bind_data.table_name);
+            auto &catalog = Catalog::GetCatalog(context, qname.catalog);
+            auto &entry = catalog.GetEntry<TableCatalogEntry>(context, qname.schema, qname.name);
+
+            // Get list of VARCHAR columns to scan
+            std::vector<std::string> columns_to_scan;
+            for (auto &col : entry.GetColumns().Logical()) {
+                if (col.Type().id() == LogicalTypeId::VARCHAR) {
+                    // If column filter is set, check if this column is in the filter
+                    if (!bind_data.column_filter.empty()) {
+                        bool found = false;
+                        for (const auto &filter_col : bind_data.column_filter) {
+                            if (filter_col == col.Name()) {
+                                found = true;
+                                break;
+                            }
+                        }
+                        if (!found) continue;
+                    }
+                    columns_to_scan.push_back(col.Name());
+                }
+            }
+
+            // For each column, query values and detect PII
+            auto &engine = PIIEngine::Instance();
+
+            for (const auto &col_name : columns_to_scan) {
+                // Build query to get column values
+                std::string query = "SELECT \"" + col_name + "\" FROM " + bind_data.table_name +
+                                   " WHERE \"" + col_name + "\" IS NOT NULL";
+
+                // Execute query using a new connection
+                Connection con(*context.db);
+                auto result = con.Query(query);
+
+                if (result->HasError()) {
+                    AnofoxTrace(AnofoxLogLevel::Warn, "pii_scan_table: Error querying column " + col_name);
+                    continue;
+                }
+
+                // Aggregate PII detections by type
+                std::unordered_map<PIIType, PIIScanTableResult> col_results;
+
+                while (true) {
+                    auto chunk = result->Fetch();
+                    if (!chunk || chunk->size() == 0) break;
+
+                    for (idx_t row = 0; row < chunk->size(); row++) {
+                        auto val = chunk->GetValue(0, row);
+                        if (val.IsNull()) continue;
+
+                        auto text = val.GetValue<std::string>();
+                        auto matches = engine.Detect(text);
+
+                        for (const auto &match : matches) {
+                            auto &res = col_results[match.type];
+                            res.column_name = col_name;
+                            res.pii_type = match.type;
+                            res.match_count++;
+                            // Keep up to 5 samples
+                            if (res.sample_values.size() < 5) {
+                                res.sample_values.push_back(match.matched_text);
+                            }
+                            res.confidence = 1.0;  // Regex matches have full confidence
+                        }
+                    }
+                }
+
+                // Add results to output
+                for (auto &[type, res] : col_results) {
+                    state.results.push_back(std::move(res));
+                }
+            }
+
+        } catch (const std::exception &e) {
+            throw InvalidInputException("pii_scan_table: Failed to scan table - %s", e.what());
+        }
+    }
+
+    // Output results
+    if (state.current_index >= state.results.size()) {
+        output.SetCardinality(0);
+        return;
+    }
+
+    idx_t remaining = state.results.size() - state.current_index;
+    idx_t count = MinValue<idx_t>(remaining, STANDARD_VECTOR_SIZE);
+
+    output.SetCardinality(count);
+
+    auto &sample_vec = output.data[3];
+
+    for (idx_t i = 0; i < count; i++) {
+        const auto &res = state.results[state.current_index + i];
+
+        // Column 0: column_name
+        output.SetValue(0, i, Value(res.column_name));
+
+        // Column 1: pii_type
+        output.SetValue(1, i, Value(PIITypeToString(res.pii_type)));
+
+        // Column 2: match_count
+        output.SetValue(2, i, Value::BIGINT(res.match_count));
+
+        // Column 3: sample_values (LIST)
+        std::vector<Value> sample_list;
+        for (const auto &sample : res.sample_values) {
+            sample_list.push_back(Value(sample));
+        }
+        output.SetValue(3, i, Value::LIST(LogicalTypeId::VARCHAR, std::move(sample_list)));
+
+        // Column 4: confidence
+        output.SetValue(4, i, Value::DOUBLE(res.confidence));
+    }
+
+    state.current_index += count;
+}
+
+TableFunctionSet CreatePIIScanTableFunctionSet() {
+    TableFunctionSet set("anofox_tab_pii_scan_table");
+
+    // Version 1: table_name only
+    TableFunction func1("anofox_tab_pii_scan_table",
+                        {LogicalType::VARCHAR},
+                        PIIScanTableFunction, PIIScanTableBind, PIIScanTableInit);
+    set.AddFunction(func1);
+
+    // Version 2: table_name + column filter
+    TableFunction func2("anofox_tab_pii_scan_table",
+                        {LogicalType::VARCHAR, LogicalType::VARCHAR},
+                        PIIScanTableFunction, PIIScanTableBind, PIIScanTableInit);
+    set.AddFunction(func2);
+
+    return set;
+}
+
 } // anonymous namespace
 
 // ============================================================================
@@ -1060,6 +1550,14 @@ void RegisterPIIFunctions(ExtensionLoader &loader) {
 
     // anofox_tab_pii_count (alias: pii_count)
     RegisterScalarFunctionWithAlias(loader, PIICountFunction::GetFunction(), "pii_count");
+
+    // anofox_tab_pii_status (alias: pii_status) - table function
+    auto pii_status_func = CreatePIIStatusFunction();
+    RegisterTableFunctionWithAlias(loader, pii_status_func, "pii_status");
+
+    // anofox_tab_pii_scan_table (alias: pii_scan_table) - table function set
+    auto pii_scan_set = CreatePIIScanTableFunctionSet();
+    RegisterTableFunctionSetWithAlias(loader, pii_scan_set, "pii_scan_table");
 
     AnofoxTrace(AnofoxLogLevel::Info, "[anofox] PII detection functions registered");
 }

@@ -426,3 +426,216 @@ query I
 SELECT pii_count('Email: test@test.com, MAC: 00:1A:2B:3C:4D:5E, SSN: 123-45-6789');
 ----
 3
+
+# ============================================================================
+# Cryptocurrency Address Tests
+# ============================================================================
+
+# Bitcoin legacy (P2PKH) - Genesis block address
+query I
+SELECT pii_detect('Wallet: 1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa') LIKE '%CRYPTO_ADDRESS%';
+----
+true
+
+# Bitcoin P2SH
+query I
+SELECT pii_detect('Send: 3J98t1WpEZ73CNmQviecrnyiWrnqRhWNLy') LIKE '%CRYPTO_ADDRESS%';
+----
+true
+
+# Bitcoin SegWit (bech32)
+query I
+SELECT pii_detect('bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq') LIKE '%CRYPTO_ADDRESS%';
+----
+true
+
+# Ethereum address
+query I
+SELECT pii_detect('0x742d35Cc6634C0532925a3b844Bc454e4438f44e') LIKE '%CRYPTO_ADDRESS%';
+----
+true
+
+# Invalid Bitcoin checksum (last char changed)
+query I
+SELECT pii_detect('1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNb') LIKE '%CRYPTO_ADDRESS%';
+----
+false
+
+# Invalid Ethereum (wrong length - too short)
+query I
+SELECT pii_detect('0x742d35Cc6634') LIKE '%CRYPTO_ADDRESS%';
+----
+false
+
+# CRYPTO_ADDRESS masking - REDACT
+query I
+SELECT pii_mask('1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa', 'redact') LIKE '%[CRYPTO_ADDRESS]%';
+----
+true
+
+# CRYPTO_ADDRESS masking - PARTIAL (first 4 + last 4)
+query I
+SELECT pii_mask('bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq', 'partial');
+----
+bc1q**********************************5mdq
+
+# CRYPTO_ADDRESS masking - ASTERISK
+query I
+SELECT length(pii_mask('0x742d35Cc6634C0532925a3b844Bc454e4438f44e', 'asterisk')) = 42;
+----
+true
+
+# Multiple crypto addresses in one string
+query I
+SELECT pii_count('BTC: 1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa, ETH: 0x742d35Cc6634C0532925a3b844Bc454e4438f44e') >= 2;
+----
+true
+
+# Mixed PII types including crypto
+query I
+SELECT pii_count('Email: test@test.com, BTC: 1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa, Card: 4111111111111111') >= 3;
+----
+true
+
+# Ethereum lowercase (valid)
+query I
+SELECT pii_detect('0x742d35cc6634c0532925a3b844bc454e4438f44e') LIKE '%CRYPTO_ADDRESS%';
+----
+true
+
+# Ethereum uppercase (valid)
+query I
+SELECT pii_detect('0x742D35CC6634C0532925A3B844BC454E4438F44E') LIKE '%CRYPTO_ADDRESS%';
+----
+true
+
+# Bitcoin address in context
+query I
+SELECT pii_contains('Please send payment to 1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa');
+----
+true
+
+# ============================================================================
+# PII Status Table Function Tests
+# ============================================================================
+
+# Returns all 13 PII types
+query I
+SELECT COUNT(*) = 13 FROM pii_status();
+----
+true
+
+# Schema validation - check column count
+query I
+SELECT COUNT(*) FROM (DESCRIBE SELECT * FROM pii_status());
+----
+4
+
+# EMAIL type is listed
+query I
+SELECT COUNT(*) FROM pii_status() WHERE pii_type = 'EMAIL';
+----
+1
+
+# CRYPTO_ADDRESS type is listed
+query I
+SELECT COUNT(*) FROM pii_status() WHERE pii_type = 'CRYPTO_ADDRESS';
+----
+1
+
+# All recognizers are enabled
+query I
+SELECT COUNT(*) FROM pii_status() WHERE enabled = false;
+----
+0
+
+# No empty pattern_info
+query I
+SELECT COUNT(*) FROM pii_status() WHERE pattern_info IS NULL OR pattern_info = '';
+----
+0
+
+# Verify specific row - CREDIT_CARD
+query III
+SELECT pii_type, enabled, recognizer_name FROM pii_status() WHERE pii_type = 'CREDIT_CARD';
+----
+CREDIT_CARD	true	Credit Card
+
+# ============================================================================
+# PII Scan Table Function Tests
+# ============================================================================
+
+# Create test table
+statement ok
+CREATE TABLE pii_test_data (
+    id INTEGER,
+    email VARCHAR,
+    notes VARCHAR,
+    phone VARCHAR,
+    clean_text VARCHAR
+);
+
+statement ok
+INSERT INTO pii_test_data VALUES
+    (1, 'user@example.com', 'SSN: 123-45-6789', '+1-555-123-4567', 'No PII'),
+    (2, 'test@test.com', 'Card: 4111111111111111', '(555) 234-5678', 'Text'),
+    (3, 'admin@site.org', NULL, '+44-20-7946-0958', 'Data');
+
+# Returns results
+query I
+SELECT COUNT(*) > 0 FROM pii_scan_table('pii_test_data');
+----
+true
+
+# EMAIL detection
+query III
+SELECT column_name, pii_type, match_count
+FROM pii_scan_table('pii_test_data')
+WHERE column_name = 'email' AND pii_type = 'EMAIL';
+----
+email	EMAIL	3
+
+# SSN detection
+query III
+SELECT column_name, pii_type, match_count
+FROM pii_scan_table('pii_test_data')
+WHERE column_name = 'notes' AND pii_type = 'US_SSN';
+----
+notes	US_SSN	1
+
+# Column filter - single column
+query I
+SELECT COUNT(*) FROM pii_scan_table('pii_test_data', 'email');
+----
+1
+
+# Multiple column filter
+query I
+SELECT COUNT(DISTINCT column_name)
+FROM pii_scan_table('pii_test_data', 'email,notes');
+----
+2
+
+# sample_values is array with content
+query I
+SELECT array_length(sample_values) > 0
+FROM pii_scan_table('pii_test_data')
+WHERE column_name = 'email';
+----
+true
+
+# Confidence is 1.0
+query I
+SELECT confidence FROM pii_scan_table('pii_test_data') WHERE pii_type = 'EMAIL';
+----
+1.0
+
+# No PII in clean column
+query I
+SELECT COUNT(*) FROM pii_scan_table('pii_test_data', 'clean_text');
+----
+0
+
+# Clean up
+statement ok
+DROP TABLE pii_test_data;

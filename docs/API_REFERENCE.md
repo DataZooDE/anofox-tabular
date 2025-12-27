@@ -873,6 +873,7 @@ Detect and mask Personally Identifiable Information (PII) in text data. Supports
 | US_PASSPORT | US Passport numbers | `A12345678` |
 | PHONE | International phone numbers | `+1-555-123-4567` |
 | API_KEY | API keys (AWS, GitHub, generic) | `AKIAIOSFODNN7EXAMPLE` |
+| CRYPTO_ADDRESS | Cryptocurrency addresses (Bitcoin, Ethereum) | `1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa` |
 
 ### Known Limitations
 
@@ -890,6 +891,12 @@ Detect and mask Personally Identifiable Information (PII) in text data. Supports
 - Generic pattern uses entropy threshold (≥3.5 bits/char for 32+ chars)
 - AWS (`AKIA...`) and GitHub (`ghp_`, `gho_`, etc.) patterns are highly specific
 - Possible false positives with random high-entropy strings
+
+**CRYPTO_ADDRESS:**
+- Bitcoin legacy (P2PKH) and P2SH addresses validated with Base58 checksum (double SHA-256)
+- Bitcoin SegWit (bc1) addresses use format validation only (Bech32 checksum deferred)
+- Ethereum addresses validated by hex format (no EIP-55 checksum for all-lowercase)
+- Partial masking shows first 4 + last 4 characters
 
 ### Masking Strategies
 
@@ -994,6 +1001,67 @@ anofox_tab_pii_count(text VARCHAR) → BIGINT
 ```sql
 SELECT pii_count('Email: a@b.com, SSN: 123-45-6789, Card: 4111111111111111');
 -- Returns: 3
+```
+
+---
+
+#### `anofox_tab_pii_status` (alias: `pii_status`)
+
+Show all registered PII recognizers with metadata.
+
+**Signature:**
+```sql
+pii_status() → TABLE(pii_type, recognizer_name, enabled, pattern_info)
+```
+
+**Returns:**
+- `pii_type` (VARCHAR): PII type identifier (EMAIL, CREDIT_CARD, etc.)
+- `recognizer_name` (VARCHAR): Human-readable name
+- `enabled` (BOOLEAN): Always true (no disable mechanism)
+- `pattern_info` (VARCHAR): Description of validation method
+
+**Example:**
+```sql
+SELECT * FROM pii_status() ORDER BY pii_type;
+-- Shows all 13 PII types with their recognizer info
+```
+
+---
+
+#### `anofox_tab_pii_scan_table` (alias: `pii_scan_table`)
+
+Scan entire table for PII across VARCHAR columns.
+
+**Signature:**
+```sql
+pii_scan_table(table_name VARCHAR [, columns VARCHAR])
+  → TABLE(column_name, pii_type, match_count, sample_values, confidence)
+```
+
+**Parameters:**
+- `table_name`: Name of table to scan
+- `columns`: Optional comma-separated column names (scans all VARCHAR if omitted)
+
+**Returns:**
+- `column_name` (VARCHAR): Column containing PII
+- `pii_type` (VARCHAR): Type of PII detected
+- `match_count` (BIGINT): Number of matches found
+- `sample_values` (VARCHAR[]): Up to 5 sample values
+- `confidence` (DOUBLE): Average confidence (always 1.0)
+
+**Examples:**
+```sql
+-- Scan all columns
+SELECT * FROM pii_scan_table('users');
+
+-- Scan specific columns
+SELECT * FROM pii_scan_table('users', 'email,phone');
+
+-- Find high-risk columns
+SELECT column_name, COUNT(DISTINCT pii_type) as pii_types
+FROM pii_scan_table('customer_data')
+GROUP BY column_name
+HAVING COUNT(DISTINCT pii_type) >= 2;
 ```
 
 ---
@@ -1586,11 +1654,11 @@ SET anofox_telemetry_key = 'your_custom_key';
 | Phone Numbers | 9 | Scalar (8), Table (1) |
 | Money & Currency | 17 | Scalar functions |
 | VAT Validation | 10 | Scalar functions |
-| PII Detection | 4 | Scalar functions |
+| PII Detection | 6 | 4 scalar + 2 table functions |
 | Data Quality Metrics | 8 | Table functions |
 | Anomaly Detection | 5 | Table functions |
 | Data Diffing | 2 | Table functions |
-| **Total** | **62** | |
+| **Total** | **64** | |
 
 ### Function Type Breakdown
 
@@ -1608,7 +1676,7 @@ SET anofox_telemetry_key = 'your_custom_key';
 | Phone Numbers | 9 | Stable | libphonenumber (embedded) |
 | Money & Currency | 17 | Stable | None |
 | VAT Validation | 10 | Stable | None |
-| PII Detection | 4 | Stable | OpenSSL (for hash masking) |
+| PII Detection | 6 | Stable | OpenSSL (for hash masking) |
 | Data Quality Metrics | 8 | Stable | None |
 | Anomaly Detection | 5 | Stable | None |
 | Data Diffing | 2 | Stable | None |
