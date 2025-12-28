@@ -26,9 +26,17 @@ find_package(c-ares CONFIG REQUIRED)
 find_package(CURL CONFIG REQUIRED)
 
 # OpenVINO for NER (Named Entity Recognition)
-find_package(OpenVINO REQUIRED COMPONENTS Runtime ONNX)
-message(STATUS "OpenVINO support: ENABLED (version ${OpenVINO_VERSION})")
-add_compile_definitions(HAVE_OPENVINO=1)
+# Optional: NER functionality will be disabled if OpenVINO is not available
+find_package(OpenVINO COMPONENTS Runtime ONNX)
+if(OpenVINO_FOUND)
+    message(STATUS "OpenVINO support: ENABLED (version ${OpenVINO_VERSION})")
+    add_compile_definitions(HAVE_OPENVINO=1)
+    set(OPENVINO_FOUND TRUE)
+else()
+    message(STATUS "OpenVINO support: DISABLED (NER-based PII detection will not be available)")
+    add_compile_definitions(HAVE_OPENVINO=0)
+    set(OPENVINO_FOUND FALSE)
+endif()
 
 # SentencePiece for XLM-RoBERTa tokenization (multilingual NER)
 # NOTE: Disabled for now due to complex abseil dependency chain issues with static linking.
@@ -190,8 +198,10 @@ target_link_libraries(${EXTENSION_NAME}
     OpenSSL::Crypto
 )
 
-# Link OpenVINO runtime
-target_link_libraries(${EXTENSION_NAME} openvino::runtime)
+# Link OpenVINO runtime (if available)
+if(OPENVINO_FOUND)
+    target_link_libraries(${EXTENSION_NAME} openvino::runtime)
+endif()
 
 # Link SentencePiece for multilingual tokenization (if available)
 if(SENTENCEPIECE_FOUND)
@@ -227,8 +237,10 @@ target_link_libraries(${LOADABLE_EXTENSION_NAME}
     OpenSSL::Crypto
 )
 
-# Link OpenVINO runtime
-target_link_libraries(${LOADABLE_EXTENSION_NAME} openvino::runtime)
+# Link OpenVINO runtime (if available)
+if(OPENVINO_FOUND)
+    target_link_libraries(${LOADABLE_EXTENSION_NAME} openvino::runtime)
+endif()
 
 # Link SentencePiece for multilingual tokenization (if available)
 if(SENTENCEPIECE_FOUND)
