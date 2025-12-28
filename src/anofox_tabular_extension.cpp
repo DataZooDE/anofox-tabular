@@ -12,6 +12,7 @@
 #include "anofox_money.hpp"
 #include "anofox_vat.hpp"
 #include "anofox_pii.hpp"
+#include "anofox_ner.hpp"
 #include "telemetry.hpp"
 
 namespace duckdb {
@@ -82,6 +83,8 @@ void LoadInternal(ExtensionLoader &loader) {
 	anofox::RegisterMoneyFunctions(loader);
 	RegisterVATOptions(loader);
 	RegisterVATFunctions(loader);
+	anofox::RegisterNEROptions(loader);
+	anofox::RegisterPIIOptions(loader);
 	anofox::RegisterPIIFunctions(loader);
 }
 

@@ -1,0 +1,65 @@
+# name: test/sql/pii_detect_constant_regression.test
+# description: Regression test for pii_detect() constant folding bug
+# Bug: PIIDetectFunction didn't handle constant arguments (literal strings) correctly,
+#      causing assertion failure: result.GetVectorType() == VectorType::CONSTANT_VECTOR
+
+require anofox_tabular
+
+statement ok
+LOAD anofox_tabular;
+
+# Test with constant string input (literal) - this was the bug
+# Query: SELECT pii_detect('My name is Joachim, phone +491773073773');
+# Error: INTERNAL Error: Assertion triggered allow_unfoldable || result.GetVectorType() == VectorType::CONSTANT_VECTOR
+query I
+SELECT len(pii_detect('My name is Joachim, phone +491773073773')) > 0;
+----
+true
+
+# Test the exact query from the bug report
+query I
+SELECT len(pii_detect('My name is Joachim, I''m married to Linda, we live in Donauwörth, Germany, my phone number is +491773073773')) > 0;
+----
+true
+
+# Test with simple constant email
+query I
+SELECT (unnest(pii_detect('Contact: test@example.com'))).type;
+----
+EMAIL
+
+# Test with constant SSN (filter for US_SSN since NER may detect additional entities)
+query I
+SELECT m.type FROM (SELECT unnest(pii_detect('SSN: 123-45-6789')) as m) WHERE m.type = 'US_SSN';
+----
+US_SSN
+
+# Test with column reference (should also work)
+statement ok
+CREATE TABLE test_pii_data AS SELECT 'Contact me at john@test.com please' as text;
+
+query I
+SELECT len(pii_detect(text)) > 0 FROM test_pii_data;
+----
+true
+
+statement ok
+DROP TABLE test_pii_data;
+
+# Test with multiple constant calls
+query II
+SELECT len(pii_detect('email: a@b.com')), len(pii_detect('phone: +14155551234'));
+----
+1	1
+
+# Test with empty string constant
+query I
+SELECT len(pii_detect(''));
+----
+0
+
+# Test with no PII constant
+query I
+SELECT len(pii_detect('Hello World'));
+----
+0

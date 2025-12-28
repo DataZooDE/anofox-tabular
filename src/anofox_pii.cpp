@@ -1,6 +1,8 @@
 #include "anofox_pii.hpp"
+#include "anofox_ner.hpp"
 #include "anofox_trace.hpp"
 #include "anofox_function_alias.hpp"
+#include "anofox_phonenumber.hpp"
 #include "telemetry.hpp"
 
 #include "duckdb/catalog/catalog.hpp"
@@ -11,6 +13,7 @@
 #include "duckdb/function/scalar_function.hpp"
 #include "duckdb/function/table_function.hpp"
 #include "duckdb/main/client_context.hpp"
+#include "duckdb/main/config.hpp"
 #include "duckdb/main/connection.hpp"
 #include "duckdb/parser/qualified_name.hpp"
 
@@ -38,6 +41,10 @@ std::string PIITypeToString(PIIType type) {
         case PIIType::IBAN: return "IBAN";
         case PIIType::DE_TAX_ID: return "DE_TAX_ID";
         case PIIType::URL: return "URL";
+        case PIIType::NAME: return "NAME";
+        case PIIType::ORGANIZATION: return "ORGANIZATION";
+        case PIIType::LOCATION: return "LOCATION";
+        case PIIType::MISC: return "MISC";
         case PIIType::US_PASSPORT: return "US_PASSPORT";
         case PIIType::CRYPTO_ADDRESS: return "CRYPTO_ADDRESS";
         case PIIType::UK_NINO: return "UK_NINO";
@@ -59,6 +66,10 @@ PIIType StringToPIIType(const std::string &str) {
     if (upper == "IBAN") return PIIType::IBAN;
     if (upper == "DE_TAX_ID" || upper == "STEUER_ID" || upper == "GERMAN_TAX_ID") return PIIType::DE_TAX_ID;
     if (upper == "URL") return PIIType::URL;
+    if (upper == "NAME" || upper == "PERSON" || upper == "PERSON_NAME") return PIIType::NAME;
+    if (upper == "ORGANIZATION" || upper == "ORG" || upper == "COMPANY") return PIIType::ORGANIZATION;
+    if (upper == "LOCATION" || upper == "LOC" || upper == "PLACE" || upper == "GEO") return PIIType::LOCATION;
+    if (upper == "MISC" || upper == "MISCELLANEOUS" || upper == "OTHER") return PIIType::MISC;
     if (upper == "US_PASSPORT" || upper == "PASSPORT") return PIIType::US_PASSPORT;
     if (upper == "CRYPTO_ADDRESS" || upper == "CRYPTO") return PIIType::CRYPTO_ADDRESS;
     if (upper == "UK_NINO" || upper == "NINO") return PIIType::UK_NINO;
@@ -89,12 +100,124 @@ MaskStrategy StringToMaskStrategy(const std::string &str) {
 }
 
 // ============================================================================
+// PII Configuration Singleton
+// ============================================================================
+
+PIIConfig& PIIConfig::Get() {
+    static PIIConfig instance;
+    return instance;
+}
+
+PIIConfig::PIIConfig()
+    : min_confidence_(DEFAULT_MIN_CONFIDENCE),
+      default_mask_strategy_(MaskStrategy::REDACT),
+      enabled_types_() {
+}
+
+void PIIConfig::SetMinConfidence(double value) {
+    if (value < MIN_CONFIDENCE || value > MAX_CONFIDENCE) {
+        throw InvalidInputException("anofox_pii_min_confidence must be between " +
+                                    std::to_string(MIN_CONFIDENCE) + " and " +
+                                    std::to_string(MAX_CONFIDENCE));
+    }
+    min_confidence_ = value;
+}
+
+void PIIConfig::SetDefaultMaskStrategy(const std::string &strategy) {
+    auto parsed = StringToMaskStrategy(strategy);
+    if (parsed == MaskStrategy::NONE && StringUtil::Upper(strategy) != "NONE") {
+        throw InvalidInputException("Invalid mask strategy: " + strategy +
+                                    ". Valid values: REDACT, HASH, PARTIAL, ASTERISK, NONE");
+    }
+    default_mask_strategy_ = parsed;
+}
+
+std::string PIIConfig::GetEnabledTypesString() const {
+    if (enabled_types_.empty()) {
+        return "";  // Empty means all types enabled
+    }
+    std::ostringstream oss;
+    for (size_t i = 0; i < enabled_types_.size(); i++) {
+        if (i > 0) oss << ",";
+        oss << PIITypeToString(enabled_types_[i]);
+    }
+    return oss.str();
+}
+
+void PIIConfig::SetEnabledTypes(const std::string &types_csv) {
+    enabled_types_.clear();
+
+    if (types_csv.empty()) {
+        return;  // Empty = all types enabled
+    }
+
+    // Parse comma-separated list
+    std::istringstream iss(types_csv);
+    std::string token;
+    while (std::getline(iss, token, ',')) {
+        StringUtil::Trim(token);
+        if (token.empty()) continue;
+
+        auto pii_type = StringToPIIType(token);
+        if (pii_type == PIIType::UNKNOWN) {
+            throw InvalidInputException("Unknown PII type: " + token);
+        }
+        enabled_types_.push_back(pii_type);
+    }
+}
+
+bool PIIConfig::IsTypeEnabled(PIIType type) const {
+    if (enabled_types_.empty()) {
+        return true;  // All types enabled when empty
+    }
+    return std::find(enabled_types_.begin(), enabled_types_.end(), type) != enabled_types_.end();
+}
+
+// ============================================================================
+// PII Match Return Types (for idiomatic DuckDB API)
+// ============================================================================
+
+/**
+ * Returns the STRUCT type for a single PII match:
+ * STRUCT(type VARCHAR, text VARCHAR, start_pos BIGINT, end_pos BIGINT, confidence DOUBLE)
+ */
+LogicalType GetPIIMatchStructType() {
+    child_list_t<LogicalType> struct_children;
+    struct_children.emplace_back("type", LogicalType(LogicalTypeId::VARCHAR));
+    struct_children.emplace_back("text", LogicalType(LogicalTypeId::VARCHAR));
+    struct_children.emplace_back("start_pos", LogicalType(LogicalTypeId::BIGINT));
+    struct_children.emplace_back("end_pos", LogicalType(LogicalTypeId::BIGINT));
+    struct_children.emplace_back("confidence", LogicalType(LogicalTypeId::DOUBLE));
+    return LogicalType::STRUCT(struct_children);
+}
+
+/**
+ * Returns the LIST(STRUCT(...)) type for pii_detect return value
+ */
+LogicalType GetPIIMatchListType() {
+    return LogicalType::LIST(GetPIIMatchStructType());
+}
+
+// ============================================================================
 // PIIMatch Implementation
 // ============================================================================
 
 std::string PIIMatch::ToJSON() const {
     std::ostringstream oss;
+    // Escape any special JSON characters in matched_text
+    std::string escaped_text;
+    for (char c : matched_text) {
+        switch (c) {
+            case '"': escaped_text += "\\\""; break;
+            case '\\': escaped_text += "\\\\"; break;
+            case '\n': escaped_text += "\\n"; break;
+            case '\r': escaped_text += "\\r"; break;
+            case '\t': escaped_text += "\\t"; break;
+            default: escaped_text += c;
+        }
+    }
     oss << "{\"type\":\"" << PIITypeToString(type) << "\","
+        << "\"text\":\"" << escaped_text << "\","
         << "\"start\":" << start_pos << ","
         << "\"end\":" << end_pos << ","
         << "\"confidence\":" << std::fixed << std::setprecision(2) << confidence << "}";
@@ -685,6 +808,23 @@ PhoneRecognizer::~PhoneRecognizer() {
     (void)type_;
 }
 
+bool PhoneRecognizer::Validate(const std::string &text) const {
+    // When deep validation is enabled, use libphonenumber for validation
+    if (PIIConfig::Get().IsDeepValidationEnabled()) {
+        try {
+            auto &manager = phonenumber::PhoneNumberManager::Instance();
+            // Use IsPossible for PII detection - checks length and basic format
+            // IsValid would be too strict for detection purposes
+            return manager.IsPossible(text, "");
+        } catch (...) {
+            // If libphonenumber fails, fall back to pattern match (already passed regex)
+            return true;
+        }
+    }
+    // Without deep validation, regex match is sufficient
+    return true;
+}
+
 std::string PhoneRecognizer::GetPartialMask(const std::string &text) const {
     // Extract digits only
     std::string digits;
@@ -929,6 +1069,479 @@ std::string CryptoAddressRecognizer::GetPartialMask(const std::string &text) con
 }
 
 // ============================================================================
+// Name Recognizer (Dictionary-based)
+// ============================================================================
+
+namespace {
+
+// Common first names dictionary (top names from US, UK, EU census data)
+// Stored in lowercase for case-insensitive matching
+const std::unordered_set<std::string>& GetCommonNames() {
+    static std::unordered_set<std::string> names = {
+        // Male names (US/UK/EU common)
+        "james", "john", "robert", "michael", "david", "william", "richard", "joseph",
+        "thomas", "charles", "christopher", "daniel", "matthew", "anthony", "mark",
+        "donald", "steven", "paul", "andrew", "joshua", "kenneth", "kevin", "brian",
+        "george", "timothy", "ronald", "edward", "jason", "jeffrey", "ryan", "jacob",
+        "gary", "nicholas", "eric", "jonathan", "stephen", "larry", "justin", "scott",
+        "brandon", "benjamin", "samuel", "raymond", "gregory", "frank", "alexander",
+        "patrick", "jack", "dennis", "jerry", "tyler", "aaron", "jose", "adam", "nathan",
+        "henry", "douglas", "zachary", "peter", "kyle", "noah", "ethan", "jeremy",
+        "walter", "christian", "keith", "roger", "terry", "austin", "sean", "gerald",
+        "carl", "harold", "dylan", "arthur", "lawrence", "jordan", "jesse", "bryan",
+        "billy", "bruce", "gabriel", "joe", "logan", "albert", "willie", "alan", "eugene",
+        "ralph", "roy", "louis", "russell", "philip", "harry", "vincent", "bobby", "johnny", "bob",
+        "martin", "oliver", "charlie", "lucas", "mason", "liam", "aiden", "jackson",
+        // Female names (US/UK/EU common)
+        "mary", "patricia", "jennifer", "linda", "barbara", "elizabeth", "susan",
+        "jessica", "sarah", "karen", "lisa", "nancy", "betty", "margaret", "sandra",
+        "ashley", "kimberly", "emily", "donna", "michelle", "dorothy", "carol", "amanda",
+        "melissa", "deborah", "stephanie", "rebecca", "sharon", "laura", "cynthia",
+        "kathleen", "amy", "angela", "shirley", "anna", "brenda", "pamela", "emma",
+        "nicole", "helen", "samantha", "katherine", "christine", "debra", "rachel",
+        "carolyn", "janet", "catherine", "maria", "heather", "diane", "ruth", "julie",
+        "olivia", "joyce", "virginia", "victoria", "kelly", "lauren", "christina", "joan",
+        "evelyn", "judith", "megan", "andrea", "cheryl", "hannah", "jacqueline", "martha",
+        "gloria", "teresa", "ann", "sara", "madison", "frances", "kathryn", "janice",
+        "jean", "abigail", "alice", "judy", "sophia", "grace", "denise", "amber", "doris",
+        "marilyn", "danielle", "beverly", "isabella", "theresa", "diana", "natalie",
+        "brittany", "charlotte", "marie", "kayla", "alexis", "lori", "jane", "claire",
+        "julia", "lucy", "ella", "chloe", "mia", "ava", "lily", "zoe", "molly", "ruby",
+        // Surnames commonly used as first names
+        "taylor", "morgan", "jordan", "cameron", "bailey", "parker", "hunter", "carter",
+        "riley", "mason", "tyler", "logan", "dylan", "blake", "ryan", "austin", "evan",
+        // International common names (EU)
+        "hans", "franz", "klaus", "andreas", "stefan", "peter", "martin", "thomas",
+        "marie", "anna", "sophie", "laura", "julia", "sarah", "emma", "max", "paul",
+        "pierre", "jean", "michel", "marie", "sophie", "camille", "lea", "chloe",
+        "marco", "luca", "matteo", "giulia", "francesca", "elena", "maria", "giuseppe",
+        "pablo", "carlos", "juan", "jose", "antonio", "maria", "carmen", "lucia",
+        // Additional UK common names
+        "alfie", "archie", "freddie", "oscar", "george", "harry", "leo", "teddy",
+        "poppy", "isla", "jessica", "emily", "daisy", "freya", "florence", "elsie"
+    };
+    return names;
+}
+
+// Helper: convert string to lowercase
+std::string ToLowerCase(const std::string &str) {
+    std::string result;
+    result.reserve(str.size());
+    for (char c : str) {
+        result += static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    }
+    return result;
+}
+
+// Helper: extract first word from a string
+std::string ExtractFirstWord(const std::string &str) {
+    size_t end = str.find(' ');
+    if (end == std::string::npos) {
+        return str;
+    }
+    return str.substr(0, end);
+}
+
+// Helper: split string into words
+std::vector<std::string> SplitIntoWords(const std::string &str) {
+    std::vector<std::string> words;
+    std::istringstream iss(str);
+    std::string word;
+    while (iss >> word) {
+        words.push_back(word);
+    }
+    return words;
+}
+
+} // anonymous namespace
+
+NameRecognizer::NameRecognizer() {
+    try {
+        // Match capitalized words (potential names): 1-3 consecutive capitalized words
+        // Pattern: Starts with uppercase, followed by lowercase letters (2-20 chars per word)
+        pattern_ = std::regex(R"(\b([A-Z][a-z]{1,19})(?:\s+([A-Z][a-z]{1,19})){0,2}\b)",
+                              std::regex_constants::ECMAScript);
+    } catch (const std::regex_error &e) {
+        throw InvalidInputException("Invalid regex pattern for NameRecognizer: %s", e.what());
+    }
+}
+
+NameRecognizer::~NameRecognizer() = default;
+
+PIIType NameRecognizer::GetType() const {
+    return PIIType::NAME;
+}
+
+std::string NameRecognizer::GetName() const {
+    return "Person Name";
+}
+
+std::vector<PIIMatch> NameRecognizer::FindMatches(const std::string &text) const {
+    std::vector<PIIMatch> matches;
+
+#if HAVE_OPENVINO
+    // Try NER-based detection first if OpenVINO is available
+    auto &ner = NERModelManager::Instance();
+    if (ner.GetStatus() == NERStatus::NOT_LOADED) {
+        // Lazy initialize the NER model
+        ner.EnsureInitialized();
+    }
+
+    if (ner.IsAvailable()) {
+        try {
+            auto entities = ner.ExtractEntities(text);
+            for (const auto &entity : entities) {
+                // Only include PER (person) entities with sufficient confidence
+                if (entity.label == "PER" && entity.confidence >= 0.7) {
+                    matches.emplace_back(
+                        PIIType::NAME,
+                        entity.text,
+                        entity.start_pos,
+                        entity.end_pos,
+                        entity.confidence
+                    );
+                }
+            }
+            // If NER found matches, return them
+            if (!matches.empty()) {
+                return matches;
+            }
+        } catch (const std::exception &e) {
+            AnofoxTrace(AnofoxLogLevel::Warn,
+                "[anofox] pii: NER extraction failed, falling back to dictionary: " + std::string(e.what()));
+        }
+    }
+#endif
+
+    // Fallback to dictionary-based detection
+    return ExtractWithDictionary(text);
+}
+
+std::vector<PIIMatch> NameRecognizer::ExtractWithDictionary(const std::string &text) const {
+    std::vector<PIIMatch> matches;
+
+    // First, find all individual capitalized words with their positions
+    std::regex word_pattern(R"(\b([A-Z][a-z]{1,19})\b)", std::regex_constants::ECMAScript);
+    std::vector<std::tuple<std::string, size_t, size_t>> words; // (word, start, end)
+
+    std::sregex_iterator iter(text.begin(), text.end(), word_pattern);
+    std::sregex_iterator end;
+
+    while (iter != end) {
+        std::smatch match = *iter;
+        words.emplace_back(
+            match.str(),
+            static_cast<size_t>(match.position()),
+            static_cast<size_t>(match.position() + match.length())
+        );
+        ++iter;
+    }
+
+    // Now scan through words looking for dictionary matches
+    const auto& name_dict = GetCommonNames();
+    std::unordered_set<size_t> used_positions; // Track positions we've already included in a match
+
+    for (size_t i = 0; i < words.size(); ++i) {
+        const auto& [word, start, word_end] = words[i];
+
+        // Skip if this word is already part of a previous match
+        if (used_positions.count(start) > 0) {
+            continue;
+        }
+
+        std::string lower_word = ToLowerCase(word);
+
+        // Check if this word is a name in our dictionary
+        if (name_dict.count(lower_word) > 0) {
+            // Found a name! Now extend to include consecutive capitalized words
+            std::string full_name = word;
+            size_t name_end = word_end;
+            used_positions.insert(start);
+
+            // Look ahead for consecutive capitalized words (with single space between)
+            for (size_t j = i + 1; j < words.size() && j < i + 3; ++j) { // Max 3 words total
+                const auto& [next_word, next_start, next_end] = words[j];
+
+                // Check if next word immediately follows (single space between)
+                // The space should be at name_end, and next_start should be name_end + 1
+                if (next_start == name_end + 1) {
+                    full_name += " " + next_word;
+                    name_end = next_end;
+                    used_positions.insert(next_start);
+                } else {
+                    break; // Not consecutive
+                }
+            }
+
+            PIIMatch pii_match(
+                PIIType::NAME,
+                full_name,
+                start,
+                name_end,
+                0.5  // Lower confidence for dictionary-based detection
+            );
+            matches.push_back(pii_match);
+        }
+    }
+
+    return matches;
+}
+
+bool NameRecognizer::Validate(const std::string &text) const {
+    // Name validation is probabilistic - dictionary match already done in FindMatches
+    return true;
+}
+
+std::string NameRecognizer::GetPartialMask(const std::string &text) const {
+    // Mask: "John Smith" -> "J*** S****"
+    std::vector<std::string> words = SplitIntoWords(text);
+    std::string masked;
+
+    for (size_t i = 0; i < words.size(); ++i) {
+        if (i > 0) masked += " ";
+
+        if (words[i].size() <= 1) {
+            masked += words[i];
+        } else {
+            masked += words[i][0];
+            masked += std::string(words[i].size() - 1, '*');
+        }
+    }
+
+    return masked;
+}
+
+// ============================================================================
+// OrganizationRecognizer Implementation (NER-based ORG entities)
+// ============================================================================
+
+OrganizationRecognizer::OrganizationRecognizer() : type_(PIIType::ORGANIZATION) {}
+
+OrganizationRecognizer::~OrganizationRecognizer() = default;
+
+PIIType OrganizationRecognizer::GetType() const {
+    return type_;
+}
+
+std::string OrganizationRecognizer::GetName() const {
+    return "Organization Name";
+}
+
+std::vector<PIIMatch> OrganizationRecognizer::FindMatches(const std::string &text) const {
+    std::vector<PIIMatch> matches;
+
+#if HAVE_OPENVINO
+    auto &ner = NERModelManager::Instance();
+    if (ner.GetStatus() == NERStatus::NOT_LOADED) {
+        ner.EnsureInitialized();
+    }
+
+    if (ner.IsAvailable()) {
+        try {
+            auto entities = ner.ExtractEntities(text);
+            for (const auto &entity : entities) {
+                // Only include ORG entities with sufficient confidence
+                if (entity.label == "ORG" && entity.confidence >= 0.7) {
+                    matches.emplace_back(
+                        PIIType::ORGANIZATION,
+                        entity.text,
+                        entity.start_pos,
+                        entity.end_pos,
+                        entity.confidence
+                    );
+                    AnofoxTrace(AnofoxLogLevel::Debug,
+                        "[anofox] pii: Detected ORGANIZATION '" + entity.text +
+                        "' (confidence=" + std::to_string(entity.confidence) + ")");
+                }
+            }
+        } catch (const std::exception &e) {
+            AnofoxTrace(AnofoxLogLevel::Warn,
+                "[anofox] pii: NER extraction failed for organizations: " + std::string(e.what()));
+        }
+    }
+#endif
+
+    return matches;
+}
+
+bool OrganizationRecognizer::Validate(const std::string &text) const {
+    return true;
+}
+
+std::string OrganizationRecognizer::GetPartialMask(const std::string &text) const {
+    // Mask: "Microsoft Corp" -> "Mic****** C***"
+    std::vector<std::string> words = SplitIntoWords(text);
+    std::string masked;
+
+    for (size_t i = 0; i < words.size(); ++i) {
+        if (i > 0) masked += " ";
+
+        if (words[i].size() <= 3) {
+            masked += words[i];
+        } else {
+            masked += words[i].substr(0, 3);
+            masked += std::string(words[i].size() - 3, '*');
+        }
+    }
+
+    return masked;
+}
+
+// ============================================================================
+// LocationRecognizer Implementation (NER-based LOC entities)
+// ============================================================================
+
+LocationRecognizer::LocationRecognizer() : type_(PIIType::LOCATION) {}
+
+LocationRecognizer::~LocationRecognizer() = default;
+
+PIIType LocationRecognizer::GetType() const {
+    return type_;
+}
+
+std::string LocationRecognizer::GetName() const {
+    return "Location";
+}
+
+std::vector<PIIMatch> LocationRecognizer::FindMatches(const std::string &text) const {
+    std::vector<PIIMatch> matches;
+
+#if HAVE_OPENVINO
+    auto &ner = NERModelManager::Instance();
+    if (ner.GetStatus() == NERStatus::NOT_LOADED) {
+        ner.EnsureInitialized();
+    }
+
+    if (ner.IsAvailable()) {
+        try {
+            auto entities = ner.ExtractEntities(text);
+            for (const auto &entity : entities) {
+                // Only include LOC entities with sufficient confidence
+                if (entity.label == "LOC" && entity.confidence >= 0.7) {
+                    matches.emplace_back(
+                        PIIType::LOCATION,
+                        entity.text,
+                        entity.start_pos,
+                        entity.end_pos,
+                        entity.confidence
+                    );
+                    AnofoxTrace(AnofoxLogLevel::Debug,
+                        "[anofox] pii: Detected LOCATION '" + entity.text +
+                        "' (confidence=" + std::to_string(entity.confidence) + ")");
+                }
+            }
+        } catch (const std::exception &e) {
+            AnofoxTrace(AnofoxLogLevel::Warn,
+                "[anofox] pii: NER extraction failed for locations: " + std::string(e.what()));
+        }
+    }
+#endif
+
+    return matches;
+}
+
+bool LocationRecognizer::Validate(const std::string &text) const {
+    return true;
+}
+
+std::string LocationRecognizer::GetPartialMask(const std::string &text) const {
+    // Mask: "New York" -> "New ****"
+    std::vector<std::string> words = SplitIntoWords(text);
+    std::string masked;
+
+    for (size_t i = 0; i < words.size(); ++i) {
+        if (i > 0) masked += " ";
+
+        if (i == 0 && words[i].size() <= 3) {
+            masked += words[i];
+        } else if (i == 0) {
+            masked += words[i].substr(0, 3);
+            masked += std::string(words[i].size() - 3, '*');
+        } else {
+            masked += std::string(words[i].size(), '*');
+        }
+    }
+
+    return masked;
+}
+
+// ============================================================================
+// MiscRecognizer Implementation (NER-based MISC entities)
+// ============================================================================
+
+MiscRecognizer::MiscRecognizer() : type_(PIIType::MISC) {}
+
+MiscRecognizer::~MiscRecognizer() = default;
+
+PIIType MiscRecognizer::GetType() const {
+    return type_;
+}
+
+std::string MiscRecognizer::GetName() const {
+    return "Miscellaneous Entity";
+}
+
+std::vector<PIIMatch> MiscRecognizer::FindMatches(const std::string &text) const {
+    std::vector<PIIMatch> matches;
+
+#if HAVE_OPENVINO
+    auto &ner = NERModelManager::Instance();
+    if (ner.GetStatus() == NERStatus::NOT_LOADED) {
+        ner.EnsureInitialized();
+    }
+
+    if (ner.IsAvailable()) {
+        try {
+            auto entities = ner.ExtractEntities(text);
+            for (const auto &entity : entities) {
+                // Only include MISC entities with sufficient confidence
+                if (entity.label == "MISC" && entity.confidence >= 0.7) {
+                    matches.emplace_back(
+                        PIIType::MISC,
+                        entity.text,
+                        entity.start_pos,
+                        entity.end_pos,
+                        entity.confidence
+                    );
+                    AnofoxTrace(AnofoxLogLevel::Debug,
+                        "[anofox] pii: Detected MISC entity '" + entity.text +
+                        "' (confidence=" + std::to_string(entity.confidence) + ")");
+                }
+            }
+        } catch (const std::exception &e) {
+            AnofoxTrace(AnofoxLogLevel::Warn,
+                "[anofox] pii: NER extraction failed for misc entities: " + std::string(e.what()));
+        }
+    }
+#endif
+
+    return matches;
+}
+
+bool MiscRecognizer::Validate(const std::string &text) const {
+    return true;
+}
+
+std::string MiscRecognizer::GetPartialMask(const std::string &text) const {
+    // Mask: "Nobel Prize" -> "Nob** P****"
+    std::vector<std::string> words = SplitIntoWords(text);
+    std::string masked;
+
+    for (size_t i = 0; i < words.size(); ++i) {
+        if (i > 0) masked += " ";
+
+        if (words[i].size() <= 3) {
+            masked += words[i];
+        } else {
+            masked += words[i].substr(0, 3);
+            masked += std::string(words[i].size() - 3, '*');
+        }
+    }
+
+    return masked;
+}
+
+// ============================================================================
 // PIIEngine Implementation
 // ============================================================================
 
@@ -960,6 +1573,12 @@ void PIIEngine::InitializeDefaultRecognizers() {
     // strings that would otherwise match the generic API_KEY pattern
     recognizers_.push_back(std::make_unique<CryptoAddressRecognizer>());
     recognizers_.push_back(std::make_unique<APIKeyRecognizer>());
+
+    // NER-based recognizers (Person, Organization, Location, Misc entities)
+    recognizers_.push_back(std::make_unique<NameRecognizer>());          // PER entities
+    recognizers_.push_back(std::make_unique<OrganizationRecognizer>());  // ORG entities
+    recognizers_.push_back(std::make_unique<LocationRecognizer>());      // LOC entities
+    recognizers_.push_back(std::make_unique<MiscRecognizer>());          // MISC entities
 }
 
 std::vector<PIIType> PIIEngine::GetSupportedTypes() const {
@@ -981,6 +1600,28 @@ const PIIRecognizer* PIIEngine::GetRecognizer(PIIType type) const {
         }
     }
     return nullptr;
+}
+
+bool PIIEngine::ValidateType(const std::string &text, PIIType type) const {
+    auto recognizer = GetRecognizer(type);
+    if (!recognizer) {
+        return false;
+    }
+
+    // First check if text matches the pattern
+    auto matches = recognizer->FindMatches(text);
+
+    // Look for an exact match (the entire text should match)
+    for (const auto &match : matches) {
+        if (match.matched_text == text) {
+            // Then validate checksum/format
+            return recognizer->Validate(text);
+        }
+    }
+
+    // Also try validating directly - some validators work on the raw input
+    // This handles cases where the text IS the value (not wrapped in context)
+    return recognizer->Validate(text);
 }
 
 std::vector<PIIMatch> PIIEngine::Detect(
@@ -1013,6 +1654,34 @@ std::vector<PIIMatch> PIIEngine::Detect(
               });
 
     return all_matches;
+}
+
+std::vector<std::vector<PIIMatch>> PIIEngine::DetectBatch(
+    const std::vector<std::string> &texts,
+    const std::vector<PIIType> &types
+) const {
+    std::vector<std::vector<PIIMatch>> all_results;
+    all_results.reserve(texts.size());
+
+    if (texts.empty()) {
+        return all_results;
+    }
+
+    // Pre-warm NER cache by running batch extraction
+    // This ensures subsequent Detect calls hit the cache instead of re-running inference
+    auto &ner = NERModelManager::Instance();
+    if (ner.IsAvailable()) {
+        AnofoxTrace(AnofoxLogLevel::Debug,
+                    "[anofox] pii: Pre-warming NER cache for " + std::to_string(texts.size()) + " texts");
+        ner.ExtractEntitiesBatch(texts);
+    }
+
+    // Now run individual detection for each text (NER calls will hit cache)
+    for (const auto &text : texts) {
+        all_results.push_back(Detect(text, types));
+    }
+
+    return all_results;
 }
 
 std::string PIIEngine::ApplyMask(const PIIMatch &match, MaskStrategy strategy) const {
@@ -1076,34 +1745,77 @@ std::string PIIEngine::Mask(
 
 namespace {
 
-// anofox_tab_pii_detect(text) -> JSON array of matches (alias: pii_detect)
+// anofox_tab_pii_detect(text) -> LIST(STRUCT(...)) of matches (alias: pii_detect)
+// Returns idiomatic DuckDB types that can be queried with unnest, dot notation, etc.
 struct PIIDetectFunction {
     static void Execute(DataChunk &args, ExpressionState &state, Vector &result) {
         auto &engine = PIIEngine::Instance();
+        result.SetVectorType(VectorType::FLAT_VECTOR);
 
-        UnaryExecutor::Execute<string_t, string_t>(
-            args.data[0], result, args.size(),
-            [&](string_t input) {
-                std::string text = input.GetString();
-                auto matches = engine.Detect(text);
+        // Get list entries data and child struct vector
+        auto list_entries = FlatVector::GetData<list_entry_t>(result);
+        auto &child_struct = ListVector::GetEntry(result);
+        auto &struct_children = StructVector::GetEntries(child_struct);
 
-                // Build JSON array
-                std::ostringstream oss;
-                oss << "[";
-                for (size_t i = 0; i < matches.size(); ++i) {
-                    if (i > 0) oss << ",";
-                    oss << matches[i].ToJSON();
-                }
-                oss << "]";
+        // References to individual struct fields
+        auto &type_vec = *struct_children[0];       // VARCHAR: type
+        auto &text_vec = *struct_children[1];       // VARCHAR: text
+        auto &start_pos_vec = *struct_children[2];  // BIGINT: start_pos
+        auto &end_pos_vec = *struct_children[3];    // BIGINT: end_pos
+        auto &confidence_vec = *struct_children[4]; // DOUBLE: confidence
 
-                return StringVector::AddString(result, oss.str());
+        // Reset list size
+        ListVector::SetListSize(result, 0);
+
+        for (idx_t row = 0; row < args.size(); row++) {
+            auto input_value = args.GetValue(0, row);
+            if (input_value.IsNull()) {
+                FlatVector::SetNull(result, row, true);
+                continue;
             }
-        );
+            FlatVector::SetNull(result, row, false);
+
+            std::string text = input_value.ToString();
+            auto matches = engine.Detect(text);
+
+            // Set list entry for this row
+            list_entries[row].offset = ListVector::GetListSize(result);
+            list_entries[row].length = matches.size();
+
+            // Reserve space in child vector
+            ListVector::Reserve(result, ListVector::GetListSize(result) + matches.size());
+
+            // Add each match to the list
+            for (size_t i = 0; i < matches.size(); i++) {
+                auto &match = matches[i];
+                idx_t child_idx = ListVector::GetListSize(result);
+
+                // Set struct field values
+                FlatVector::GetData<string_t>(type_vec)[child_idx] =
+                    StringVector::AddString(type_vec, PIITypeToString(match.type));
+                FlatVector::GetData<string_t>(text_vec)[child_idx] =
+                    StringVector::AddString(text_vec, match.matched_text);
+                FlatVector::GetData<int64_t>(start_pos_vec)[child_idx] =
+                    static_cast<int64_t>(match.start_pos);
+                FlatVector::GetData<int64_t>(end_pos_vec)[child_idx] =
+                    static_cast<int64_t>(match.end_pos);
+                FlatVector::GetData<double>(confidence_vec)[child_idx] = match.confidence;
+
+                ListVector::SetListSize(result, child_idx + 1);
+            }
+        }
+
+        // Fix for constant folding: Convert to CONSTANT_VECTOR when all inputs are constant
+        // This prevents assertion failures in DuckDB's expression evaluator which expects
+        // constant input arguments to produce constant result vectors
+        if (args.AllConstant()) {
+            result.SetVectorType(VectorType::CONSTANT_VECTOR);
+        }
     }
 
     static ScalarFunction GetFunction() {
         return ScalarFunction("anofox_tab_pii_detect", {LogicalType::VARCHAR},
-                              LogicalType::VARCHAR, Execute);
+                              GetPIIMatchListType(), Execute);
     }
 };
 
@@ -1194,6 +1906,456 @@ struct PIICountFunction {
 };
 
 // ============================================================================
+// Individual Validation Functions
+// ============================================================================
+
+// Template for type-specific validators
+template<PIIType Type>
+struct PIIIsValidFunction {
+    static void Execute(DataChunk &args, ExpressionState &state, Vector &result) {
+        auto &engine = PIIEngine::Instance();
+
+        UnaryExecutor::Execute<string_t, bool>(
+            args.data[0], result, args.size(),
+            [&](string_t input) {
+                std::string text = input.GetString();
+                return engine.ValidateType(text, Type);
+            }
+        );
+    }
+};
+
+// pii_is_valid_ssn(text) -> boolean
+struct PIIIsValidSSNFunction {
+    static void Execute(DataChunk &args, ExpressionState &state, Vector &result) {
+        PIIIsValidFunction<PIIType::US_SSN>::Execute(args, state, result);
+    }
+
+    static ScalarFunction GetFunction() {
+        return ScalarFunction("anofox_tab_pii_is_valid_ssn", {LogicalType::VARCHAR},
+                              LogicalType::BOOLEAN, Execute);
+    }
+};
+
+// pii_is_valid_iban(text) -> boolean
+struct PIIIsValidIBANFunction {
+    static void Execute(DataChunk &args, ExpressionState &state, Vector &result) {
+        PIIIsValidFunction<PIIType::IBAN>::Execute(args, state, result);
+    }
+
+    static ScalarFunction GetFunction() {
+        return ScalarFunction("anofox_tab_pii_is_valid_iban", {LogicalType::VARCHAR},
+                              LogicalType::BOOLEAN, Execute);
+    }
+};
+
+// pii_is_valid_credit_card(text) -> boolean
+struct PIIIsValidCreditCardFunction {
+    static void Execute(DataChunk &args, ExpressionState &state, Vector &result) {
+        PIIIsValidFunction<PIIType::CREDIT_CARD>::Execute(args, state, result);
+    }
+
+    static ScalarFunction GetFunction() {
+        return ScalarFunction("anofox_tab_pii_is_valid_credit_card", {LogicalType::VARCHAR},
+                              LogicalType::BOOLEAN, Execute);
+    }
+};
+
+// pii_is_valid_nino(text) -> boolean (UK National Insurance Number)
+struct PIIIsValidNINOFunction {
+    static void Execute(DataChunk &args, ExpressionState &state, Vector &result) {
+        PIIIsValidFunction<PIIType::UK_NINO>::Execute(args, state, result);
+    }
+
+    static ScalarFunction GetFunction() {
+        return ScalarFunction("anofox_tab_pii_is_valid_nino", {LogicalType::VARCHAR},
+                              LogicalType::BOOLEAN, Execute);
+    }
+};
+
+// pii_is_valid_de_tax_id(text) -> boolean (German Tax ID)
+struct PIIIsValidDETaxIDFunction {
+    static void Execute(DataChunk &args, ExpressionState &state, Vector &result) {
+        PIIIsValidFunction<PIIType::DE_TAX_ID>::Execute(args, state, result);
+    }
+
+    static ScalarFunction GetFunction() {
+        return ScalarFunction("anofox_tab_pii_is_valid_de_tax_id", {LogicalType::VARCHAR},
+                              LogicalType::BOOLEAN, Execute);
+    }
+};
+
+// pii_is_valid_crypto_address(text) -> boolean (Bitcoin/Ethereum)
+struct PIIIsValidCryptoFunction {
+    static void Execute(DataChunk &args, ExpressionState &state, Vector &result) {
+        PIIIsValidFunction<PIIType::CRYPTO_ADDRESS>::Execute(args, state, result);
+    }
+
+    static ScalarFunction GetFunction() {
+        return ScalarFunction("anofox_tab_pii_is_valid_crypto_address", {LogicalType::VARCHAR},
+                              LogicalType::BOOLEAN, Execute);
+    }
+};
+
+// ============================================================================
+// Type-Specific Detection Functions
+// ============================================================================
+
+// Helper to create match values as LIST(STRUCT(...))
+Value CreatePIIMatchListValue(const std::vector<PIIMatch> &matches) {
+    std::vector<Value> match_values;
+    for (const auto &match : matches) {
+        child_list_t<Value> struct_values;
+        struct_values.emplace_back("type", Value(PIITypeToString(match.type)));
+        struct_values.emplace_back("text", Value(match.matched_text));
+        struct_values.emplace_back("start_pos", Value::BIGINT(static_cast<int64_t>(match.start_pos)));
+        struct_values.emplace_back("end_pos", Value::BIGINT(static_cast<int64_t>(match.end_pos)));
+        struct_values.emplace_back("confidence", Value::DOUBLE(match.confidence));
+        match_values.push_back(Value::STRUCT(std::move(struct_values)));
+    }
+    return Value::LIST(GetPIIMatchStructType(), std::move(match_values));
+}
+
+// Template for type-specific detection
+template<PIIType Type>
+struct PIIDetectTypeFunction {
+    static void Execute(DataChunk &args, ExpressionState &state, Vector &result) {
+        auto &engine = PIIEngine::Instance();
+
+        UnaryExecutor::ExecuteWithNulls<string_t, list_entry_t>(
+            args.data[0], result, args.size(),
+            [&](string_t input, ValidityMask &mask, idx_t idx) {
+                std::string text = input.GetString();
+
+                // Detect with type filter
+                std::vector<PIIType> filter = {Type};
+                auto matches = engine.Detect(text, filter);
+
+                auto list_value = CreatePIIMatchListValue(matches);
+                result.SetValue(idx, list_value);
+
+                return list_entry_t{0, 0};  // Return value is not used when SetValue is called
+            }
+        );
+    }
+};
+
+// pii_detect_emails(text) -> LIST(STRUCT(...))
+struct PIIDetectEmailsFunction {
+    static void Execute(DataChunk &args, ExpressionState &state, Vector &result) {
+        auto &engine = PIIEngine::Instance();
+        std::vector<PIIType> filter = {PIIType::EMAIL};
+
+        for (idx_t i = 0; i < args.size(); i++) {
+            auto val = args.data[0].GetValue(i);
+            if (val.IsNull()) {
+                result.SetValue(i, Value(LogicalType::SQLNULL));
+            } else {
+                auto matches = engine.Detect(val.GetValue<std::string>(), filter);
+                result.SetValue(i, CreatePIIMatchListValue(matches));
+            }
+        }
+    }
+
+    static ScalarFunction GetFunction() {
+        return ScalarFunction("anofox_tab_pii_detect_emails", {LogicalType::VARCHAR},
+                              GetPIIMatchListType(), Execute);
+    }
+};
+
+// pii_detect_phones(text) -> LIST(STRUCT(...))
+struct PIIDetectPhonesFunction {
+    static void Execute(DataChunk &args, ExpressionState &state, Vector &result) {
+        auto &engine = PIIEngine::Instance();
+        std::vector<PIIType> filter = {PIIType::PHONE};
+
+        for (idx_t i = 0; i < args.size(); i++) {
+            auto val = args.data[0].GetValue(i);
+            if (val.IsNull()) {
+                result.SetValue(i, Value(LogicalType::SQLNULL));
+            } else {
+                auto matches = engine.Detect(val.GetValue<std::string>(), filter);
+                result.SetValue(i, CreatePIIMatchListValue(matches));
+            }
+        }
+    }
+
+    static ScalarFunction GetFunction() {
+        return ScalarFunction("anofox_tab_pii_detect_phones", {LogicalType::VARCHAR},
+                              GetPIIMatchListType(), Execute);
+    }
+};
+
+// pii_detect_credit_cards(text) -> LIST(STRUCT(...))
+struct PIIDetectCreditCardsFunction {
+    static void Execute(DataChunk &args, ExpressionState &state, Vector &result) {
+        auto &engine = PIIEngine::Instance();
+        std::vector<PIIType> filter = {PIIType::CREDIT_CARD};
+
+        for (idx_t i = 0; i < args.size(); i++) {
+            auto val = args.data[0].GetValue(i);
+            if (val.IsNull()) {
+                result.SetValue(i, Value(LogicalType::SQLNULL));
+            } else {
+                auto matches = engine.Detect(val.GetValue<std::string>(), filter);
+                result.SetValue(i, CreatePIIMatchListValue(matches));
+            }
+        }
+    }
+
+    static ScalarFunction GetFunction() {
+        return ScalarFunction("anofox_tab_pii_detect_credit_cards", {LogicalType::VARCHAR},
+                              GetPIIMatchListType(), Execute);
+    }
+};
+
+// pii_detect_ssns(text) -> LIST(STRUCT(...))
+struct PIIDetectSSNsFunction {
+    static void Execute(DataChunk &args, ExpressionState &state, Vector &result) {
+        auto &engine = PIIEngine::Instance();
+        std::vector<PIIType> filter = {PIIType::US_SSN};
+
+        for (idx_t i = 0; i < args.size(); i++) {
+            auto val = args.data[0].GetValue(i);
+            if (val.IsNull()) {
+                result.SetValue(i, Value(LogicalType::SQLNULL));
+            } else {
+                auto matches = engine.Detect(val.GetValue<std::string>(), filter);
+                result.SetValue(i, CreatePIIMatchListValue(matches));
+            }
+        }
+    }
+
+    static ScalarFunction GetFunction() {
+        return ScalarFunction("anofox_tab_pii_detect_ssns", {LogicalType::VARCHAR},
+                              GetPIIMatchListType(), Execute);
+    }
+};
+
+// pii_detect_names(text) -> LIST(STRUCT(...))
+struct PIIDetectNamesFunction {
+    static void Execute(DataChunk &args, ExpressionState &state, Vector &result) {
+        auto &engine = PIIEngine::Instance();
+        std::vector<PIIType> filter = {PIIType::NAME};
+
+        for (idx_t i = 0; i < args.size(); i++) {
+            auto val = args.data[0].GetValue(i);
+            if (val.IsNull()) {
+                result.SetValue(i, Value(LogicalType::SQLNULL));
+            } else {
+                auto matches = engine.Detect(val.GetValue<std::string>(), filter);
+                result.SetValue(i, CreatePIIMatchListValue(matches));
+            }
+        }
+    }
+
+    static ScalarFunction GetFunction() {
+        return ScalarFunction("anofox_tab_pii_detect_names", {LogicalType::VARCHAR},
+                              GetPIIMatchListType(), Execute);
+    }
+};
+
+// pii_detect_ibans(text) -> LIST(STRUCT(...))
+struct PIIDetectIBANsFunction {
+    static void Execute(DataChunk &args, ExpressionState &state, Vector &result) {
+        auto &engine = PIIEngine::Instance();
+        std::vector<PIIType> filter = {PIIType::IBAN};
+
+        for (idx_t i = 0; i < args.size(); i++) {
+            auto val = args.data[0].GetValue(i);
+            if (val.IsNull()) {
+                result.SetValue(i, Value(LogicalType::SQLNULL));
+            } else {
+                auto matches = engine.Detect(val.GetValue<std::string>(), filter);
+                result.SetValue(i, CreatePIIMatchListValue(matches));
+            }
+        }
+    }
+
+    static ScalarFunction GetFunction() {
+        return ScalarFunction("anofox_tab_pii_detect_ibans", {LogicalType::VARCHAR},
+                              GetPIIMatchListType(), Execute);
+    }
+};
+
+// ============================================================================
+// Batch Detection Function
+// ============================================================================
+
+// pii_detect_batch(texts VARCHAR[]) -> LIST(LIST(STRUCT(...)))
+// Returns an array of results, one for each input text
+struct PIIDetectBatchFunction {
+    static void Execute(DataChunk &args, ExpressionState &state, Vector &result) {
+        auto &engine = PIIEngine::Instance();
+
+        // Process each row (which contains an array)
+        for (idx_t i = 0; i < args.size(); i++) {
+            auto val = args.data[0].GetValue(i);
+
+            if (val.IsNull()) {
+                result.SetValue(i, Value(LogicalType::SQLNULL));
+                continue;
+            }
+
+            // val is a LIST of VARCHARs
+            auto &list_val = ListValue::GetChildren(val);
+
+            // Collect texts for batch processing
+            std::vector<std::string> texts;
+            texts.reserve(list_val.size());
+            for (auto &item : list_val) {
+                if (item.IsNull()) {
+                    texts.push_back("");
+                } else {
+                    texts.push_back(item.GetValue<std::string>());
+                }
+            }
+
+            // Run batch detection (pre-warms NER cache)
+            auto batch_results = engine.DetectBatch(texts);
+
+            // Convert to LIST(LIST(STRUCT(...)))
+            std::vector<Value> outer_list;
+            outer_list.reserve(batch_results.size());
+
+            for (size_t j = 0; j < batch_results.size(); j++) {
+                if (list_val[j].IsNull()) {
+                    // Preserve NULL for NULL inputs
+                    outer_list.push_back(Value(LogicalType::SQLNULL));
+                } else {
+                    outer_list.push_back(CreatePIIMatchListValue(batch_results[j]));
+                }
+            }
+
+            result.SetValue(i, Value::LIST(GetPIIMatchListType(), std::move(outer_list)));
+        }
+    }
+
+    static ScalarFunction GetFunction() {
+        // Input: LIST(VARCHAR), Output: LIST(LIST(STRUCT(...)))
+        auto inner_list = GetPIIMatchListType();
+        auto outer_list = LogicalType::LIST(inner_list);
+
+        return ScalarFunction("anofox_tab_pii_detect_batch",
+                              {LogicalType::LIST(LogicalType::VARCHAR)},
+                              outer_list, Execute);
+    }
+};
+
+// ============================================================================
+// Advanced Masking Functions
+// ============================================================================
+
+// pii_mask_column(value, pii_type, strategy) -> VARCHAR
+// Masks a specific PII type in the value using the given strategy
+// Useful for UPDATE statements where you know the column contains a specific PII type
+struct PIIMaskColumnFunction {
+    static void Execute(DataChunk &args, ExpressionState &state, Vector &result) {
+        auto &engine = PIIEngine::Instance();
+
+        // Get the type and strategy arguments (they should be the same for all rows)
+        auto type_arg = args.data[1].GetValue(0);
+        auto strategy_arg = args.data[2].GetValue(0);
+
+        if (type_arg.IsNull() || strategy_arg.IsNull()) {
+            result.SetVectorType(VectorType::CONSTANT_VECTOR);
+            result.SetValue(0, Value(LogicalType::SQLNULL));
+            return;
+        }
+
+        auto pii_type = StringToPIIType(type_arg.GetValue<std::string>());
+        auto strategy = StringToMaskStrategy(strategy_arg.GetValue<std::string>());
+
+        if (pii_type == PIIType::UNKNOWN) {
+            throw InvalidInputException("Unknown PII type: %s", type_arg.GetValue<std::string>());
+        }
+
+        // Use type filter for detection
+        std::vector<PIIType> filter = {pii_type};
+
+        for (idx_t i = 0; i < args.size(); i++) {
+            auto val = args.data[0].GetValue(i);
+            if (val.IsNull()) {
+                result.SetValue(i, Value(LogicalType::SQLNULL));
+            } else {
+                auto text = val.GetValue<std::string>();
+                // Detect only the specified type, then mask
+                auto matches = engine.Detect(text, filter);
+                if (matches.empty()) {
+                    // No PII of that type found - return original
+                    result.SetValue(i, Value(text));
+                } else {
+                    result.SetValue(i, Value(engine.Mask(text, strategy, filter)));
+                }
+            }
+        }
+    }
+
+    static ScalarFunction GetFunction() {
+        return ScalarFunction("anofox_tab_pii_mask_column",
+                              {LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR},
+                              LogicalType::VARCHAR, Execute);
+    }
+};
+
+// pii_redact_column(value, strategy) -> VARCHAR
+// Shorthand for masking without specifying type - masks all PII types
+struct PIIRedactColumnFunction {
+    static void Execute(DataChunk &args, ExpressionState &state, Vector &result) {
+        auto &engine = PIIEngine::Instance();
+
+        // Get strategy argument
+        auto strategy_arg = args.data[1].GetValue(0);
+
+        MaskStrategy strategy = MaskStrategy::REDACT;
+        if (!strategy_arg.IsNull()) {
+            strategy = StringToMaskStrategy(strategy_arg.GetValue<std::string>());
+        }
+
+        for (idx_t i = 0; i < args.size(); i++) {
+            auto val = args.data[0].GetValue(i);
+            if (val.IsNull()) {
+                result.SetValue(i, Value(LogicalType::SQLNULL));
+            } else {
+                auto text = val.GetValue<std::string>();
+                result.SetValue(i, Value(engine.Mask(text, strategy)));
+            }
+        }
+    }
+
+    static ScalarFunction GetFunction() {
+        return ScalarFunction("anofox_tab_pii_redact_column",
+                              {LogicalType::VARCHAR, LogicalType::VARCHAR},
+                              LogicalType::VARCHAR, Execute);
+    }
+};
+
+// pii_redact_column(value) -> VARCHAR (overload with default strategy)
+struct PIIRedactColumnDefaultFunction {
+    static void Execute(DataChunk &args, ExpressionState &state, Vector &result) {
+        auto &engine = PIIEngine::Instance();
+        auto &config = PIIConfig::Get();
+        auto strategy = config.GetDefaultMaskStrategy();
+
+        for (idx_t i = 0; i < args.size(); i++) {
+            auto val = args.data[0].GetValue(i);
+            if (val.IsNull()) {
+                result.SetValue(i, Value(LogicalType::SQLNULL));
+            } else {
+                auto text = val.GetValue<std::string>();
+                result.SetValue(i, Value(engine.Mask(text, strategy)));
+            }
+        }
+    }
+
+    static ScalarFunction GetFunction() {
+        return ScalarFunction("anofox_tab_pii_redact_column",
+                              {LogicalType::VARCHAR},
+                              LogicalType::VARCHAR, Execute);
+    }
+};
+
+// ============================================================================
 // pii_status() Table Function
 // ============================================================================
 
@@ -1247,6 +2409,7 @@ void PIIStatusFunction(ClientContext &, TableFunctionInput &input, DataChunk &ou
         {PIIType::IBAN, "IBAN"},
         {PIIType::DE_TAX_ID, "German Tax ID"},
         {PIIType::URL, "URL"},
+        {PIIType::NAME, "Person Name"},
         {PIIType::US_PASSPORT, "US Passport"},
         {PIIType::CRYPTO_ADDRESS, "Crypto Address"},
         {PIIType::UK_NINO, "UK NINO"},
@@ -1264,6 +2427,11 @@ void PIIStatusFunction(ClientContext &, TableFunctionInput &input, DataChunk &ou
         {PIIType::IBAN, "ISO 13616 with MOD-97 checksum"},
         {PIIType::DE_TAX_ID, "11-digit Steueridentifikationsnummer"},
         {PIIType::URL, "HTTP/HTTPS URLs"},
+#if HAVE_OPENVINO
+        {PIIType::NAME, "OpenVINO DistilBERT NER (92% F1)"},
+#else
+        {PIIType::NAME, "Dictionary-based name detection (200+ first names)"},
+#endif
         {PIIType::US_PASSPORT, "9 digits or letter + 8 digits"},
         {PIIType::CRYPTO_ADDRESS, "Bitcoin (P2PKH/P2SH/SegWit) and Ethereum"},
         {PIIType::UK_NINO, "UK National Insurance Number format"},
@@ -1303,6 +2471,343 @@ void PIIStatusFunction(ClientContext &, TableFunctionInput &input, DataChunk &ou
 
 TableFunction CreatePIIStatusFunction() {
     return TableFunction("anofox_tab_pii_status", {}, PIIStatusFunction, PIIStatusBind, PIIStatusInit);
+}
+
+// ============================================================================
+// anofox_ner_status() Table Function
+// ============================================================================
+
+struct NERStatusState : public GlobalTableFunctionState {
+    bool returned = false;
+};
+
+unique_ptr<GlobalTableFunctionState> NERStatusInit(ClientContext &, TableFunctionInitInput &) {
+    return make_uniq<NERStatusState>();
+}
+
+unique_ptr<FunctionData> NERStatusBind(ClientContext &, TableFunctionBindInput &,
+                                       vector<LogicalType> &return_types, vector<string> &names) {
+    PostHogTelemetry::Instance().CaptureFunctionExecution("anofox_ner_status");
+
+    names.emplace_back("onnx_available");
+    return_types.emplace_back(LogicalTypeId::BOOLEAN);
+
+    names.emplace_back("model_status");
+    return_types.emplace_back(LogicalTypeId::VARCHAR);
+
+    names.emplace_back("model_path");
+    return_types.emplace_back(LogicalTypeId::VARCHAR);
+
+    names.emplace_back("model_size_mb");
+    return_types.emplace_back(LogicalTypeId::DOUBLE);
+
+    names.emplace_back("status_message");
+    return_types.emplace_back(LogicalTypeId::VARCHAR);
+
+    return nullptr;
+}
+
+void NERStatusFunction(ClientContext &, TableFunctionInput &input, DataChunk &output) {
+    auto &state = input.global_state->Cast<NERStatusState>();
+
+    if (state.returned) {
+        output.SetCardinality(0);
+        return;
+    }
+
+    output.SetCardinality(1);
+
+#if HAVE_OPENVINO
+    auto &ner = NERModelManager::Instance();
+    auto status = ner.GetStatus();
+
+    // onnx_available (keep column name for backward compatibility)
+    output.data[0].SetValue(0, Value::BOOLEAN(true));
+
+    // model_status
+    std::string status_str;
+    switch (status) {
+        case NERStatus::NOT_LOADED: status_str = "NOT_LOADED"; break;
+        case NERStatus::DOWNLOADING: status_str = "DOWNLOADING"; break;
+        case NERStatus::LOADED: status_str = "LOADED"; break;
+        case NERStatus::FAILED: status_str = "FAILED"; break;
+        case NERStatus::NOT_AVAILABLE: status_str = "NOT_AVAILABLE"; break;
+        default: status_str = "UNKNOWN"; break;
+    }
+    output.data[1].SetValue(0, Value(status_str));
+
+    // model_path
+    output.data[2].SetValue(0, Value(ner.GetModelPath()));
+
+    // model_size_mb
+    output.data[3].SetValue(0, Value::DOUBLE(ner.GetModelSizeMB()));
+
+    // status_message
+    output.data[4].SetValue(0, Value(ner.GetStatusMessage()));
+#else
+    // OpenVINO not compiled in
+    output.data[0].SetValue(0, Value::BOOLEAN(false));
+    output.data[1].SetValue(0, Value("NOT_AVAILABLE"));
+    output.data[2].SetValue(0, Value("N/A"));
+    output.data[3].SetValue(0, Value::DOUBLE(0.0));
+    output.data[4].SetValue(0, Value("OpenVINO not compiled in - using dictionary fallback for NAME detection"));
+#endif
+
+    state.returned = true;
+}
+
+TableFunction CreateNERStatusFunction() {
+    return TableFunction("anofox_ner_status", {}, NERStatusFunction, NERStatusBind, NERStatusInit);
+}
+
+// ============================================================================
+// pii_audit_table() Table Function - Row-level PII audit
+// ============================================================================
+
+struct PIIAuditTableBindData : public TableFunctionData {
+    std::string table_name;
+    std::vector<std::string> column_filter;  // Empty = all VARCHAR columns
+
+    PIIAuditTableBindData(const std::string &table, const std::vector<std::string> &cols)
+        : table_name(table), column_filter(cols) {}
+};
+
+struct PIIAuditTableResult {
+    int64_t row_id;
+    std::string column_name;
+    PIIType pii_type;
+    std::string original_value;
+    std::string masked_value;
+    int64_t start_pos;
+    int64_t end_pos;
+    double confidence;
+
+    PIIAuditTableResult() : row_id(0), pii_type(PIIType::UNKNOWN),
+                            start_pos(0), end_pos(0), confidence(0.0) {}
+};
+
+struct PIIAuditTableState : public GlobalTableFunctionState {
+    idx_t current_index = 0;
+    std::vector<PIIAuditTableResult> results;
+    bool scanned = false;
+};
+
+unique_ptr<GlobalTableFunctionState> PIIAuditTableInit(ClientContext &, TableFunctionInitInput &) {
+    return make_uniq<PIIAuditTableState>();
+}
+
+unique_ptr<FunctionData> PIIAuditTableBind(ClientContext &context, TableFunctionBindInput &input,
+                                            vector<LogicalType> &return_types, vector<string> &names) {
+    PostHogTelemetry::Instance().CaptureFunctionExecution("pii_audit_table");
+
+    // Get table name (required)
+    if (input.inputs.empty()) {
+        throw BinderException("pii_audit_table requires a table name");
+    }
+    auto table_name = input.inputs[0].GetValue<std::string>();
+
+    // Get optional column filter
+    std::vector<std::string> column_filter;
+    if (input.inputs.size() > 1 && !input.inputs[1].IsNull()) {
+        auto cols_str = input.inputs[1].GetValue<std::string>();
+        // Parse comma-separated column names
+        std::stringstream ss(cols_str);
+        std::string col;
+        while (std::getline(ss, col, ',')) {
+            // Trim whitespace
+            col.erase(0, col.find_first_not_of(" \t"));
+            col.erase(col.find_last_not_of(" \t") + 1);
+            if (!col.empty()) {
+                column_filter.push_back(col);
+            }
+        }
+    }
+
+    // Define output columns matching PIIAuditResult struct
+    names.emplace_back("row_id");
+    return_types.emplace_back(LogicalTypeId::BIGINT);
+
+    names.emplace_back("column_name");
+    return_types.emplace_back(LogicalTypeId::VARCHAR);
+
+    names.emplace_back("pii_type");
+    return_types.emplace_back(LogicalTypeId::VARCHAR);
+
+    names.emplace_back("original_value");
+    return_types.emplace_back(LogicalTypeId::VARCHAR);
+
+    names.emplace_back("masked_value");
+    return_types.emplace_back(LogicalTypeId::VARCHAR);
+
+    names.emplace_back("start_pos");
+    return_types.emplace_back(LogicalTypeId::BIGINT);
+
+    names.emplace_back("end_pos");
+    return_types.emplace_back(LogicalTypeId::BIGINT);
+
+    names.emplace_back("confidence");
+    return_types.emplace_back(LogicalTypeId::DOUBLE);
+
+    return make_uniq<PIIAuditTableBindData>(table_name, column_filter);
+}
+
+void PIIAuditTableFunction(ClientContext &context, TableFunctionInput &input, DataChunk &output) {
+    auto &state = input.global_state->Cast<PIIAuditTableState>();
+    auto &bind_data = input.bind_data->Cast<PIIAuditTableBindData>();
+
+    // On first call, scan the table
+    if (!state.scanned) {
+        state.scanned = true;
+
+        try {
+            // Get table metadata from catalog
+            auto qname = QualifiedName::Parse(bind_data.table_name);
+            auto &catalog = Catalog::GetCatalog(context, qname.catalog);
+            auto &entry = catalog.GetEntry<TableCatalogEntry>(context, qname.schema, qname.name);
+
+            // Get list of VARCHAR columns to scan
+            std::vector<std::string> columns_to_scan;
+            for (auto &col : entry.GetColumns().Logical()) {
+                if (col.Type().id() == LogicalTypeId::VARCHAR) {
+                    // If column filter is set, check if this column is in the filter
+                    if (!bind_data.column_filter.empty()) {
+                        bool found = false;
+                        for (const auto &filter_col : bind_data.column_filter) {
+                            if (filter_col == col.Name()) {
+                                found = true;
+                                break;
+                            }
+                        }
+                        if (!found) continue;
+                    }
+                    columns_to_scan.push_back(col.Name());
+                }
+            }
+
+            // Get PII engine and config
+            auto &engine = PIIEngine::Instance();
+            auto &config = PIIConfig::Get();
+            auto mask_strategy = config.GetDefaultMaskStrategy();
+
+            // For each column, query values and detect PII (row-level)
+            for (const auto &col_name : columns_to_scan) {
+                // Build query to get column values with row numbers
+                std::string query = "SELECT row_number() OVER () as _row_id, \"" + col_name + "\" FROM " +
+                                   bind_data.table_name;
+
+                // Execute query using a new connection
+                Connection con(*context.db);
+                auto result = con.Query(query);
+
+                if (result->HasError()) {
+                    AnofoxTrace(AnofoxLogLevel::Warn, "pii_audit_table: Error querying column " + col_name);
+                    continue;
+                }
+
+                while (true) {
+                    auto chunk = result->Fetch();
+                    if (!chunk || chunk->size() == 0) break;
+
+                    // Process each row
+                    for (idx_t row = 0; row < chunk->size(); row++) {
+                        auto row_id_val = chunk->GetValue(0, row);
+                        auto text_val = chunk->GetValue(1, row);
+
+                        if (text_val.IsNull()) continue;
+
+                        int64_t row_id = row_id_val.GetValue<int64_t>();
+                        std::string text = text_val.GetValue<std::string>();
+
+                        // Detect PII in this value
+                        auto matches = engine.Detect(text);
+
+                        // Add each match as a result row
+                        for (const auto &match : matches) {
+                            // Check if type is enabled in config
+                            if (!config.IsTypeEnabled(match.type)) continue;
+
+                            // Check minimum confidence threshold
+                            if (match.confidence < config.GetMinConfidence()) continue;
+
+                            PIIAuditTableResult res;
+                            res.row_id = row_id;
+                            res.column_name = col_name;
+                            res.pii_type = match.type;
+                            res.original_value = text;
+                            res.masked_value = engine.Mask(text, mask_strategy);
+                            res.start_pos = static_cast<int64_t>(match.start_pos);
+                            res.end_pos = static_cast<int64_t>(match.end_pos);
+                            res.confidence = match.confidence;
+
+                            state.results.push_back(std::move(res));
+                        }
+                    }
+                }
+            }
+
+        } catch (const std::exception &e) {
+            throw InvalidInputException("pii_audit_table: Failed to audit table - %s", e.what());
+        }
+    }
+
+    // Output results
+    if (state.current_index >= state.results.size()) {
+        output.SetCardinality(0);
+        return;
+    }
+
+    idx_t remaining = state.results.size() - state.current_index;
+    idx_t count = MinValue<idx_t>(remaining, STANDARD_VECTOR_SIZE);
+
+    output.SetCardinality(count);
+
+    for (idx_t i = 0; i < count; i++) {
+        const auto &res = state.results[state.current_index + i];
+
+        // Column 0: row_id
+        output.SetValue(0, i, Value::BIGINT(res.row_id));
+
+        // Column 1: column_name
+        output.SetValue(1, i, Value(res.column_name));
+
+        // Column 2: pii_type
+        output.SetValue(2, i, Value(PIITypeToString(res.pii_type)));
+
+        // Column 3: original_value
+        output.SetValue(3, i, Value(res.original_value));
+
+        // Column 4: masked_value
+        output.SetValue(4, i, Value(res.masked_value));
+
+        // Column 5: start_pos
+        output.SetValue(5, i, Value::BIGINT(res.start_pos));
+
+        // Column 6: end_pos
+        output.SetValue(6, i, Value::BIGINT(res.end_pos));
+
+        // Column 7: confidence
+        output.SetValue(7, i, Value::DOUBLE(res.confidence));
+    }
+
+    state.current_index += count;
+}
+
+TableFunctionSet CreatePIIAuditTableFunctionSet() {
+    TableFunctionSet set("anofox_tab_pii_audit_table");
+
+    // Version 1: table_name only
+    TableFunction func1("anofox_tab_pii_audit_table",
+                        {LogicalType::VARCHAR},
+                        PIIAuditTableFunction, PIIAuditTableBind, PIIAuditTableInit);
+    set.AddFunction(func1);
+
+    // Version 2: table_name + column filter
+    TableFunction func2("anofox_tab_pii_audit_table",
+                        {LogicalType::VARCHAR, LogicalType::VARCHAR},
+                        PIIAuditTableFunction, PIIAuditTableBind, PIIAuditTableInit);
+    set.AddFunction(func2);
+
+    return set;
 }
 
 // ============================================================================
@@ -1440,14 +2945,25 @@ void PIIScanTableFunction(ClientContext &context, TableFunctionInput &input, Dat
                     auto chunk = result->Fetch();
                     if (!chunk || chunk->size() == 0) break;
 
+                    // Collect all texts from this chunk for batch processing
+                    std::vector<std::string> batch_texts;
+                    batch_texts.reserve(chunk->size());
+
                     for (idx_t row = 0; row < chunk->size(); row++) {
                         auto val = chunk->GetValue(0, row);
-                        if (val.IsNull()) continue;
+                        if (val.IsNull()) {
+                            batch_texts.push_back("");  // Placeholder for null values
+                        } else {
+                            batch_texts.push_back(val.GetValue<std::string>());
+                        }
+                    }
 
-                        auto text = val.GetValue<std::string>();
-                        auto matches = engine.Detect(text);
+                    // Run batch detection (pre-warms NER cache)
+                    auto batch_matches = engine.DetectBatch(batch_texts);
 
-                        for (const auto &match : matches) {
+                    // Process results
+                    for (size_t i = 0; i < batch_matches.size(); i++) {
+                        for (const auto &match : batch_matches[i]) {
                             auto &res = col_results[match.type];
                             res.column_name = col_name;
                             res.pii_type = match.type;
@@ -1532,24 +3048,356 @@ TableFunctionSet CreatePIIScanTableFunctionSet() {
 } // anonymous namespace
 
 // ============================================================================
+// Telemetry Bind Functions for PII Scalar Functions
+// ============================================================================
+
+unique_ptr<FunctionData> PIIDetectBind(ClientContext &, ScalarFunction &, vector<unique_ptr<Expression>> &) {
+    PostHogTelemetry::Instance().CaptureFunctionExecution("pii_detect");
+    return nullptr;
+}
+
+unique_ptr<FunctionData> PIIMaskBind(ClientContext &, ScalarFunction &, vector<unique_ptr<Expression>> &) {
+    PostHogTelemetry::Instance().CaptureFunctionExecution("pii_mask");
+    return nullptr;
+}
+
+unique_ptr<FunctionData> PIIContainsBind(ClientContext &, ScalarFunction &, vector<unique_ptr<Expression>> &) {
+    PostHogTelemetry::Instance().CaptureFunctionExecution("pii_contains");
+    return nullptr;
+}
+
+unique_ptr<FunctionData> PIICountBind(ClientContext &, ScalarFunction &, vector<unique_ptr<Expression>> &) {
+    PostHogTelemetry::Instance().CaptureFunctionExecution("pii_count");
+    return nullptr;
+}
+
+unique_ptr<FunctionData> PIIIsValidSSNBind(ClientContext &, ScalarFunction &, vector<unique_ptr<Expression>> &) {
+    PostHogTelemetry::Instance().CaptureFunctionExecution("pii_is_valid_ssn");
+    return nullptr;
+}
+
+unique_ptr<FunctionData> PIIIsValidIBANBind(ClientContext &, ScalarFunction &, vector<unique_ptr<Expression>> &) {
+    PostHogTelemetry::Instance().CaptureFunctionExecution("pii_is_valid_iban");
+    return nullptr;
+}
+
+unique_ptr<FunctionData> PIIIsValidCreditCardBind(ClientContext &, ScalarFunction &, vector<unique_ptr<Expression>> &) {
+    PostHogTelemetry::Instance().CaptureFunctionExecution("pii_is_valid_credit_card");
+    return nullptr;
+}
+
+unique_ptr<FunctionData> PIIIsValidNINOBind(ClientContext &, ScalarFunction &, vector<unique_ptr<Expression>> &) {
+    PostHogTelemetry::Instance().CaptureFunctionExecution("pii_is_valid_nino");
+    return nullptr;
+}
+
+unique_ptr<FunctionData> PIIIsValidDETaxIDBind(ClientContext &, ScalarFunction &, vector<unique_ptr<Expression>> &) {
+    PostHogTelemetry::Instance().CaptureFunctionExecution("pii_is_valid_de_tax_id");
+    return nullptr;
+}
+
+unique_ptr<FunctionData> PIIIsValidCryptoBind(ClientContext &, ScalarFunction &, vector<unique_ptr<Expression>> &) {
+    PostHogTelemetry::Instance().CaptureFunctionExecution("pii_is_valid_crypto_address");
+    return nullptr;
+}
+
+unique_ptr<FunctionData> PIIDetectEmailsBind(ClientContext &, ScalarFunction &, vector<unique_ptr<Expression>> &) {
+    PostHogTelemetry::Instance().CaptureFunctionExecution("pii_detect_emails");
+    return nullptr;
+}
+
+unique_ptr<FunctionData> PIIDetectPhonesBind(ClientContext &, ScalarFunction &, vector<unique_ptr<Expression>> &) {
+    PostHogTelemetry::Instance().CaptureFunctionExecution("pii_detect_phones");
+    return nullptr;
+}
+
+unique_ptr<FunctionData> PIIDetectCreditCardsBind(ClientContext &, ScalarFunction &, vector<unique_ptr<Expression>> &) {
+    PostHogTelemetry::Instance().CaptureFunctionExecution("pii_detect_credit_cards");
+    return nullptr;
+}
+
+unique_ptr<FunctionData> PIIDetectSSNsBind(ClientContext &, ScalarFunction &, vector<unique_ptr<Expression>> &) {
+    PostHogTelemetry::Instance().CaptureFunctionExecution("pii_detect_ssns");
+    return nullptr;
+}
+
+unique_ptr<FunctionData> PIIDetectNamesBind(ClientContext &, ScalarFunction &, vector<unique_ptr<Expression>> &) {
+    PostHogTelemetry::Instance().CaptureFunctionExecution("pii_detect_names");
+    return nullptr;
+}
+
+unique_ptr<FunctionData> PIIDetectIBANsBind(ClientContext &, ScalarFunction &, vector<unique_ptr<Expression>> &) {
+    PostHogTelemetry::Instance().CaptureFunctionExecution("pii_detect_ibans");
+    return nullptr;
+}
+
+unique_ptr<FunctionData> PIIDetectBatchBind(ClientContext &, ScalarFunction &, vector<unique_ptr<Expression>> &) {
+    PostHogTelemetry::Instance().CaptureFunctionExecution("pii_detect_batch");
+    return nullptr;
+}
+
+unique_ptr<FunctionData> PIIMaskColumnBind(ClientContext &, ScalarFunction &, vector<unique_ptr<Expression>> &) {
+    PostHogTelemetry::Instance().CaptureFunctionExecution("pii_mask_column");
+    return nullptr;
+}
+
+unique_ptr<FunctionData> PIIRedactColumnBind(ClientContext &, ScalarFunction &, vector<unique_ptr<Expression>> &) {
+    PostHogTelemetry::Instance().CaptureFunctionExecution("pii_redact_column");
+    return nullptr;
+}
+
+// ============================================================================
+// PII Configuration Option Setters
+// ============================================================================
+
+void SetPIIMinConfidenceOption(ClientContext &, SetScope, Value &parameter) {
+    if (parameter.IsNull()) {
+        throw InvalidInputException("anofox_pii_min_confidence cannot be NULL");
+    }
+    auto value = parameter.GetValue<double>();
+    PIIConfig::Get().SetMinConfidence(value);
+    parameter = Value::DOUBLE(value);
+}
+
+void SetPIIDefaultMaskStrategyOption(ClientContext &, SetScope, Value &parameter) {
+    if (parameter.IsNull()) {
+        throw InvalidInputException("anofox_pii_default_mask_strategy cannot be NULL");
+    }
+    auto strategy = parameter.ToString();
+    PIIConfig::Get().SetDefaultMaskStrategy(strategy);
+    parameter = Value(PIIConfig::Get().GetDefaultMaskStrategyString());
+}
+
+void SetPIIEnabledTypesOption(ClientContext &, SetScope, Value &parameter) {
+    if (parameter.IsNull()) {
+        PIIConfig::Get().SetEnabledTypes("");  // Reset to all types
+        parameter = Value("");
+        return;
+    }
+    auto types_csv = parameter.ToString();
+    PIIConfig::Get().SetEnabledTypes(types_csv);
+    parameter = Value(PIIConfig::Get().GetEnabledTypesString());
+}
+
+void SetPIIDeepValidationOption(ClientContext &, SetScope, Value &parameter) {
+    if (parameter.IsNull()) {
+        throw InvalidInputException("anofox_pii_deep_validation cannot be NULL");
+    }
+    auto enabled = BooleanValue::Get(parameter);
+    PIIConfig::Get().SetDeepValidation(enabled);
+}
+
+// ============================================================================
+// pii_config() Table Function
+// ============================================================================
+
+struct PIIConfigData : TableFunctionData {
+    bool done = false;
+};
+
+struct PIIConfigState : GlobalTableFunctionState {
+    idx_t current_row = 0;
+};
+
+unique_ptr<FunctionData> PIIConfigBind(ClientContext &, TableFunctionBindInput &,
+                                       vector<LogicalType> &return_types, vector<string> &names) {
+    return_types.push_back(LogicalType::VARCHAR);  // option_name
+    return_types.push_back(LogicalType::VARCHAR);  // option_value
+    return_types.push_back(LogicalType::VARCHAR);  // description
+
+    names.push_back("option_name");
+    names.push_back("option_value");
+    names.push_back("description");
+
+    return make_uniq<PIIConfigData>();
+}
+
+unique_ptr<GlobalTableFunctionState> PIIConfigInit(ClientContext &, TableFunctionInitInput &) {
+    return make_uniq<PIIConfigState>();
+}
+
+void PIIConfigFunction(ClientContext &, TableFunctionInput &input, DataChunk &output) {
+    auto &state = input.global_state->Cast<PIIConfigState>();
+
+    struct ConfigOption {
+        const char* name;
+        std::string value;
+        const char* description;
+    };
+
+    auto &config = PIIConfig::Get();
+
+    std::vector<ConfigOption> options = {
+        {"anofox_pii_min_confidence",
+         std::to_string(config.GetMinConfidence()),
+         "Minimum confidence threshold for NER-based detection (0.0 - 1.0)"},
+        {"anofox_pii_default_mask_strategy",
+         config.GetDefaultMaskStrategyString(),
+         "Default masking strategy (REDACT, HASH, PARTIAL, ASTERISK, NONE)"},
+        {"anofox_pii_enabled_types",
+         config.GetEnabledTypesString().empty() ? "(all types)" : config.GetEnabledTypesString(),
+         "Comma-separated list of PII types to detect (empty = all)"},
+        {"anofox_pii_deep_validation",
+         config.IsDeepValidationEnabled() ? "true" : "false",
+         "Enable deep validation using libphonenumber for phone numbers"}
+    };
+
+    if (state.current_row >= options.size()) {
+        output.SetCardinality(0);
+        return;
+    }
+
+    idx_t remaining = options.size() - state.current_row;
+    idx_t count = MinValue<idx_t>(remaining, STANDARD_VECTOR_SIZE);
+
+    output.SetCardinality(count);
+
+    for (idx_t i = 0; i < count; i++) {
+        const auto &opt = options[state.current_row + i];
+        output.SetValue(0, i, Value(opt.name));
+        output.SetValue(1, i, Value(opt.value));
+        output.SetValue(2, i, Value(opt.description));
+    }
+
+    state.current_row += count;
+}
+
+TableFunction CreatePIIConfigFunction() {
+    TableFunction func("anofox_tab_pii_config", {}, PIIConfigFunction, PIIConfigBind, PIIConfigInit);
+    return func;
+}
+
+// ============================================================================
 // Registration
 // ============================================================================
 
+void RegisterPIIOptions(ExtensionLoader &loader) {
+    auto &config = DBConfig::GetConfig(loader.GetDatabaseInstance());
+
+    config.AddExtensionOption("anofox_pii_min_confidence",
+                              "Minimum confidence threshold for NER-based PII detection (0.0 - 1.0)",
+                              LogicalTypeId::DOUBLE,
+                              Value::DOUBLE(PIIConfig::DEFAULT_MIN_CONFIDENCE),
+                              SetPIIMinConfidenceOption);
+
+    config.AddExtensionOption("anofox_pii_default_mask_strategy",
+                              "Default masking strategy (REDACT, HASH, PARTIAL, ASTERISK, NONE)",
+                              LogicalTypeId::VARCHAR,
+                              Value(PIIConfig::DEFAULT_MASK_STRATEGY),
+                              SetPIIDefaultMaskStrategyOption);
+
+    config.AddExtensionOption("anofox_pii_enabled_types",
+                              "Comma-separated list of PII types to detect (empty = all)",
+                              LogicalTypeId::VARCHAR,
+                              Value(""),
+                              SetPIIEnabledTypesOption);
+
+    config.AddExtensionOption("anofox_pii_deep_validation",
+                              "Enable deep validation using libphonenumber for phone numbers (default: false)",
+                              LogicalTypeId::BOOLEAN,
+                              Value::BOOLEAN(false),
+                              SetPIIDeepValidationOption);
+
+    AnofoxTrace(AnofoxLogLevel::Info, "[anofox] PII configuration options registered");
+}
+
 void RegisterPIIFunctions(ExtensionLoader &loader) {
-    // anofox_tab_pii_detect (alias: pii_detect)
-    RegisterScalarFunctionWithAlias(loader, PIIDetectFunction::GetFunction(), "pii_detect");
+    // anofox_tab_pii_detect (alias: pii_detect) - returns LIST(STRUCT(...))
+    // Idiomatic DuckDB version with queryable struct fields
+    auto pii_detect_func = PIIDetectFunction::GetFunction();
+    pii_detect_func.bind = PIIDetectBind;
+    RegisterScalarFunctionWithAlias(loader, pii_detect_func, "pii_detect");
 
     // anofox_tab_pii_mask (alias: pii_mask) - with function set for overloads
     ScalarFunctionSet mask_set("anofox_tab_pii_mask");
-    mask_set.AddFunction(PIIMaskFunction::GetFunction());
-    mask_set.AddFunction(PIIMaskDefaultFunction::GetFunction());
+    auto pii_mask_func = PIIMaskFunction::GetFunction();
+    pii_mask_func.bind = PIIMaskBind;
+    mask_set.AddFunction(pii_mask_func);
+    auto pii_mask_default_func = PIIMaskDefaultFunction::GetFunction();
+    pii_mask_default_func.bind = PIIMaskBind;
+    mask_set.AddFunction(pii_mask_default_func);
     RegisterScalarFunctionSetWithAlias(loader, mask_set, "pii_mask");
 
     // anofox_tab_pii_contains (alias: pii_contains)
-    RegisterScalarFunctionWithAlias(loader, PIIContainsFunction::GetFunction(), "pii_contains");
+    auto pii_contains_func = PIIContainsFunction::GetFunction();
+    pii_contains_func.bind = PIIContainsBind;
+    RegisterScalarFunctionWithAlias(loader, pii_contains_func, "pii_contains");
 
     // anofox_tab_pii_count (alias: pii_count)
-    RegisterScalarFunctionWithAlias(loader, PIICountFunction::GetFunction(), "pii_count");
+    auto pii_count_func = PIICountFunction::GetFunction();
+    pii_count_func.bind = PIICountBind;
+    RegisterScalarFunctionWithAlias(loader, pii_count_func, "pii_count");
+
+    // Individual validation functions
+    auto pii_valid_ssn_func = PIIIsValidSSNFunction::GetFunction();
+    pii_valid_ssn_func.bind = PIIIsValidSSNBind;
+    RegisterScalarFunctionWithAlias(loader, pii_valid_ssn_func, "pii_is_valid_ssn");
+
+    auto pii_valid_iban_func = PIIIsValidIBANFunction::GetFunction();
+    pii_valid_iban_func.bind = PIIIsValidIBANBind;
+    RegisterScalarFunctionWithAlias(loader, pii_valid_iban_func, "pii_is_valid_iban");
+
+    auto pii_valid_cc_func = PIIIsValidCreditCardFunction::GetFunction();
+    pii_valid_cc_func.bind = PIIIsValidCreditCardBind;
+    RegisterScalarFunctionWithAlias(loader, pii_valid_cc_func, "pii_is_valid_credit_card");
+
+    auto pii_valid_nino_func = PIIIsValidNINOFunction::GetFunction();
+    pii_valid_nino_func.bind = PIIIsValidNINOBind;
+    RegisterScalarFunctionWithAlias(loader, pii_valid_nino_func, "pii_is_valid_nino");
+
+    auto pii_valid_de_tax_func = PIIIsValidDETaxIDFunction::GetFunction();
+    pii_valid_de_tax_func.bind = PIIIsValidDETaxIDBind;
+    RegisterScalarFunctionWithAlias(loader, pii_valid_de_tax_func, "pii_is_valid_de_tax_id");
+
+    auto pii_valid_crypto_func = PIIIsValidCryptoFunction::GetFunction();
+    pii_valid_crypto_func.bind = PIIIsValidCryptoBind;
+    RegisterScalarFunctionWithAlias(loader, pii_valid_crypto_func, "pii_is_valid_crypto_address");
+
+    // Type-specific detection functions
+    auto pii_detect_emails_func = PIIDetectEmailsFunction::GetFunction();
+    pii_detect_emails_func.bind = PIIDetectEmailsBind;
+    RegisterScalarFunctionWithAlias(loader, pii_detect_emails_func, "pii_detect_emails");
+
+    auto pii_detect_phones_func = PIIDetectPhonesFunction::GetFunction();
+    pii_detect_phones_func.bind = PIIDetectPhonesBind;
+    RegisterScalarFunctionWithAlias(loader, pii_detect_phones_func, "pii_detect_phones");
+
+    auto pii_detect_cc_func = PIIDetectCreditCardsFunction::GetFunction();
+    pii_detect_cc_func.bind = PIIDetectCreditCardsBind;
+    RegisterScalarFunctionWithAlias(loader, pii_detect_cc_func, "pii_detect_credit_cards");
+
+    auto pii_detect_ssns_func = PIIDetectSSNsFunction::GetFunction();
+    pii_detect_ssns_func.bind = PIIDetectSSNsBind;
+    RegisterScalarFunctionWithAlias(loader, pii_detect_ssns_func, "pii_detect_ssns");
+
+    auto pii_detect_names_func = PIIDetectNamesFunction::GetFunction();
+    pii_detect_names_func.bind = PIIDetectNamesBind;
+    RegisterScalarFunctionWithAlias(loader, pii_detect_names_func, "pii_detect_names");
+
+    auto pii_detect_ibans_func = PIIDetectIBANsFunction::GetFunction();
+    pii_detect_ibans_func.bind = PIIDetectIBANsBind;
+    RegisterScalarFunctionWithAlias(loader, pii_detect_ibans_func, "pii_detect_ibans");
+
+    // Batch detection function
+    auto pii_detect_batch_func = PIIDetectBatchFunction::GetFunction();
+    pii_detect_batch_func.bind = PIIDetectBatchBind;
+    RegisterScalarFunctionWithAlias(loader, pii_detect_batch_func, "pii_detect_batch");
+
+    // Advanced masking functions
+    // pii_mask_column(value, pii_type, strategy) - type-specific masking
+    auto pii_mask_column_func = PIIMaskColumnFunction::GetFunction();
+    pii_mask_column_func.bind = PIIMaskColumnBind;
+    RegisterScalarFunctionWithAlias(loader, pii_mask_column_func, "pii_mask_column");
+
+    // pii_redact_column(value, strategy?) - mask all PII, optional strategy
+    ScalarFunctionSet redact_column_set("anofox_tab_pii_redact_column");
+    auto pii_redact_column_func = PIIRedactColumnFunction::GetFunction();
+    pii_redact_column_func.bind = PIIRedactColumnBind;
+    redact_column_set.AddFunction(pii_redact_column_func);
+    auto pii_redact_column_default_func = PIIRedactColumnDefaultFunction::GetFunction();
+    pii_redact_column_default_func.bind = PIIRedactColumnBind;
+    redact_column_set.AddFunction(pii_redact_column_default_func);
+    RegisterScalarFunctionSetWithAlias(loader, redact_column_set, "pii_redact_column");
 
     // anofox_tab_pii_status (alias: pii_status) - table function
     auto pii_status_func = CreatePIIStatusFunction();
@@ -1558,6 +3406,18 @@ void RegisterPIIFunctions(ExtensionLoader &loader) {
     // anofox_tab_pii_scan_table (alias: pii_scan_table) - table function set
     auto pii_scan_set = CreatePIIScanTableFunctionSet();
     RegisterTableFunctionSetWithAlias(loader, pii_scan_set, "pii_scan_table");
+
+    // anofox_tab_pii_audit_table (alias: pii_audit_table) - row-level audit function
+    auto pii_audit_set = CreatePIIAuditTableFunctionSet();
+    RegisterTableFunctionSetWithAlias(loader, pii_audit_set, "pii_audit_table");
+
+    // anofox_ner_status - NER model status (no alias, direct name)
+    auto ner_status_func = CreateNERStatusFunction();
+    loader.RegisterFunction(ner_status_func);
+
+    // anofox_tab_pii_config (alias: pii_config) - configuration display
+    auto pii_config_func = CreatePIIConfigFunction();
+    RegisterTableFunctionWithAlias(loader, pii_config_func, "pii_config");
 
     AnofoxTrace(AnofoxLogLevel::Info, "[anofox] PII detection functions registered");
 }

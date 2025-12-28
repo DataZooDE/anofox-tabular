@@ -25,7 +25,10 @@ enum class PIIType {
     IBAN,            // International Bank Account Numbers
     DE_TAX_ID,       // German Tax ID (Steueridentifikationsnummer)
     URL,             // HTTP/HTTPS URLs
-    // Future extensions
+    NAME,            // Person names (NER-based detection, PER entities)
+    ORGANIZATION,    // Organization/company names (NER-based, ORG entities)
+    LOCATION,        // Geographic locations (NER-based, LOC entities)
+    MISC,            // Miscellaneous entities (NER-based, MISC entities - events, languages)
     US_PASSPORT,
     CRYPTO_ADDRESS,
     UK_NINO,
@@ -264,6 +267,7 @@ class PhoneRecognizer : public RegexRecognizer {
 public:
     PhoneRecognizer();
     ~PhoneRecognizer() override;
+    bool Validate(const std::string &text) const override;
     std::string GetPartialMask(const std::string &text) const override;
 };
 
@@ -298,6 +302,83 @@ private:
 };
 
 /**
+ * Person Name recognizer (NER-based detection, PER entities)
+ * Uses OpenVINO DistilBERT NER model with dictionary fallback
+ */
+class NameRecognizer : public PIIRecognizer {
+public:
+    NameRecognizer();
+    ~NameRecognizer() override;
+
+    PIIType GetType() const override;
+    std::string GetName() const override;
+    std::vector<PIIMatch> FindMatches(const std::string &text) const override;
+    bool Validate(const std::string &text) const override;
+    std::string GetPartialMask(const std::string &text) const override;
+
+private:
+    std::vector<PIIMatch> ExtractWithDictionary(const std::string &text) const;
+    std::regex pattern_;
+};
+
+/**
+ * Organization Name recognizer (NER-based detection, ORG entities)
+ * Uses OpenVINO DistilBERT NER model to detect company/organization names
+ */
+class OrganizationRecognizer : public PIIRecognizer {
+public:
+    OrganizationRecognizer();
+    ~OrganizationRecognizer() override;
+
+    PIIType GetType() const override;
+    std::string GetName() const override;
+    std::vector<PIIMatch> FindMatches(const std::string &text) const override;
+    bool Validate(const std::string &text) const override;
+    std::string GetPartialMask(const std::string &text) const override;
+
+private:
+    PIIType type_;
+};
+
+/**
+ * Location recognizer (NER-based detection, LOC entities)
+ * Uses OpenVINO DistilBERT NER model to detect geographic locations
+ */
+class LocationRecognizer : public PIIRecognizer {
+public:
+    LocationRecognizer();
+    ~LocationRecognizer() override;
+
+    PIIType GetType() const override;
+    std::string GetName() const override;
+    std::vector<PIIMatch> FindMatches(const std::string &text) const override;
+    bool Validate(const std::string &text) const override;
+    std::string GetPartialMask(const std::string &text) const override;
+
+private:
+    PIIType type_;
+};
+
+/**
+ * Miscellaneous Entity recognizer (NER-based detection, MISC entities)
+ * Uses OpenVINO DistilBERT NER model to detect misc entities (events, languages, etc.)
+ */
+class MiscRecognizer : public PIIRecognizer {
+public:
+    MiscRecognizer();
+    ~MiscRecognizer() override;
+
+    PIIType GetType() const override;
+    std::string GetName() const override;
+    std::vector<PIIMatch> FindMatches(const std::string &text) const override;
+    bool Validate(const std::string &text) const override;
+    std::string GetPartialMask(const std::string &text) const override;
+
+private:
+    PIIType type_;
+};
+
+/**
  * PII Detection Engine
  * Main class for detecting and masking PII in text
  */
@@ -323,6 +404,18 @@ public:
     ) const;
 
     /**
+     * Batch detection of PII in multiple texts
+     * Pre-warms NER cache for efficiency when processing many texts
+     * @param texts: Vector of input texts to scan
+     * @param types: Optional filter for specific PII types (empty = all)
+     * @return Vector of match vectors (one per input text)
+     */
+    std::vector<std::vector<PIIMatch>> DetectBatch(
+        const std::vector<std::string> &texts,
+        const std::vector<PIIType> &types = {}
+    ) const;
+
+    /**
      * Mask all PII in input text
      * @param text: Input text to process
      * @param strategy: Masking strategy to apply
@@ -344,6 +437,15 @@ public:
      * Register a custom recognizer
      */
     void RegisterRecognizer(std::unique_ptr<PIIRecognizer> recognizer);
+
+    /**
+     * Validate a text for a specific PII type
+     * First checks if text matches the pattern, then validates checksum if applicable
+     * @param text: Input text to validate
+     * @param type: PII type to validate against
+     * @return true if text is valid for the specified type
+     */
+    bool ValidateType(const std::string &text, PIIType type) const;
 
 private:
     std::vector<std::unique_ptr<PIIRecognizer>> recognizers_;
@@ -392,6 +494,56 @@ struct PIIAuditResult {
 
     PIIAuditResult() : row_id(0), pii_type(PIIType::UNKNOWN), start_pos(0), end_pos(0), confidence(0.0) {}
 };
+
+/**
+ * PII Configuration Singleton
+ * Manages runtime configuration for PII detection and masking
+ */
+class PIIConfig {
+public:
+    static PIIConfig& Get();
+
+    // Confidence threshold for NER-based detection (0.0 - 1.0)
+    double GetMinConfidence() const { return min_confidence_; }
+    void SetMinConfidence(double value);
+
+    // Default masking strategy
+    MaskStrategy GetDefaultMaskStrategy() const { return default_mask_strategy_; }
+    std::string GetDefaultMaskStrategyString() const { return MaskStrategyToString(default_mask_strategy_); }
+    void SetDefaultMaskStrategy(const std::string &strategy);
+
+    // Enabled PII types filter (empty = all types enabled)
+    const std::vector<PIIType>& GetEnabledTypes() const { return enabled_types_; }
+    std::string GetEnabledTypesString() const;
+    void SetEnabledTypes(const std::string &types_csv);
+    bool IsTypeEnabled(PIIType type) const;
+
+    // Deep validation for emails and phones (uses existing validators)
+    bool IsDeepValidationEnabled() const { return deep_validation_; }
+    void SetDeepValidation(bool enabled) { deep_validation_ = enabled; }
+
+    // Configuration limits
+    static constexpr double MIN_CONFIDENCE = 0.0;
+    static constexpr double MAX_CONFIDENCE = 1.0;
+    static constexpr double DEFAULT_MIN_CONFIDENCE = 0.5;
+    static constexpr const char* DEFAULT_MASK_STRATEGY = "redact";
+
+private:
+    PIIConfig();
+    ~PIIConfig() = default;
+    PIIConfig(const PIIConfig&) = delete;
+    PIIConfig& operator=(const PIIConfig&) = delete;
+
+    double min_confidence_;
+    MaskStrategy default_mask_strategy_;
+    std::vector<PIIType> enabled_types_;  // Empty = all types
+    bool deep_validation_ = false;        // Use email/phone validators
+};
+
+/**
+ * Register PII configuration options with DuckDB
+ */
+void RegisterPIIOptions(ExtensionLoader &loader);
 
 /**
  * Register PII functions with DuckDB

@@ -16,18 +16,32 @@ endif()
 
 # --- Dependencies ---
 
+# pkg-config is needed for some dependencies (libpostal, sentencepiece fallback)
+find_package(PkgConfig)
+
 # Lightweight deps via vcpkg
 include(CMakeFindDependencyMacro)
 find_package(spdlog CONFIG REQUIRED)
 find_package(c-ares CONFIG REQUIRED)
 find_package(CURL CONFIG REQUIRED)
 
+# OpenVINO for NER (Named Entity Recognition)
+find_package(OpenVINO REQUIRED COMPONENTS Runtime ONNX)
+message(STATUS "OpenVINO support: ENABLED (version ${OpenVINO_VERSION})")
+add_compile_definitions(HAVE_OPENVINO=1)
+
+# SentencePiece for XLM-RoBERTa tokenization (multilingual NER)
+# NOTE: Disabled for now due to complex abseil dependency chain issues with static linking.
+# When sentencepiece is needed, consider using tokenizers-cpp or pre-converted OpenVINO tokenizer models.
+# See: https://github.com/mlc-ai/tokenizers-cpp
+# See: https://github.com/openvinotoolkit/openvino_tokenizers
+message(STATUS "SentencePiece support: DISABLED (English NER only via WordPiece)")
+set(SENTENCEPIECE_FOUND FALSE)
+
 # Libphonenumber: Custom implementation (no external dependency)
 
 # Libpostal via pkg-config (system-installed, CI preferred)
 # Note: libpostal is NOT supported on Windows - postal module will be disabled
-# pkg-config is optional - only needed for libpostal detection on Linux/macOS
-find_package(PkgConfig)
 
 # Libpostal is installed by configure_ci (Makefile) before CMake runs.
 # The install script (scripts/install-deps-ci.sh) builds from source with -fPIC
@@ -142,6 +156,7 @@ set(EXTENSION_SOURCES
         src/anofox_vat.cpp
         src/anofox_vat_country.cpp
         src/anofox_pii.cpp
+        src/anofox_ner.cpp
 )
 
 add_library(anofox_trace_obj OBJECT src/anofox_trace.cpp)
@@ -175,6 +190,19 @@ target_link_libraries(${EXTENSION_NAME}
     OpenSSL::Crypto
 )
 
+# Link OpenVINO runtime
+target_link_libraries(${EXTENSION_NAME} openvino::runtime)
+
+# Link SentencePiece for multilingual tokenization (if available)
+if(SENTENCEPIECE_FOUND)
+    if(sentencepiece_FOUND)
+        target_link_libraries(${EXTENSION_NAME} sentencepiece)
+    else()
+        target_link_libraries(${EXTENSION_NAME} ${SENTENCEPIECE_LDFLAGS})
+        target_include_directories(${EXTENSION_NAME} PRIVATE ${SENTENCEPIECE_INCLUDE_DIRS})
+    endif()
+endif()
+
 # Add include directories from dependencies
 target_include_directories(${EXTENSION_NAME} PRIVATE
     ${LIBPOSTAL_INCLUDE_DIRS}
@@ -198,6 +226,19 @@ target_link_libraries(${LOADABLE_EXTENSION_NAME}
     OpenSSL::SSL
     OpenSSL::Crypto
 )
+
+# Link OpenVINO runtime
+target_link_libraries(${LOADABLE_EXTENSION_NAME} openvino::runtime)
+
+# Link SentencePiece for multilingual tokenization (if available)
+if(SENTENCEPIECE_FOUND)
+    if(sentencepiece_FOUND)
+        target_link_libraries(${LOADABLE_EXTENSION_NAME} sentencepiece)
+    else()
+        target_link_libraries(${LOADABLE_EXTENSION_NAME} ${SENTENCEPIECE_LDFLAGS})
+        target_include_directories(${LOADABLE_EXTENSION_NAME} PRIVATE ${SENTENCEPIECE_INCLUDE_DIRS})
+    endif()
+endif()
 
 # Add include directories from dependencies
 target_include_directories(${LOADABLE_EXTENSION_NAME} PRIVATE

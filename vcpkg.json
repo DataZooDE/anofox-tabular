@@ -3,7 +3,12 @@
                 "openssl",
                 "c-ares",
                 "spdlog",
-                "curl"
+                "curl",
+                {
+                        "name": "openvino",
+                        "default-features": false,
+                        "features": ["cpu", "gpu", "auto", "onnx"]
+                }
         ],
         "vcpkg-configuration": {
                 "overlay-ports": [
