@@ -412,7 +412,8 @@ NERModelManager::NERModelManager()
     status_message_ = "OpenVINO available, model not loaded";
     core_ = std::make_shared<ov::Core>();
 #else
-    #error "OpenVINO is required for NER functionality"
+    status_.store(NERStatus::NOT_LOADED);
+    status_message_ = "NER not available: OpenVINO not installed";
 #endif
 }
 

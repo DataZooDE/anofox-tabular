@@ -27,6 +27,8 @@ find_package(CURL CONFIG REQUIRED)
 
 # OpenVINO for NER (Named Entity Recognition)
 # Optional: NER functionality will be disabled if OpenVINO is not available
+# Note: OpenVINO is NOT installed via vcpkg due to musl compatibility issues.
+# To enable NER, install OpenVINO manually (e.g., apt install openvino-dev)
 find_package(OpenVINO COMPONENTS Runtime ONNX)
 if(OpenVINO_FOUND)
     message(STATUS "OpenVINO support: ENABLED (version ${OpenVINO_VERSION})")
