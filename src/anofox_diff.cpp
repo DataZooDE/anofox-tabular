@@ -1,5 +1,6 @@
 #include "anofox_diff.hpp"
 #include "anofox_function_alias.hpp"
+#include "telemetry.hpp"
 
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/common/types/value.hpp"
@@ -299,6 +300,7 @@ static string GenerateJoinDiffSQL(const string &source_table, const string &targ
 }
 
 static unique_ptr<TableRef> JoinDiffBindReplace(ClientContext &context, TableFunctionBindInput &input) {
+	PostHogTelemetry::Instance().CaptureFunctionExecution("diff_joindiff");
 	// Parameters:
 	// 0: source_table (VARCHAR)
 	// 1: target_table (VARCHAR)
@@ -350,6 +352,44 @@ static unique_ptr<TableRef> JoinDiffBindReplace(ClientContext &context, TableFun
 	// Parse and return as SubqueryRef
 	auto subquery_ref = ParseSubquery(sql, context.GetParserOptions(),
 	                                  "Failed to parse generated diff query");
+	return std::move(subquery_ref);
+}
+
+// HashDiff bind_replace - wraps JoinDiff with separate telemetry tracking
+static unique_ptr<TableRef> HashDiffBindReplace(ClientContext &context, TableFunctionBindInput &input) {
+	PostHogTelemetry::Instance().CaptureFunctionExecution("diff_hashdiff");
+	// Currently, HashDiff uses the same logic as JoinDiff
+	// But we track it separately for telemetry purposes
+
+	if (input.inputs.size() < 3) {
+		throw BinderException("anofox_diff_hashdiff requires at least 3 arguments: source_table, target_table, primary_key(s)");
+	}
+
+	// Parse source and target table names
+	if (input.inputs[0].IsNull() || input.inputs[1].IsNull()) {
+		throw BinderException("source_table and target_table cannot be NULL");
+	}
+
+	string source_table = input.inputs[0].ToString();
+	string target_table = input.inputs[1].ToString();
+
+	// Parse primary keys
+	vector<string> primary_keys = ParseColumnList(input.inputs[2]);
+	if (primary_keys.empty()) {
+		throw BinderException("Primary key(s) cannot be empty");
+	}
+
+	// HashDiff specific parameters (bisection_threshold, bisection_factor) are ignored for now
+	// as we fall back to JoinDiff logic
+	vector<string> compare_columns;
+	bool include_all = false;
+
+	// Generate SQL query using same logic as JoinDiff
+	string sql = GenerateJoinDiffSQL(source_table, target_table, primary_keys, compare_columns, include_all);
+
+	// Parse and return as SubqueryRef
+	auto subquery_ref = ParseSubquery(sql, context.GetParserOptions(),
+	                                  "Failed to parse generated hashdiff query");
 	return std::move(subquery_ref);
 }
 
@@ -472,7 +512,7 @@ void RegisterDiffFunctions(ExtensionLoader &loader) {
 	                             {LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::VARCHAR),
 	                              LogicalType(LogicalTypeId::VARCHAR)},
 	                             nullptr, nullptr);
-	hashdiff_single.bind_replace = JoinDiffBindReplace;  // Reuse JoinDiff for now
+	hashdiff_single.bind_replace = HashDiffBindReplace;
 	hashdiff_single.named_parameters["source_table"] = LogicalType(LogicalTypeId::VARCHAR);
 	hashdiff_single.named_parameters["target_table"] = LogicalType(LogicalTypeId::VARCHAR);
 	hashdiff_single.named_parameters["primary_key"] = LogicalType(LogicalTypeId::VARCHAR);
@@ -483,7 +523,7 @@ void RegisterDiffFunctions(ExtensionLoader &loader) {
 	                                       {LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::VARCHAR),
 	                                        LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::BIGINT)},
 	                                       nullptr, nullptr);
-	hashdiff_single_threshold.bind_replace = JoinDiffBindReplace;
+	hashdiff_single_threshold.bind_replace = HashDiffBindReplace;
 	hashdiff_single_threshold.named_parameters["source_table"] = LogicalType(LogicalTypeId::VARCHAR);
 	hashdiff_single_threshold.named_parameters["target_table"] = LogicalType(LogicalTypeId::VARCHAR);
 	hashdiff_single_threshold.named_parameters["primary_key"] = LogicalType(LogicalTypeId::VARCHAR);
@@ -496,7 +536,7 @@ void RegisterDiffFunctions(ExtensionLoader &loader) {
 	                                   LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::BIGINT),
 	                                   LogicalType(LogicalTypeId::BIGINT)},
 	                                  nullptr, nullptr);
-	hashdiff_single_full.bind_replace = JoinDiffBindReplace;
+	hashdiff_single_full.bind_replace = HashDiffBindReplace;
 	hashdiff_single_full.named_parameters["source_table"] = LogicalType(LogicalTypeId::VARCHAR);
 	hashdiff_single_full.named_parameters["target_table"] = LogicalType(LogicalTypeId::VARCHAR);
 	hashdiff_single_full.named_parameters["primary_key"] = LogicalType(LogicalTypeId::VARCHAR);
@@ -509,7 +549,7 @@ void RegisterDiffFunctions(ExtensionLoader &loader) {
 	                               {LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::VARCHAR),
 	                                LogicalType::LIST(LogicalType(LogicalTypeId::VARCHAR))},
 	                               nullptr, nullptr);
-	hashdiff_compound.bind_replace = JoinDiffBindReplace;
+	hashdiff_compound.bind_replace = HashDiffBindReplace;
 	hashdiff_compound.named_parameters["source_table"] = LogicalType(LogicalTypeId::VARCHAR);
 	hashdiff_compound.named_parameters["target_table"] = LogicalType(LogicalTypeId::VARCHAR);
 	hashdiff_compound.named_parameters["primary_keys"] = LogicalType::LIST(LogicalType(LogicalTypeId::VARCHAR));

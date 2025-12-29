@@ -8,8 +8,11 @@
 #endif
 #include "anofox_phonenumber.hpp"
 #include "anofox_metric.hpp"
+#include "anofox_outlier_tree.hpp"
 #include "anofox_money.hpp"
 #include "anofox_vat.hpp"
+#include "anofox_pii.hpp"
+#include "anofox_ner.hpp"
 #include "telemetry.hpp"
 
 namespace duckdb {
@@ -75,10 +78,14 @@ void LoadInternal(ExtensionLoader &loader) {
 	anofox::RegisterEmailFunctions(loader);
 	anofox::RegisterDiffFunctions(loader);
 	anofox::RegisterMetricFunctions(loader);
+	anofox::RegisterOutlierTreeFunctions(loader);
 	anofox::RegisterMoneyOptions(loader);
 	anofox::RegisterMoneyFunctions(loader);
 	RegisterVATOptions(loader);
 	RegisterVATFunctions(loader);
+	anofox::RegisterNEROptions(loader);
+	anofox::RegisterPIIOptions(loader);
+	anofox::RegisterPIIFunctions(loader);
 }
 
 void AnofoxTabularExtension::Load(ExtensionLoader &loader) {

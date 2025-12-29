@@ -11,8 +11,8 @@ The Anofox Tabular extension provides comprehensive data quality validation, ano
 
 ### Key Features
 
-- **8 Production-Ready Modules**: Email, postal, phone, money, VAT, metrics, anomalies, and diffing
-- **57 SQL Functions**: Complete validation and analysis toolkit
+- **9 Production-Ready Modules**: Email, postal, phone, money, VAT, PII, metrics, anomalies, and diffing
+- **62 SQL Functions**: Complete validation and analysis toolkit
 - **Zero Friction**: SQL-native with no external services required (except optional libpostal for address parsing)
 - **Blazing Fast**: Vectorized C++17 implementation processes millions of rows per second
 - **Self-Contained**: Embedded validation patterns; no API keys or network calls required
@@ -53,12 +53,13 @@ All functions have aliases without the `anofox_tab_` prefix. For example:
 3. [Phone Number Validation](#phone-number-validation)
 4. [Money & Currency Operations](#money--currency-operations)
 5. [VAT Validation](#vat-validation)
-6. [Data Quality Metrics](#data-quality-metrics)
-7. [Anomaly Detection](#anomaly-detection)
-8. [Data Diffing](#data-diffing)
-9. [Configuration](#configuration)
-10. [Function Coverage Matrix](#function-coverage-matrix)
-11. [Notes](#notes)
+6. [PII Detection](#pii-detection)
+7. [Data Quality Metrics](#data-quality-metrics)
+8. [Anomaly Detection](#anomaly-detection)
+9. [Data Diffing](#data-diffing)
+10. [Configuration](#configuration)
+11. [Function Coverage Matrix](#function-coverage-matrix)
+12. [Notes](#notes)
 
 ---
 
@@ -852,6 +853,413 @@ SELECT anofox_tab_vat (alias: vat_is_valid('DE123456789');
 
 ---
 
+## PII Detection
+
+Detect and mask Personally Identifiable Information (PII) in text data. Supports multiple PII types with configurable masking strategies.
+
+### Supported PII Types
+
+| Type | Description | Example |
+|------|-------------|---------|
+| EMAIL | Email addresses | `user@example.com` |
+| CREDIT_CARD | Credit card numbers (Visa, MC, Amex, Discover) | `4111-1111-1111-1111` |
+| US_SSN | US Social Security Numbers | `123-45-6789` |
+| IBAN | International Bank Account Numbers | `DE89370400440532013000` |
+| IP_ADDRESS | IPv4 addresses | `192.168.1.100` |
+| URL | HTTP/HTTPS URLs | `https://example.com` |
+| DE_TAX_ID | German Tax ID (Steueridentifikationsnummer) | `12345678901` |
+| MAC_ADDRESS | Network hardware addresses (MAC) | `00:1A:2B:3C:4D:5E` |
+| UK_NINO | UK National Insurance Number | `AB123456C` |
+| US_PASSPORT | US Passport numbers | `A12345678` |
+| PHONE | International phone numbers | `+1-555-123-4567` |
+| API_KEY | API keys (AWS, GitHub, generic) | `AKIAIOSFODNN7EXAMPLE` |
+| CRYPTO_ADDRESS | Cryptocurrency addresses (Bitcoin, Ethereum) | `1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa` |
+| NAME | Person names (NER-based, PER entities) | `John Smith` |
+| ORGANIZATION | Company/organization names (NER-based, ORG entities) | `Microsoft`, `Google Inc` |
+| LOCATION | Geographic locations (NER-based, LOC entities) | `Paris`, `New York` |
+| MISC | Miscellaneous entities (NER-based, MISC entities) | `French`, `Nobel Prize` |
+
+### Known Limitations
+
+**US_PASSPORT:**
+- May match 9-digit sequences (invoice numbers, IDs)
+- No checksum validation available (passport numbers have none)
+- Use context to interpret overlapping matches with US_SSN
+
+**PHONE:**
+- Requires distinctive features (+ prefix or parentheses format)
+- Pattern-based detection only, not full libphonenumber validation
+- For comprehensive phone parsing, use `anofox_phonenumber_parse()`
+
+**API_KEY:**
+- Generic pattern uses entropy threshold (≥3.5 bits/char for 32+ chars)
+- AWS (`AKIA...`) and GitHub (`ghp_`, `gho_`, etc.) patterns are highly specific
+- Possible false positives with random high-entropy strings
+
+**CRYPTO_ADDRESS:**
+- Bitcoin legacy (P2PKH) and P2SH addresses validated with Base58 checksum (double SHA-256)
+- Bitcoin SegWit (bc1) addresses use format validation only (Bech32 checksum deferred)
+- Ethereum addresses validated by hex format (no EIP-55 checksum for all-lowercase)
+- Partial masking shows first 4 + last 4 characters
+
+**NAME, ORGANIZATION, LOCATION, MISC (NER-based entities):**
+- All four entity types use ML-based NER (Named Entity Recognition) with OpenVINO + DistilBERT
+- Model trained on CoNLL-2003 dataset with 92% F1 score
+- OpenVINO is required and installed via vcpkg with AUTO device selection (CPU/GPU/NPU)
+- Model downloads automatically from HuggingFace on first use (~66 MB quantized ONNX)
+- Use `SELECT * FROM anofox_ner_status()` to check NER availability
+- Confidence threshold: 0.7 (70%) for entity acceptance
+- NAME has dictionary fallback if NER unavailable; ORGANIZATION, LOCATION, MISC require NER
+- Entity types:
+  - NAME: Person names (PER entities) - e.g., "John Smith"
+  - ORGANIZATION: Company/org names (ORG entities) - e.g., "Microsoft"
+  - LOCATION: Geographic locations (LOC entities) - e.g., "Paris"
+  - MISC: Miscellaneous entities (events, languages) - e.g., "French", "Nobel Prize"
+- Case sensitive: all-caps text may produce fragmented or no results
+
+### Masking Strategies
+
+| Strategy | Description | Example Output |
+|----------|-------------|----------------|
+| `redact` | Replace with type label | `[EMAIL]`, `[US_SSN]` |
+| `partial` | Show partial value | `te**@example.com`, `***-**-6789` |
+| `asterisk` | Replace with asterisks (same length) | `****************` |
+| `hash` | Replace with SHA-256 hash (truncated) | `a1b2c3d4e5f6...` |
+
+### Functions
+
+#### `anofox_tab_pii_detect` (alias: `pii_detect`)
+
+Detect all PII in input text and return matches as JSON.
+
+**Signature:**
+```sql
+anofox_tab_pii_detect(text VARCHAR) → VARCHAR
+```
+
+**Returns:**
+- `VARCHAR`: JSON array of detected PII matches with type, position, and confidence
+
+**Example:**
+```sql
+SELECT pii_detect('Contact: john.doe@example.com, SSN: 123-45-6789');
+-- Returns: [{"type":"EMAIL","text":"john.doe@example.com","start":9,"end":29,"confidence":1.00},
+--           {"type":"US_SSN","text":"123-45-6789","start":36,"end":47,"confidence":1.00}]
+
+-- NER-based entity detection example:
+SELECT pii_detect('John Smith from Microsoft visited Paris to study French');
+-- Returns: [{"type":"NAME","text":"John Smith","start":0,"end":10,"confidence":1.00},
+--           {"type":"ORGANIZATION","text":"Microsoft","start":16,"end":25,"confidence":1.00},
+--           {"type":"LOCATION","text":"Paris","start":34,"end":39,"confidence":1.00},
+--           {"type":"MISC","text":"French","start":49,"end":55,"confidence":1.00}]
+```
+
+---
+
+#### `anofox_tab_pii_mask` (alias: `pii_mask`)
+
+Mask all detected PII in text using specified strategy.
+
+**Signature:**
+```sql
+anofox_tab_pii_mask(text VARCHAR [, strategy VARCHAR]) → VARCHAR
+```
+
+**Parameters:**
+- `text`: Input text containing potential PII
+- `strategy`: Masking strategy - `'redact'` (default), `'partial'`, `'asterisk'`, or `'hash'`
+
+**Returns:**
+- `VARCHAR`: Text with PII masked according to strategy
+
+**Examples:**
+```sql
+-- Default (redact) strategy
+SELECT pii_mask('Email: test@example.com');
+-- Returns: 'Email: [EMAIL]'
+
+-- Partial masking
+SELECT pii_mask('SSN: 123-45-6789', 'partial');
+-- Returns: 'SSN: ***-**-6789'
+
+-- Asterisk masking
+SELECT pii_mask('Card: 4111111111111111', 'asterisk');
+-- Returns: 'Card: ****************'
+```
+
+---
+
+#### `anofox_tab_pii_contains` (alias: `pii_contains`)
+
+Check if text contains any PII.
+
+**Signature:**
+```sql
+anofox_tab_pii_contains(text VARCHAR) → BOOLEAN
+```
+
+**Returns:**
+- `BOOLEAN`: `true` if any PII detected, `false` otherwise
+
+**Example:**
+```sql
+SELECT pii_contains('Contact us at support@company.com');
+-- Returns: true
+
+SELECT pii_contains('Hello, world!');
+-- Returns: false
+```
+
+---
+
+#### `anofox_tab_pii_count` (alias: `pii_count`)
+
+Count the number of PII matches in text.
+
+**Signature:**
+```sql
+anofox_tab_pii_count(text VARCHAR) → BIGINT
+```
+
+**Returns:**
+- `BIGINT`: Number of PII instances detected
+
+**Example:**
+```sql
+SELECT pii_count('Email: a@b.com, SSN: 123-45-6789, Card: 4111111111111111');
+-- Returns: 3
+```
+
+---
+
+#### `anofox_tab_pii_status` (alias: `pii_status`)
+
+Show all registered PII recognizers with metadata.
+
+**Signature:**
+```sql
+pii_status() → TABLE(pii_type, recognizer_name, enabled, pattern_info)
+```
+
+**Returns:**
+- `pii_type` (VARCHAR): PII type identifier (EMAIL, CREDIT_CARD, etc.)
+- `recognizer_name` (VARCHAR): Human-readable name
+- `enabled` (BOOLEAN): Always true (no disable mechanism)
+- `pattern_info` (VARCHAR): Description of validation method
+
+**Example:**
+```sql
+SELECT * FROM pii_status() ORDER BY pii_type;
+-- Shows all 17 PII types with their recognizer info
+```
+
+---
+
+#### `anofox_ner_status`
+
+Show NER (Named Entity Recognition) model status for NAME detection.
+
+**Signature:**
+```sql
+anofox_ner_status() → TABLE(onnx_available, model_status, model_path, model_size_mb, status_message)
+```
+
+**Returns:**
+- `onnx_available` (BOOLEAN): Whether OpenVINO is compiled in (column name kept for backward compatibility)
+- `model_status` (VARCHAR): NOT_LOADED, DOWNLOADING, LOADED, FAILED, or NOT_AVAILABLE
+- `model_path` (VARCHAR): Path to ONNX model file (or "N/A")
+- `model_size_mb` (DOUBLE): Model file size in MB (0 if not loaded)
+- `status_message` (VARCHAR): Human-readable status description
+
+**Example:**
+```sql
+SELECT * FROM anofox_ner_status();
+-- onnx_available | model_status  | model_path                                          | model_size_mb | status_message
+-- true           | LOADED        | /home/user/.duckdb/extensions/anofox/ner/model.onnx | 66.5          | Model loaded successfully
+```
+
+---
+
+#### `anofox_tab_pii_scan_table` (alias: `pii_scan_table`)
+
+Scan entire table for PII across VARCHAR columns.
+
+**Signature:**
+```sql
+pii_scan_table(table_name VARCHAR [, columns VARCHAR])
+  → TABLE(column_name, pii_type, match_count, sample_values, confidence)
+```
+
+**Parameters:**
+- `table_name`: Name of table to scan
+- `columns`: Optional comma-separated column names (scans all VARCHAR if omitted)
+
+**Returns:**
+- `column_name` (VARCHAR): Column containing PII
+- `pii_type` (VARCHAR): Type of PII detected
+- `match_count` (BIGINT): Number of matches found
+- `sample_values` (VARCHAR[]): Up to 5 sample values
+- `confidence` (DOUBLE): Average confidence (always 1.0)
+
+**Examples:**
+```sql
+-- Scan all columns
+SELECT * FROM pii_scan_table('users');
+
+-- Scan specific columns
+SELECT * FROM pii_scan_table('users', 'email,phone');
+
+-- Find high-risk columns
+SELECT column_name, COUNT(DISTINCT pii_type) as pii_types
+FROM pii_scan_table('customer_data')
+GROUP BY column_name
+HAVING COUNT(DISTINCT pii_type) >= 2;
+```
+
+---
+
+#### `anofox_tab_pii_audit_table` (alias: `pii_audit_table`)
+
+Row-level PII audit with masking for detailed inspection.
+
+**Signature:**
+```sql
+pii_audit_table(table_name VARCHAR [, columns VARCHAR])
+  → TABLE(row_id, column_name, pii_type, original_value, masked_value, start_pos, end_pos, confidence)
+```
+
+**Parameters:**
+- `table_name`: Name of table to audit
+- `columns`: Optional comma-separated column names (audits all VARCHAR if omitted)
+
+**Returns:**
+- `row_id` (BIGINT): Row number in the table
+- `column_name` (VARCHAR): Column containing PII
+- `pii_type` (VARCHAR): Type of PII detected
+- `original_value` (VARCHAR): Original text value
+- `masked_value` (VARCHAR): Masked version of the value
+- `start_pos` (BIGINT): Start position of PII in text
+- `end_pos` (BIGINT): End position of PII in text
+- `confidence` (DOUBLE): Detection confidence (0.0-1.0)
+
+**Example:**
+```sql
+SELECT * FROM pii_audit_table('customer_data') WHERE pii_type = 'US_SSN';
+```
+
+---
+
+#### Type-Specific Detection Functions
+
+Detect only specific types of PII for targeted scans:
+
+| Function | Alias | Returns |
+|----------|-------|---------|
+| `anofox_tab_pii_detect_emails` | `pii_detect_emails` | List of EMAIL matches |
+| `anofox_tab_pii_detect_phones` | `pii_detect_phones` | List of PHONE matches |
+| `anofox_tab_pii_detect_credit_cards` | `pii_detect_credit_cards` | List of CREDIT_CARD matches |
+| `anofox_tab_pii_detect_ssns` | `pii_detect_ssns` | List of US_SSN matches |
+| `anofox_tab_pii_detect_names` | `pii_detect_names` | List of NAME matches (NER-based) |
+| `anofox_tab_pii_detect_ibans` | `pii_detect_ibans` | List of IBAN matches |
+
+**Example:**
+```sql
+SELECT pii_detect_emails('Contact: john@example.com and jane@example.com');
+-- Returns only EMAIL matches
+```
+
+---
+
+#### Validation Functions
+
+Validate specific PII formats with checksum verification:
+
+| Function | Alias | Description |
+|----------|-------|-------------|
+| `anofox_tab_pii_is_valid_ssn` | `pii_is_valid_ssn` | Validate US SSN format (XXX-XX-XXXX) |
+| `anofox_tab_pii_is_valid_iban` | `pii_is_valid_iban` | Validate IBAN with MOD-97 checksum |
+| `anofox_tab_pii_is_valid_credit_card` | `pii_is_valid_credit_card` | Validate credit card with Luhn algorithm |
+| `anofox_tab_pii_is_valid_nino` | `pii_is_valid_nino` | Validate UK National Insurance Number |
+| `anofox_tab_pii_is_valid_de_tax_id` | `pii_is_valid_de_tax_id` | Validate German Tax ID (11 digits + checksum) |
+| `anofox_tab_pii_is_valid_crypto_address` | `pii_is_valid_crypto_address` | Validate Bitcoin/Ethereum address |
+
+**Example:**
+```sql
+SELECT pii_is_valid_credit_card('4111111111111111');  -- true (Luhn valid)
+SELECT pii_is_valid_iban('DE89370400440532013000');   -- true (MOD-97 valid)
+```
+
+---
+
+#### Advanced Masking Functions
+
+##### `anofox_tab_pii_mask_column` (alias: `pii_mask_column`)
+
+Type-specific masking for a single PII type.
+
+**Signature:**
+```sql
+pii_mask_column(value VARCHAR, pii_type VARCHAR, strategy VARCHAR) → VARCHAR
+```
+
+**Example:**
+```sql
+SELECT pii_mask_column('123-45-6789', 'US_SSN', 'partial');
+-- Returns: ***-**-6789
+```
+
+---
+
+##### `anofox_tab_pii_redact_column` (alias: `pii_redact_column`)
+
+Mask all PII in text with optional strategy.
+
+**Signature:**
+```sql
+pii_redact_column(value VARCHAR [, strategy VARCHAR]) → VARCHAR
+```
+
+**Example:**
+```sql
+SELECT pii_redact_column('Email: test@example.com');
+-- Returns: Email: [EMAIL]
+```
+
+---
+
+#### `anofox_tab_pii_config` (alias: `pii_config`)
+
+Display current PII configuration settings.
+
+**Signature:**
+```sql
+pii_config() → TABLE(option, value, description)
+```
+
+**Example:**
+```sql
+SELECT * FROM pii_config();
+```
+
+---
+
+### Configuration Options
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `anofox_pii_min_confidence` | DOUBLE | 0.5 | Minimum confidence threshold (0.0-1.0) |
+| `anofox_pii_default_mask_strategy` | VARCHAR | 'redact' | Default masking strategy |
+| `anofox_pii_enabled_types` | VARCHAR | '' | Comma-separated list of enabled PII types (empty = all) |
+| `anofox_pii_deep_validation` | BOOLEAN | false | Enable deep email/phone validation |
+
+**Example:**
+```sql
+SET anofox_pii_min_confidence = 0.7;
+SET anofox_pii_default_mask_strategy = 'partial';
+```
+
+---
+
 ## Data Quality Metrics
 
 Track essential data quality dimensions.
@@ -1185,6 +1593,106 @@ anofox_tab_metric_ (alias: metric_dbscan_multivariate(
 
 ---
 
+### OutlierTree (Explainable Anomaly Detection)
+
+Detects outliers using decision tree conditioning, providing human-readable explanations for why specific values are anomalous based on conditional distributions.
+
+**Key Features:**
+- Detects outliers in context (e.g., "salary is high *for a Junior Developer*")
+- Returns natural language explanations with statistical backing
+- Uses robust statistics (median + MAD) resistant to outliers
+- Supports both numeric and categorical columns
+
+#### `anofox_tab_outlier_tree` (alias: `outlier_tree`)
+
+Explainable outlier detection with conditional distributions.
+
+**Signature:**
+```sql
+-- Simple (3 params, uses defaults)
+outlier_tree(table_name VARCHAR, columns VARCHAR, output_mode VARCHAR) → TABLE
+
+-- Full (9 params)
+outlier_tree(
+    table_name VARCHAR,
+    columns VARCHAR,
+    output_mode VARCHAR,
+    max_depth INTEGER,
+    max_perc_outliers DOUBLE,
+    min_size_numeric INTEGER,
+    min_size_categ INTEGER,
+    z_norm DOUBLE,
+    z_outlier DOUBLE
+) → TABLE
+```
+
+**Parameters:**
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `table_name` | VARCHAR | required | Source table name |
+| `columns` | VARCHAR | required | Comma-separated column names to analyze |
+| `output_mode` | VARCHAR | 'summary' | `'summary'` or `'outliers'` |
+| `max_depth` | INTEGER | 4 | Maximum tree depth |
+| `max_perc_outliers` | DOUBLE | 0.01 | Max fraction of outliers per cluster |
+| `min_size_numeric` | INTEGER | 25 | Min cluster size for numeric targets |
+| `min_size_categ` | INTEGER | 75 | Min cluster size for categorical targets |
+| `z_norm` | DOUBLE | 2.67 | Z-threshold for confidence intervals |
+| `z_outlier` | DOUBLE | 8.0 | Z-threshold for outlier flagging |
+
+**Summary Mode Returns:**
+| Column | Type | Description |
+|--------|------|-------------|
+| `status` | VARCHAR | `'pass'` or `'fail'` |
+| `total_rows` | BIGINT | Rows analyzed |
+| `outlier_count` | BIGINT | Outliers detected |
+| `columns_analyzed` | INTEGER | Columns analyzed |
+| `clusters_evaluated` | BIGINT | Clusters evaluated |
+| `max_depth_reached` | INTEGER | Max tree depth reached |
+| `message` | VARCHAR | Summary message |
+
+**Outliers Mode Returns:**
+| Column | Type | Description |
+|--------|------|-------------|
+| `row_id` | BIGINT | Row index (1-indexed) |
+| `column_name` | VARCHAR | Column with outlier |
+| `outlier_value` | VARCHAR | The anomalous value |
+| `cluster_mean` | DOUBLE | Mean in cluster |
+| `cluster_sd` | DOUBLE | SD in cluster |
+| `cluster_size` | BIGINT | Rows in cluster |
+| `z_score` | DOUBLE | Robust z-score |
+| `lower_bound` | DOUBLE | Lower CI bound |
+| `upper_bound` | DOUBLE | Upper CI bound |
+| `conditions` | VARCHAR | JSON array of split conditions |
+| `explanation` | VARCHAR | Human-readable explanation |
+| `outlier_score` | DOUBLE | Rarity score (lower = more anomalous) |
+
+**Examples:**
+```sql
+-- Summary mode: quick pass/fail check
+SELECT * FROM outlier_tree('employees', 'department,salary', 'summary');
+
+-- Outliers mode: get detailed explanations
+SELECT row_id, column_name, outlier_value, explanation
+FROM outlier_tree('employees', 'department,salary,years_exp', 'outliers');
+
+-- Returns explanations like:
+-- "Value 150000 for column 'salary' is unusually high (expected: 52333 ± 7413)
+--  when job_title = 'Junior Developer'"
+
+-- With custom parameters for small datasets
+SELECT * FROM outlier_tree(
+    'test_data', 'category,value', 'outliers',
+    4,          -- max_depth
+    0.5,        -- max_perc_outliers
+    3,          -- min_size_numeric
+    2,          -- min_size_categ
+    2.67,       -- z_norm
+    3.0         -- z_outlier
+);
+```
+
+---
+
 ## Data Diffing
 
 Compare tables and identify changes for migration validation and regression testing.
@@ -1304,6 +1812,29 @@ SET anofox_tab_trace_enabled = true;  -- Enable/disable logging
 SET anofox_tab_trace_level = 'info';  -- trace|debug|info|warn|error|critical|off
 ```
 
+### Telemetry
+
+Anonymous usage telemetry helps improve the extension. No personal data or query content is collected.
+
+**What is collected:**
+- Extension load events (extension name, version, platform)
+- Function execution counts (function name only, no arguments or data)
+
+**Disable via environment variable (before loading extension):**
+```bash
+export DATAZOO_DISABLE_TELEMETRY=1
+```
+
+**Disable via SQL (after loading extension):**
+```sql
+SET anofox_telemetry_enabled = false;
+```
+
+**Configure API key (advanced):**
+```sql
+SET anofox_telemetry_key = 'your_custom_key';
+```
+
 ---
 
 ## Function Coverage Matrix
@@ -1317,17 +1848,18 @@ SET anofox_tab_trace_level = 'info';  -- trace|debug|info|warn|error|critical|of
 | Phone Numbers | 9 | Scalar (8), Table (1) |
 | Money & Currency | 17 | Scalar functions |
 | VAT Validation | 10 | Scalar functions |
+| PII Detection | 20 | 15 scalar + 5 table functions |
 | Data Quality Metrics | 8 | Table functions |
-| Anomaly Detection | 4 | Table functions |
+| Anomaly Detection | 5 | Table functions |
 | Data Diffing | 2 | Table functions |
-| **Total** | **57** | |
+| **Total** | **78** | |
 
 ### Function Type Breakdown
 
 | Type | Count | Examples |
 |------|-------|----------|
-| Scalar Functions | 45 | `anofox_tab_email_is_valid (alias: email_is_valid)`, `anofox_tab_money (alias: money_add`, `anofox_tab_vat (alias: vat_is_valid` |
-| Table Functions | 12 | `anofox_tab_metric_ (alias: metric_volume`, `anofox_tab_metric_ (alias: metric_isolation_forest`, `anofox_tab_diff_ (alias: diff_hashdiff` |
+| Scalar Functions | 60 | `anofox_tab_email_is_valid` (alias: `email_is_valid`), `anofox_tab_pii_detect` (alias: `pii_detect`), `anofox_tab_vat_is_valid` (alias: `vat_is_valid`) |
+| Table Functions | 18 | `anofox_tab_metric_volume` (alias: `volume`), `anofox_tab_metric_isolation_forest` (alias: `isolation_forest`), `anofox_tab_outlier_tree` (alias: `outlier_tree`) |
 
 ### Module Status
 
@@ -1338,8 +1870,9 @@ SET anofox_tab_trace_level = 'info';  -- trace|debug|info|warn|error|critical|of
 | Phone Numbers | 9 | Stable | libphonenumber (embedded) |
 | Money & Currency | 17 | Stable | None |
 | VAT Validation | 10 | Stable | None |
+| PII Detection | 20 | Stable | OpenVINO (for NER), OpenSSL (for hash masking) |
 | Data Quality Metrics | 8 | Stable | None |
-| Anomaly Detection | 4 | Stable | None |
+| Anomaly Detection | 5 | Stable | None |
 | Data Diffing | 2 | Stable | None |
 
 ---

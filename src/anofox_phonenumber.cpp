@@ -1,6 +1,7 @@
 #include "anofox_phonenumber.hpp"
 #include "anofox_phonenumber_metadata.hpp"
 #include "anofox_function_alias.hpp"
+#include "telemetry.hpp"
 
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/string_util.hpp"
@@ -897,10 +898,52 @@ unique_ptr<GlobalTableFunctionState> PhoneStatusInit(ClientContext&, TableFuncti
 
 unique_ptr<FunctionData> PhoneStatusBind(ClientContext&, TableFunctionBindInput&, vector<LogicalType>& return_types,
                                          vector<string>& names) {
+	PostHogTelemetry::Instance().CaptureFunctionExecution("phonenumber_status");
 	names.emplace_back("initialized");
 	return_types.emplace_back(LogicalTypeId::BOOLEAN);
 	names.emplace_back("default_region");
 	return_types.emplace_back(LogicalTypeId::VARCHAR);
+	return nullptr;
+}
+
+// Telemetry bind functions for scalar functions
+unique_ptr<FunctionData> PhoneParseBind(ClientContext &, ScalarFunction &, vector<unique_ptr<Expression>> &) {
+	PostHogTelemetry::Instance().CaptureFunctionExecution("phonenumber_parse");
+	return nullptr;
+}
+
+unique_ptr<FunctionData> PhoneFormatBind(ClientContext &, ScalarFunction &, vector<unique_ptr<Expression>> &) {
+	PostHogTelemetry::Instance().CaptureFunctionExecution("phonenumber_format");
+	return nullptr;
+}
+
+unique_ptr<FunctionData> PhoneRegionBind(ClientContext &, ScalarFunction &, vector<unique_ptr<Expression>> &) {
+	PostHogTelemetry::Instance().CaptureFunctionExecution("phonenumber_region");
+	return nullptr;
+}
+
+unique_ptr<FunctionData> PhoneIsValidBind(ClientContext &, ScalarFunction &, vector<unique_ptr<Expression>> &) {
+	PostHogTelemetry::Instance().CaptureFunctionExecution("phonenumber_is_valid");
+	return nullptr;
+}
+
+unique_ptr<FunctionData> PhoneIsPossibleBind(ClientContext &, ScalarFunction &, vector<unique_ptr<Expression>> &) {
+	PostHogTelemetry::Instance().CaptureFunctionExecution("phonenumber_is_possible");
+	return nullptr;
+}
+
+unique_ptr<FunctionData> PhoneIsValidForRegionBind(ClientContext &, ScalarFunction &, vector<unique_ptr<Expression>> &) {
+	PostHogTelemetry::Instance().CaptureFunctionExecution("phonenumber_is_valid_for_region");
+	return nullptr;
+}
+
+unique_ptr<FunctionData> PhoneMatchBind(ClientContext &, ScalarFunction &, vector<unique_ptr<Expression>> &) {
+	PostHogTelemetry::Instance().CaptureFunctionExecution("phonenumber_match");
+	return nullptr;
+}
+
+unique_ptr<FunctionData> PhoneExampleBind(ClientContext &, ScalarFunction &, vector<unique_ptr<Expression>> &) {
+	PostHogTelemetry::Instance().CaptureFunctionExecution("phonenumber_example");
 	return nullptr;
 }
 
@@ -1001,40 +1044,48 @@ void RegisterPhonenumberOptions(ExtensionLoader& loader) {
 
 void RegisterPhonenumberFunctions(ExtensionLoader& loader) {
 	RegisterPhonenumberOptions(loader);
-	
+
 	// Register phonenumber_parse
 	ScalarFunction parse_func = CreateParseScalar("anofox_tab_phonenumber_parse");
+	parse_func.bind = PhoneParseBind;
 	RegisterScalarFunctionWithAlias(loader, parse_func, "phonenumber_parse");
-	
+
 	// Register phonenumber_format
 	ScalarFunction format_func = CreateFormatScalar("anofox_tab_phonenumber_format");
+	format_func.bind = PhoneFormatBind;
 	RegisterScalarFunctionWithAlias(loader, format_func, "phonenumber_format");
-	
+
 	// Register phonenumber_region
 	ScalarFunction region_func = CreateRegionScalar("anofox_tab_phonenumber_region");
+	region_func.bind = PhoneRegionBind;
 	RegisterScalarFunctionWithAlias(loader, region_func, "phonenumber_region");
-	
+
 	// Register phonenumber_is_valid
 	ScalarFunction is_valid_func = CreateIsValidScalar("anofox_tab_phonenumber_is_valid");
+	is_valid_func.bind = PhoneIsValidBind;
 	RegisterScalarFunctionWithAlias(loader, is_valid_func, "phonenumber_is_valid");
-	
+
 	// Register phonenumber_is_possible
 	ScalarFunction is_possible_func = CreateIsPossibleScalar("anofox_tab_phonenumber_is_possible");
+	is_possible_func.bind = PhoneIsPossibleBind;
 	RegisterScalarFunctionWithAlias(loader, is_possible_func, "phonenumber_is_possible");
-	
+
 	// Register phonenumber_is_valid_for_region
 	ScalarFunction is_valid_for_region_func = CreateIsValidForRegionScalar("anofox_tab_phonenumber_is_valid_for_region");
+	is_valid_for_region_func.bind = PhoneIsValidForRegionBind;
 	RegisterScalarFunctionWithAlias(loader, is_valid_for_region_func, "phonenumber_is_valid_for_region");
-	
+
 	// Register phonenumber_match
 	ScalarFunction match_func = CreateMatchScalar("anofox_tab_phonenumber_match");
+	match_func.bind = PhoneMatchBind;
 	RegisterScalarFunctionWithAlias(loader, match_func, "phonenumber_match");
-	
+
 	// Register phonenumber_example
 	ScalarFunction example_func = CreateExampleScalar("anofox_tab_phonenumber_example");
+	example_func.bind = PhoneExampleBind;
 	RegisterScalarFunctionWithAlias(loader, example_func, "phonenumber_example");
-	
-	// Register phonenumber_status
+
+	// Register phonenumber_status (telemetry in PhoneStatusBind)
 	TableFunction status_func = CreateStatusTable("anofox_tab_phonenumber_status");
 	RegisterTableFunctionWithAlias(loader, status_func, "phonenumber_status");
 }

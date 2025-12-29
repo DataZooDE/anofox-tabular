@@ -5,8 +5,8 @@
 [![DuckDB](https://img.shields.io/badge/DuckDB-1.4.2-green)](https://duckdb.org/)
 [![C++17](https://img.shields.io/badge/C++-17-blue.svg)](https://isocpp.org/)
 [![License](https://img.shields.io/badge/license-BSL%201.1-blue.svg)](LICENSE)
-[![Functions](https://img.shields.io/badge/Functions-57-green)]()
-[![Modules](https://img.shields.io/badge/Modules-8-blue)]()
+[![Functions](https://img.shields.io/badge/Functions-78-green)]()
+[![Modules](https://img.shields.io/badge/Modules-9-blue)]()
 
 SQL-native validation, anomaly detection, and data diffing—all without leaving your database.
 
@@ -38,7 +38,7 @@ WHERE vat_is_valid(vat_id)
 
 **The DuckDB extension combining validation, anomaly detection, and data diffing.**
 
-- ✅ **8 Production-Ready Modules** - 52 SQL functions for email, postal, phone, money, VAT, metrics, anomalies, and diffing
+- ✅ **9 Production-Ready Modules** - 78 SQL functions for email, postal, phone, money, VAT, PII, metrics, anomalies, and diffing
 - ⚡ **Blazing Fast** - Vectorized C++17 implementation processes millions of rows per second
 - 🔌 **Zero Friction** - SQL-native with no external services; works entirely within DuckDB
 - 📦 **Self-Contained** - Embedded validation patterns; no API keys or network calls required
@@ -86,6 +86,7 @@ WHERE vat_is_valid(vat_id)
   - [Phone Number Validation](#-phone-number-validation)
   - [Money & Currency Operations](#-money--currency-operations)
   - [VAT Validation](#-vat-validation)
+  - [PII Detection](#-pii-detection)
   - [Data Quality Metrics](#-data-quality-metrics)
   - [Anomaly Detection](#-anomaly-detection)
   - [Data Diffing](#-data-diffing)
@@ -98,6 +99,7 @@ WHERE vat_is_valid(vat_id)
 - [Contributing](#-contributing)
 - [Troubleshooting](#-troubleshooting)
 - [Performance Tips](#-performance-tips)
+- [Telemetry](#-telemetry)
 - [License](#-license)
 
 ---
@@ -111,11 +113,12 @@ WHERE vat_is_valid(vat_id)
 | 📞 **Phone Numbers** | 9 | Google libphonenumber integration | Stable |
 | 💰 **Money & Currency** | 17 | Multi-currency operations, 10 currencies | ✨ New |
 | 💼 **VAT Validation** | 10 | European VAT compliance, 29 countries | ✨ New |
+| 🕵️ **PII Detection** | 20 | Detect & mask 17 PII types (SSN, IBAN, NAME, etc.) | ✨ New |
 | 🔍 **Quality Metrics** | 8 | Volume, nulls, freshness, schema checks | Stable |
-| 🤖 **Anomaly Detection** | 4 | Enhanced Isolation Forest, DBSCAN, categorical support | ✨ Enhanced |
+| 🤖 **Anomaly Detection** | 5 | Isolation Forest, DBSCAN, OutlierTree (explainable) | ✨ Enhanced |
 | 🔄 **Data Diffing** | 2 | Table comparison, migration validation | Stable |
 
-**Total: 57 SQL Functions** | **Zero Required Dependencies***
+**Total: 78 SQL Functions** | **Zero Required Dependencies***
 
 <sub>*Except libpostal (address parsing) and optional DNS/SMTP for email</sub>
 
@@ -223,7 +226,7 @@ Works with any DuckDB language binding:
 
 ---
 
-## ✨ Features - All 8 Modules
+## ✨ Features - All 9 Modules
 
 ### 📧 Email Validation
 
@@ -358,6 +361,47 @@ FROM customers;
 
 ---
 
+### 🕵️ PII Detection
+
+Detect and mask Personally Identifiable Information (PII) in text data with 17 supported types.
+
+**PII Types Detected:**
+- **Pattern-based (13 types):** EMAIL, PHONE, CREDIT_CARD, US_SSN, IBAN, IP_ADDRESS, URL, MAC_ADDRESS, UK_NINO, US_PASSPORT, API_KEY, CRYPTO_ADDRESS, DE_TAX_ID
+- **NER-based (4 types):** NAME, ORGANIZATION, LOCATION, MISC (using OpenVINO + DistilBERT)
+
+**Masking Strategies:**
+- `REDACT` - Replace with [TYPE] label
+- `PARTIAL` - Show partial value (e.g., `***-**-6789` for SSN)
+- `ASTERISK` - Replace with same-length asterisks
+- `HASH` - Replace with SHA-256 hash (truncated)
+
+```sql
+-- Detect all PII in text
+SELECT unnest(pii_detect('My SSN is 123-45-6789 and email is test@example.com'));
+-- Returns: [{type: 'US_SSN', text: '123-45-6789', ...}, {type: 'EMAIL', ...}]
+
+-- Mask PII with partial strategy
+SELECT pii_mask('Contact: john@example.com, SSN: 123-45-6789', 'partial');
+-- Returns: 'Contact: jo**@example.com, SSN: ***-**-6789'
+
+-- Scan entire table for PII
+SELECT * FROM pii_scan_table('customer_data');
+
+-- Check if text contains any PII
+SELECT pii_contains('This is safe text');
+-- Returns: false
+```
+
+**Use Cases:**
+- Data privacy compliance (GDPR, CCPA)
+- Customer data anonymization
+- Pre-migration PII discovery
+- Audit logging and redaction
+
+[📖 See complete PII module documentation](#pii-detection-functions)
+
+---
+
 ### 🔍 Data Quality Metrics
 
 Track essential data quality dimensions:
@@ -466,6 +510,30 @@ SELECT * FROM metric_dbscan(
 - **NOISE** - Isolated outliers (high anomaly score: 1.0)
 
 [📖 See complete Anomaly Detection module documentation](#anomaly-detection-functions)
+
+#### OutlierTree (Explainable Anomaly Detection)
+
+Unlike Isolation Forest which provides anomaly scores, OutlierTree generates **human-readable explanations** for why specific values are outliers based on conditional distributions.
+
+**Key Features:**
+- Detects outliers in context (e.g., "salary is high *for a Junior Developer*")
+- Returns natural language explanations with statistical backing
+- Uses robust statistics (median + MAD) resistant to outliers
+- Supports both numeric and categorical columns
+
+```sql
+-- Detect salary outliers conditioned on job title
+SELECT row_id, column_name, outlier_value, explanation
+FROM outlier_tree('employees', 'job_title,salary,years_exp', 'outliers');
+
+-- Returns explanations like:
+-- "Value 150000 for column 'salary' is unusually high (expected: 52333 ± 7413)
+--  when job_title = 'Junior Developer'"
+```
+
+**Output Modes:**
+- `'summary'`: Single row with pass/fail status and outlier count
+- `'outliers'`: Per-outlier rows with z-scores, bounds, and explanations
 
 ---
 
@@ -748,6 +816,44 @@ WHERE money_in_range(amount, 0.01, 99999.99)
 |----------|-----------|---------|-------------|
 | `anofox_tab_vat_is_valid` | `(vat_string)` | BOOLEAN | Full validation (syntax + country check) |
 
+### PII Detection Functions
+
+#### Detection & Masking
+| Function | Signature | Returns | Description |
+|----------|-----------|---------|-------------|
+| `anofox_tab_pii_detect` | `(text VARCHAR)` | LIST(STRUCT) | Detect all PII in text (returns type, text, start, end, confidence) |
+| `anofox_tab_pii_mask` | `(text VARCHAR [, strategy VARCHAR])` | VARCHAR | Mask all PII in text (default: 'redact') |
+| `anofox_tab_pii_contains` | `(text VARCHAR)` | BOOLEAN | Check if text contains any PII |
+| `anofox_tab_pii_count` | `(text VARCHAR)` | BIGINT | Count PII occurrences in text |
+
+#### Type-Specific Detection
+| Function | Signature | Returns | Description |
+|----------|-----------|---------|-------------|
+| `anofox_tab_pii_detect_emails` | `(text VARCHAR)` | LIST(STRUCT) | Detect only EMAIL PII |
+| `anofox_tab_pii_detect_phones` | `(text VARCHAR)` | LIST(STRUCT) | Detect only PHONE PII |
+| `anofox_tab_pii_detect_credit_cards` | `(text VARCHAR)` | LIST(STRUCT) | Detect only CREDIT_CARD PII |
+| `anofox_tab_pii_detect_ssns` | `(text VARCHAR)` | LIST(STRUCT) | Detect only US_SSN PII |
+| `anofox_tab_pii_detect_names` | `(text VARCHAR)` | LIST(STRUCT) | Detect only NAME PII (NER-based) |
+| `anofox_tab_pii_detect_ibans` | `(text VARCHAR)` | LIST(STRUCT) | Detect only IBAN PII |
+
+#### Validation (Checksum-based)
+| Function | Signature | Returns | Description |
+|----------|-----------|---------|-------------|
+| `anofox_tab_pii_is_valid_ssn` | `(text VARCHAR)` | BOOLEAN | Validate US SSN format |
+| `anofox_tab_pii_is_valid_iban` | `(text VARCHAR)` | BOOLEAN | Validate IBAN with MOD-97 checksum |
+| `anofox_tab_pii_is_valid_credit_card` | `(text VARCHAR)` | BOOLEAN | Validate credit card with Luhn checksum |
+| `anofox_tab_pii_is_valid_nino` | `(text VARCHAR)` | BOOLEAN | Validate UK National Insurance Number |
+| `anofox_tab_pii_is_valid_de_tax_id` | `(text VARCHAR)` | BOOLEAN | Validate German Tax ID |
+| `anofox_tab_pii_is_valid_crypto_address` | `(text VARCHAR)` | BOOLEAN | Validate Bitcoin/Ethereum address |
+
+#### Table Functions
+| Function | Signature | Returns | Description |
+|----------|-----------|---------|-------------|
+| `anofox_tab_pii_scan_table` | `(table VARCHAR [, columns VARCHAR])` | TABLE | Scan table columns for PII |
+| `anofox_tab_pii_audit_table` | `(table VARCHAR [, columns VARCHAR])` | TABLE | Row-level PII audit with masking |
+| `anofox_tab_pii_status` | `()` | TABLE | List supported PII types and recognizers |
+| `anofox_tab_pii_config` | `()` | TABLE | Current PII configuration |
+
 ### Data Quality Metrics Functions
 
 | Function | Signature | Description |
@@ -768,6 +874,7 @@ WHERE money_in_range(amount, 0.01, 99999.99)
 | `anofox_tab_metric_isolation_forest_multivariate` | Multivariate Isolation Forest |
 | `anofox_tab_metric_dbscan` | Univariate DBSCAN clustering |
 | `anofox_tab_metric_dbscan_multivariate` | Multivariate DBSCAN clustering |
+| `outlier_tree` | Explainable outlier detection with conditional distributions |
 
 **Isolation Forest Full Signature:**
 ```sql
@@ -936,7 +1043,7 @@ make test_debug
 │  └─────────────────────────────────────────────────────┘ │
 ├─────────────────────────────────────────────────────────┤
 │                 External Libraries                       │
-│   libpostal · libphonenumber · c-ares · spdlog          │
+│ libpostal · libphonenumber · c-ares · spdlog · OpenVINO │
 └─────────────────────────────────────────────────────────┘
 ```
 
@@ -1050,6 +1157,34 @@ WHERE valid AND created_at > NOW() - INTERVAL '1 day';
 
 ---
 
+## 📡 Telemetry
+
+Anofox Tabular collects **anonymous usage data** to help improve the extension. This is enabled by default.
+
+### What We Collect
+
+- Extension load events (name, version, platform)
+- Anonymized device identifier (hashed MAC address)
+- Timestamp of events
+
+**We do NOT collect:** query content, table data, file paths, or any personally identifiable information.
+
+### Disabling Telemetry
+
+**Option 1: Environment Variable** (recommended for CI/Docker)
+
+```bash
+export DATAZOO_DISABLE_TELEMETRY=1
+```
+
+**Option 2: SQL Setting**
+
+```sql
+SET anofox_telemetry_enabled = false;
+```
+
+---
+
 ## 📜 License
 
 This project is licensed under the **Business Source License (BSL) 1.1**.
@@ -1075,6 +1210,7 @@ This project incorporates third-party libraries and their respective licenses. F
 - **[c-ares](https://github.com/c-ares/c-ares)** - Asynchronous DNS resolver (MIT License)
 - **[curl](https://curl.se/)** - HTTP client library (curl License)
 - **[OpenSSL](https://www.openssl.org/)** - Cryptography library (Apache License 2.0)
+- **[OpenVINO](https://github.com/openvinotoolkit/openvino)** - Intel AI inference toolkit for NER (Apache License 2.0)
 
 ---
 
@@ -1084,6 +1220,7 @@ This project incorporates third-party libraries and their respective licenses. F
 - **[isotree](https://github.com/david-cortes/isotree)** - Inspiration for Enhanced Isolation Forest features (Extended IF, SCiForest, density scoring)
 - **[libpostal](https://github.com/openvenues/libpostal)** - Statistical NLP library for parsing world addresses
 - **[libphonenumber](https://github.com/google/libphonenumber)** - Google's comprehensive phone number handling library (custom implementation)
+- **[OpenVINO](https://github.com/openvinotoolkit/openvino)** - Intel's inference optimization toolkit for NER-based entity detection (NAME, ORGANIZATION, LOCATION, MISC)
 - **c-ares** - Asynchronous DNS resolver library
 
 ---
