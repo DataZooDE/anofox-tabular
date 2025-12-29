@@ -1,0 +1,356 @@
+# name: test/sql/anofox_pii_ner.test
+# description: NER-based PII detection tests (requires OpenVINO)
+# group: [anofox_tabular]
+
+# This test file requires OpenVINO to be available.
+# NER-based detection (NAME, ORGANIZATION, LOCATION, MISC) uses OpenVINO + DistilBERT model.
+# On platforms without OpenVINO (musl/Alpine), these tests are skipped.
+require-env OPENVINO_AVAILABLE
+
+require anofox_tabular
+
+statement ok
+LOAD anofox_tabular
+
+# ============================================================================
+# Organization Detection Tests (NER-based)
+# ============================================================================
+
+# Basic organization detection
+query I
+SELECT list_contains(list_transform(pii_detect('John works at Microsoft'), x -> x.type), 'ORGANIZATION');
+----
+true
+
+# Company with Inc suffix
+query I
+SELECT list_contains(list_transform(pii_detect('Contact Apple Inc for details'), x -> x.type), 'ORGANIZATION');
+----
+true
+
+# Technology company
+query I
+SELECT list_contains(list_transform(pii_detect('She joined Google last year'), x -> x.type), 'ORGANIZATION');
+----
+true
+
+# Multiple organizations
+query I
+SELECT pii_count('Microsoft and Apple announced a partnership with IBM') >= 2;
+----
+true
+
+# Organization in context
+query I
+SELECT pii_contains('The team at Amazon Web Services delivered the project');
+----
+true
+
+# Organization masking - REDACT
+query I
+SELECT pii_mask('Works at Google', 'redact') LIKE '%[ORGANIZATION]%';
+----
+true
+
+# Organization masking - PARTIAL
+query I
+SELECT pii_mask('Contact Microsoft', 'partial') LIKE '%M********%';
+----
+true
+
+# ============================================================================
+# Location Detection Tests (NER-based)
+# ============================================================================
+
+# City detection
+query I
+SELECT list_contains(list_transform(pii_detect('She moved to London'), x -> x.type), 'LOCATION');
+----
+true
+
+# Country detection
+query I
+SELECT list_contains(list_transform(pii_detect('Traveling to Germany next week'), x -> x.type), 'LOCATION');
+----
+true
+
+# Multiple locations
+query I
+SELECT pii_count('Flying from New York to Paris via London') >= 2;
+----
+true
+
+# Location with context
+query I
+SELECT pii_contains('The office is located in San Francisco');
+----
+true
+
+# Location masking - REDACT
+query I
+SELECT pii_mask('Lives in Berlin', 'redact') LIKE '%[LOCATION]%';
+----
+true
+
+# Location masking - PARTIAL
+query I
+SELECT pii_mask('Office in Tokyo', 'partial') LIKE '%T****%';
+----
+true
+
+# ============================================================================
+# MISC Entity Detection Tests (NER-based)
+# ============================================================================
+
+# Language detection as MISC
+query I
+SELECT list_contains(list_transform(pii_detect('He speaks French fluently'), x -> x.type), 'MISC');
+----
+true
+
+# Nationality as MISC
+query I
+SELECT list_contains(list_transform(pii_detect('She is German'), x -> x.type), 'MISC');
+----
+true
+
+# MISC masking - REDACT
+query I
+SELECT pii_mask('Speaks Spanish', 'redact') LIKE '%[MISC]%';
+----
+true
+
+# ============================================================================
+# Combined NER Entity Detection
+# ============================================================================
+
+# NAME + ORGANIZATION
+query I
+SELECT pii_count('John Smith works at Microsoft') >= 2;
+----
+true
+
+# NAME + LOCATION
+query I
+SELECT pii_count('Sarah moved to London') >= 2;
+----
+true
+
+# NAME + ORGANIZATION + LOCATION
+query I
+SELECT pii_count('John joined Google in San Francisco') >= 3;
+----
+true
+
+# All entity types in one sentence
+query I
+SELECT pii_count('John at Microsoft in Berlin speaks German') >= 4;
+----
+true
+
+# ============================================================================
+# NER + Pattern-Based Mixed Detection
+# ============================================================================
+
+# NAME with EMAIL
+query I
+SELECT pii_count('John Smith (john@example.com)') >= 2;
+----
+true
+
+# ORGANIZATION with EMAIL
+query I
+SELECT pii_count('Contact Microsoft at support@microsoft.com') >= 2;
+----
+true
+
+# LOCATION with PHONE
+query I
+SELECT pii_count('Office in London: +44-20-7946-0958') >= 2;
+----
+true
+
+# Full business record
+query I
+SELECT pii_count('John Smith at Google in London, email: john@google.com, SSN: 123-45-6789') >= 5;
+----
+true
+
+# ============================================================================
+# NER Entity Types in pii_status
+# ============================================================================
+
+# NAME type is listed
+query I
+SELECT COUNT(*) FROM pii_status() WHERE pii_type = 'NAME';
+----
+1
+
+# ORGANIZATION type is listed
+query I
+SELECT COUNT(*) FROM pii_status() WHERE pii_type = 'ORGANIZATION';
+----
+1
+
+# LOCATION type is listed
+query I
+SELECT COUNT(*) FROM pii_status() WHERE pii_type = 'LOCATION';
+----
+1
+
+# MISC type is listed
+query I
+SELECT COUNT(*) FROM pii_status() WHERE pii_type = 'MISC';
+----
+1
+
+# All NER types enabled
+query I
+SELECT COUNT(*) FROM pii_status() WHERE pii_type IN ('NAME', 'ORGANIZATION', 'LOCATION', 'MISC') AND enabled = true;
+----
+4
+
+# ============================================================================
+# Table Scanning with NER Entities
+# ============================================================================
+
+statement ok
+CREATE TABLE ner_test_data (
+    id INTEGER,
+    description VARCHAR
+);
+
+statement ok
+INSERT INTO ner_test_data VALUES
+    (1, 'John works at Microsoft'),
+    (2, 'Sarah moved to London'),
+    (3, 'Bob speaks French'),
+    (4, 'Clean text here');
+
+# Scan detects NER entities
+query I
+SELECT COUNT(DISTINCT pii_type)
+FROM pii_scan_table('ner_test_data')
+WHERE pii_type IN ('NAME', 'ORGANIZATION', 'LOCATION', 'MISC');
+----
+4
+
+# NAME detection count
+query I
+SELECT match_count >= 3
+FROM pii_scan_table('ner_test_data')
+WHERE pii_type = 'NAME';
+----
+true
+
+statement ok
+DROP TABLE ner_test_data;
+
+# ============================================================================
+# Audit Table with NER Entities
+# ============================================================================
+
+statement ok
+CREATE TABLE ner_audit_test (
+    id INTEGER,
+    text_value VARCHAR
+);
+
+statement ok
+INSERT INTO ner_audit_test VALUES
+    (1, 'John at Google'),
+    (2, 'Sarah in Paris');
+
+# Audit returns NER entity matches
+query I
+SELECT COUNT(*) > 0
+FROM pii_audit_table('ner_audit_test')
+WHERE pii_type IN ('NAME', 'ORGANIZATION', 'LOCATION');
+----
+true
+
+# Masked values populated for NER entities
+query I
+SELECT masked_value LIKE '%[NAME]%' OR masked_value LIKE '%[ORGANIZATION]%'
+FROM pii_audit_table('ner_audit_test')
+WHERE row_id = 1
+LIMIT 1;
+----
+true
+
+statement ok
+DROP TABLE ner_audit_test;
+
+# ============================================================================
+# Configuration with NER Types
+# ============================================================================
+
+# Filter to only NER types
+statement ok
+SET anofox_pii_enabled_types = 'NAME,ORGANIZATION,LOCATION,MISC';
+
+# Only NER types detected
+query I
+SELECT pii_count('John at Google (john@google.com)') >= 2;
+----
+true
+
+# EMAIL not detected when filtered out
+query I
+SELECT list_contains(list_transform(pii_detect('Email: test@test.com'), x -> x.type), 'EMAIL');
+----
+false
+
+# Reset
+statement ok
+SET anofox_pii_enabled_types = '';
+
+# All types detected again
+query I
+SELECT pii_count('John at Google (john@google.com)') >= 3;
+----
+true
+
+# ============================================================================
+# Edge Cases for NER Detection
+# ============================================================================
+
+# Name at start of text
+query I
+SELECT list_contains(list_transform(pii_detect('John is here'), x -> x.type), 'NAME');
+----
+true
+
+# Name at end of text
+query I
+SELECT list_contains(list_transform(pii_detect('Talk to John'), x -> x.type), 'NAME');
+----
+true
+
+# Organization in quotes
+query I
+SELECT list_contains(list_transform(pii_detect('Works at "Microsoft"'), x -> x.type), 'ORGANIZATION');
+----
+true
+
+# Location with preposition
+query I
+SELECT list_contains(list_transform(pii_detect('Flights to Tokyo'), x -> x.type), 'LOCATION');
+----
+true
+
+# Multiple names in one string
+query I
+SELECT pii_count('John, Mary, and David attended') >= 3;
+----
+true
+
+# Reset all settings
+statement ok
+SET anofox_pii_min_confidence = 0.5;
+
+statement ok
+SET anofox_pii_default_mask_strategy = 'redact';
+
+statement ok
+SET anofox_pii_enabled_types = '';
