@@ -1,0 +1,20 @@
+diff --git a/src/common/transformations/CMakeLists.txt b/src/common/transformations/CMakeLists.txt
+index 1234567..abcdefg 100644
+--- a/src/common/transformations/CMakeLists.txt
++++ b/src/common/transformations/CMakeLists.txt
+@@ -30,6 +30,14 @@ target_include_directories(${TARGET_NAME}_obj PRIVATE "${PUBLIC_HEADERS_DIR}"
+
+ ov_add_clang_format_target(${TARGET_NAME}_clang FOR_TARGETS ${TARGET_NAME}_obj)
+
++# Workaround for MSVC C1083 "Cannot open compiler generated file" error
++# This occurs due to race conditions when using /MP (multi-processor compilation)
++# with complex transformation modules. Limiting to single-threaded compilation
++# for this target avoids the race condition.
++# See: https://community.rti.com/kb/why-do-i-get-fatal-error-c1083-cannot-open-compiler-generated-file-when-using-visual-studio
++if(MSVC)
++    target_compile_options(${TARGET_NAME}_obj PRIVATE /MP1)
++endif()
++
+ ov_mark_target_as_cc(${TARGET_NAME}_obj)
+
+ if(NOT BUILD_SHARED_LIBS)
