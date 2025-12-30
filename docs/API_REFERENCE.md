@@ -911,7 +911,8 @@ Detect and mask Personally Identifiable Information (PII) in text data. Supports
 - Confidence threshold: 0.7 (70%) for entity acceptance
 - NAME has dictionary fallback if NER unavailable; ORGANIZATION, LOCATION, MISC require NER
 - **Platform Availability:**
-  - Linux x64 (glibc), Linux ARM64 (glibc), Windows x64, macOS x64, macOS ARM64
+  - Linux x64 (glibc), Windows x64, macOS x64, macOS ARM64
+  - Linux ARM64 - temporarily excluded due to vcpkg OpenVINO build issues
   - Linux musl (Alpine) - NER-based detection unavailable, NAME uses dictionary fallback
 - Entity types:
   - NAME: Person names (PER entities) - e.g., "John Smith"
