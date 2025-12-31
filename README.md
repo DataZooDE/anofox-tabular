@@ -368,7 +368,8 @@ Detect and mask Personally Identifiable Information (PII) in text data with 17 s
 **PII Types Detected:**
 - **Pattern-based (13 types):** EMAIL, PHONE, CREDIT_CARD, US_SSN, IBAN, IP_ADDRESS, URL, MAC_ADDRESS, UK_NINO, US_PASSPORT, API_KEY, CRYPTO_ADDRESS, DE_TAX_ID
 - **NER-based (4 types):** NAME, ORGANIZATION, LOCATION, MISC (using OpenVINO + DistilBERT)
-  - Available on: Linux x64 (glibc), Linux ARM64 (glibc), Windows x64, macOS (x64 & ARM64)
+  - Available on: Linux x64 (glibc), macOS (x64 & ARM64)
+  - Temporarily excluded: Linux ARM64 (glibc), Windows x64
   - Not available on: Linux musl (Alpine) - NAME falls back to dictionary-based detection
 
 **Masking Strategies:**
