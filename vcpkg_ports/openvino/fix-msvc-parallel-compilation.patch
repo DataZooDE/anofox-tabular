@@ -1,10 +1,10 @@
 diff --git a/src/common/transformations/CMakeLists.txt b/src/common/transformations/CMakeLists.txt
 --- a/src/common/transformations/CMakeLists.txt
 +++ b/src/common/transformations/CMakeLists.txt
-@@ -35,6 +35,20 @@
-
+@@ -35,6 +35,21 @@
+ 
  ov_add_clang_format_target(${TARGET_NAME}_clang FOR_TARGETS ${TARGET_NAME}_obj)
-
+ 
 +# Workaround for MSVC C1083 "Cannot open compiler generated file" error
 +# This occurs due to race conditions when using /MP (multi-processor compilation)
 +# with complex transformation modules. We need to:
@@ -21,5 +21,5 @@ diff --git a/src/common/transformations/CMakeLists.txt b/src/common/transformati
 +endif()
 +
  ov_mark_target_as_cc(${TARGET_NAME}_obj)
-
+ 
  if(NOT BUILD_SHARED_LIBS)
