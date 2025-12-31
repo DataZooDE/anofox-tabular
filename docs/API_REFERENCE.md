@@ -910,6 +910,11 @@ Detect and mask Personally Identifiable Information (PII) in text data. Supports
 - Use `SELECT * FROM anofox_ner_status()` to check NER availability
 - Confidence threshold: 0.7 (70%) for entity acceptance
 - NAME has dictionary fallback if NER unavailable; ORGANIZATION, LOCATION, MISC require NER
+- **Platform Availability:**
+  - Linux x64 (glibc), macOS x64, macOS ARM64
+  - Linux ARM64 - temporarily excluded due to vcpkg OpenVINO build issues
+  - Windows x64 - temporarily excluded due to MSVC parallel compilation issues
+  - Linux musl (Alpine) - NER-based detection unavailable, NAME uses dictionary fallback
 - Entity types:
   - NAME: Person names (PER entities) - e.g., "John Smith"
   - ORGANIZATION: Company/org names (ORG entities) - e.g., "Microsoft"
