@@ -911,10 +911,10 @@ Detect and mask Personally Identifiable Information (PII) in text data. Supports
 - Confidence threshold: 0.7 (70%) for entity acceptance
 - NAME has dictionary fallback if NER unavailable; ORGANIZATION, LOCATION, MISC require NER
 - **Platform Availability:**
-  - Linux x64 (glibc), macOS x64, macOS ARM64
-  - Linux ARM64 - temporarily excluded due to vcpkg OpenVINO build issues
-  - Windows x64 - temporarily excluded due to MSVC parallel compilation issues
-  - Linux musl (Alpine) - NER-based detection unavailable, NAME uses dictionary fallback
+  - ✅ Linux x64 (glibc), macOS x64, macOS ARM64 - Full NER detection available
+  - ❌ Windows x64 - OpenVINO not installed, NAME uses dictionary fallback, ORG/LOC/MISC unavailable
+  - ❌ Linux ARM64 - vcpkg OpenVINO build timeout issues, excluded from CI
+  - ❌ Linux musl (Alpine) - OpenVINO requires glibc, excluded from CI
 - Entity types:
   - NAME: Person names (PER entities) - e.g., "John Smith"
   - ORGANIZATION: Company/org names (ORG entities) - e.g., "Microsoft"
