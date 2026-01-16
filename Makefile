@@ -23,3 +23,14 @@ BUILD_ROOT:=build
 # for linking into shared libraries (DuckDB extensions)
 configure_ci:
 	bash $(PROJ_DIR)/scripts/install-deps-ci.sh
+
+# Override test targets to disable telemetry during test runs
+# This prevents local tests and CI/CD from polluting PostHog telemetry data
+test_release_internal:
+	DATAZOO_DISABLE_TELEMETRY=1 ./build/release/test/unittest "test/*"
+
+test_debug_internal:
+	DATAZOO_DISABLE_TELEMETRY=1 ./build/debug/test/unittest "test/*"
+
+test_reldebug_internal:
+	DATAZOO_DISABLE_TELEMETRY=1 ./build/reldebug/test/unittest "test/*"
