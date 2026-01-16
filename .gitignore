@@ -8,3 +8,5 @@ test/python/__pycache__/
 .Rhistory
 vcpkg_installed/
 .ai/
+ai/
+third_party/
