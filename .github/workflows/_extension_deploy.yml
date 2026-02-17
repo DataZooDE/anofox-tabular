@@ -31,7 +31,7 @@ on:
       deploy_script:
         required: false
         type: string
-        default: "./scripts/extension-upload.sh"
+        default: "./duckdb/scripts/extension-upload-single.sh"
       matrix_parse_script:
         required: false
         type: string
@@ -97,6 +97,7 @@ jobs:
         shell: bash
         env:
           BUCKET_NAME: ${{ vars.DEPLOY_S3_BUCKET }}
+          DUCKDB_DEPLOY_SCRIPT_MODE: for_real
         run: |
           pwd
           python3 -m pip install pip awscli
