@@ -8,7 +8,7 @@
                         "name": "openvino",
                         "default-features": false,
                         "features": ["auto", "cpu", "onnx"],
-                        "platform": "!windows"
+                        "platform": "x64 & !windows"
                 }
         ],
         "vcpkg-configuration": {
