@@ -80,6 +80,7 @@ WHERE vat_is_valid(vat_id)
 - [Feature Overview](#-feature-overview)
 - [Quick Start](#-quick-start)
 - [Installation](#-installation)
+  - [Python Package](#python-package)
 - [Features](#-features-all-8-modules)
   - [Email Validation](#-email-validation)
   - [Address Parsing](#-address-parsing--normalization)
@@ -204,13 +205,42 @@ make test
 - `build/release/extension/anofox_tabular/anofox_tabular.duckdb_extension` - Loadable extension binary
 - `build/release/test/unittest` - Test runner
 
-### Python Integration
+### Python Package
+
+Install the native Python wrapper — no raw SQL required:
+
+```bash
+pip install anofox-tabular
+# with DataFrame support:
+pip install "anofox-tabular[pandas]"
+pip install "anofox-tabular[polars]"
+```
+
+```python
+import anofox
+from anofox import validate, quality, anomaly, pii, diff
+
+conn = anofox.connect()  # extension downloaded automatically
+
+validate.email_is_valid(conn, "hi@example.com")           # True
+validate.email_is_valid(conn, "hi@example.com", mode="dns")
+
+import pandas as pd
+df = pd.DataFrame({"email": ["a@b.com", "bad@", "c@d.org"]})
+result_df = validate.email_is_valid(conn, df, column="email")
+
+quality.volume(conn, "my_table", min_rows=100)             # {"status": "pass", ...}
+anomaly.isolation_forest(conn, "my_table", "amount")       # {"status": ..., "n_anomalies": ...}
+changes = diff.joindiff(conn, df_before, df_after, primary_keys="id")
+```
+
+See [`python/README.md`](python/README.md) for the full Python API reference.
+
+### Running raw-SQL examples
 
 ```bash
 cd examples
 uv sync  # or: pip install -r requirements.txt
-
-# Run examples
 uv run email_verification.py
 uv run postal_verification.py
 ```
@@ -218,7 +248,7 @@ uv run postal_verification.py
 ### Multi-Language Accessibility
 
 Works with any DuckDB language binding:
-- **Python**: `duckdb` package
+- **Python**: `pip install anofox-tabular` (native wrapper with DataFrame support) or raw `duckdb` package
 - **R**: `duckdb` package
 - **Node.js**: `duckdb` package
 - **Java**: DuckDB JDBC driver

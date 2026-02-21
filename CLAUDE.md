@@ -4,6 +4,31 @@ This file provides guidance to AI coding Agents when working with code in this r
 
 ## Quick Start
 
+## Python Development
+
+Always use **uv** for Python environment management. Never use `pip`, `venv`, or `conda` directly.
+
+```bash
+# Install uv if not present
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# Create/sync the Python environment
+cd python
+uv sync --extra dev
+
+# Run tests
+cd python
+ANOFOX_EXT_PATH=../build/release/extension/anofox_tabular/anofox_tabular.duckdb_extension \
+  uv run pytest tests/ -v
+
+# Run tests that don't need the extension
+uv run pytest tests/test_loader.py tests/test_utils.py -v
+
+# Add a dependency
+uv add <package>
+uv add --dev <package>
+```
+
 ## Project Overview
 
 **Anofox Tabular** is a DuckDB extension providing data quality validation and improvement primitives. 
