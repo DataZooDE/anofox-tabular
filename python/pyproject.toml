@@ -1,0 +1,52 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "anofox-tabular"
+version = "0.2.0"
+description = "Python wrapper for the anofox-tabular DuckDB extension — data quality, PII, and validation primitives"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+keywords = ["duckdb", "data-quality", "validation", "pii", "email", "phone"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Database",
+    "Topic :: Scientific/Engineering :: Information Analysis",
+]
+dependencies = ["duckdb>=1.0.0", "rich>=13.0"]
+
+[project.optional-dependencies]
+pandas = ["pandas>=1.5"]
+polars = ["polars>=0.19", "pyarrow>=12.0"]
+dev = ["pytest>=7", "pytest-mock>=3", "pandas>=1.5", "polars>=0.19", "pyarrow>=12.0"]
+
+[project.scripts]
+anofox = "anofox._cli:main"
+
+[project.entry-points."pytest11"]
+anofox = "anofox._plugin"
+
+[project.urls]
+Homepage = "https://github.com/DataZooDE/anofox-tabular"
+Repository = "https://github.com/DataZooDE/anofox-tabular"
+Issues = "https://github.com/DataZooDE/anofox-tabular/issues"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/anofox"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[dependency-groups]
+dev = [
+    "duckdb==1.4.4",
+]
