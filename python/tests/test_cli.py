@@ -4,6 +4,7 @@ Tests for _cli.py — argument parsing and CLI behaviour.
 
 import csv
 import sys
+from contextlib import redirect_stdout
 from io import StringIO
 from pathlib import Path
 from unittest.mock import patch
@@ -43,11 +44,12 @@ def _run_cli(*argv: str) -> tuple[int, str]:
     buf = StringIO()
     console = Console(file=buf, force_terminal=False, no_color=True)
     with patch("sys.argv", ["anofox", *argv]):
-        try:
-            main(console=console)
-            code = 0
-        except SystemExit as exc:
-            code = exc.code if isinstance(exc.code, int) else 1
+        with redirect_stdout(buf):
+            try:
+                main(console=console)
+                code = 0
+            except SystemExit as exc:
+                code = exc.code if isinstance(exc.code, int) else 1
     return code, buf.getvalue()
 
 

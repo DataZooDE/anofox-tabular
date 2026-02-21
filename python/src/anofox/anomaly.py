@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from typing import Any, Optional, Union
 
-from ._utils import detect_df_type, drop_df_table, register_df_as_table
+from ._table import cleanup_table, resolve_table
 
 
 def isolation_forest(
@@ -47,7 +47,7 @@ def isolation_forest(
     -------
     dict or DataFrame
     """
-    table_name, registered = _resolve_table(conn, table_or_df)
+    table_name, registered = resolve_table(conn, table_or_df)
     try:
         actual_sample_size = sample_size if sample_size is not None else 256
         query = (
@@ -56,7 +56,7 @@ def isolation_forest(
         )
         return _execute_anomaly(conn, query, output_mode)
     finally:
-        _maybe_unregister(conn, table_name, registered)
+        cleanup_table(conn, table_name, registered)
 
 
 def isolation_forest_mv(
@@ -88,7 +88,7 @@ def isolation_forest_mv(
     contamination:
         Expected fraction of anomalies (default 0.1).
     """
-    table_name, registered = _resolve_table(conn, table_or_df)
+    table_name, registered = resolve_table(conn, table_or_df)
     cols_csv = ",".join(columns)
     try:
         actual_sample_size = sample_size if sample_size is not None else 256
@@ -98,7 +98,7 @@ def isolation_forest_mv(
         )
         return _execute_anomaly(conn, query, output_mode)
     finally:
-        _maybe_unregister(conn, table_name, registered)
+        cleanup_table(conn, table_name, registered)
 
 
 def dbscan(
@@ -127,7 +127,7 @@ def dbscan(
     min_points:
         Minimum cluster size (default 5).
     """
-    table_name, registered = _resolve_table(conn, table_or_df)
+    table_name, registered = resolve_table(conn, table_or_df)
     try:
         query = (
             f"SELECT * FROM anofox_tab_dbscan("
@@ -135,7 +135,7 @@ def dbscan(
         )
         return _execute_anomaly(conn, query, output_mode)
     finally:
-        _maybe_unregister(conn, table_name, registered)
+        cleanup_table(conn, table_name, registered)
 
 
 def dbscan_mv(
@@ -164,7 +164,7 @@ def dbscan_mv(
     min_points:
         Minimum cluster size (default 5).
     """
-    table_name, registered = _resolve_table(conn, table_or_df)
+    table_name, registered = resolve_table(conn, table_or_df)
     cols_csv = ",".join(columns)
     try:
         query = (
@@ -173,7 +173,7 @@ def dbscan_mv(
         )
         return _execute_anomaly(conn, query, output_mode)
     finally:
-        _maybe_unregister(conn, table_name, registered)
+        cleanup_table(conn, table_name, registered)
 
 
 def outlier_tree(
@@ -219,7 +219,7 @@ def outlier_tree(
     -------
     dict or DataFrame
     """
-    table_name, registered = _resolve_table(conn, table_or_df)
+    table_name, registered = resolve_table(conn, table_or_df)
     if isinstance(columns, list):
         cols_csv = ",".join(columns)
     else:
@@ -233,30 +233,7 @@ def outlier_tree(
         )
         return _execute_anomaly(conn, query, output_mode)
     finally:
-        _maybe_unregister(conn, table_name, registered)
-
-
-# ---------------------------------------------------------------------------
-# Internal helpers
-# ---------------------------------------------------------------------------
-
-def _resolve_table(
-    conn: Any,
-    table_or_df: Union[str, Any],
-) -> tuple[str, bool]:
-    """
-    Return ``(table_name, was_registered)``.
-    """
-    if isinstance(table_or_df, str):
-        return table_or_df, False
-    detect_df_type(table_or_df)  # validate type before registering
-    table_name = register_df_as_table(conn.native, table_or_df)
-    return table_name, True
-
-
-def _maybe_unregister(conn: Any, table_name: str, registered: bool) -> None:
-    if registered:
-        drop_df_table(conn.native, table_name)
+        cleanup_table(conn, table_name, registered)
 
 
 def _execute_anomaly(conn: Any, query: str, output_mode: str) -> Union[dict, Any]:

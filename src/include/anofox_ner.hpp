@@ -303,6 +303,22 @@ public:
     void ClearCache();
 
     /**
+     * Set OpenVINO inference device (e.g. "AUTO", "CPU", "GPU", "GPU.0")
+     * Takes effect on next model load
+     */
+    void SetDevice(const std::string &device_name);
+
+    /**
+     * Get current configured device name
+     */
+    std::string GetDevice() const;
+
+    /**
+     * Get list of devices available to OpenVINO at runtime
+     */
+    std::vector<std::string> GetAvailableDevices() const;
+
+    /**
      * Get current model status
      */
     NERStatus GetStatus() const { return status_.load(); }
@@ -341,6 +357,7 @@ private:
     std::mutex init_lock_;
     std::string status_message_;
     std::string model_path_;
+    std::string device_name_ = "AUTO";
 
 #if HAVE_OPENVINO
     std::shared_ptr<ov::Core> core_;

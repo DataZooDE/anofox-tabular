@@ -62,6 +62,16 @@ class TestVolume:
         result = quality.volume(conn, quality_table, min_rows=1000)
         assert result["status"] == "fail"
 
+    def test_raises_for_negative_min_rows(self, conn, quality_table):
+        from anofox import quality
+        with pytest.raises(ValueError, match="min_rows must be >= 0"):
+            quality.volume(conn, quality_table, min_rows=-1)
+
+    def test_raises_when_max_below_min(self, conn, quality_table):
+        from anofox import quality
+        with pytest.raises(ValueError, match="max_rows must be >= min_rows"):
+            quality.volume(conn, quality_table, min_rows=10, max_rows=5)
+
 
 class TestNullRate:
     def test_returns_dict(self, conn, sparse_table):

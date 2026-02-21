@@ -531,11 +531,26 @@ void NERModelManager::LoadModel() {
         input_shapes["attention_mask"] = dynamic_shape;
         model->reshape(input_shapes);
 
-        // Compile model for AUTO device (automatically selects best: GPU, then CPU)
-        AnofoxTrace(AnofoxLogLevel::Info, "[anofox] ner: Compiling model for AUTO device...");
+        // Log available devices for diagnostics
+        auto available = core_->get_available_devices();
+        std::string dev_list;
+        for (const auto &d : available) dev_list += d + " ";
+        AnofoxTrace(AnofoxLogLevel::Info, "[anofox] ner: Available OpenVINO devices: " + dev_list);
+
+        // Compile model for configured device (default AUTO: selects GPU if available, falls back to CPU)
+        AnofoxTrace(AnofoxLogLevel::Info, "[anofox] ner: Compiling model for device: " + device_name_);
         compiled_model_ = std::make_shared<ov::CompiledModel>(
-            core_->compile_model(model, "AUTO")
+            core_->compile_model(model, device_name_)
         );
+
+        // Log the actual execution device(s) chosen by AUTO or by explicit selection
+        auto exec_devices = compiled_model_->get_property(ov::execution_devices);
+        std::string exec_dev_str;
+        for (size_t di = 0; di < exec_devices.size(); ++di) {
+            if (di > 0) exec_dev_str += ",";
+            exec_dev_str += exec_devices[di];
+        }
+        AnofoxTrace(AnofoxLogLevel::Info, "[anofox] ner: Executing on: " + exec_dev_str);
 
         // Create inference request
         infer_request_ = std::make_shared<ov::InferRequest>(
@@ -575,7 +590,7 @@ void NERModelManager::LoadModel() {
 
         current_model_name_ = model_name;
         status_.store(NERStatus::LOADED);
-        status_message_ = "Model loaded successfully (" + model_name + ")";
+        status_message_ = "Model loaded successfully (" + model_name + ", device: " + exec_dev_str + ")";
         AnofoxTrace(AnofoxLogLevel::Info, "[anofox] ner: NER model loaded from: " + model_path_);
 
     } catch (const ov::Exception &e) {
@@ -983,6 +998,24 @@ void NERModelManager::ClearCache() {
     }
 }
 
+void NERModelManager::SetDevice(const std::string &device_name) {
+    device_name_ = device_name;
+    AnofoxTrace(AnofoxLogLevel::Info,
+                "[anofox] ner: Device set to '" + device_name + "' (reload required for changes to take effect)");
+}
+
+std::string NERModelManager::GetDevice() const {
+    return device_name_;
+}
+
+std::vector<std::string> NERModelManager::GetAvailableDevices() const {
+#if HAVE_OPENVINO
+    return core_->get_available_devices();
+#else
+    return {};
+#endif
+}
+
 // ============================================================================
 // Batch Processing
 // ============================================================================
@@ -1161,6 +1194,14 @@ void SetNERModelOption(ClientContext &context, SetScope scope, Value &parameter)
     // TODO: Implement NERModelManager::ReloadModel() for immediate reload
 }
 
+void SetNERDeviceOption(ClientContext &context, SetScope scope, Value &parameter) {
+    if (parameter.IsNull()) {
+        throw InvalidInputException("anofox_ner_device cannot be NULL");
+    }
+    auto device_name = StringValue::Get(parameter);
+    NERModelManager::Instance().SetDevice(device_name);
+}
+
 } // anonymous namespace
 
 void RegisterNEROptions(ExtensionLoader &loader) {
@@ -1177,6 +1218,12 @@ void RegisterNEROptions(ExtensionLoader &loader) {
                               LogicalTypeId::VARCHAR,
                               Value("distilbert-en"),
                               SetNERModelOption);
+
+    config.AddExtensionOption("anofox_ner_device",
+                              "OpenVINO device for NER inference: AUTO (default), CPU, GPU, GPU.0, etc.",
+                              LogicalTypeId::VARCHAR,
+                              Value("AUTO"),
+                              SetNERDeviceOption);
 }
 
 } // namespace anofox

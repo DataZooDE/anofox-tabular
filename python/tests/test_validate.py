@@ -72,6 +72,22 @@ class TestEmailIsValid:
         assert "email" in result.columns
         assert "email_is_valid" in result.columns
 
+    def test_dataframe_temp_table_is_dropped(self, conn):
+        import pandas as pd
+        from anofox.validate import email_is_valid
+
+        before = conn.execute(
+            "SELECT count(*) FROM information_schema.tables "
+            "WHERE table_name LIKE '_anofox_%'"
+        ).fetchone()[0]
+        df = pd.DataFrame({"email": ["test@example.com", "bad"]})
+        email_is_valid(conn, df, column="email")
+        after = conn.execute(
+            "SELECT count(*) FROM information_schema.tables "
+            "WHERE table_name LIKE '_anofox_%'"
+        ).fetchone()[0]
+        assert after == before
+
 
 class TestEmailValidate:
     def test_returns_dict_for_string(self, conn):

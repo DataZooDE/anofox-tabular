@@ -354,3 +354,74 @@ SET anofox_pii_default_mask_strategy = 'redact';
 
 statement ok
 SET anofox_pii_enabled_types = '';
+
+# ============================================================================
+# NER Device Option — Inference Behavior
+# ============================================================================
+
+# 27. SET device to 'CPU', run pii_detect() on a NAME -> NAME detected
+statement ok
+SET anofox_ner_device = 'CPU';
+
+query I
+SELECT list_contains(list_transform(pii_detect('John is here'), x -> x.type), 'NAME');
+----
+true
+
+# 28. SET device to 'CPU', run pii_detect() on an ORG -> ORGANIZATION detected
+query I
+SELECT list_contains(list_transform(pii_detect('She joined Google last year'), x -> x.type), 'ORGANIZATION');
+----
+true
+
+# 29. SET device to 'AUTO', run pii_detect() on a LOC -> LOCATION detected
+statement ok
+SET anofox_ner_device = 'AUTO';
+
+query I
+SELECT list_contains(list_transform(pii_detect('She moved to London'), x -> x.type), 'LOCATION');
+----
+true
+
+# 30. With cache disabled (size=0), inference still returns correct result
+statement ok
+SET anofox_ner_device = 'CPU';
+
+statement ok
+SET anofox_ner_cache_size = 0;
+
+query I
+SELECT list_contains(list_transform(pii_detect('Talk to John'), x -> x.type), 'NAME');
+----
+true
+
+# 31. Cache round-trip: SET size to 1, run same text twice -> consistent result
+statement ok
+SET anofox_ner_cache_size = 1;
+
+query I
+SELECT list_contains(list_transform(pii_detect('John is here'), x -> x.type), 'NAME');
+----
+true
+
+query I
+SELECT list_contains(list_transform(pii_detect('John is here'), x -> x.type), 'NAME');
+----
+true
+
+# 32. Reset device to 'AUTO' and cache to 10000 -> settings restored correctly
+statement ok
+SET anofox_ner_device = 'AUTO';
+
+statement ok
+SET anofox_ner_cache_size = 10000;
+
+query T
+SELECT current_setting('anofox_ner_device');
+----
+AUTO
+
+query T
+SELECT current_setting('anofox_ner_cache_size');
+----
+10000

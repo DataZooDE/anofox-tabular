@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from typing import Any, Optional, Union
 
-from ._utils import detect_df_type, drop_df_table, register_df_as_table
+from ._table import cleanup_table, resolve_table
 
 
 def joindiff(
@@ -43,8 +43,8 @@ def joindiff(
     pd.DataFrame
         Rows with ``diff_type`` column indicating change type.
     """
-    src_name, src_registered = _resolve_table(conn, src)
-    tgt_name, tgt_registered = _resolve_table(conn, tgt)
+    src_name, src_registered = resolve_table(conn, src)
+    tgt_name, tgt_registered = resolve_table(conn, tgt)
     pk_arg = _format_pk(primary_keys)
 
     try:
@@ -65,10 +65,8 @@ def joindiff(
 
         result = conn.native.sql(query).df()
     finally:
-        if src_registered:
-            drop_df_table(conn.native, src_name)
-        if tgt_registered:
-            drop_df_table(conn.native, tgt_name)
+        cleanup_table(conn, src_name, src_registered)
+        cleanup_table(conn, tgt_name, tgt_registered)
     return result
 
 
@@ -103,8 +101,8 @@ def hashdiff(
     pd.DataFrame
         Rows where hashes differ, with ``diff_type`` column.
     """
-    src_name, src_registered = _resolve_table(conn, src)
-    tgt_name, tgt_registered = _resolve_table(conn, tgt)
+    src_name, src_registered = resolve_table(conn, src)
+    tgt_name, tgt_registered = resolve_table(conn, tgt)
     pk_arg = _format_pk(primary_keys)
 
     try:
@@ -123,27 +121,9 @@ def hashdiff(
 
         result = conn.native.sql(query).df()
     finally:
-        if src_registered:
-            drop_df_table(conn.native, src_name)
-        if tgt_registered:
-            drop_df_table(conn.native, tgt_name)
+        cleanup_table(conn, src_name, src_registered)
+        cleanup_table(conn, tgt_name, tgt_registered)
     return result
-
-
-# ---------------------------------------------------------------------------
-# Internal helpers
-# ---------------------------------------------------------------------------
-
-def _resolve_table(
-    conn: Any,
-    table_or_df: Union[str, Any],
-) -> tuple[str, bool]:
-    """Return ``(table_name, was_registered)``."""
-    if isinstance(table_or_df, str):
-        return table_or_df, False
-    detect_df_type(table_or_df)  # validate type before registering
-    table_name = register_df_as_table(conn.native, table_or_df)
-    return table_name, True
 
 
 def _format_pk(primary_keys: Union[str, list[str]]) -> str:

@@ -61,7 +61,7 @@ def money_from_cents(conn: Any, cents: int, currency: str) -> dict:
 
 def money_amount(conn: Any, money: dict) -> float:
     """Extract the numeric amount from a money dict."""
-    amount = money.get("amount", money.get("amount", None))
+    amount = money.get("amount", 0)
     currency = money.get("currency", "USD")
     result = conn.execute(
         f"SELECT anofox_tab_money_amount(anofox_tab_money({amount}, '{currency}'))"

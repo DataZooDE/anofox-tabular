@@ -1,0 +1,234 @@
+# name: test/sql/anofox_ner_options.test
+# description: NER configuration options tests (no OpenVINO required)
+# group: [anofox_tabular]
+
+require anofox_tabular
+
+statement ok
+LOAD anofox_tabular
+
+# ============================================================================
+# anofox_ner_device option tests
+# ============================================================================
+
+# 1. Default value is 'AUTO'
+query T
+SELECT current_setting('anofox_ner_device');
+----
+AUTO
+
+# 2. Visible in duckdb_settings() with correct default
+query I
+SELECT COUNT(*) FROM duckdb_settings() WHERE name = 'anofox_ner_device' AND value = 'AUTO';
+----
+1
+
+# 3. SET to 'CPU' -> current_setting() reflects new value
+statement ok
+SET anofox_ner_device = 'CPU';
+
+query T
+SELECT current_setting('anofox_ner_device');
+----
+CPU
+
+# 4. SET to 'AUTO' (round-trip) -> current_setting() reflects new value
+statement ok
+SET anofox_ner_device = 'AUTO';
+
+query T
+SELECT current_setting('anofox_ner_device');
+----
+AUTO
+
+# 5. SET to 'GPU' (no validation at SET time) - accepted and stored
+statement ok
+SET anofox_ner_device = 'GPU';
+
+query T
+SELECT current_setting('anofox_ner_device');
+----
+GPU
+
+# 6. SET to 'GPU.0' (indexed GPU) - accepted and stored
+statement ok
+SET anofox_ner_device = 'GPU.0';
+
+query T
+SELECT current_setting('anofox_ner_device');
+----
+GPU.0
+
+# 7. SET to 'HETERO:GPU,CPU' (heterogeneous device) - accepted and stored
+statement ok
+SET anofox_ner_device = 'HETERO:GPU,CPU';
+
+query T
+SELECT current_setting('anofox_ner_device');
+----
+HETERO:GPU,CPU
+
+# 8. SET to NULL - throws InvalidInputException
+statement error
+SET anofox_ner_device = NULL;
+----
+anofox_ner_device cannot be NULL
+
+# 9. Reset to AUTO; verify setting is stored correctly
+statement ok
+SET anofox_ner_device = 'AUTO';
+
+query T
+SELECT current_setting('anofox_ner_device');
+----
+AUTO
+
+# ============================================================================
+# anofox_ner_cache_size option tests
+# ============================================================================
+
+# 10. Default value is 10000 (returned as BIGINT)
+query I
+SELECT current_setting('anofox_ner_cache_size');
+----
+10000
+
+# 11. Visible in duckdb_settings() with correct default
+query I
+SELECT COUNT(*) FROM duckdb_settings() WHERE name = 'anofox_ner_cache_size' AND value = '10000';
+----
+1
+
+# 12. SET to 0 (disable cache) - accepted and stored
+statement ok
+SET anofox_ner_cache_size = 0;
+
+query I
+SELECT current_setting('anofox_ner_cache_size');
+----
+0
+
+# 13. SET to 5000 - accepted and stored
+statement ok
+SET anofox_ner_cache_size = 5000;
+
+query I
+SELECT current_setting('anofox_ner_cache_size');
+----
+5000
+
+# 14. SET to 1 (minimum useful value) - accepted
+statement ok
+SET anofox_ner_cache_size = 1;
+
+query I
+SELECT current_setting('anofox_ner_cache_size');
+----
+1
+
+# 15. SET to very large value (1000000) - accepted
+statement ok
+SET anofox_ner_cache_size = 1000000;
+
+query I
+SELECT current_setting('anofox_ner_cache_size');
+----
+1000000
+
+# 16. SET to -1 (negative) - throws InvalidInputException
+statement error
+SET anofox_ner_cache_size = -1;
+----
+anofox_ner_cache_size cannot be negative
+
+# 17. SET to NULL - throws InvalidInputException
+statement error
+SET anofox_ner_cache_size = NULL;
+----
+anofox_ner_cache_size cannot be NULL
+
+# Reset to default for subsequent tests
+statement ok
+SET anofox_ner_cache_size = 10000;
+
+query I
+SELECT current_setting('anofox_ner_cache_size');
+----
+10000
+
+# ============================================================================
+# anofox_ner_model option tests
+# ============================================================================
+
+# 18. Default value is 'distilbert-en'
+query T
+SELECT current_setting('anofox_ner_model');
+----
+distilbert-en
+
+# 19. Visible in duckdb_settings() with correct default
+query I
+SELECT COUNT(*) FROM duckdb_settings() WHERE name = 'anofox_ner_model' AND value = 'distilbert-en';
+----
+1
+
+# 20. SET to 'distilbert-en' (valid, round-trip) - accepted
+statement ok
+SET anofox_ner_model = 'distilbert-en';
+
+query T
+SELECT current_setting('anofox_ner_model');
+----
+distilbert-en
+
+# 21. SET to 'xlm-roberta-multi' (valid multilingual model) - accepted
+statement ok
+SET anofox_ner_model = 'xlm-roberta-multi';
+
+query T
+SELECT current_setting('anofox_ner_model');
+----
+xlm-roberta-multi
+
+# 22. SET to 'invalid-model' - throws (model name validated at SET time)
+statement error
+SET anofox_ner_model = 'invalid-model';
+----
+Unsupported NER model
+
+# 23. SET to 'DISTILBERT-EN' (wrong case) - throws (case-sensitive validation)
+statement error
+SET anofox_ner_model = 'DISTILBERT-EN';
+----
+Unsupported NER model
+
+# 24. SET to '' (empty string) - throws (not a valid model name)
+statement error
+SET anofox_ner_model = '';
+----
+Unsupported NER model
+
+# 25. SET to NULL - throws InvalidInputException
+statement error
+SET anofox_ner_model = NULL;
+----
+anofox_ner_model cannot be NULL
+
+# Reset model to default
+statement ok
+SET anofox_ner_model = 'distilbert-en';
+
+query T
+SELECT current_setting('anofox_ner_model');
+----
+distilbert-en
+
+# ============================================================================
+# Global option count
+# ============================================================================
+
+# 26. Exactly 3 anofox_ner% options registered in duckdb_settings()
+query I
+SELECT COUNT(*) FROM duckdb_settings() WHERE name LIKE 'anofox_ner%';
+----
+3

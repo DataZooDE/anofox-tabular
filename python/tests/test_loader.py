@@ -2,6 +2,7 @@
 Tests for _loader.py — no extension binary required.
 """
 
+import hashlib
 import sys
 from pathlib import Path
 from unittest.mock import patch
@@ -14,6 +15,8 @@ from anofox._loader import (
     AnofoxLoader,
     _detect_duckdb_version,
     _detect_platform,
+    _fetch_sha256,
+    _verify_sha256,
 )
 
 
@@ -136,16 +139,21 @@ class TestAnofoxLoader:
         assert result == str(ext_file)
 
     def test_ensure_extension_uses_cached_when_present(self, tmp_path):
-        loader = AnofoxLoader(duckdb_version="9.9.9")
-        # Manually place a file at the cached path
-        cached = loader._cached_path()
-        cached.parent.mkdir(parents=True, exist_ok=True)
-        cached.write_bytes(b"fake cached")
-        try:
-            result = loader.ensure_extension()
-            assert result == str(cached)
-        finally:
-            cached.unlink(missing_ok=True)
+        with patch("pathlib.Path.home", return_value=tmp_path):
+            loader = AnofoxLoader(duckdb_version="9.9.9")
+            # Manually place a file at the cached path
+            cached = loader._cached_path()
+            checksum = loader._cached_checksum_path()
+            cached.parent.mkdir(parents=True, exist_ok=True)
+            payload = b"fake cached"
+            cached.write_bytes(payload)
+            checksum.write_text(hashlib.sha256(payload).hexdigest())
+            try:
+                result = loader.ensure_extension()
+                assert result == str(cached)
+            finally:
+                cached.unlink(missing_ok=True)
+                checksum.unlink(missing_ok=True)
 
     def test_ensure_extension_raises_when_nothing_available(self):
         loader = AnofoxLoader(duckdb_version="0.0.0-nonexistent")
@@ -172,3 +180,29 @@ class TestAnofoxLoader:
         loader._arch = "linux_amd64"
         urls = loader._candidate_urls()
         assert any("anofox_forecast" in u for u in urls)
+
+
+class TestIntegrityHelpers:
+    def test_fetch_sha256_parses_standard_sidecar_format(self):
+        class _Resp:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self):
+                return (("d2" * 32) + "  file.duckdb_extension.gz\n").encode("utf-8")
+
+        with patch("urllib.request.urlopen", return_value=_Resp()):
+            digest = _fetch_sha256("https://example.com/ext.gz.sha256")
+        assert digest == "d2" * 32
+
+    def test_verify_sha256_accepts_matching_hash(self):
+        payload = b"payload"
+        expected = hashlib.sha256(payload).hexdigest()
+        _verify_sha256(payload, expected)
+
+    def test_verify_sha256_rejects_mismatch(self):
+        with pytest.raises(RuntimeError, match="SHA256 mismatch"):
+            _verify_sha256(b"payload", "0" * 64)
