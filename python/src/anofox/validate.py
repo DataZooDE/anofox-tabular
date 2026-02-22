@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 from typing import Any, Optional, Union
 
-from ._utils import detect_df_type, register_df_as_table, relation_to_dataframe
+from ._utils import detect_df_type, drop_df_table, register_df_as_table, relation_to_dataframe
 
 
 # ---------------------------------------------------------------------------
@@ -81,7 +81,7 @@ def email_is_valid(
         )
         return relation_to_dataframe(rel, df_type)
     finally:
-        conn.native.unregister(table_name)
+        drop_df_table(conn.native, table_name)
 
 
 def email_validate(
@@ -138,7 +138,7 @@ def email_validate(
         )
         return relation_to_dataframe(rel, df_type)
     finally:
-        conn.native.unregister(table_name)
+        drop_df_table(conn.native, table_name)
 
 
 # ---------------------------------------------------------------------------
@@ -183,7 +183,7 @@ def phone_is_valid(
         )
         return relation_to_dataframe(rel, df_type)
     finally:
-        conn.native.unregister(table_name)
+        drop_df_table(conn.native, table_name)
 
 
 def phone_parse(
@@ -232,7 +232,7 @@ def phone_parse(
         )
         return relation_to_dataframe(rel, df_type)
     finally:
-        conn.native.unregister(table_name)
+        drop_df_table(conn.native, table_name)
 
 
 def phone_format(

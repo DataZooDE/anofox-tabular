@@ -7,8 +7,14 @@
                 {
                         "name": "openvino",
                         "default-features": false,
+                        "features": ["auto", "cpu", "gpu", "onnx"],
+                        "platform": "x64 & linux"
+                },
+                {
+                        "name": "openvino",
+                        "default-features": false,
                         "features": ["auto", "cpu", "onnx"],
-                        "platform": "x64 & !windows"
+                        "platform": "x64 & osx"
                 }
         ],
         "vcpkg-configuration": {

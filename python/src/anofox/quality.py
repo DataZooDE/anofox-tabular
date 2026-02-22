@@ -13,6 +13,8 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
+_MAX_BIGINT = 9223372036854775807
+
 
 def volume(
     conn: Any,
@@ -39,13 +41,18 @@ def volume(
     dict
         ``{"status": "pass"|"fail", "row_count": int, "min_rows": int, "max_rows": int|None}``
     """
+    if min_rows < 0:
+        raise ValueError("min_rows must be >= 0")
+    if max_rows is not None and max_rows < min_rows:
+        raise ValueError("max_rows must be >= min_rows")
+
     if max_rows is not None:
         rows = conn.execute(
             f"SELECT * FROM anofox_tab_volume('{table_name}', {min_rows}, {max_rows})"
         ).fetchall()
     else:
         rows = conn.execute(
-            f"SELECT * FROM anofox_tab_volume('{table_name}', {min_rows}, {min_rows * 1000000})"
+            f"SELECT * FROM anofox_tab_volume('{table_name}', {min_rows}, {_MAX_BIGINT})"
         ).fetchall()
 
     return _parse_table_result(rows, {"min_rows": min_rows, "max_rows": max_rows})

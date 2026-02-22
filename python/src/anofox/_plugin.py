@@ -72,9 +72,7 @@ def pytest_runtest_setup(item: pytest.Item) -> None:
     if not item.config.getoption("--anofox-check", default=False):
         return
 
-    conn = item.funcargs.get("anofox_conn")  # type: ignore[attr-defined]
-    if conn is None:
-        return
+    conn = item._request.getfixturevalue("anofox_conn")  # type: ignore[attr-defined]
 
     table = marker.args[0] if marker.args else None
     kwargs = marker.kwargs
