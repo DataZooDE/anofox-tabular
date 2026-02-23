@@ -12,19 +12,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
+      - uses: astral-sh/setup-uv@v4
 
       - name: Install dev dependencies
         run: |
           cd python
-          pip install -e ".[dev]"
+          uv sync --extra dev
 
       - name: Run loader and utils tests
         run: |
           cd python
-          pytest tests/test_loader.py tests/test_utils.py -v
+          uv run pytest tests/test_loader.py tests/test_utils.py -v
 
   build:
     name: Build wheel
@@ -33,17 +31,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
-      - name: Install build backend
-        run: pip install hatchling build
+      - uses: astral-sh/setup-uv@v4
 
       - name: Build wheel and sdist
         run: |
           cd python
-          python -m build
+          uv build
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
