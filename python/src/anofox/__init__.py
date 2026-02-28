@@ -23,7 +23,7 @@ from typing import Optional
 from ._connection import AnofoxConnection
 from ._loader import _DEFAULT_S3_BASE
 
-__all__ = ["connect", "AnofoxConnection"]
+__all__ = ["connect", "AnofoxConnection", "profile"]
 
 
 def connect(
