@@ -2,6 +2,10 @@
 dolt/
 dolt-access.lock
 
+# Dolt database directories with project-specific names (e.g. beads_<project>/)
+beads/
+beads_*/
+
 # Runtime files
 bd.sock
 bd.sock.startlock
