@@ -636,7 +636,7 @@ WHERE abs(pearson) > 0.7;
 | `mean`, `median`, `stddev`, `p25`, `p75`, `skewness`, `kurtosis` | Numeric distribution (NULL for non-numeric) |
 | `avg_length`, `min_length`, `max_length` | String character length; list element count; map cardinality |
 | `top_values` | Most-frequent values |
-| `pattern_summary` | Detected pattern: `email`, `url`, `phone`, `uuid`, `date`, `integer`, `decimal`, `list`, `map`, `struct`, `union` |
+| `pattern_summary` | Detected pattern: `email`, `uuid`, `url`, `ip_address`, `iso_date`, `numeric_string`, `mixed`, `list`, `map`, `struct`, `union` |
 | `zero_count`, `negative_count` | Numeric zero/negative counts (NULL for non-numeric) |
 | `is_sampled`, `actual_sample_size` | Sampling metadata |
 
@@ -1042,7 +1042,7 @@ metric_isolation_forest(
 | `row_count` | BIGINT | Total rows in table |
 | `null_count` | BIGINT | Number of NULL values |
 | `null_rate` | DOUBLE | Fraction of NULLs |
-| `distinct_count` | BIGINT | Approximate distinct value count |
+| `distinct_count` | BIGINT | Distinct value count |
 | `distinct_rate` | DOUBLE | Fraction of distinct values |
 | `min_val` | VARCHAR | Minimum value as string (NULL for STRUCT/MAP/UNION) |
 | `max_val` | VARCHAR | Maximum value as string (NULL for STRUCT/MAP/UNION) |
@@ -1053,11 +1053,11 @@ metric_isolation_forest(
 | `p75` | DOUBLE | 75th percentile (numeric columns only) |
 | `skewness` | DOUBLE | Skewness (numeric columns only) |
 | `kurtosis` | DOUBLE | Kurtosis (numeric columns only) |
-| `top_values` | VARCHAR | Most-frequent values with counts |
+| `top_values` | LIST(STRUCT(value VARCHAR, count BIGINT)) | Most-frequent values with counts |
 | `avg_length` | DOUBLE | Avg string length / list element count / map cardinality |
 | `min_length` | BIGINT | Min string length / list element count / map cardinality |
 | `max_length` | BIGINT | Max string length / list element count / map cardinality |
-| `pattern_summary` | VARCHAR | Detected pattern: `email`, `url`, `phone`, `uuid`, `date`, `integer`, `decimal`, `list`, `map`, `struct`, `union` |
+| `pattern_summary` | VARCHAR | Detected pattern: `email`, `uuid`, `url`, `ip_address`, `iso_date`, `numeric_string`, `mixed`, `list`, `map`, `struct`, `union` |
 | `is_unique` | BOOLEAN | True if all non-NULL values are distinct |
 | `is_constant` | BOOLEAN | True if all non-NULL values are the same |
 | `zero_count` | BIGINT | Number of zero values (numeric only) |

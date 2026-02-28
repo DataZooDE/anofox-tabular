@@ -22,6 +22,7 @@ from typing import Optional
 
 from ._connection import AnofoxConnection
 from ._loader import _DEFAULT_S3_BASE
+from . import profile
 
 __all__ = ["connect", "AnofoxConnection", "profile"]
 

@@ -173,6 +173,7 @@ set(EXTENSION_SOURCES
         src/anofox_email_smtp.cpp
         src/anofox_metric.cpp
         src/anofox_profile.cpp
+        src/anofox_sql_utils.cpp
         src/anofox_isolation_forest.cpp
         src/anofox_dbscan.cpp
         src/anofox_outlier_tree.cpp

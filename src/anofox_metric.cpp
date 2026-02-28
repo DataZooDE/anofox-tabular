@@ -2,6 +2,8 @@
 #include "anofox_isolation_forest.hpp"
 #include "anofox_dbscan.hpp"
 #include "anofox_function_alias.hpp"
+#include "anofox_sql_utils.hpp"
+#include "anofox_trace.hpp"
 #include "telemetry.hpp"
 #include "duckdb/function/table_function.hpp"
 #include "duckdb/parser/parser.hpp"
@@ -10,6 +12,7 @@
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/main/connection.hpp"
 #include "duckdb/main/client_context.hpp"
+#include <algorithm>
 #include <chrono>
 #include <random>
 
@@ -55,6 +58,7 @@ static string GenerateVolumeSQL(const string &table_ref, const Value &min_rows, 
 // Helper: Generate SQL for null rate metrics
 static string GenerateNullRateSQL(const string &table_ref, const string &column_name, const Value &max_null_rate) {
 	string max_rate_val = max_null_rate.IsNull() ? "1.0" : max_null_rate.ToString();
+	string col_id = QuoteSqlIdentifier(column_name);
 
 	return "SELECT "
 		"CASE WHEN null_rate <= " + max_rate_val + " THEN 'pass' ELSE 'fail' END AS status, "
@@ -68,9 +72,9 @@ static string GenerateNullRateSQL(const string &table_ref, const string &column_
 		"  ELSE ' exceeds maximum ' || CAST(" + max_rate_val + " AS VARCHAR) "
 		"END AS message "
 		"FROM (SELECT "
-		"  CAST(SUM(CASE WHEN \"" + column_name + "\" IS NULL THEN 1 ELSE 0 END) AS BIGINT) AS null_count, "
+		"  CAST(SUM(CASE WHEN " + col_id + " IS NULL THEN 1 ELSE 0 END) AS BIGINT) AS null_count, "
 		"  COUNT(*) AS total_count, "
-		"  CAST(SUM(CASE WHEN \"" + column_name + "\" IS NULL THEN 1 ELSE 0 END) AS DOUBLE) / COUNT(*) AS null_rate "
+		"  CAST(SUM(CASE WHEN " + col_id + " IS NULL THEN 1 ELSE 0 END) AS DOUBLE) / COUNT(*) AS null_rate "
 		"FROM " + table_ref + ")";
 }
 
@@ -78,6 +82,7 @@ static string GenerateNullRateSQL(const string &table_ref, const string &column_
 static string GenerateDistinctCountSQL(const string &table_ref, const string &column_name, const Value &min_distinct, const Value &max_distinct) {
 	string min_val = min_distinct.IsNull() ? "NULL" : min_distinct.ToString();
 	string max_val = max_distinct.IsNull() ? "NULL" : max_distinct.ToString();
+	string col_id = QuoteSqlIdentifier(column_name);
 
 	return "SELECT "
 		"CASE "
@@ -95,12 +100,13 @@ static string GenerateDistinctCountSQL(const string &table_ref, const string &co
 		"    'Distinct count ' || CAST(distinct_count AS VARCHAR) || ' exceeds maximum ' || CAST(" + max_val + " AS VARCHAR) "
 		"  ELSE 'Distinct count ' || CAST(distinct_count AS VARCHAR) || ' is within acceptable range' "
 		"END AS message "
-		"FROM (SELECT COUNT(DISTINCT \"" + column_name + "\") AS distinct_count FROM " + table_ref + ")";
+		"FROM (SELECT COUNT(DISTINCT " + col_id + ") AS distinct_count FROM " + table_ref + ")";
 }
 
 // Helper: Generate SQL for zscore metrics using CTE to avoid nested aggregates
 static string GenerateZscoreSQL(const string &table_ref, const string &column_name, const Value &threshold) {
 	string thresh_val = threshold.IsNull() ? "3.0" : threshold.ToString();
+	string col_id = QuoteSqlIdentifier(column_name);
 
 	// Use CTEs to avoid nested aggregate error:
 	// 1. stats: compute mean and stddev
@@ -108,11 +114,11 @@ static string GenerateZscoreSQL(const string &table_ref, const string &column_na
 	// 3. summary: count outliers
 	return "WITH stats AS ("
 		"SELECT AVG(val) AS mean, STDDEV(val) AS stddev, COUNT(*) AS total_count "
-		"FROM (SELECT CAST(\"" + column_name + "\" AS DOUBLE) AS val FROM " + table_ref + " WHERE \"" + column_name + "\" IS NOT NULL)"
+		"FROM (SELECT CAST(" + col_id + " AS DOUBLE) AS val FROM " + table_ref + " WHERE " + col_id + " IS NOT NULL)"
 		"), "
 		"with_zscore AS ("
 		"SELECT ABS((val - stats.mean) / stats.stddev) AS abs_zscore "
-		"FROM (SELECT CAST(\"" + column_name + "\" AS DOUBLE) AS val FROM " + table_ref + " WHERE \"" + column_name + "\" IS NOT NULL), stats"
+		"FROM (SELECT CAST(" + col_id + " AS DOUBLE) AS val FROM " + table_ref + " WHERE " + col_id + " IS NOT NULL), stats"
 		"), "
 		"summary AS ("
 		"SELECT "
@@ -143,6 +149,7 @@ static string GenerateZscoreSQL(const string &table_ref, const string &column_na
 // Helper: Generate SQL for IQR metrics using CTE to avoid nested aggregates
 static string GenerateIQRSQL(const string &table_ref, const string &column_name, const Value &iqr_multiplier) {
 	string mult_val = iqr_multiplier.IsNull() ? "1.5" : iqr_multiplier.ToString();
+	string col_id = QuoteSqlIdentifier(column_name);
 
 	// Use CTEs to avoid nested aggregate error:
 	// 1. stats: compute Q1 and Q3 quantiles
@@ -150,7 +157,7 @@ static string GenerateIQRSQL(const string &table_ref, const string &column_name,
 	// 3. summary: count outliers
 	return "WITH stats AS ("
 		"SELECT QUANTILE_CONT(val, 0.25) AS q1, QUANTILE_CONT(val, 0.75) AS q3, COUNT(*) AS total_count "
-		"FROM (SELECT CAST(\"" + column_name + "\" AS DOUBLE) AS val FROM " + table_ref + " WHERE \"" + column_name + "\" IS NOT NULL)"
+		"FROM (SELECT CAST(" + col_id + " AS DOUBLE) AS val FROM " + table_ref + " WHERE " + col_id + " IS NOT NULL)"
 		"), "
 		"with_bounds AS ("
 		"SELECT "
@@ -160,7 +167,7 @@ static string GenerateIQRSQL(const string &table_ref, const string &column_name,
 		"  stats.total_count, "
 		"  stats.q1 - " + mult_val + " * (stats.q3 - stats.q1) AS lower_bound, "
 		"  stats.q3 + " + mult_val + " * (stats.q3 - stats.q1) AS upper_bound "
-		"FROM (SELECT CAST(\"" + column_name + "\" AS DOUBLE) AS val FROM " + table_ref + " WHERE \"" + column_name + "\" IS NOT NULL), stats"
+		"FROM (SELECT CAST(" + col_id + " AS DOUBLE) AS val FROM " + table_ref + " WHERE " + col_id + " IS NOT NULL), stats"
 		"), "
 		"summary AS ("
 		"SELECT "
@@ -191,36 +198,49 @@ static string GenerateIQRSQL(const string &table_ref, const string &column_name,
 		"FROM summary";
 }
 
-// Helper: Generate SQL for schema metrics (requires actual table name for information_schema queries)
-static string GenerateSchemaSQL(const string &table_name, const Value &required_columns_val) {
-	// Convert list value to SQL array literal
-	string cols_str;
-	if (!required_columns_val.IsNull() && required_columns_val.type().id() == LogicalTypeId::LIST) {
-		auto &list_children = ListValue::GetChildren(required_columns_val);
-		for (size_t i = 0; i < list_children.size(); i++) {
-			if (i > 0) cols_str += ", ";
-			cols_str += "'" + list_children[i].ToString() + "'";
+static string GenerateSchemaSQL(const string &table_name, const vector<string> &required_columns) {
+	string required_array = "[]::VARCHAR[]";
+	if (!required_columns.empty()) {
+		required_array = "[";
+		for (size_t i = 0; i < required_columns.size(); i++) {
+			if (i > 0) {
+				required_array += ", ";
+			}
+			required_array += "'" + EscapeSqlStringLiteral(required_columns[i]) + "'";
 		}
+		required_array += "]::VARCHAR[]";
 	}
 
-	// Use EXCEPT to find missing columns instead of list_filter with subquery
-	return "SELECT "
-		"CASE WHEN missing_count = 0 THEN 'pass' ELSE 'fail' END AS status, "
-		"missing_columns, "
-		"'Table ' || '" + table_name + "' || CASE "
-		"  WHEN missing_count = 0 THEN ' has all required columns' "
-		"  ELSE ' is missing ' || CAST(missing_count AS VARCHAR) || ' column(s)' "
-		"END AS message "
-		"FROM (SELECT "
-		"  (SELECT array_agg(col) FROM (SELECT unnest([" + cols_str + "]) AS col EXCEPT SELECT column_name FROM information_schema.columns WHERE table_name = '" + table_name + "')) AS missing_columns, "
-		"  (SELECT count(*) FROM (SELECT unnest([" + cols_str + "]) AS col EXCEPT SELECT column_name FROM information_schema.columns WHERE table_name = '" + table_name + "')) AS missing_count "
-		")";
+	return "WITH required(col) AS ("
+	       "  SELECT unnest(" + required_array + ")"
+	       "), actual(col) AS ("
+	       "  SELECT column_name"
+	       "  FROM (DESCRIBE SELECT * FROM " + BuildQueryTableRef(table_name) + ")"
+	       "), missing AS ("
+	       "  SELECT col FROM required"
+	       "  EXCEPT"
+	       "  SELECT col FROM actual"
+	       "), missing_stats AS ("
+	       "  SELECT"
+	       "    COALESCE(COUNT(*), 0) AS missing_count,"
+	       "    COALESCE(array_agg(col), []::VARCHAR[]) AS missing_columns"
+	       "  FROM missing"
+	       ")"
+	       "SELECT"
+	       "  CASE WHEN missing_count = 0 THEN 'pass' ELSE 'fail' END AS status,"
+	       "  missing_columns,"
+	       "  'Table " + EscapeSqlStringLiteral(table_name) + "' || CASE"
+	       "    WHEN missing_count = 0 THEN ' has all required columns'"
+	       "    ELSE ' is missing ' || CAST(missing_count AS VARCHAR) || ' column(s)'"
+	       "  END AS message"
+	       " FROM missing_stats";
 }
 
 // Helper: Generate SQL for freshness metrics
 static string GenerateFreshnessSQL(const string &table_ref, const string &timestamp_column, const Value &max_age, const Value &reference_time) {
 	string max_age_interval = max_age.IsNull() ? "INTERVAL '1 day'" : "'" + max_age.ToString() + "'::INTERVAL";
 	string ref_time = reference_time.IsNull() ? "now()" : "'" + reference_time.ToString() + "'::TIMESTAMP";
+	string col_id = QuoteSqlIdentifier(timestamp_column);
 
 	return "SELECT "
 		"CASE WHEN latest_timestamp >= threshold_timestamp THEN 'pass' ELSE 'fail' END AS status, "
@@ -234,7 +254,7 @@ static string GenerateFreshnessSQL(const string &table_ref, const string &timest
 		"    'Data is stale. Latest update: ' || CAST(latest_timestamp AS VARCHAR) || ' (age: ' || CAST(EXTRACT(EPOCH FROM (" + ref_time + " - latest_timestamp))::BIGINT AS VARCHAR) || 's, max allowed: ' || CAST(EXTRACT(EPOCH FROM " + max_age_interval + ")::BIGINT AS VARCHAR) || 's)' "
 		"END AS message "
 		"FROM (SELECT "
-		"  MAX(\"" + timestamp_column + "\") AS latest_timestamp, "
+		"  MAX(" + col_id + ") AS latest_timestamp, "
 		+ ref_time + " - " + max_age_interval + " AS threshold_timestamp "
 		"FROM " + table_ref + ")";
 }
@@ -252,7 +272,7 @@ static unique_ptr<TableRef> MetricVolumeBindReplace(ClientContext &context, Tabl
 	}
 
 	string table_name = input.inputs[0].ToString();
-	string table_ref = "query_table('" + table_name + "')";
+	string table_ref = BuildQueryTableRef(table_name);
 	string sql = GenerateVolumeSQL(table_ref, input.inputs[1], input.inputs[2]);
 	return ParseSubquery(sql, context.GetParserOptions(), "Failed to parse volume metric query");
 }
@@ -265,7 +285,7 @@ static unique_ptr<TableRef> MetricNullRateBindReplace(ClientContext &context, Ta
 
 	string table_name = input.inputs[0].ToString();
 	string column_name = input.inputs[1].ToString();
-	string table_ref = "query_table('" + table_name + "')";
+	string table_ref = BuildQueryTableRef(table_name);
 	string sql = GenerateNullRateSQL(table_ref, column_name, input.inputs[2]);
 	return ParseSubquery(sql, context.GetParserOptions(), "Failed to parse null rate metric query");
 }
@@ -278,7 +298,7 @@ static unique_ptr<TableRef> MetricDistinctCountBindReplace(ClientContext &contex
 
 	string table_name = input.inputs[0].ToString();
 	string column_name = input.inputs[1].ToString();
-	string table_ref = "query_table('" + table_name + "')";
+	string table_ref = BuildQueryTableRef(table_name);
 	string sql = GenerateDistinctCountSQL(table_ref, column_name, input.inputs[2], input.inputs[3]);
 	return ParseSubquery(sql, context.GetParserOptions(), "Failed to parse distinct count metric query");
 }
@@ -291,7 +311,7 @@ static unique_ptr<TableRef> MetricZscoreBindReplace(ClientContext &context, Tabl
 
 	string table_name = input.inputs[0].ToString();
 	string column_name = input.inputs[1].ToString();
-	string table_ref = "query_table('" + table_name + "')";
+	string table_ref = BuildQueryTableRef(table_name);
 	string sql = GenerateZscoreSQL(table_ref, column_name, input.inputs[2]);
 	return ParseSubquery(sql, context.GetParserOptions(), "Failed to parse zscore metric query");
 }
@@ -304,7 +324,7 @@ static unique_ptr<TableRef> MetricIQRBindReplace(ClientContext &context, TableFu
 
 	string table_name = input.inputs[0].ToString();
 	string column_name = input.inputs[1].ToString();
-	string table_ref = "query_table('" + table_name + "')";
+	string table_ref = BuildQueryTableRef(table_name);
 	string sql = GenerateIQRSQL(table_ref, column_name, input.inputs[2]);
 	return ParseSubquery(sql, context.GetParserOptions(), "Failed to parse IQR metric query");
 }
@@ -316,7 +336,19 @@ static unique_ptr<TableRef> MetricSchemaBindReplace(ClientContext &context, Tabl
 	}
 
 	string table_name = input.inputs[0].ToString();
-	string sql = GenerateSchemaSQL(table_name, input.inputs[1]);
+	vector<string> required_columns;
+	if (!input.inputs[1].IsNull() && input.inputs[1].type().id() == LogicalTypeId::LIST) {
+		auto &list_children = ListValue::GetChildren(input.inputs[1]);
+		for (auto &child : list_children) {
+			if (!child.IsNull()) {
+				required_columns.push_back(child.ToString());
+			}
+		}
+	}
+	AnofoxTrace(AnofoxLogLevel::Debug,
+	            "metric_schema: table='" + table_name + "', required=" +
+	                std::to_string(required_columns.size()));
+	string sql = GenerateSchemaSQL(table_name, required_columns);
 	return ParseSubquery(sql, context.GetParserOptions(), "Failed to parse schema metric query");
 }
 
@@ -331,7 +363,7 @@ static unique_ptr<TableRef> MetricFreshnessBindReplace(ClientContext &context, T
 	Value max_age = input.inputs[2];
 	Value reference_time = (input.inputs.size() > 3) ? input.inputs[3] : Value();
 
-	string table_ref = "query_table('" + table_name + "')";
+	string table_ref = BuildQueryTableRef(table_name);
 	string sql = GenerateFreshnessSQL(table_ref, timestamp_column, max_age, reference_time);
 	return ParseSubquery(sql, context.GetParserOptions(), "Failed to parse freshness metric query");
 }
@@ -1587,4 +1619,3 @@ void RegisterMetricFunctions(ExtensionLoader &loader) {
 
 } // namespace anofox
 } // namespace duckdb
-

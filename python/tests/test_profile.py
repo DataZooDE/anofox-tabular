@@ -232,3 +232,57 @@ class TestProfileCorrelations:
         assert len(result) == 1
         assert result["column_a"].iloc[0] == "age"
         assert result["column_b"].iloc[0] == "salary"
+
+
+class _DummyNative:
+    def __init__(self):
+        self.last_query = None
+
+    def sql(self, query):
+        self.last_query = query
+        return self
+
+    def df(self):
+        return pandas.DataFrame()
+
+
+class _DummyConn:
+    def __init__(self):
+        self.native = _DummyNative()
+
+
+class TestProfileSqlEscaping:
+    def test_profile_table_escapes_table_and_columns(self, monkeypatch):
+        from anofox import profile
+
+        conn = _DummyConn()
+        monkeypatch.setattr(profile, "resolve_table", lambda _c, _t: ("bad'table", False))
+        monkeypatch.setattr(profile, "cleanup_table", lambda _c, _t, _r: None)
+
+        profile.profile_table(conn, "ignored", columns=["a'b"])
+
+        assert "anofox_tab_profile_table('bad''table'" in conn.native.last_query
+        assert "['a''b']" in conn.native.last_query
+
+    def test_profile_summary_escapes_table(self, monkeypatch):
+        from anofox import profile
+
+        conn = _DummyConn()
+        monkeypatch.setattr(profile, "resolve_table", lambda _c, _t: ("bad'table", False))
+        monkeypatch.setattr(profile, "cleanup_table", lambda _c, _t, _r: None)
+
+        profile.profile_summary(conn, "ignored")
+
+        assert "anofox_tab_profile_summary('bad''table')" in conn.native.last_query
+
+    def test_profile_correlations_escapes_table_and_columns(self, monkeypatch):
+        from anofox import profile
+
+        conn = _DummyConn()
+        monkeypatch.setattr(profile, "resolve_table", lambda _c, _t: ("bad'table", False))
+        monkeypatch.setattr(profile, "cleanup_table", lambda _c, _t, _r: None)
+
+        profile.profile_correlations(conn, "ignored", columns=["a'b"])
+
+        assert "anofox_tab_profile_correlations('bad''table'" in conn.native.last_query
+        assert "['a''b']" in conn.native.last_query

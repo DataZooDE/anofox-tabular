@@ -40,16 +40,16 @@ SELECT COUNT(*) FROM profile_table('profile_test')
 7
 
 # Column names come back in schema order
-query T rowsort
+query T
 SELECT column_name FROM profile_table('profile_test')
 ----
-active
-age
-created_at
-email
 id
 name
+email
+age
 salary
+active
+created_at
 
 # Alias works
 query I
@@ -561,3 +561,84 @@ query T
 SELECT avg_length IS NULL FROM profile_table('empty_complex') WHERE column_name = 'vals'
 ----
 true
+
+# ===--------------------------------------------------------------------===
+# Regression: schema-qualified table names
+# ===--------------------------------------------------------------------===
+
+statement ok
+CREATE SCHEMA profile_schema
+
+statement ok
+CREATE TABLE profile_schema.events (
+    event_id INTEGER,
+    amount DOUBLE,
+    label VARCHAR
+)
+
+statement ok
+INSERT INTO profile_schema.events VALUES
+    (1, 10.0, 'a'),
+    (2, 20.0, 'b'),
+    (3, 30.0, 'c')
+
+# Create same table name in main schema to guard against cross-schema collisions
+statement ok
+CREATE TABLE events (
+    only_in_main INTEGER
+)
+
+statement ok
+INSERT INTO events VALUES (99)
+
+# profile_table should introspect schema-qualified relations
+query I
+SELECT COUNT(*) FROM profile_table('profile_schema.events')
+----
+3
+
+# profile_summary should report correct column count for schema-qualified relation
+query I
+SELECT column_count FROM profile_summary('profile_schema.events')
+----
+3
+
+# profile_correlations should see both numeric columns (event_id, amount)
+query I
+SELECT COUNT(*) FROM profile_correlations('profile_schema.events')
+----
+1
+
+# ===--------------------------------------------------------------------===
+# Regression: quoted identifiers containing embedded double quotes
+# ===--------------------------------------------------------------------===
+
+statement ok
+CREATE TABLE quoted_profile_cols (
+    "a""b" DOUBLE,
+    c DOUBLE
+)
+
+statement ok
+INSERT INTO quoted_profile_cols VALUES
+    (1.0, 10.0),
+    (NULL, 20.0),
+    (3.0, NULL)
+
+# profile_table should handle escaped identifier quoting
+query T
+SELECT COUNT(*) = 2 FROM profile_table('quoted_profile_cols')
+----
+true
+
+# profile_summary total_nulls should include nulls from quoted column name
+query I
+SELECT total_nulls FROM profile_summary('quoted_profile_cols')
+----
+2
+
+# profile_correlations should not fail to parse quoted identifiers
+query I
+SELECT COUNT(*) FROM profile_correlations('quoted_profile_cols')
+----
+1

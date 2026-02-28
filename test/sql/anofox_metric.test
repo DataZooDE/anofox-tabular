@@ -244,3 +244,58 @@ query T
 SELECT status FROM schema_check('test_orders', ['order_id', 'nonexistent_column'])
 ----
 fail
+
+# ===--------------------------------------------------------------------===
+# Regression: schema-qualified tables, quoted identifiers, and safe failures
+# ===--------------------------------------------------------------------===
+
+statement ok
+CREATE SCHEMA metric_schema
+
+statement ok
+CREATE TABLE metric_schema.events (
+    id INTEGER,
+    "a""b" INTEGER,
+    created_at TIMESTAMP
+)
+
+statement ok
+INSERT INTO metric_schema.events VALUES
+    (1, 10, TIMESTAMP '2025-10-19 10:00:00'),
+    (2, NULL, TIMESTAMP '2025-10-19 11:00:00'),
+    (3, 30, TIMESTAMP '2025-10-19 12:00:00')
+
+# same table name in main schema (different shape) must not affect schema_check
+statement ok
+CREATE TABLE events (
+    wrong_col INTEGER
+)
+
+# schema_check must resolve relation columns via the target relation
+query T
+SELECT status FROM schema_check('metric_schema.events', ['id', 'a"b', 'created_at'])
+----
+pass
+
+# quoted column name containing double quote must be escaped in generated SQL
+query T
+SELECT status FROM null_rate('metric_schema.events', 'a"b', 0.5)
+----
+pass
+
+# freshness should work against schema-qualified relation
+query T
+SELECT status FROM freshness('metric_schema.events', 'created_at', INTERVAL '1 hour', TIMESTAMP '2025-10-19 13:00:00')
+----
+pass
+
+# injection-shaped table argument should fail safely and not execute appended SQL
+statement error
+SELECT status FROM volume('metric_schema.events''); DROP TABLE events; --', 1, 10)
+----
+does not exist
+
+query I
+SELECT COUNT(*) FROM events
+----
+0

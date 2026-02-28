@@ -1,6 +1,7 @@
 #include "anofox_profile.hpp"
 #include "anofox_trace.hpp"
 #include "anofox_function_alias.hpp"
+#include "anofox_sql_utils.hpp"
 #include "telemetry.hpp"
 
 #include "duckdb/function/table_function.hpp"
@@ -38,16 +39,12 @@ static unique_ptr<SubqueryRef> ParseSubquery(const string &query, const ParserOp
 
 // Escape a column/table name as a SQL string literal (single-quote escaping)
 static string EscapeStringLiteral(const string &s) {
-	string result;
-	result.reserve(s.size());
-	for (char c : s) {
-		if (c == '\'') {
-			result += "''";
-		} else {
-			result += c;
-		}
-	}
-	return result;
+	return EscapeSqlStringLiteral(s);
+}
+
+// Escape a SQL identifier by doubling embedded double-quotes and wrapping in quotes
+static string EscapeIdentifier(const string &identifier) {
+	return QuoteSqlIdentifier(identifier);
 }
 
 //===--------------------------------------------------------------------===//
@@ -114,32 +111,24 @@ static vector<pair<string, string>> IntrospectColumns(Connection &con, const str
                                                        const vector<string> &filter) {
 	vector<pair<string, string>> result;
 
-	string sql = "SELECT column_name, data_type FROM information_schema.columns "
-	             "WHERE table_name = '" + EscapeStringLiteral(table_name) + "' "
-	             "ORDER BY ordinal_position";
+	string sql = "SELECT * FROM query_table('" + EscapeStringLiteral(table_name) + "') LIMIT 0";
 
 	auto res = con.Query(sql);
 	if (res->HasError()) {
 		throw InvalidInputException("Failed to introspect table '%s': %s", table_name, res->GetError());
 	}
 
-	while (true) {
-		auto chunk = res->Fetch();
-		if (!chunk || chunk->size() == 0) {
-			break;
-		}
-		for (idx_t i = 0; i < chunk->size(); i++) {
-			string col_name = chunk->GetValue(0, i).ToString();
-			string col_type = chunk->GetValue(1, i).ToString();
+	for (idx_t i = 0; i < res->names.size(); i++) {
+		string col_name = res->names[i];
+		string col_type = res->types[i].ToString();
 
-			if (!filter.empty()) {
-				bool found = std::find(filter.begin(), filter.end(), col_name) != filter.end();
-				if (!found) {
-					continue;
-				}
+		if (!filter.empty()) {
+			bool found = std::find(filter.begin(), filter.end(), col_name) != filter.end();
+			if (!found) {
+				continue;
 			}
-			result.push_back({col_name, col_type});
 		}
+		result.push_back({col_name, col_type});
 	}
 
 	return result;
@@ -162,7 +151,7 @@ static int64_t ComputeTotalNulls(Connection &con, const string &table_name,
 			sql += " + ";
 		}
 		first = false;
-		string ec = "\"" + col_name + "\"";
+		string ec = EscapeIdentifier(col_name);
 		sql += "COALESCE(SUM(CASE WHEN " + ec + " IS NULL THEN 1 ELSE 0 END), 0)";
 	}
 	sql += " AS total_nulls FROM query_table('" + tbl + "')";
@@ -181,30 +170,19 @@ static int64_t ComputeTotalNulls(Connection &con, const string &table_name,
 }
 
 static string GenerateSummarySQL(const string &table_name, int64_t total_nulls,
-                                  int64_t complex_columns) {
+                                  int64_t complex_columns, int64_t column_count,
+                                  int64_t numeric_columns, int64_t string_columns,
+                                  int64_t temporal_columns, int64_t boolean_columns) {
 	string tbl = EscapeStringLiteral(table_name);
 	string tn_lit = std::to_string(total_nulls);
 	string cc_lit = std::to_string(complex_columns);
+	string col_count_lit = std::to_string(column_count);
+	string num_count_lit = std::to_string(numeric_columns);
+	string str_count_lit = std::to_string(string_columns);
+	string tmp_count_lit = std::to_string(temporal_columns);
+	string bool_count_lit = std::to_string(boolean_columns);
 
-	return "WITH col_meta AS ("
-	       "  SELECT"
-	       "    COUNT(*) AS column_count,"
-	       "    SUM(CASE WHEN data_type ILIKE '%INT%' OR data_type ILIKE '%FLOAT%'"
-	       "             OR data_type = 'DOUBLE' OR data_type = 'REAL'"
-	       "             OR data_type ILIKE '%DECIMAL%' OR data_type ILIKE '%NUMERIC%'"
-	       "             OR data_type = 'HUGEINT' OR data_type = 'UBIGINT'"
-	       "             THEN 1 ELSE 0 END) AS numeric_columns,"
-	       "    SUM(CASE WHEN data_type ILIKE 'VARCHAR%' OR data_type = 'CHAR'"
-	       "             OR data_type = 'TEXT' OR data_type = 'BLOB' OR data_type = 'STRING'"
-	       "             THEN 1 ELSE 0 END) AS string_columns,"
-	       "    SUM(CASE WHEN data_type ILIKE '%DATE%' OR data_type ILIKE '%TIMESTAMP%'"
-	       "             OR (data_type ILIKE '%TIME%' AND data_type NOT ILIKE '%INT%')"
-	       "             THEN 1 ELSE 0 END) AS temporal_columns,"
-	       "    SUM(CASE WHEN data_type ILIKE 'BOOL%' THEN 1 ELSE 0 END) AS boolean_columns"
-	       "  FROM information_schema.columns"
-	       "  WHERE table_name = '" + tbl + "'"
-	       "),"
-	       "row_stats AS ("
+	return "WITH row_stats AS ("
 	       "  SELECT COUNT(*) AS row_count FROM query_table('" + tbl + "')"
 	       "),"
 	       "dup_stats AS ("
@@ -213,19 +191,19 @@ static string GenerateSummarySQL(const string &table_name, int64_t total_nulls,
 	       ")"
 	       "SELECT"
 	       "  CAST(r.row_count AS BIGINT) AS row_count,"
-	       "  CAST(m.column_count AS BIGINT) AS column_count,"
-	       "  CAST(COALESCE(m.numeric_columns, 0) AS BIGINT) AS numeric_columns,"
-	       "  CAST(COALESCE(m.string_columns, 0) AS BIGINT) AS string_columns,"
-	       "  CAST(COALESCE(m.temporal_columns, 0) AS BIGINT) AS temporal_columns,"
-	       "  CAST(COALESCE(m.boolean_columns, 0) AS BIGINT) AS boolean_columns,"
+	       "  " + col_count_lit + "::BIGINT AS column_count,"
+	       "  " + num_count_lit + "::BIGINT AS numeric_columns,"
+	       "  " + str_count_lit + "::BIGINT AS string_columns,"
+	       "  " + tmp_count_lit + "::BIGINT AS temporal_columns,"
+	       "  " + bool_count_lit + "::BIGINT AS boolean_columns,"
 	       "  " + cc_lit + "::BIGINT AS complex_columns,"
 	       "  " + tn_lit + "::BIGINT AS total_nulls,"
-	       "  CASE WHEN r.row_count = 0 OR m.column_count = 0 THEN 0.0"
+	       "  CASE WHEN r.row_count = 0 OR " + col_count_lit + " = 0 THEN 0.0"
 	       "       ELSE CAST(" + tn_lit + " AS DOUBLE)"
-	       "            / (CAST(r.row_count AS DOUBLE) * CAST(m.column_count AS DOUBLE))"
+	       "            / (CAST(r.row_count AS DOUBLE) * CAST(" + col_count_lit + " AS DOUBLE))"
 	       "  END AS total_null_rate,"
 	       "  CAST(d.duplicate_row_count AS BIGINT) AS duplicate_row_count"
-	       " FROM col_meta m, row_stats r, dup_stats d";
+	       " FROM row_stats r, dup_stats d";
 }
 
 static unique_ptr<TableRef> ProfileSummaryBindReplace(ClientContext &context,
@@ -243,9 +221,25 @@ static unique_ptr<TableRef> ProfileSummaryBindReplace(ClientContext &context,
 	Connection con(*context.db);
 	auto columns = IntrospectColumns(con, table_name, {});
 
+	int64_t column_count = 0;
+	int64_t numeric_columns = 0;
+	int64_t string_columns = 0;
+	int64_t temporal_columns = 0;
+	int64_t boolean_columns = 0;
 	int64_t complex_columns = 0;
 	for (auto &[col_name, col_type] : columns) {
-		if (IsComplexCategory(ClassifyColumn(col_type))) {
+		auto category = ClassifyColumn(col_type);
+		column_count++;
+		if (category == ColumnCategory::NUMERIC) {
+			numeric_columns++;
+		} else if (category == ColumnCategory::STRING) {
+			string_columns++;
+		} else if (category == ColumnCategory::TEMPORAL) {
+			temporal_columns++;
+		} else if (category == ColumnCategory::BOOLEAN) {
+			boolean_columns++;
+		}
+		if (IsComplexCategory(category)) {
 			complex_columns++;
 		}
 	}
@@ -255,7 +249,9 @@ static unique_ptr<TableRef> ProfileSummaryBindReplace(ClientContext &context,
 	            "profile: total_nulls=" + std::to_string(total_nulls) +
 	                " complex_columns=" + std::to_string(complex_columns));
 
-	string sql = GenerateSummarySQL(table_name, total_nulls, complex_columns);
+	string sql = GenerateSummarySQL(table_name, total_nulls, complex_columns, column_count,
+	                                numeric_columns, string_columns, temporal_columns,
+	                                boolean_columns);
 	return ParseSubquery(sql, context.GetParserOptions(), "Failed to parse profile_summary query");
 }
 
@@ -362,7 +358,7 @@ static unique_ptr<GlobalTableFunctionState> ProfileTableInit(ClientContext &,
 static string BuildColumnProfileSQL(const string &col_name, const string &col_type,
                                     ColumnCategory cat, bool is_sampled,
                                     int64_t actual_sample_size) {
-	string ec = "\"" + col_name + "\""; // escaped column for SQL identifiers
+	string ec = EscapeIdentifier(col_name);
 	string is_sampled_str = is_sampled ? "TRUE" : "FALSE";
 	string sample_size_str = std::to_string(actual_sample_size);
 	string col_name_lit = "'" + EscapeStringLiteral(col_name) + "'";
@@ -701,8 +697,8 @@ static void ProfileCorrelationsExecute(ClientContext &context, TableFunctionInpu
 		bool first = true;
 		for (size_t i = 0; i < numeric_cols.size(); i++) {
 			for (size_t j = i + 1; j < numeric_cols.size(); j++) {
-				string ea = "\"" + numeric_cols[i] + "\"";
-				string eb = "\"" + numeric_cols[j] + "\"";
+				string ea = EscapeIdentifier(numeric_cols[i]);
+				string eb = EscapeIdentifier(numeric_cols[j]);
 				string col_a_lit = "'" + EscapeStringLiteral(numeric_cols[i]) + "'";
 				string col_b_lit = "'" + EscapeStringLiteral(numeric_cols[j]) + "'";
 
