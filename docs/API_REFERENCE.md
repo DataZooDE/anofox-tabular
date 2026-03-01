@@ -1775,6 +1775,142 @@ LIMIT 100;
 
 ---
 
+## Data Profiling
+
+Generate per-column statistics, pairwise correlations, and table-wide quality summaries.
+Full support for complex types (LIST, MAP, STRUCT, UNION).
+
+### Functions
+
+#### `anofox_tab_profile_table` (alias: `profile_table`)
+
+Per-column statistical profile of a table — one output row per column.
+
+**Signature:**
+```sql
+anofox_tab_profile_table(
+    table_name VARCHAR
+    [, cols LIST<VARCHAR>]
+    [, sample_size BIGINT]
+    [, exact BOOLEAN]
+) → TABLE
+```
+
+**Parameters:**
+- `table_name`: Table or view name
+- `cols`: Optional column filter (default: all columns)
+- `sample_size`: Maximum rows to scan (default: 1,000,000)
+- `exact`: Disable sampling even for large tables (default: `false`)
+
+**Output Schema (27 columns):**
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `column_name` | VARCHAR | Column name |
+| `column_type` | VARCHAR | DuckDB column type |
+| `row_count` | BIGINT | Total rows in sample |
+| `null_count` | BIGINT | Number of NULL values |
+| `null_rate` | DOUBLE | Fraction of NULLs |
+| `distinct_count` | BIGINT | Number of distinct non-NULL values |
+| `distinct_rate` | DOUBLE | Distinct count / row count |
+| `min_val` | VARCHAR | Minimum value as string (NULL for STRUCT/MAP/UNION) |
+| `max_val` | VARCHAR | Maximum value as string (NULL for STRUCT/MAP/UNION) |
+| `mean` | DOUBLE | Mean (numeric columns only) |
+| `median` | DOUBLE | Median (numeric columns only) |
+| `stddev` | DOUBLE | Standard deviation (numeric columns only) |
+| `p25` | DOUBLE | 25th percentile (numeric columns only) |
+| `p75` | DOUBLE | 75th percentile (numeric columns only) |
+| `skewness` | DOUBLE | Skewness (numeric columns only) |
+| `kurtosis` | DOUBLE | Kurtosis (numeric columns only) |
+| `top_values` | LIST(STRUCT) | Most-frequent values with counts |
+| `avg_length` | DOUBLE | Avg string length / list element count / map cardinality |
+| `min_length` | BIGINT | Min string length / list element count / map cardinality |
+| `max_length` | BIGINT | Max string length / list element count / map cardinality |
+| `pattern_summary` | VARCHAR | Detected pattern: `email`, `phone`, `uuid`, `url`, `ip_address`, `iso_date`, `numeric_string`, `mixed`, `list`, `map`, `struct`, `union` |
+| `is_unique` | BOOLEAN | All non-NULL values are distinct |
+| `is_constant` | BOOLEAN | All non-NULL values are the same |
+| `zero_count` | BIGINT | Number of zero values (numeric columns only) |
+| `negative_count` | BIGINT | Number of negative values (numeric columns only) |
+| `is_sampled` | BOOLEAN | True if a sample was taken |
+| `actual_sample_size` | BIGINT | Number of rows actually scanned |
+
+**Pattern Detection Priority:** `email` → `phone` → `uuid` → `url` → `ip_address` → `iso_date` → `numeric_string` → `mixed`. A pattern is assigned when ≥ 80% of non-NULL values match. Phone detection uses the libphonenumber validator (`US` region hint).
+
+**Example:**
+```sql
+-- Profile all columns
+SELECT column_name, null_rate, pattern_summary, mean
+FROM profile_table('orders');
+
+-- Profile specific columns with a 500K row sample
+SELECT * FROM profile_table('orders', ['amount', 'customer_id'], 500000);
+```
+
+---
+
+#### `anofox_tab_profile_summary` (alias: `profile_summary`)
+
+Single-row table-wide quality overview.
+
+**Signature:**
+```sql
+anofox_tab_profile_summary(table_name VARCHAR) → TABLE
+```
+
+**Output Schema (11 columns, one row):**
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `row_count` | BIGINT | Total rows in the table |
+| `column_count` | BIGINT | Total columns in the table |
+| `numeric_columns` | BIGINT | Number of numeric columns |
+| `string_columns` | BIGINT | Number of string columns |
+| `temporal_columns` | BIGINT | Number of date/timestamp columns |
+| `boolean_columns` | BIGINT | Number of boolean columns |
+| `complex_columns` | BIGINT | Number of complex-type columns (LIST, MAP, STRUCT, UNION) |
+| `total_nulls` | BIGINT | Total NULL cells across all columns |
+| `total_null_rate` | DOUBLE | Fraction of cells that are NULL |
+| `duplicate_row_count` | BIGINT | Number of duplicate rows |
+| `estimated_memory_bytes` | BIGINT | Estimated in-memory size (row_count × column_count × 8 bytes) |
+
+**Example:**
+```sql
+SELECT * FROM profile_summary('orders');
+```
+
+---
+
+#### `anofox_tab_profile_correlations` (alias: `profile_correlations`)
+
+Pairwise Pearson and Spearman correlations for numeric columns.
+
+**Signature:**
+```sql
+anofox_tab_profile_correlations(
+    table_name VARCHAR
+    [, cols LIST<VARCHAR>]
+) → TABLE
+```
+
+**Output Schema:**
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `column_a` | VARCHAR | First column name |
+| `column_b` | VARCHAR | Second column name |
+| `pearson` | DOUBLE | Pearson correlation coefficient (−1 to 1) |
+| `spearman` | DOUBLE | Spearman rank correlation coefficient (−1 to 1) |
+| `n` | BIGINT | Number of non-NULL row pairs used |
+
+**Example:**
+```sql
+SELECT column_a, column_b, pearson
+FROM profile_correlations('orders')
+WHERE abs(pearson) > 0.7;
+```
+
+---
+
 ## Configuration
 
 Set options via SQL or DuckDB's configuration file.

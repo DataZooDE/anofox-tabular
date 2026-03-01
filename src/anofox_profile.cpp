@@ -182,6 +182,11 @@ static string GenerateSummarySQL(const string &table_name, int64_t total_nulls,
 	string tmp_count_lit = std::to_string(temporal_columns);
 	string bool_count_lit = std::to_string(boolean_columns);
 
+	// estimated_memory_bytes: rough approximation as row_count * column_count * 8.
+	// Assumes an average of 8 bytes per cell across all column types.
+	string estimated_bytes_sql =
+	    "CAST(r.row_count * " + col_count_lit + " * 8 AS BIGINT)";
+
 	return "WITH row_stats AS ("
 	       "  SELECT COUNT(*) AS row_count FROM query_table('" + tbl + "')"
 	       "),"
@@ -202,7 +207,8 @@ static string GenerateSummarySQL(const string &table_name, int64_t total_nulls,
 	       "       ELSE CAST(" + tn_lit + " AS DOUBLE)"
 	       "            / (CAST(r.row_count AS DOUBLE) * CAST(" + col_count_lit + " AS DOUBLE))"
 	       "  END AS total_null_rate,"
-	       "  CAST(d.duplicate_row_count AS BIGINT) AS duplicate_row_count"
+	       "  CAST(d.duplicate_row_count AS BIGINT) AS duplicate_row_count,"
+	       "  " + estimated_bytes_sql + " AS estimated_memory_bytes"
 	       " FROM row_stats r, dup_stats d";
 }
 
@@ -418,10 +424,17 @@ static string BuildColumnProfileSQL(const string &col_name, const string &col_ty
 			return "SUM(CASE WHEN REGEXP_MATCHES(CAST(" + ec + " AS VARCHAR), '" + regex +
 			       "') THEN 1 ELSE 0 END) * 1.0 / NULLIF(COUNT(" + ec + "), 0) >= 0.8";
 		};
+		// Phone check: use the phonenumber_is_valid scalar function to detect phone columns.
+		// >= 80% of non-null values must parse as valid phone numbers.
+		string phone_frac =
+		    "SUM(CASE WHEN anofox_tab_phonenumber_is_valid(CAST(" + ec + " AS VARCHAR), 'US') = true"
+		    " THEN 1 ELSE 0 END) * 1.0 / NULLIF(COUNT(" + ec + "), 0) >= 0.8";
 		pattern_sql =
 		    "CASE"
 		    " WHEN " + regex_frac("^[a-zA-Z0-9._%+\\-]+@[a-zA-Z0-9.\\-]+[.][a-zA-Z]{2,}$") +
 		    " THEN 'email'"
+		    " WHEN " + phone_frac +
+		    " THEN 'phone'"
 		    " WHEN " + regex_frac("^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$") +
 		    " THEN 'uuid'"
 		    " WHEN " + regex_frac("^https?://.+") +

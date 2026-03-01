@@ -642,3 +642,60 @@ query I
 SELECT COUNT(*) FROM profile_correlations('quoted_profile_cols')
 ----
 1
+
+# ===--------------------------------------------------------------------===
+# pattern_summary: phone detection
+# ===--------------------------------------------------------------------===
+
+statement ok
+CREATE TABLE phone_pattern_test (phone VARCHAR)
+
+statement ok
+INSERT INTO phone_pattern_test
+SELECT '+1800555' || LPAD(CAST(i AS VARCHAR), 4, '0') AS phone
+FROM range(100) t(i)
+
+# >= 80% valid phone numbers → pattern_summary = 'phone'
+query T
+SELECT pattern_summary FROM profile_table('phone_pattern_test') WHERE column_name = 'phone'
+----
+phone
+
+# Mixed column (some phones, but < 80%) should NOT be classified as 'phone'
+statement ok
+CREATE TABLE mixed_phone_test (val VARCHAR)
+
+statement ok
+INSERT INTO mixed_phone_test VALUES
+    ('+1-415-555-1234'),
+    ('hello@example.com'),
+    ('not a phone'),
+    ('also not a phone'),
+    ('random text here')
+
+query T
+SELECT pattern_summary != 'phone' FROM profile_table('mixed_phone_test') WHERE column_name = 'val'
+----
+true
+
+# ===--------------------------------------------------------------------===
+# profile_summary: estimated_memory_bytes
+# ===--------------------------------------------------------------------===
+
+# estimated_memory_bytes is non-NULL and positive for non-empty table
+query T
+SELECT estimated_memory_bytes > 0 FROM profile_summary('profile_test')
+----
+true
+
+# estimated_memory_bytes is 0 for empty table (0 rows)
+query I
+SELECT estimated_memory_bytes FROM profile_summary('empty_tbl')
+----
+0
+
+# estimated_memory_bytes scales with row count (phone_pattern_test: 100 rows × 1 col × 8 bytes)
+query I
+SELECT estimated_memory_bytes FROM profile_summary('phone_pattern_test')
+----
+800

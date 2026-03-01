@@ -636,14 +636,15 @@ WHERE abs(pearson) > 0.7;
 | `mean`, `median`, `stddev`, `p25`, `p75`, `skewness`, `kurtosis` | Numeric distribution (NULL for non-numeric) |
 | `avg_length`, `min_length`, `max_length` | String character length; list element count; map cardinality |
 | `top_values` | Most-frequent values |
-| `pattern_summary` | Detected pattern: `email`, `uuid`, `url`, `ip_address`, `iso_date`, `numeric_string`, `mixed`, `list`, `map`, `struct`, `union` |
+| `pattern_summary` | Detected pattern: `email`, `phone`, `uuid`, `url`, `ip_address`, `iso_date`, `numeric_string`, `mixed`, `list`, `map`, `struct`, `union` |
 | `zero_count`, `negative_count` | Numeric zero/negative counts (NULL for non-numeric) |
 | `is_sampled`, `actual_sample_size` | Sampling metadata |
 
-**`profile_summary` output** (10 columns, one row):
+**`profile_summary` output** (11 columns, one row):
 
 `row_count`, `column_count`, `numeric_columns`, `string_columns`, `temporal_columns`,
-`boolean_columns`, `complex_columns`, `total_nulls`, `total_null_rate`, `duplicate_row_count`
+`boolean_columns`, `complex_columns`, `total_nulls`, `total_null_rate`, `duplicate_row_count`,
+`estimated_memory_bytes`
 
 **Python API:**
 
@@ -1065,7 +1066,7 @@ metric_isolation_forest(
 | `is_sampled` | BOOLEAN | True if a sample was taken |
 | `actual_sample_size` | BIGINT | Number of rows actually scanned |
 
-**`profile_summary` Output Schema (10 columns, one row):**
+**`profile_summary` Output Schema (11 columns, one row):**
 
 | Column | Type | Description |
 |--------|------|-------------|
@@ -1079,6 +1080,7 @@ metric_isolation_forest(
 | `total_nulls` | BIGINT | Total NULL cells across all columns |
 | `total_null_rate` | DOUBLE | Fraction of cells that are NULL (total_nulls / row_count / column_count) |
 | `duplicate_row_count` | BIGINT | Number of duplicate rows (row_count minus distinct rows) |
+| `estimated_memory_bytes` | BIGINT | Estimated in-memory size in bytes (row_count × column_count × 8) |
 
 **`profile_correlations` Output Schema:**
 
