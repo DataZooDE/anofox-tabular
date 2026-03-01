@@ -5,8 +5,8 @@
 [![DuckDB](https://img.shields.io/badge/DuckDB-1.4.4-green)](https://duckdb.org/)
 [![C++17](https://img.shields.io/badge/C++-17-blue.svg)](https://isocpp.org/)
 [![License](https://img.shields.io/badge/license-BSL%201.1-blue.svg)](LICENSE)
-[![Functions](https://img.shields.io/badge/Functions-78-green)]()
-[![Modules](https://img.shields.io/badge/Modules-9-blue)]()
+[![Functions](https://img.shields.io/badge/Functions-81-green)]()
+[![Modules](https://img.shields.io/badge/Modules-10-blue)]()
 
 SQL-native validation, anomaly detection, and data diffing—all without leaving your database.
 
@@ -38,7 +38,7 @@ WHERE vat_is_valid(vat_id)
 
 **The DuckDB extension combining validation, anomaly detection, and data diffing.**
 
-- ✅ **9 Production-Ready Modules** - 78 SQL functions for email, postal, phone, money, VAT, PII, metrics, anomalies, and diffing
+- ✅ **10 Production-Ready Modules** - 81 SQL functions for email, postal, phone, money, VAT, PII, metrics, anomalies, diffing, and profiling
 - ⚡ **Blazing Fast** - Vectorized C++17 implementation processes millions of rows per second
 - 🔌 **Zero Friction** - SQL-native with no external services; works entirely within DuckDB
 - 📦 **Self-Contained** - Embedded validation patterns; no API keys or network calls required
@@ -81,7 +81,7 @@ WHERE vat_is_valid(vat_id)
 - [Quick Start](#-quick-start)
 - [Installation](#-installation)
   - [Python Package](#python-package)
-- [Features](#-features-all-8-modules)
+- [Features](#-features-all-10-modules)
   - [Email Validation](#-email-validation)
   - [Address Parsing](#-address-parsing--normalization)
   - [Phone Number Validation](#-phone-number-validation)
@@ -91,6 +91,7 @@ WHERE vat_is_valid(vat_id)
   - [Data Quality Metrics](#-data-quality-metrics)
   - [Anomaly Detection](#-anomaly-detection)
   - [Data Diffing](#-data-diffing)
+  - [Data Profiling](#-data-profiling)
 - [Real-World Examples](#-real-world-examples)
 - [SQL Function Reference](#-sql-function-reference)
 - [Configuration](#-configuration)
@@ -118,8 +119,9 @@ WHERE vat_is_valid(vat_id)
 | 🔍 **Quality Metrics** | 8 | Volume, nulls, freshness, schema checks | Stable |
 | 🤖 **Anomaly Detection** | 5 | Isolation Forest, DBSCAN, OutlierTree (explainable) | ✨ Enhanced |
 | 🔄 **Data Diffing** | 2 | Table comparison, migration validation | Stable |
+| 📊 **Data Profiling** | 3 | Column stats, correlations, table overview | ✨ New |
 
-**Total: 78 SQL Functions** | **Zero Required Dependencies***
+**Total: 81 SQL Functions** | **Zero Required Dependencies***
 
 <sub>*Except libpostal (address parsing) and optional DNS/SMTP for email</sub>
 
@@ -256,7 +258,7 @@ Works with any DuckDB language binding:
 
 ---
 
-## ✨ Features - All 9 Modules
+## ✨ Features - All 10 Modules
 
 ### 📧 Email Validation
 
@@ -598,6 +600,64 @@ LIMIT 100;
 - Detailed change tracking
 
 [📖 See complete Data Diffing module documentation](#data-diffing-functions)
+
+---
+
+### 📊 Data Profiling
+
+Generate comprehensive column-level statistics, pairwise correlations, and table-wide quality
+summaries in a single SQL call — with full support for complex types (LIST, MAP, STRUCT, UNION).
+
+```sql
+-- Per-column statistics: one row per column
+SELECT column_name, column_type, null_rate, distinct_count, mean, stddev, pattern_summary
+FROM profile_table('orders');
+
+-- Focus on specific columns only
+SELECT * FROM profile_table('orders', ['amount', 'customer_id'], 500000, false);
+
+-- Table overview: row counts, type breakdowns, null totals, duplicates
+SELECT * FROM profile_summary('orders');
+
+-- Pairwise Pearson and Spearman correlations for all numeric columns
+SELECT column_a, column_b, pearson, spearman
+FROM profile_correlations('orders')
+WHERE abs(pearson) > 0.7;
+```
+
+**`profile_table` output** (27 columns per row):
+
+| Column | Description |
+|--------|-------------|
+| `column_name`, `column_type` | Column identity and DuckDB type |
+| `row_count`, `null_count`, `null_rate` | Total and missing value stats |
+| `distinct_count`, `distinct_rate`, `is_unique`, `is_constant` | Cardinality metrics |
+| `min_val`, `max_val` | Min/max as VARCHAR (NULL for STRUCT/MAP/UNION) |
+| `mean`, `median`, `stddev`, `p25`, `p75`, `skewness`, `kurtosis` | Numeric distribution (NULL for non-numeric) |
+| `avg_length`, `min_length`, `max_length` | String character length; list element count; map cardinality |
+| `top_values` | Most-frequent values |
+| `pattern_summary` | Detected pattern: `email`, `phone`, `uuid`, `url`, `ip_address`, `iso_date`, `numeric_string`, `mixed`, `list`, `map`, `struct`, `union` |
+| `zero_count`, `negative_count` | Numeric zero/negative counts (NULL for non-numeric) |
+| `is_sampled`, `actual_sample_size` | Sampling metadata |
+
+**`profile_summary` output** (11 columns, one row):
+
+`row_count`, `column_count`, `numeric_columns`, `string_columns`, `temporal_columns`,
+`boolean_columns`, `complex_columns`, `total_nulls`, `total_null_rate`, `duplicate_row_count`,
+`estimated_memory_bytes`
+
+**Python API:**
+
+```python
+import anofox
+
+with anofox.connect() as conn:
+    stats   = anofox.profile.profile_table(conn, df)          # pandas/polars DataFrame input
+    summary = anofox.profile.profile_summary(conn, 'orders')
+    corr    = anofox.profile.profile_correlations(conn, df, columns=['price', 'qty'])
+```
+
+[📖 See complete Data Profiling module documentation](#data-profiling-functions)
 
 ---
 
@@ -952,6 +1012,85 @@ metric_isolation_forest(
 |----------|-----------|-------------|
 | `anofox_tab_diff_hashdiff` | `(source VARCHAR, target VARCHAR, pk_cols LIST<VARCHAR> [, compare_cols LIST<VARCHAR>]) → TABLE` | Fast hash-based summary diff |
 | `anofox_tab_diff_joindiff` | `(source VARCHAR, target VARCHAR, pk_cols LIST<VARCHAR> [, compare_cols LIST<VARCHAR>]) → TABLE` | Detailed row-level diff with source/target data |
+
+### Data Profiling Functions
+
+<a name="data-profiling-functions"></a>
+
+| Function | Signature | Description |
+|----------|-----------|-------------|
+| `anofox_tab_profile_table` | `(table_name VARCHAR, columns VARCHAR[] DEFAULT [], sample_size BIGINT DEFAULT 1000000, exact BOOLEAN DEFAULT false) → TABLE` | Per-column statistics (27 output columns) |
+| `anofox_tab_profile_summary` | `(table_name VARCHAR) → TABLE` | Single-row table overview (10 output columns) |
+| `anofox_tab_profile_correlations` | `(table_name VARCHAR, columns VARCHAR[] DEFAULT []) → TABLE` | Pairwise Pearson and Spearman correlations for numeric columns |
+
+**Aliases:** `profile_table`, `profile_summary`, `profile_correlations`
+
+**`profile_table` Parameters:**
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `table_name` | VARCHAR | — | Name of the table to profile |
+| `columns` | VARCHAR[] | `[]` (all columns) | Optional column name filter |
+| `sample_size` | BIGINT | 1,000,000 | Maximum rows to sample |
+| `exact` | BOOLEAN | false | When true, always scan the full table (ignores sample_size) |
+
+**`profile_table` Output Schema (27 columns):**
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `column_name` | VARCHAR | Column name |
+| `column_type` | VARCHAR | DuckDB data type |
+| `row_count` | BIGINT | Total rows in table |
+| `null_count` | BIGINT | Number of NULL values |
+| `null_rate` | DOUBLE | Fraction of NULLs |
+| `distinct_count` | BIGINT | Distinct value count |
+| `distinct_rate` | DOUBLE | Fraction of distinct values |
+| `min_val` | VARCHAR | Minimum value as string (NULL for STRUCT/MAP/UNION) |
+| `max_val` | VARCHAR | Maximum value as string (NULL for STRUCT/MAP/UNION) |
+| `mean` | DOUBLE | Arithmetic mean (numeric columns only) |
+| `median` | DOUBLE | Median value (numeric columns only) |
+| `stddev` | DOUBLE | Standard deviation (numeric columns only) |
+| `p25` | DOUBLE | 25th percentile (numeric columns only) |
+| `p75` | DOUBLE | 75th percentile (numeric columns only) |
+| `skewness` | DOUBLE | Skewness (numeric columns only) |
+| `kurtosis` | DOUBLE | Kurtosis (numeric columns only) |
+| `top_values` | LIST(STRUCT(value VARCHAR, count BIGINT)) | Most-frequent values with counts |
+| `avg_length` | DOUBLE | Avg string length / list element count / map cardinality |
+| `min_length` | BIGINT | Min string length / list element count / map cardinality |
+| `max_length` | BIGINT | Max string length / list element count / map cardinality |
+| `pattern_summary` | VARCHAR | Detected pattern: `email`, `uuid`, `url`, `ip_address`, `iso_date`, `numeric_string`, `mixed`, `list`, `map`, `struct`, `union` |
+| `is_unique` | BOOLEAN | True if all non-NULL values are distinct |
+| `is_constant` | BOOLEAN | True if all non-NULL values are the same |
+| `zero_count` | BIGINT | Number of zero values (numeric only) |
+| `negative_count` | BIGINT | Number of negative values (numeric only) |
+| `is_sampled` | BOOLEAN | True if a sample was taken |
+| `actual_sample_size` | BIGINT | Number of rows actually scanned |
+
+**`profile_summary` Output Schema (11 columns, one row):**
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `row_count` | BIGINT | Total rows in the table |
+| `column_count` | BIGINT | Total columns in the table |
+| `numeric_columns` | BIGINT | Number of numeric columns |
+| `string_columns` | BIGINT | Number of string columns |
+| `temporal_columns` | BIGINT | Number of date/timestamp columns |
+| `boolean_columns` | BIGINT | Number of boolean columns |
+| `complex_columns` | BIGINT | Number of complex-type columns (LIST, MAP, STRUCT, UNION) |
+| `total_nulls` | BIGINT | Total NULL cells across all columns |
+| `total_null_rate` | DOUBLE | Fraction of cells that are NULL (total_nulls / row_count / column_count) |
+| `duplicate_row_count` | BIGINT | Number of duplicate rows (row_count minus distinct rows) |
+| `estimated_memory_bytes` | BIGINT | Estimated in-memory size in bytes (row_count × column_count × 8) |
+
+**`profile_correlations` Output Schema:**
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `column_a` | VARCHAR | First column name |
+| `column_b` | VARCHAR | Second column name |
+| `pearson` | DOUBLE | Pearson correlation coefficient (−1 to 1) |
+| `spearman` | DOUBLE | Spearman rank correlation coefficient (−1 to 1) |
+| `n` | BIGINT | Number of non-NULL row pairs used |
 
 ---
 

@@ -1,5 +1,6 @@
 #include "include/anofox_outlier_tree.hpp"
 #include "include/anofox_function_alias.hpp"
+#include "anofox_sql_utils.hpp"
 #include "telemetry.hpp"
 #include "anofox_trace.hpp"
 #include "duckdb/function/table_function.hpp"
@@ -906,11 +907,10 @@ static void OutlierTreeExecute(ClientContext &context, TableFunctionInput &data_
         std::string column_list;
         for (size_t i = 0; i < bind_data.column_names.size(); ++i) {
             if (i > 0) column_list += ", ";
-            column_list += "\"" + bind_data.column_names[i] + "\"";
+            column_list += QuoteSqlIdentifier(bind_data.column_names[i]);
         }
 
-        std::string query = "SELECT " + column_list + " FROM query_table('" +
-                           bind_data.table_name + "')";
+        std::string query = "SELECT " + column_list + " FROM " + BuildQueryTableRef(bind_data.table_name);
 
         auto result = con.Query(query);
         if (result->HasError()) {

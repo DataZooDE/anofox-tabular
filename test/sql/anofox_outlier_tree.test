@@ -253,6 +253,35 @@ SELECT COUNT(*) FROM (
 0
 
 # ===--------------------------------------------------------------------===
+# Regression: schema-qualified tables and quoted identifiers
+# ===--------------------------------------------------------------------===
+
+statement ok
+CREATE SCHEMA ot_schema
+
+statement ok
+CREATE TABLE ot_schema.quoted_cols (
+    "a""b" DOUBLE,
+    c DOUBLE
+)
+
+statement ok
+INSERT INTO ot_schema.quoted_cols VALUES
+    (10.0, 1.0),
+    (11.0, 1.1),
+    (200.0, 1.2)
+
+query I
+SELECT COUNT(*) FROM outlier_tree('ot_schema.quoted_cols', 'a"b,c', 'summary', 4, 0.5::DOUBLE, 2, 2, 2.67, 2.0)
+----
+1
+
+query T
+SELECT status FROM outlier_tree('ot_schema.quoted_cols', 'a"b,c', 'summary', 4, 0.5::DOUBLE, 2, 2, 2.67, 2.0)
+----
+fail
+
+# ===--------------------------------------------------------------------===
 # Real-world Pattern: Titanic-style fare outliers
 # Inspired by david-cortes/outliertree test cases
 # ===--------------------------------------------------------------------===
