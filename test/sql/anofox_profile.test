@@ -1,0 +1,701 @@
+require anofox_tabular
+
+statement ok
+LOAD anofox_tabular
+
+statement ok
+SET anofox_tab_trace_enabled = false
+
+# ===--------------------------------------------------------------------===
+# Test setup: mixed-type table with nulls and edge cases
+# ===--------------------------------------------------------------------===
+
+statement ok
+CREATE TABLE profile_test (
+    id INTEGER,
+    name VARCHAR,
+    email VARCHAR,
+    age INTEGER,
+    salary DOUBLE,
+    active BOOLEAN,
+    created_at TIMESTAMP
+)
+
+statement ok
+INSERT INTO profile_test VALUES
+    (1, 'Alice', 'alice@example.com', 30, 75000.0, true,  TIMESTAMP '2023-01-15 00:00:00'),
+    (2, 'Bob',   'bob@example.com',   25, 55000.0, false, TIMESTAMP '2023-06-01 00:00:00'),
+    (3, 'Carol', NULL,                40, 90000.0, true,  TIMESTAMP '2022-12-01 00:00:00'),
+    (4, NULL,    'dave@example.com',  NULL, NULL,  NULL,  NULL),
+    (5, 'Eve',   'not-an-email',      35, 65000.0, true,  TIMESTAMP '2024-01-01 00:00:00')
+
+# ===--------------------------------------------------------------------===
+# profile_table: basic structure
+# ===--------------------------------------------------------------------===
+
+# One row per column
+query I
+SELECT COUNT(*) FROM profile_table('profile_test')
+----
+7
+
+# Column names come back in schema order
+query T
+SELECT column_name FROM profile_table('profile_test')
+----
+id
+name
+email
+age
+salary
+active
+created_at
+
+# Alias works
+query I
+SELECT COUNT(*) FROM anofox_tab_profile_table('profile_test')
+----
+7
+
+# ===--------------------------------------------------------------------===
+# profile_table: null statistics
+# ===--------------------------------------------------------------------===
+
+# email column has 1 NULL
+query IT
+SELECT null_count, column_name FROM profile_table('profile_test')
+WHERE column_name = 'email'
+----
+1	email
+
+# name column has 1 NULL
+query I
+SELECT null_count FROM profile_table('profile_test') WHERE column_name = 'name'
+----
+1
+
+# age column has 1 NULL (row 4)
+query I
+SELECT null_count FROM profile_table('profile_test') WHERE column_name = 'age'
+----
+1
+
+# salary column has 1 NULL
+query I
+SELECT null_count FROM profile_table('profile_test') WHERE column_name = 'salary'
+----
+1
+
+# ===--------------------------------------------------------------------===
+# profile_table: numeric statistics
+# ===--------------------------------------------------------------------===
+
+# age mean over non-null rows: (30+25+40+35)/4 = 32.5
+query R
+SELECT ROUND(mean, 2) FROM profile_table('profile_test') WHERE column_name = 'age'
+----
+32.50
+
+# age has valid min/max as VARCHAR
+query TT
+SELECT min_val, max_val FROM profile_table('profile_test') WHERE column_name = 'age'
+----
+25	40
+
+# stddev is non-null for numeric columns
+query T
+SELECT stddev IS NOT NULL FROM profile_table('profile_test') WHERE column_name = 'salary'
+----
+true
+
+# numeric stats are NULL for string columns
+query T
+SELECT mean IS NULL FROM profile_table('profile_test') WHERE column_name = 'name'
+----
+true
+
+query T
+SELECT stddev IS NULL FROM profile_table('profile_test') WHERE column_name = 'email'
+----
+true
+
+# ===--------------------------------------------------------------------===
+# profile_table: string statistics
+# ===--------------------------------------------------------------------===
+
+# avg_length is non-null for string columns
+query T
+SELECT avg_length IS NOT NULL FROM profile_table('profile_test') WHERE column_name = 'name'
+----
+true
+
+# avg_length is NULL for numeric columns
+query T
+SELECT avg_length IS NULL FROM profile_table('profile_test') WHERE column_name = 'age'
+----
+true
+
+# ===--------------------------------------------------------------------===
+# profile_table: pattern detection
+# ===--------------------------------------------------------------------===
+
+# email column: 3 of 4 non-null values are valid emails (75%), below 80% threshold → 'mixed'
+query TT
+SELECT column_name, pattern_summary FROM profile_table('profile_test')
+WHERE column_name = 'email'
+----
+email	mixed
+
+# pattern_summary is NULL for non-string columns
+query T
+SELECT pattern_summary IS NULL FROM profile_table('profile_test') WHERE column_name = 'age'
+----
+true
+
+# ===--------------------------------------------------------------------===
+# profile_table: uniqueness and constancy
+# ===--------------------------------------------------------------------===
+
+# id column: all values distinct → is_unique = true
+query T
+SELECT is_unique FROM profile_table('profile_test') WHERE column_name = 'id'
+----
+true
+
+# name column: 4 distinct values out of 4 non-null → is_unique
+query T
+SELECT is_unique FROM profile_table('profile_test') WHERE column_name = 'name'
+----
+true
+
+# active column: only true/false/null, not unique
+query T
+SELECT is_unique FROM profile_table('profile_test') WHERE column_name = 'active'
+----
+false
+
+# No column in this table is constant
+query I
+SELECT COUNT(*) FROM profile_table('profile_test') WHERE is_constant = true
+----
+0
+
+# ===--------------------------------------------------------------------===
+# profile_table: sampling flag
+# ===--------------------------------------------------------------------===
+
+# Table has 5 rows < 1,000,000 default sample_size → not sampled
+query T
+SELECT is_sampled FROM profile_table('profile_test') LIMIT 1
+----
+false
+
+# actual_sample_size equals row count when not sampled
+query I
+SELECT actual_sample_size FROM profile_table('profile_test') LIMIT 1
+----
+5
+
+# exact=true also not sampled
+query T
+SELECT is_sampled FROM profile_table('profile_test', []::VARCHAR[], 1000000, true) LIMIT 1
+----
+false
+
+# ===--------------------------------------------------------------------===
+# profile_table: columns filter
+# ===--------------------------------------------------------------------===
+
+# Filter to 3 columns → 3 rows returned
+query I
+SELECT COUNT(*) FROM profile_table('profile_test', ['id', 'age', 'salary'])
+----
+3
+
+# Filtered columns are the right ones
+query T rowsort
+SELECT column_name FROM profile_table('profile_test', ['id', 'age', 'salary'])
+----
+age
+id
+salary
+
+# ===--------------------------------------------------------------------===
+# profile_table: zero and negative counts
+# ===--------------------------------------------------------------------===
+
+# zero_count only present for numeric columns
+query T
+SELECT zero_count IS NOT NULL FROM profile_table('profile_test') WHERE column_name = 'id'
+----
+true
+
+# no zeros in id column (1,2,3,4,5)
+query I
+SELECT zero_count FROM profile_table('profile_test') WHERE column_name = 'id'
+----
+0
+
+# zero_count is NULL for string columns
+query T
+SELECT zero_count IS NULL FROM profile_table('profile_test') WHERE column_name = 'name'
+----
+true
+
+# ===--------------------------------------------------------------------===
+# profile_summary: basic structure
+# ===--------------------------------------------------------------------===
+
+# Returns exactly one row
+query I
+SELECT COUNT(*) FROM profile_summary('profile_test')
+----
+1
+
+# Row count and column count are correct
+query II
+SELECT row_count, column_count FROM profile_summary('profile_test')
+----
+5	7
+
+# Alias works
+query I
+SELECT COUNT(*) FROM anofox_tab_profile_summary('profile_test')
+----
+1
+
+# ===--------------------------------------------------------------------===
+# profile_summary: type counts
+# ===--------------------------------------------------------------------===
+
+# Numeric: id, age, salary = 3
+query I
+SELECT numeric_columns FROM profile_summary('profile_test')
+----
+3
+
+# String: name, email = 2
+query I
+SELECT string_columns FROM profile_summary('profile_test')
+----
+2
+
+# Temporal: created_at = 1
+query I
+SELECT temporal_columns FROM profile_summary('profile_test')
+----
+1
+
+# Boolean: active = 1
+query I
+SELECT boolean_columns FROM profile_summary('profile_test')
+----
+1
+
+# duplicate_row_count: all rows are distinct → 0
+query I
+SELECT duplicate_row_count FROM profile_summary('profile_test')
+----
+0
+
+# ===--------------------------------------------------------------------===
+# profile_correlations: structure
+# ===--------------------------------------------------------------------===
+
+# At least one pair among id, age, salary
+query T
+SELECT COUNT(*) >= 1 FROM profile_correlations('profile_test')
+----
+true
+
+# 3 numeric columns → 3 pairs (C(3,2) = 3)
+query I
+SELECT COUNT(*) FROM profile_correlations('profile_test')
+----
+3
+
+# Alias works
+query T
+SELECT COUNT(*) >= 1 FROM anofox_tab_profile_correlations('profile_test')
+----
+true
+
+# Columns present
+query T
+SELECT COUNT(*) = 3 FROM profile_correlations('profile_test')
+WHERE column_a IS NOT NULL AND column_b IS NOT NULL
+----
+true
+
+# ===--------------------------------------------------------------------===
+# profile_correlations: validity
+# ===--------------------------------------------------------------------===
+
+# Pearson is bounded between -1 and 1 for all pairs
+query T
+SELECT BOOL_AND(ABS(pearson) <= 1.0 OR pearson IS NULL)
+FROM profile_correlations('profile_test')
+----
+true
+
+# Spearman is bounded between -1 and 1 for all pairs
+query T
+SELECT BOOL_AND(ABS(spearman) <= 1.0 OR spearman IS NULL)
+FROM profile_correlations('profile_test')
+----
+true
+
+# n is positive
+query T
+SELECT BOOL_AND(n > 0) FROM profile_correlations('profile_test')
+----
+true
+
+# ===--------------------------------------------------------------------===
+# profile_correlations: columns filter
+# ===--------------------------------------------------------------------===
+
+# Filter to age and salary → 1 pair
+query I
+SELECT COUNT(*) FROM profile_correlations('profile_test', ['age', 'salary'])
+----
+1
+
+# The pair is (age, salary)
+query TT
+SELECT column_a, column_b FROM profile_correlations('profile_test', ['age', 'salary'])
+----
+age	salary
+
+# ===--------------------------------------------------------------------===
+# Edge cases: empty table
+# ===--------------------------------------------------------------------===
+
+statement ok
+CREATE TABLE empty_tbl (x INTEGER, y VARCHAR)
+
+# profile_table on empty table returns 2 rows (one per column)
+query I
+SELECT COUNT(*) FROM profile_table('empty_tbl')
+----
+2
+
+# null_count is 0 for empty table (not NULL)
+query I
+SELECT null_count FROM profile_table('empty_tbl') WHERE column_name = 'x'
+----
+0
+
+# distinct_count is 0 for empty table
+query I
+SELECT distinct_count FROM profile_table('empty_tbl') WHERE column_name = 'x'
+----
+0
+
+# row_count is 0 for empty table
+query I
+SELECT row_count FROM profile_table('empty_tbl') WHERE column_name = 'x'
+----
+0
+
+# profile_summary on empty table
+query II
+SELECT row_count, column_count FROM profile_summary('empty_tbl')
+----
+0	2
+
+# profile_correlations on table with < 2 numeric columns returns 0 rows
+statement ok
+CREATE TABLE single_numeric (id INTEGER, name VARCHAR)
+
+statement ok
+INSERT INTO single_numeric VALUES (1, 'a'), (2, 'b')
+
+query I
+SELECT COUNT(*) FROM profile_correlations('single_numeric')
+----
+0
+
+# ===--------------------------------------------------------------------===
+# Complex type support — profile_table (0c5)
+# ===--------------------------------------------------------------------===
+
+statement ok
+CREATE TABLE complex_test (
+    id        INTEGER,
+    tags      INTEGER[],
+    metadata  MAP(VARCHAR, INTEGER),
+    address   STRUCT(city VARCHAR, zip VARCHAR),
+    choice    UNION(num INTEGER, str VARCHAR)
+)
+
+statement ok
+INSERT INTO complex_test VALUES
+    (1, [1,2,3],        MAP {'a':1,'b':2},      {'city':'Berlin','zip':'10115'},   1::INTEGER),
+    (2, [10,20],        MAP {'x':99},            {'city':'Munich','zip':'80331'},   'hello'::VARCHAR),
+    (3, [],             MAP {},                  {'city':'Hamburg','zip':'20095'},  42::INTEGER),
+    (4, NULL,           NULL,                    NULL,                              NULL),
+    (5, [7,8,9,10,11], MAP {'p':1,'q':2,'r':3}, {'city':'Frankfurt','zip':'60311'},'world'::VARCHAR)
+
+# profile_table: one row per column (id + 4 complex)
+query I
+SELECT COUNT(*) FROM profile_table('complex_test')
+----
+5
+
+# pattern_summary for each complex type
+query TT rowsort
+SELECT column_name, pattern_summary FROM profile_table('complex_test')
+WHERE column_name IN ('tags','metadata','address','choice')
+----
+address	struct
+choice	union
+metadata	map
+tags	list
+
+# pattern_summary is NULL for numeric column
+query T
+SELECT pattern_summary IS NULL FROM profile_table('complex_test') WHERE column_name = 'id'
+----
+true
+
+# tags: avg_length is non-null, min_length = 0 (empty list in row 3)
+query TI
+SELECT avg_length IS NOT NULL, min_length
+FROM profile_table('complex_test') WHERE column_name = 'tags'
+----
+true	0
+
+# metadata: avg_length is non-null (cardinality-based)
+query T
+SELECT avg_length IS NOT NULL FROM profile_table('complex_test') WHERE column_name = 'metadata'
+----
+true
+
+# address (STRUCT): avg_length is NULL — no length concept
+query T
+SELECT avg_length IS NULL FROM profile_table('complex_test') WHERE column_name = 'address'
+----
+true
+
+# tags: null_count = 1 (row 4 is NULL)
+query I
+SELECT null_count FROM profile_table('complex_test') WHERE column_name = 'tags'
+----
+1
+
+# numeric stats are NULL for complex types
+query T
+SELECT mean IS NULL AND stddev IS NULL AND p25 IS NULL
+FROM profile_table('complex_test') WHERE column_name = 'tags'
+----
+true
+
+# min_val/max_val are NULL for complex types (no ordering defined)
+query T
+SELECT min_val IS NULL AND max_val IS NULL
+FROM profile_table('complex_test') WHERE column_name = 'address'
+----
+true
+
+# top_values is non-null for non-empty complex column
+query T
+SELECT top_values IS NOT NULL FROM profile_table('complex_test') WHERE column_name = 'tags'
+----
+true
+
+# ===--------------------------------------------------------------------===
+# Complex type support — profile_summary (5s1)
+# ===--------------------------------------------------------------------===
+
+# complex_test has 4 complex columns: tags, metadata, address, choice
+query I
+SELECT complex_columns FROM profile_summary('complex_test')
+----
+4
+
+# profile_test has 0 complex columns (all scalar)
+query I
+SELECT complex_columns FROM profile_summary('profile_test')
+----
+0
+
+# total_nulls for profile_test:
+#   row 3: email NULL (1)
+#   row 4: name, age, salary, active, created_at NULL (5)
+#   total = 6
+query I
+SELECT total_nulls FROM profile_summary('profile_test')
+----
+6
+
+# total_null_rate > 0
+query T
+SELECT total_null_rate > 0 FROM profile_summary('profile_test')
+----
+true
+
+# total_null_rate = 6 / (5 rows * 7 cols) = 6/35
+query T
+SELECT ABS(total_null_rate - 6.0 / 35) < 0.001 FROM profile_summary('profile_test')
+----
+true
+
+# empty table: total_nulls = 0, total_null_rate = 0.0
+query IR
+SELECT total_nulls, total_null_rate FROM profile_summary('empty_tbl')
+----
+0	0.0
+
+# empty_complex: 2 complex columns, 0 nulls (no rows)
+statement ok
+CREATE TABLE empty_complex (vals INTEGER[], meta MAP(VARCHAR, INTEGER))
+
+query II
+SELECT complex_columns, total_nulls FROM profile_summary('empty_complex')
+----
+2	0
+
+# avg_length IS NULL for empty list column (AVG over 0 rows)
+query T
+SELECT avg_length IS NULL FROM profile_table('empty_complex') WHERE column_name = 'vals'
+----
+true
+
+# ===--------------------------------------------------------------------===
+# Regression: schema-qualified table names
+# ===--------------------------------------------------------------------===
+
+statement ok
+CREATE SCHEMA profile_schema
+
+statement ok
+CREATE TABLE profile_schema.events (
+    event_id INTEGER,
+    amount DOUBLE,
+    label VARCHAR
+)
+
+statement ok
+INSERT INTO profile_schema.events VALUES
+    (1, 10.0, 'a'),
+    (2, 20.0, 'b'),
+    (3, 30.0, 'c')
+
+# Create same table name in main schema to guard against cross-schema collisions
+statement ok
+CREATE TABLE events (
+    only_in_main INTEGER
+)
+
+statement ok
+INSERT INTO events VALUES (99)
+
+# profile_table should introspect schema-qualified relations
+query I
+SELECT COUNT(*) FROM profile_table('profile_schema.events')
+----
+3
+
+# profile_summary should report correct column count for schema-qualified relation
+query I
+SELECT column_count FROM profile_summary('profile_schema.events')
+----
+3
+
+# profile_correlations should see both numeric columns (event_id, amount)
+query I
+SELECT COUNT(*) FROM profile_correlations('profile_schema.events')
+----
+1
+
+# ===--------------------------------------------------------------------===
+# Regression: quoted identifiers containing embedded double quotes
+# ===--------------------------------------------------------------------===
+
+statement ok
+CREATE TABLE quoted_profile_cols (
+    "a""b" DOUBLE,
+    c DOUBLE
+)
+
+statement ok
+INSERT INTO quoted_profile_cols VALUES
+    (1.0, 10.0),
+    (NULL, 20.0),
+    (3.0, NULL)
+
+# profile_table should handle escaped identifier quoting
+query T
+SELECT COUNT(*) = 2 FROM profile_table('quoted_profile_cols')
+----
+true
+
+# profile_summary total_nulls should include nulls from quoted column name
+query I
+SELECT total_nulls FROM profile_summary('quoted_profile_cols')
+----
+2
+
+# profile_correlations should not fail to parse quoted identifiers
+query I
+SELECT COUNT(*) FROM profile_correlations('quoted_profile_cols')
+----
+1
+
+# ===--------------------------------------------------------------------===
+# pattern_summary: phone detection
+# ===--------------------------------------------------------------------===
+
+statement ok
+CREATE TABLE phone_pattern_test (phone VARCHAR)
+
+statement ok
+INSERT INTO phone_pattern_test
+SELECT '+1800555' || LPAD(CAST(i AS VARCHAR), 4, '0') AS phone
+FROM range(100) t(i)
+
+# >= 80% valid phone numbers → pattern_summary = 'phone'
+query T
+SELECT pattern_summary FROM profile_table('phone_pattern_test') WHERE column_name = 'phone'
+----
+phone
+
+# Mixed column (some phones, but < 80%) should NOT be classified as 'phone'
+statement ok
+CREATE TABLE mixed_phone_test (val VARCHAR)
+
+statement ok
+INSERT INTO mixed_phone_test VALUES
+    ('+1-415-555-1234'),
+    ('hello@example.com'),
+    ('not a phone'),
+    ('also not a phone'),
+    ('random text here')
+
+query T
+SELECT pattern_summary != 'phone' FROM profile_table('mixed_phone_test') WHERE column_name = 'val'
+----
+true
+
+# ===--------------------------------------------------------------------===
+# profile_summary: estimated_memory_bytes
+# ===--------------------------------------------------------------------===
+
+# estimated_memory_bytes is non-NULL and positive for non-empty table
+query T
+SELECT estimated_memory_bytes > 0 FROM profile_summary('profile_test')
+----
+true
+
+# estimated_memory_bytes is 0 for empty table (0 rows)
+query I
+SELECT estimated_memory_bytes FROM profile_summary('empty_tbl')
+----
+0
+
+# estimated_memory_bytes scales with row count (phone_pattern_test: 100 rows × 1 col × 8 bytes)
+query I
+SELECT estimated_memory_bytes FROM profile_summary('phone_pattern_test')
+----
+800

@@ -253,6 +253,16 @@ When bumping DuckDB target version:
 If you are adding a new feature, try to reuse existing code and concepts from the project. If you are not sure how to do it, ask.
 Also have a look at duckdb source in `./duckdb` and the cpp tests in `./duckdb/test` wether you can find a similar concept or code to reuse.
 
+### Documentation Update Workflow (Mandatory)
+For every change that affects user-visible behavior, SQL function signatures, defaults, return schemas, aliases, or examples:
+
+1. Check `README.md` for impacted sections and update them.
+2. Check `docs/API_REFERENCE.md` for impacted sections and update them.
+3. Add/update tests first (red/green) when behavior changes, then align docs to the final behavior.
+4. Before finishing, explicitly verify docs match implementation (names, types, defaults, output columns, examples).
+
+Do not consider work complete if code changed but these documentation checks were skipped.
+
 ## Git Commit Guidelines
 
 When creating git commits:
@@ -342,4 +352,3 @@ You are a senior C++ developer with expertise in modern C++ (C++17/20), STL, and
 - Document assumptions, constraints, and expected behavior of code.
 
 Follow the official ISO C++ standards and guidelines for best practices in modern C++ development.
-

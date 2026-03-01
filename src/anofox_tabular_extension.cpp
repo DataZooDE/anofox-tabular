@@ -8,6 +8,7 @@
 #endif
 #include "anofox_phonenumber.hpp"
 #include "anofox_metric.hpp"
+#include "anofox_profile.hpp"
 #include "anofox_outlier_tree.hpp"
 #include "anofox_money.hpp"
 #include "anofox_vat.hpp"
@@ -78,6 +79,7 @@ void LoadInternal(ExtensionLoader &loader) {
 	anofox::RegisterEmailFunctions(loader);
 	anofox::RegisterDiffFunctions(loader);
 	anofox::RegisterMetricFunctions(loader);
+	anofox::RegisterProfileFunctions(loader);
 	anofox::RegisterOutlierTreeFunctions(loader);
 	anofox::RegisterMoneyOptions(loader);
 	anofox::RegisterMoneyFunctions(loader);
