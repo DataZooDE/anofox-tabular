@@ -2663,7 +2663,7 @@ void PIIAuditTableFunction(ClientContext &context, TableFunctionInput &input, Da
             // Get table metadata from catalog
             auto qname = QualifiedName::Parse(bind_data.table_name);
             auto &catalog = Catalog::GetCatalog(context, qname.catalog);
-            auto &entry = catalog.GetEntry<TableCatalogEntry>(context, qname.schema, qname.name);
+            auto &entry = catalog.GetEntry(context, CatalogType::TABLE_ENTRY, qname.schema, qname.name).Cast<TableCatalogEntry>();
 
             // Get list of VARCHAR columns to scan
             std::vector<std::string> columns_to_scan;
@@ -2900,7 +2900,7 @@ void PIIScanTableFunction(ClientContext &context, TableFunctionInput &input, Dat
             // Get table metadata from catalog
             auto qname = QualifiedName::Parse(bind_data.table_name);
             auto &catalog = Catalog::GetCatalog(context, qname.catalog);
-            auto &entry = catalog.GetEntry<TableCatalogEntry>(context, qname.schema, qname.name);
+            auto &entry = catalog.GetEntry(context, CatalogType::TABLE_ENTRY, qname.schema, qname.name).Cast<TableCatalogEntry>();
 
             // Get list of VARCHAR columns to scan
             std::vector<std::string> columns_to_scan;
