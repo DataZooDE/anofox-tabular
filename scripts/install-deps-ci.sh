@@ -63,7 +63,7 @@ if command -v apk &> /dev/null; then
     ./bootstrap.sh
     # Install to /usr/local with data in /usr/local/share/libpostal
     # CRITICAL: Use CFLAGS=-fPIC to enable linking into shared libraries
-    CFLAGS="-fPIC" ./configure --datadir=/usr/local/share/libpostal
+    CFLAGS="-fPIC -Wno-error=incompatible-types" ./configure --datadir=/usr/local/share/libpostal
     make -j$(nproc)
     make install
 
@@ -109,7 +109,7 @@ elif command -v apt-get &> /dev/null; then
     ./bootstrap.sh
     # Install to /usr/local with data in /usr/local/share/libpostal
     # CRITICAL: Use CFLAGS=-fPIC to enable linking into shared libraries
-    CFLAGS="-fPIC" ./configure --datadir=/usr/local/share/libpostal
+    CFLAGS="-fPIC -Wno-error=incompatible-types" ./configure --datadir=/usr/local/share/libpostal
     make -j$(nproc)
     $SUDO_CMD make install
 
@@ -149,7 +149,7 @@ elif command -v yum &> /dev/null; then
     ./bootstrap.sh
     # Install to /usr/local with data in /usr/local/share/libpostal
     # CRITICAL: Use CFLAGS=-fPIC to enable linking into shared libraries
-    CFLAGS="-fPIC" ./configure --datadir=/usr/local/share/libpostal
+    CFLAGS="-fPIC -Wno-error=incompatible-types" ./configure --datadir=/usr/local/share/libpostal
     make -j$(nproc)
     $SUDO_CMD make install
 
@@ -196,7 +196,7 @@ elif [ "$OS" = "Darwin" ]; then
     ./bootstrap.sh
     # Install to /usr/local with data in /usr/local/share/libpostal
     # CRITICAL: Use CFLAGS=-fPIC to enable linking into shared libraries
-    CFLAGS="-fPIC" ./configure --datadir=/usr/local/share/libpostal
+    CFLAGS="-fPIC -Wno-error=incompatible-types" ./configure --datadir=/usr/local/share/libpostal
 
     # Use sysctl to get CPU count on macOS
     NPROC=$(sysctl -n hw.ncpu 2>/dev/null || echo "4")
