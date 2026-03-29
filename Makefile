@@ -26,11 +26,13 @@ configure_ci:
 
 # Override test targets to disable telemetry during test runs
 # This prevents local tests and CI/CD from polluting PostHog telemetry data
+# DNNL_MAX_CPU_ISA=AVX2: limits OneDNN (used by OpenVINO) to AVX2 at most,
+# preventing SIGILL in manylinux Docker containers that restrict AVX-512 CPUID
 test_release_internal:
-	DATAZOO_DISABLE_TELEMETRY=1 ./build/release/test/unittest "test/*"
+	DATAZOO_DISABLE_TELEMETRY=1 DNNL_MAX_CPU_ISA=AVX2 ./build/release/test/unittest "test/*"
 
 test_debug_internal:
-	DATAZOO_DISABLE_TELEMETRY=1 ./build/debug/test/unittest "test/*"
+	DATAZOO_DISABLE_TELEMETRY=1 DNNL_MAX_CPU_ISA=AVX2 ./build/debug/test/unittest "test/*"
 
 test_reldebug_internal:
-	DATAZOO_DISABLE_TELEMETRY=1 ./build/reldebug/test/unittest "test/*"
+	DATAZOO_DISABLE_TELEMETRY=1 DNNL_MAX_CPU_ISA=AVX2 ./build/reldebug/test/unittest "test/*"

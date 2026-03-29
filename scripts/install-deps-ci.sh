@@ -63,6 +63,9 @@ if command -v apk &> /dev/null; then
     ./bootstrap.sh
     # Install to /usr/local with data in /usr/local/share/libpostal
     # CRITICAL: Use CFLAGS=-fPIC to enable linking into shared libraries
+    # trie_search.c returns 'false' (_Bool) where 'phrase_array *' is expected.
+    # Newer GCC treats this as a hard error; patch the source to return NULL instead.
+    sed -i 's/\breturn false;/return NULL;/g' src/trie_search.c || true
     CFLAGS="-fPIC" ./configure --datadir=/usr/local/share/libpostal
     make -j$(nproc)
     make install
@@ -109,6 +112,9 @@ elif command -v apt-get &> /dev/null; then
     ./bootstrap.sh
     # Install to /usr/local with data in /usr/local/share/libpostal
     # CRITICAL: Use CFLAGS=-fPIC to enable linking into shared libraries
+    # trie_search.c returns 'false' (_Bool) where 'phrase_array *' is expected.
+    # Newer GCC treats this as a hard error; patch the source to return NULL instead.
+    sed -i 's/\breturn false;/return NULL;/g' src/trie_search.c || true
     CFLAGS="-fPIC" ./configure --datadir=/usr/local/share/libpostal
     make -j$(nproc)
     $SUDO_CMD make install
@@ -149,6 +155,9 @@ elif command -v yum &> /dev/null; then
     ./bootstrap.sh
     # Install to /usr/local with data in /usr/local/share/libpostal
     # CRITICAL: Use CFLAGS=-fPIC to enable linking into shared libraries
+    # trie_search.c returns 'false' (_Bool) where 'phrase_array *' is expected.
+    # Newer GCC treats this as a hard error; patch the source to return NULL instead.
+    sed -i 's/\breturn false;/return NULL;/g' src/trie_search.c || true
     CFLAGS="-fPIC" ./configure --datadir=/usr/local/share/libpostal
     make -j$(nproc)
     $SUDO_CMD make install
@@ -196,6 +205,9 @@ elif [ "$OS" = "Darwin" ]; then
     ./bootstrap.sh
     # Install to /usr/local with data in /usr/local/share/libpostal
     # CRITICAL: Use CFLAGS=-fPIC to enable linking into shared libraries
+    # trie_search.c returns 'false' (_Bool) where 'phrase_array *' is expected.
+    # Newer GCC treats this as a hard error; patch the source to return NULL instead.
+    sed -i 's/\breturn false;/return NULL;/g' src/trie_search.c || true
     CFLAGS="-fPIC" ./configure --datadir=/usr/local/share/libpostal
 
     # Use sysctl to get CPU count on macOS
