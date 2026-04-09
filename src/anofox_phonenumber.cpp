@@ -1046,48 +1046,118 @@ void RegisterPhonenumberFunctions(ExtensionLoader& loader) {
 	RegisterPhonenumberOptions(loader);
 
 	// Register phonenumber_parse
-	ScalarFunction parse_func = CreateParseScalar("anofox_tab_phonenumber_parse");
-	parse_func.bind = PhoneParseBind;
-	RegisterScalarFunctionWithAlias(loader, parse_func, "phonenumber_parse");
+	{
+		FunctionDescription desc;
+		desc.description = "Parses a phone number string and returns a struct with E164, national, international, and RFC3966 formats, plus the region code.";
+		desc.parameter_names = {"phone"};
+		desc.parameter_types = {LogicalType::VARCHAR};
+		desc.examples = {"SELECT phonenumber_parse('+14155552671');"};
+		desc.categories = {"phone", "parsing"};
+		ScalarFunction parse_func = CreateParseScalar("anofox_tab_phonenumber_parse");
+		parse_func.bind = PhoneParseBind;
+		RegisterScalarFunctionWithAlias(loader, parse_func, "phonenumber_parse", {std::move(desc)});
+	}
 
 	// Register phonenumber_format
-	ScalarFunction format_func = CreateFormatScalar("anofox_tab_phonenumber_format");
-	format_func.bind = PhoneFormatBind;
-	RegisterScalarFunctionWithAlias(loader, format_func, "phonenumber_format");
+	{
+		FunctionDescription desc;
+		desc.description = "Formats a phone number string in the specified format: 'E164', 'INTERNATIONAL', 'NATIONAL', or 'RFC3966'.";
+		desc.parameter_names = {"phone", "format"};
+		desc.parameter_types = {LogicalType::VARCHAR, LogicalType::VARCHAR};
+		desc.examples = {"SELECT phonenumber_format('+14155552671', 'NATIONAL');"};
+		desc.categories = {"phone", "formatting"};
+		ScalarFunction format_func = CreateFormatScalar("anofox_tab_phonenumber_format");
+		format_func.bind = PhoneFormatBind;
+		RegisterScalarFunctionWithAlias(loader, format_func, "phonenumber_format", {std::move(desc)});
+	}
 
 	// Register phonenumber_region
-	ScalarFunction region_func = CreateRegionScalar("anofox_tab_phonenumber_region");
-	region_func.bind = PhoneRegionBind;
-	RegisterScalarFunctionWithAlias(loader, region_func, "phonenumber_region");
+	{
+		FunctionDescription desc;
+		desc.description = "Returns the 2-letter ISO region code (e.g., 'US', 'DE') for a given phone number.";
+		desc.parameter_names = {"phone"};
+		desc.parameter_types = {LogicalType::VARCHAR};
+		desc.examples = {"SELECT phonenumber_region('+14155552671');"};
+		desc.categories = {"phone", "parsing"};
+		ScalarFunction region_func = CreateRegionScalar("anofox_tab_phonenumber_region");
+		region_func.bind = PhoneRegionBind;
+		RegisterScalarFunctionWithAlias(loader, region_func, "phonenumber_region", {std::move(desc)});
+	}
 
 	// Register phonenumber_is_valid
-	ScalarFunction is_valid_func = CreateIsValidScalar("anofox_tab_phonenumber_is_valid");
-	is_valid_func.bind = PhoneIsValidBind;
-	RegisterScalarFunctionWithAlias(loader, is_valid_func, "phonenumber_is_valid");
+	{
+		FunctionDescription desc;
+		desc.description = "Returns TRUE if the phone number is a valid, dialable number.";
+		desc.parameter_names = {"phone"};
+		desc.parameter_types = {LogicalType::VARCHAR};
+		desc.examples = {"SELECT phonenumber_is_valid('+14155552671');"};
+		desc.categories = {"phone", "validation"};
+		ScalarFunction is_valid_func = CreateIsValidScalar("anofox_tab_phonenumber_is_valid");
+		is_valid_func.bind = PhoneIsValidBind;
+		RegisterScalarFunctionWithAlias(loader, is_valid_func, "phonenumber_is_valid", {std::move(desc)});
+	}
 
 	// Register phonenumber_is_possible
-	ScalarFunction is_possible_func = CreateIsPossibleScalar("anofox_tab_phonenumber_is_possible");
-	is_possible_func.bind = PhoneIsPossibleBind;
-	RegisterScalarFunctionWithAlias(loader, is_possible_func, "phonenumber_is_possible");
+	{
+		FunctionDescription desc;
+		desc.description = "Returns TRUE if the phone number length is plausible for its region (lighter check than is_valid).";
+		desc.parameter_names = {"phone"};
+		desc.parameter_types = {LogicalType::VARCHAR};
+		desc.examples = {"SELECT phonenumber_is_possible('+14155552671');"};
+		desc.categories = {"phone", "validation"};
+		ScalarFunction is_possible_func = CreateIsPossibleScalar("anofox_tab_phonenumber_is_possible");
+		is_possible_func.bind = PhoneIsPossibleBind;
+		RegisterScalarFunctionWithAlias(loader, is_possible_func, "phonenumber_is_possible", {std::move(desc)});
+	}
 
 	// Register phonenumber_is_valid_for_region
-	ScalarFunction is_valid_for_region_func = CreateIsValidForRegionScalar("anofox_tab_phonenumber_is_valid_for_region");
-	is_valid_for_region_func.bind = PhoneIsValidForRegionBind;
-	RegisterScalarFunctionWithAlias(loader, is_valid_for_region_func, "phonenumber_is_valid_for_region");
+	{
+		FunctionDescription desc;
+		desc.description = "Returns TRUE if the phone number is valid for the specified 2-letter ISO region code (e.g., 'US').";
+		desc.parameter_names = {"phone", "region"};
+		desc.parameter_types = {LogicalType::VARCHAR, LogicalType::VARCHAR};
+		desc.examples = {"SELECT phonenumber_is_valid_for_region('+14155552671', 'US');"};
+		desc.categories = {"phone", "validation"};
+		ScalarFunction is_valid_for_region_func = CreateIsValidForRegionScalar("anofox_tab_phonenumber_is_valid_for_region");
+		is_valid_for_region_func.bind = PhoneIsValidForRegionBind;
+		RegisterScalarFunctionWithAlias(loader, is_valid_for_region_func, "phonenumber_is_valid_for_region", {std::move(desc)});
+	}
 
 	// Register phonenumber_match
-	ScalarFunction match_func = CreateMatchScalar("anofox_tab_phonenumber_match");
-	match_func.bind = PhoneMatchBind;
-	RegisterScalarFunctionWithAlias(loader, match_func, "phonenumber_match");
+	{
+		FunctionDescription desc;
+		desc.description = "Returns TRUE if two phone number strings refer to the same number.";
+		desc.parameter_names = {"phone1", "phone2"};
+		desc.parameter_types = {LogicalType::VARCHAR, LogicalType::VARCHAR};
+		desc.examples = {"SELECT phonenumber_match('+14155552671', '(415) 555-2671');"};
+		desc.categories = {"phone", "comparison"};
+		ScalarFunction match_func = CreateMatchScalar("anofox_tab_phonenumber_match");
+		match_func.bind = PhoneMatchBind;
+		RegisterScalarFunctionWithAlias(loader, match_func, "phonenumber_match", {std::move(desc)});
+	}
 
 	// Register phonenumber_example
-	ScalarFunction example_func = CreateExampleScalar("anofox_tab_phonenumber_example");
-	example_func.bind = PhoneExampleBind;
-	RegisterScalarFunctionWithAlias(loader, example_func, "phonenumber_example");
+	{
+		FunctionDescription desc;
+		desc.description = "Returns an example valid phone number for the given 2-letter ISO region code (e.g., 'US').";
+		desc.parameter_names = {"region"};
+		desc.parameter_types = {LogicalType::VARCHAR};
+		desc.examples = {"SELECT phonenumber_example('US');"};
+		desc.categories = {"phone", "utility"};
+		ScalarFunction example_func = CreateExampleScalar("anofox_tab_phonenumber_example");
+		example_func.bind = PhoneExampleBind;
+		RegisterScalarFunctionWithAlias(loader, example_func, "phonenumber_example", {std::move(desc)});
+	}
 
 	// Register phonenumber_status (telemetry in PhoneStatusBind)
-	TableFunction status_func = CreateStatusTable("anofox_tab_phonenumber_status");
-	RegisterTableFunctionWithAlias(loader, status_func, "phonenumber_status");
+	{
+		FunctionDescription desc;
+		desc.description = "Returns the current configuration and status of the phone number module.";
+		desc.examples = {"SELECT * FROM phonenumber_status();"};
+		desc.categories = {"phone", "status"};
+		TableFunction status_func = CreateStatusTable("anofox_tab_phonenumber_status");
+		RegisterTableFunctionWithAlias(loader, status_func, "phonenumber_status", {std::move(desc)});
+	}
 }
 
 } // namespace anofox

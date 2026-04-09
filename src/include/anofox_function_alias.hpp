@@ -85,6 +85,94 @@ inline void RegisterTableFunctionSetWithAlias(ExtensionLoader &loader, TableFunc
 	loader.RegisterFunction(alias_info);
 }
 
+// Helper to register a scalar function with an alias and descriptions
+inline void RegisterScalarFunctionWithAlias(ExtensionLoader &loader, ScalarFunction func,
+                                            const std::string &alias_name,
+                                            std::vector<FunctionDescription> descriptions) {
+    // Register primary with metadata
+    CreateScalarFunctionInfo primary_info(func);
+    primary_info.descriptions = std::move(descriptions);
+    loader.RegisterFunction(primary_info);
+
+    // Register alias
+    ScalarFunction alias_func(alias_name, func.arguments, func.return_type, func.function);
+    alias_func.null_handling = func.null_handling;
+    alias_func.stability = func.stability;
+    alias_func.varargs = func.varargs;
+    alias_func.bind = func.bind;
+    CreateScalarFunctionInfo alias_info(alias_func);
+    alias_info.alias_of = func.name;
+    loader.RegisterFunction(alias_info);
+}
+
+// Helper to register a scalar function set with an alias and descriptions
+inline void RegisterScalarFunctionSetWithAlias(ExtensionLoader &loader, ScalarFunctionSet func_set,
+                                               const std::string &alias_name,
+                                               std::vector<FunctionDescription> descriptions) {
+    // Register primary with metadata
+    CreateScalarFunctionInfo primary_info(func_set);
+    primary_info.descriptions = std::move(descriptions);
+    loader.RegisterFunction(primary_info);
+
+    // Register alias
+    ScalarFunctionSet alias_set(alias_name);
+    for (auto &func : func_set.functions) {
+        ScalarFunction alias_func(alias_name, func.arguments, func.return_type, func.function);
+        alias_func.null_handling = func.null_handling;
+        alias_func.stability = func.stability;
+        alias_func.varargs = func.varargs;
+        alias_func.bind = func.bind;
+        alias_set.AddFunction(alias_func);
+    }
+    CreateScalarFunctionInfo alias_info(alias_set);
+    alias_info.alias_of = func_set.name;
+    loader.RegisterFunction(alias_info);
+}
+
+// Helper to register a table function with an alias and descriptions
+inline void RegisterTableFunctionWithAlias(ExtensionLoader &loader, TableFunction func,
+                                           const std::string &alias_name,
+                                           std::vector<FunctionDescription> descriptions) {
+    // Register primary with metadata
+    CreateTableFunctionInfo primary_info(func);
+    primary_info.descriptions = std::move(descriptions);
+    loader.RegisterFunction(primary_info);
+
+    // Register alias
+    TableFunction alias_func(alias_name, func.arguments, func.function, func.bind, func.init_global, func.init_local);
+    alias_func.init_global = func.init_global;
+    alias_func.init_local = func.init_local;
+    alias_func.bind_replace = func.bind_replace;
+    alias_func.named_parameters = func.named_parameters;
+    CreateTableFunctionInfo alias_info(alias_func);
+    alias_info.alias_of = func.name;
+    loader.RegisterFunction(alias_info);
+}
+
+// Helper to register a table function set with an alias and descriptions
+inline void RegisterTableFunctionSetWithAlias(ExtensionLoader &loader, TableFunctionSet func_set,
+                                              const std::string &alias_name,
+                                              std::vector<FunctionDescription> descriptions) {
+    // Register primary with metadata
+    CreateTableFunctionInfo primary_info(func_set);
+    primary_info.descriptions = std::move(descriptions);
+    loader.RegisterFunction(primary_info);
+
+    // Register alias
+    TableFunctionSet alias_set(alias_name);
+    for (auto &func : func_set.functions) {
+        TableFunction alias_func(alias_name, func.arguments, func.function, func.bind, func.init_global, func.init_local);
+        alias_func.init_global = func.init_global;
+        alias_func.init_local = func.init_local;
+        alias_func.bind_replace = func.bind_replace;
+        alias_func.named_parameters = func.named_parameters;
+        alias_set.AddFunction(alias_func);
+    }
+    CreateTableFunctionInfo alias_info(alias_set);
+    alias_info.alias_of = func_set.name;
+    loader.RegisterFunction(alias_info);
+}
+
 } // namespace anofox
 } // namespace duckdb
 

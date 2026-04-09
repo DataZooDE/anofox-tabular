@@ -478,8 +478,19 @@ void RegisterDiffFunctions(ExtensionLoader &loader) {
 	joindiff_compound_full.named_parameters["include_all"] = LogicalType(LogicalTypeId::BOOLEAN);
 	joindiff_set.AddFunction(joindiff_compound_full);
 	
-	loader.RegisterFunction(joindiff_set);
-	
+	{
+		FunctionDescription desc;
+		desc.description = "Computes a row-level diff between two tables using a primary key (VARCHAR or VARCHAR[]), returning rows that were added, removed, or changed.";
+		desc.parameter_names = {"source_table", "target_table", "primary_key"};
+		desc.examples = {"SELECT * FROM diff_joindiff('orders_v1', 'orders_v2', 'order_id');",
+		                 "SELECT * FROM diff_joindiff('orders_v1', 'orders_v2', ['order_id', 'line_id']);"};
+		desc.categories = {"diff", "data-quality"};
+
+		CreateTableFunctionInfo joindiff_info(joindiff_set);
+		joindiff_info.descriptions = {std::move(desc)};
+		loader.RegisterFunction(joindiff_info);
+	}
+
 	// Register alias
 	TableFunctionSet alias_joindiff_set("diff_joindiff");
 	for (const auto &func : joindiff_set.functions) {
@@ -555,8 +566,19 @@ void RegisterDiffFunctions(ExtensionLoader &loader) {
 	hashdiff_compound.named_parameters["primary_keys"] = LogicalType::LIST(LogicalType(LogicalTypeId::VARCHAR));
 	hashdiff_set.AddFunction(hashdiff_compound);
 	
-	loader.RegisterFunction(hashdiff_set);
-	
+	{
+		FunctionDescription desc;
+		desc.description = "Computes a hash-based diff between two tables using a primary key (VARCHAR or VARCHAR[]), returning rows that differ by row hash.";
+		desc.parameter_names = {"source_table", "target_table", "primary_key"};
+		desc.examples = {"SELECT * FROM diff_hashdiff('products_v1', 'products_v2', 'product_id');",
+		                 "SELECT * FROM diff_hashdiff('products_v1', 'products_v2', ['product_id', 'sku']);"};
+		desc.categories = {"diff", "data-quality"};
+
+		CreateTableFunctionInfo hashdiff_info(hashdiff_set);
+		hashdiff_info.descriptions = {std::move(desc)};
+		loader.RegisterFunction(hashdiff_info);
+	}
+
 	// Register alias
 	TableFunctionSet alias_hashdiff_set("diff_hashdiff");
 	for (const auto &func : hashdiff_set.functions) {

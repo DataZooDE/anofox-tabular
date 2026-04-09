@@ -498,24 +498,52 @@ void RegisterPostalFunctions(ExtensionLoader &loader) {
 	RegisterPostalOptions(loader);
 
 	// Register postal_parse_address
-	ScalarFunction parse_func = CreateParseFunction("anofox_tab_postal_parse_address");
-	parse_func.bind = PostalParseAddressBind;
-	RegisterScalarFunctionWithAlias(loader, parse_func, "postal_parse_address");
+	{
+		FunctionDescription desc;
+		desc.description = "Parses a free-form postal address string into its structural components (house_number, road, city, state, postcode, country).";
+		desc.parameter_names = {"address"};
+		desc.parameter_types = {LogicalType::VARCHAR};
+		desc.examples = {"SELECT postal_parse_address('123 Main St, Springfield, IL 62701');"};
+		desc.categories = {"postal", "address"};
+		ScalarFunction parse_func = CreateParseFunction("anofox_tab_postal_parse_address");
+		parse_func.bind = PostalParseAddressBind;
+		RegisterScalarFunctionWithAlias(loader, parse_func, "postal_parse_address", {std::move(desc)});
+	}
 
 	// Register postal_expand_address
-	ScalarFunction expand_func = CreateExpandFunction("anofox_tab_postal_expand_address");
-	expand_func.bind = PostalExpandAddressBind;
-	RegisterScalarFunctionWithAlias(loader, expand_func, "postal_expand_address");
+	{
+		FunctionDescription desc;
+		desc.description = "Expands a postal address into all normalized variants using libpostal.";
+		desc.parameter_names = {"address"};
+		desc.parameter_types = {LogicalType::VARCHAR};
+		desc.examples = {"SELECT postal_expand_address('123 main st springfield il');"};
+		desc.categories = {"postal", "address"};
+		ScalarFunction expand_func = CreateExpandFunction("anofox_tab_postal_expand_address");
+		expand_func.bind = PostalExpandAddressBind;
+		RegisterScalarFunctionWithAlias(loader, expand_func, "postal_expand_address", {std::move(desc)});
+	}
 
 	// Register postal_status (telemetry in PostalStatusBind)
-	TableFunction status_func = CreateStatusFunction("anofox_tab_postal_status");
-	RegisterTableFunctionWithAlias(loader, status_func, "postal_status");
+	{
+		FunctionDescription desc;
+		desc.description = "Returns the current status of the libpostal address parser, including whether it is initialized and the data directory path.";
+		desc.examples = {"SELECT * FROM postal_status();"};
+		desc.categories = {"postal", "status"};
+		TableFunction status_func = CreateStatusFunction("anofox_tab_postal_status");
+		RegisterTableFunctionWithAlias(loader, status_func, "postal_status", {std::move(desc)});
+	}
 
 	// Register postal_load_data
-	ScalarFunction load_func = CreateLoadFunction();
-	load_func.name = "anofox_tab_postal_load_data";
-	load_func.bind = PostalLoadDataBind;
-	RegisterScalarFunctionWithAlias(loader, load_func, "postal_load_data");
+	{
+		FunctionDescription desc;
+		desc.description = "Downloads and installs the libpostal data bundle (~500 MB) required for address parsing and expansion.";
+		desc.examples = {"SELECT postal_load_data();"};
+		desc.categories = {"postal", "setup"};
+		ScalarFunction load_func = CreateLoadFunction();
+		load_func.name = "anofox_tab_postal_load_data";
+		load_func.bind = PostalLoadDataBind;
+		RegisterScalarFunctionWithAlias(loader, load_func, "postal_load_data", {std::move(desc)});
+	}
 }
 
 } // namespace anofox
