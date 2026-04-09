@@ -615,108 +615,193 @@ void RegisterMoneyOptions(ExtensionLoader &loader) {
 }
 
 void RegisterMoneyFunctions(ExtensionLoader &loader) {
-    // Scalar function: anofox_tab_money(amount, currency_code) -> STRUCT (alias: money)
-    ScalarFunction money_func("anofox_tab_money", {LogicalTypeId::DOUBLE, LogicalTypeId::VARCHAR}, GetMoneyType(),
-                              AnofoxMoneyFunction);
-    money_func.bind = MoneyBind;
-    RegisterScalarFunctionWithAlias(loader, money_func, "money");
-
-    // Scalar function: anofox_tab_money_from_cents(cents, currency_code) -> STRUCT (alias: money_from_cents)
-    ScalarFunction money_from_cents_func("anofox_tab_money_from_cents", {LogicalTypeId::BIGINT, LogicalTypeId::VARCHAR},
-                                         GetMoneyType(), AnofoxMoneyFromCentsFunction);
-    money_from_cents_func.bind = MoneyFromCentsBind;
-    RegisterScalarFunctionWithAlias(loader, money_from_cents_func, "money_from_cents");
-
-    // Scalar function: anofox_tab_money_amount(money) -> DOUBLE (alias: money_amount)
-    ScalarFunction money_amount_func("anofox_tab_money_amount", {GetMoneyType()},
-                                     LogicalTypeId::DOUBLE, AnofoxMoneyAmountFunction);
-    money_amount_func.bind = MoneyAmountBind;
-    RegisterScalarFunctionWithAlias(loader, money_amount_func, "money_amount");
-
-    // Scalar function: anofox_tab_money_currency(money) -> VARCHAR (alias: money_currency)
-    ScalarFunction money_currency_func("anofox_tab_money_currency", {GetMoneyType()}, LogicalTypeId::VARCHAR,
-                                       AnofoxMoneyCurrencyFunction);
-    money_currency_func.bind = MoneyCurrencyBind;
-    RegisterScalarFunctionWithAlias(loader, money_currency_func, "money_currency");
-
-    // Scalar function: anofox_tab_is_valid_currency(code) -> BOOLEAN (alias: is_valid_currency)
-    ScalarFunction is_valid_currency_func("anofox_tab_is_valid_currency", {LogicalTypeId::VARCHAR},
-                                          LogicalTypeId::BOOLEAN, AnofoxIsValidCurrencyFunction);
-    is_valid_currency_func.bind = IsValidCurrencyBind;
-    RegisterScalarFunctionWithAlias(loader, is_valid_currency_func, "is_valid_currency");
-
-    // Scalar function: anofox_tab_currency_symbol(code) -> VARCHAR (alias: currency_symbol)
-    ScalarFunction currency_symbol_func("anofox_tab_currency_symbol", {LogicalTypeId::VARCHAR}, LogicalTypeId::VARCHAR,
-                                        AnofoxCurrencySymbolFunction);
-    currency_symbol_func.bind = CurrencySymbolBind;
-    RegisterScalarFunctionWithAlias(loader, currency_symbol_func, "currency_symbol");
-
-    // Scalar function: anofox_tab_currency_name(code) -> VARCHAR (alias: currency_name)
-    ScalarFunction currency_name_func("anofox_tab_currency_name", {LogicalTypeId::VARCHAR}, LogicalTypeId::VARCHAR,
-                                      AnofoxCurrencyNameFunction);
-    currency_name_func.bind = CurrencyNameBind;
-    RegisterScalarFunctionWithAlias(loader, currency_name_func, "currency_name");
-
-    // Scalar function: anofox_tab_money_format(money, format_style) -> VARCHAR (alias: money_format)
-    ScalarFunction money_format_func("anofox_tab_money_format", {GetMoneyType(), LogicalTypeId::VARCHAR},
-                                     LogicalTypeId::VARCHAR, AnofoxMoneyFormatFunction);
-    money_format_func.bind = MoneyFormatBind;
-    RegisterScalarFunctionWithAlias(loader, money_format_func, "money_format");
-
-    // Scalar function: anofox_tab_money_is_positive(money) -> BOOLEAN (alias: money_is_positive)
-    ScalarFunction money_is_positive_func("anofox_tab_money_is_positive", {GetMoneyType()},
-                                          LogicalTypeId::BOOLEAN, AnofoxMoneyIsPositiveFunction);
-    money_is_positive_func.bind = MoneyIsPositiveBind;
-    RegisterScalarFunctionWithAlias(loader, money_is_positive_func, "money_is_positive");
-
-    // Scalar function: anofox_tab_money_is_negative(money) -> BOOLEAN (alias: money_is_negative)
-    ScalarFunction money_is_negative_func("anofox_tab_money_is_negative", {GetMoneyType()},
-                                          LogicalTypeId::BOOLEAN, AnofoxMoneyIsNegativeFunction);
-    money_is_negative_func.bind = MoneyIsNegativeBind;
-    RegisterScalarFunctionWithAlias(loader, money_is_negative_func, "money_is_negative");
-
-    // Scalar function: anofox_tab_money_is_zero(money) -> BOOLEAN (alias: money_is_zero)
-    ScalarFunction money_is_zero_func("anofox_tab_money_is_zero", {GetMoneyType()},
-                                      LogicalTypeId::BOOLEAN, AnofoxMoneyIsZeroFunction);
-    money_is_zero_func.bind = MoneyIsZeroBind;
-    RegisterScalarFunctionWithAlias(loader, money_is_zero_func, "money_is_zero");
-
-    // Scalar function: anofox_tab_money_abs(money) -> STRUCT (alias: money_abs)
-    ScalarFunction money_abs_func("anofox_tab_money_abs", {GetMoneyType()}, GetMoneyType(),
-                                  AnofoxMoneyAbsFunction);
-    money_abs_func.bind = MoneyAbsBind;
-    RegisterScalarFunctionWithAlias(loader, money_abs_func, "money_abs");
-
-    // Scalar function: anofox_tab_money_add(money1, money2) -> STRUCT (alias: money_add)
-    ScalarFunction money_add_func("anofox_tab_money_add", {GetMoneyType(), GetMoneyType()},
-                                  GetMoneyType(), AnofoxMoneyAddFunction);
-    money_add_func.bind = MoneyAddBind;
-    RegisterScalarFunctionWithAlias(loader, money_add_func, "money_add");
-
-    // Scalar function: anofox_tab_money_subtract(money1, money2) -> STRUCT (alias: money_subtract)
-    ScalarFunction money_subtract_func("anofox_tab_money_subtract", {GetMoneyType(), GetMoneyType()},
-                                       GetMoneyType(), AnofoxMoneySubtractFunction);
-    money_subtract_func.bind = MoneySubtractBind;
-    RegisterScalarFunctionWithAlias(loader, money_subtract_func, "money_subtract");
-
-    // Scalar function: anofox_tab_money_multiply(money, factor) -> STRUCT (alias: money_multiply)
-    ScalarFunction money_multiply_func("anofox_tab_money_multiply", {GetMoneyType(), LogicalTypeId::DOUBLE},
-                                       GetMoneyType(), AnofoxMoneyMultiplyFunction);
-    money_multiply_func.bind = MoneyMultiplyBind;
-    RegisterScalarFunctionWithAlias(loader, money_multiply_func, "money_multiply");
-
-    // Scalar function: anofox_tab_money_in_range(money, min, max) -> BOOLEAN (alias: money_in_range)
-    ScalarFunction money_in_range_func("anofox_tab_money_in_range",
-                                       {GetMoneyType(), LogicalTypeId::DOUBLE, LogicalTypeId::DOUBLE},
-                                       LogicalTypeId::BOOLEAN, AnofoxMoneyInRangeFunction);
-    money_in_range_func.bind = MoneyInRangeBind;
-    RegisterScalarFunctionWithAlias(loader, money_in_range_func, "money_in_range");
-
-    // Scalar function: anofox_tab_money_same_currency(money1, money2) -> BOOLEAN (alias: money_same_currency)
-    ScalarFunction money_same_currency_func("anofox_tab_money_same_currency", {GetMoneyType(), GetMoneyType()},
-                                            LogicalTypeId::BOOLEAN, AnofoxMoneySameCurrencyFunction);
-    money_same_currency_func.bind = MoneySameCurrencyBind;
-    RegisterScalarFunctionWithAlias(loader, money_same_currency_func, "money_same_currency");
+    {
+        FunctionDescription desc;
+        desc.description = "Creates a money value from a decimal amount and ISO 4217 currency code.";
+        desc.parameter_names = {"amount", "currency_code"};
+        desc.parameter_types = {LogicalType::DOUBLE, LogicalType::VARCHAR};
+        desc.examples = {"SELECT money(19.99, 'USD');"};
+        desc.categories = {"money"};
+        ScalarFunction money_func("anofox_tab_money", {LogicalTypeId::DOUBLE, LogicalTypeId::VARCHAR}, GetMoneyType(), AnofoxMoneyFunction);
+        money_func.bind = MoneyBind;
+        RegisterScalarFunctionWithAlias(loader, money_func, "money", {std::move(desc)});
+    }
+    {
+        FunctionDescription desc;
+        desc.description = "Creates a money value from an integer amount in cents and ISO 4217 currency code.";
+        desc.parameter_names = {"cents", "currency_code"};
+        desc.parameter_types = {LogicalType::BIGINT, LogicalType::VARCHAR};
+        desc.examples = {"SELECT money_from_cents(1999, 'USD');"};
+        desc.categories = {"money"};
+        ScalarFunction money_from_cents_func("anofox_tab_money_from_cents", {LogicalTypeId::BIGINT, LogicalTypeId::VARCHAR}, GetMoneyType(), AnofoxMoneyFromCentsFunction);
+        money_from_cents_func.bind = MoneyFromCentsBind;
+        RegisterScalarFunctionWithAlias(loader, money_from_cents_func, "money_from_cents", {std::move(desc)});
+    }
+    {
+        FunctionDescription desc;
+        desc.description = "Extracts the numeric amount from a money value.";
+        desc.parameter_names = {"money"};
+        desc.parameter_types = {GetMoneyType()};
+        desc.examples = {"SELECT money_amount(money(19.99, 'USD'));"};
+        desc.categories = {"money"};
+        ScalarFunction money_amount_func("anofox_tab_money_amount", {GetMoneyType()}, LogicalTypeId::DOUBLE, AnofoxMoneyAmountFunction);
+        money_amount_func.bind = MoneyAmountBind;
+        RegisterScalarFunctionWithAlias(loader, money_amount_func, "money_amount", {std::move(desc)});
+    }
+    {
+        FunctionDescription desc;
+        desc.description = "Extracts the ISO 4217 currency code from a money value.";
+        desc.parameter_names = {"money"};
+        desc.parameter_types = {GetMoneyType()};
+        desc.examples = {"SELECT money_currency(money(19.99, 'USD'));"};
+        desc.categories = {"money"};
+        ScalarFunction money_currency_func("anofox_tab_money_currency", {GetMoneyType()}, LogicalTypeId::VARCHAR, AnofoxMoneyCurrencyFunction);
+        money_currency_func.bind = MoneyCurrencyBind;
+        RegisterScalarFunctionWithAlias(loader, money_currency_func, "money_currency", {std::move(desc)});
+    }
+    {
+        FunctionDescription desc;
+        desc.description = "Returns TRUE if the given string is a valid ISO 4217 currency code.";
+        desc.parameter_names = {"currency_code"};
+        desc.parameter_types = {LogicalType::VARCHAR};
+        desc.examples = {"SELECT is_valid_currency('USD');"};
+        desc.categories = {"money", "validation"};
+        ScalarFunction is_valid_currency_func("anofox_tab_is_valid_currency", {LogicalTypeId::VARCHAR}, LogicalTypeId::BOOLEAN, AnofoxIsValidCurrencyFunction);
+        is_valid_currency_func.bind = IsValidCurrencyBind;
+        RegisterScalarFunctionWithAlias(loader, is_valid_currency_func, "is_valid_currency", {std::move(desc)});
+    }
+    {
+        FunctionDescription desc;
+        desc.description = "Returns the currency symbol for a given ISO 4217 currency code (e.g., '$' for USD).";
+        desc.parameter_names = {"currency_code"};
+        desc.parameter_types = {LogicalType::VARCHAR};
+        desc.examples = {"SELECT currency_symbol('EUR');"};
+        desc.categories = {"money"};
+        ScalarFunction currency_symbol_func("anofox_tab_currency_symbol", {LogicalTypeId::VARCHAR}, LogicalTypeId::VARCHAR, AnofoxCurrencySymbolFunction);
+        currency_symbol_func.bind = CurrencySymbolBind;
+        RegisterScalarFunctionWithAlias(loader, currency_symbol_func, "currency_symbol", {std::move(desc)});
+    }
+    {
+        FunctionDescription desc;
+        desc.description = "Returns the full English name of a currency given its ISO 4217 code (e.g., 'US Dollar').";
+        desc.parameter_names = {"currency_code"};
+        desc.parameter_types = {LogicalType::VARCHAR};
+        desc.examples = {"SELECT currency_name('EUR');"};
+        desc.categories = {"money"};
+        ScalarFunction currency_name_func("anofox_tab_currency_name", {LogicalTypeId::VARCHAR}, LogicalTypeId::VARCHAR, AnofoxCurrencyNameFunction);
+        currency_name_func.bind = CurrencyNameBind;
+        RegisterScalarFunctionWithAlias(loader, currency_name_func, "currency_name", {std::move(desc)});
+    }
+    {
+        FunctionDescription desc;
+        desc.description = "Formats a money value as a string using the specified style ('symbol', 'code', or 'plain').";
+        desc.parameter_names = {"money", "format_style"};
+        desc.parameter_types = {GetMoneyType(), LogicalType::VARCHAR};
+        desc.examples = {"SELECT money_format(money(19.99, 'USD'), 'symbol');"};
+        desc.categories = {"money", "formatting"};
+        ScalarFunction money_format_func("anofox_tab_money_format", {GetMoneyType(), LogicalTypeId::VARCHAR}, LogicalTypeId::VARCHAR, AnofoxMoneyFormatFunction);
+        money_format_func.bind = MoneyFormatBind;
+        RegisterScalarFunctionWithAlias(loader, money_format_func, "money_format", {std::move(desc)});
+    }
+    {
+        FunctionDescription desc;
+        desc.description = "Returns TRUE if the money amount is greater than zero.";
+        desc.parameter_names = {"money"};
+        desc.parameter_types = {GetMoneyType()};
+        desc.examples = {"SELECT money_is_positive(money(19.99, 'USD'));"};
+        desc.categories = {"money", "validation"};
+        ScalarFunction money_is_positive_func("anofox_tab_money_is_positive", {GetMoneyType()}, LogicalTypeId::BOOLEAN, AnofoxMoneyIsPositiveFunction);
+        money_is_positive_func.bind = MoneyIsPositiveBind;
+        RegisterScalarFunctionWithAlias(loader, money_is_positive_func, "money_is_positive", {std::move(desc)});
+    }
+    {
+        FunctionDescription desc;
+        desc.description = "Returns TRUE if the money amount is less than zero.";
+        desc.parameter_names = {"money"};
+        desc.parameter_types = {GetMoneyType()};
+        desc.examples = {"SELECT money_is_negative(money(-5.00, 'USD'));"};
+        desc.categories = {"money", "validation"};
+        ScalarFunction money_is_negative_func("anofox_tab_money_is_negative", {GetMoneyType()}, LogicalTypeId::BOOLEAN, AnofoxMoneyIsNegativeFunction);
+        money_is_negative_func.bind = MoneyIsNegativeBind;
+        RegisterScalarFunctionWithAlias(loader, money_is_negative_func, "money_is_negative", {std::move(desc)});
+    }
+    {
+        FunctionDescription desc;
+        desc.description = "Returns TRUE if the money amount is exactly zero.";
+        desc.parameter_names = {"money"};
+        desc.parameter_types = {GetMoneyType()};
+        desc.examples = {"SELECT money_is_zero(money(0.00, 'USD'));"};
+        desc.categories = {"money", "validation"};
+        ScalarFunction money_is_zero_func("anofox_tab_money_is_zero", {GetMoneyType()}, LogicalTypeId::BOOLEAN, AnofoxMoneyIsZeroFunction);
+        money_is_zero_func.bind = MoneyIsZeroBind;
+        RegisterScalarFunctionWithAlias(loader, money_is_zero_func, "money_is_zero", {std::move(desc)});
+    }
+    {
+        FunctionDescription desc;
+        desc.description = "Returns the absolute value of a money amount.";
+        desc.parameter_names = {"money"};
+        desc.parameter_types = {GetMoneyType()};
+        desc.examples = {"SELECT money_abs(money(-19.99, 'USD'));"};
+        desc.categories = {"money"};
+        ScalarFunction money_abs_func("anofox_tab_money_abs", {GetMoneyType()}, GetMoneyType(), AnofoxMoneyAbsFunction);
+        money_abs_func.bind = MoneyAbsBind;
+        RegisterScalarFunctionWithAlias(loader, money_abs_func, "money_abs", {std::move(desc)});
+    }
+    {
+        FunctionDescription desc;
+        desc.description = "Adds two money values of the same currency.";
+        desc.parameter_names = {"money1", "money2"};
+        desc.parameter_types = {GetMoneyType(), GetMoneyType()};
+        desc.examples = {"SELECT money_add(money(10.00, 'USD'), money(5.00, 'USD'));"};
+        desc.categories = {"money", "arithmetic"};
+        ScalarFunction money_add_func("anofox_tab_money_add", {GetMoneyType(), GetMoneyType()}, GetMoneyType(), AnofoxMoneyAddFunction);
+        money_add_func.bind = MoneyAddBind;
+        RegisterScalarFunctionWithAlias(loader, money_add_func, "money_add", {std::move(desc)});
+    }
+    {
+        FunctionDescription desc;
+        desc.description = "Subtracts the second money value from the first (must be the same currency).";
+        desc.parameter_names = {"money1", "money2"};
+        desc.parameter_types = {GetMoneyType(), GetMoneyType()};
+        desc.examples = {"SELECT money_subtract(money(10.00, 'USD'), money(3.00, 'USD'));"};
+        desc.categories = {"money", "arithmetic"};
+        ScalarFunction money_subtract_func("anofox_tab_money_subtract", {GetMoneyType(), GetMoneyType()}, GetMoneyType(), AnofoxMoneySubtractFunction);
+        money_subtract_func.bind = MoneySubtractBind;
+        RegisterScalarFunctionWithAlias(loader, money_subtract_func, "money_subtract", {std::move(desc)});
+    }
+    {
+        FunctionDescription desc;
+        desc.description = "Multiplies a money amount by a scalar factor.";
+        desc.parameter_names = {"money", "factor"};
+        desc.parameter_types = {GetMoneyType(), LogicalType::DOUBLE};
+        desc.examples = {"SELECT money_multiply(money(10.00, 'USD'), 1.5);"};
+        desc.categories = {"money", "arithmetic"};
+        ScalarFunction money_multiply_func("anofox_tab_money_multiply", {GetMoneyType(), LogicalTypeId::DOUBLE}, GetMoneyType(), AnofoxMoneyMultiplyFunction);
+        money_multiply_func.bind = MoneyMultiplyBind;
+        RegisterScalarFunctionWithAlias(loader, money_multiply_func, "money_multiply", {std::move(desc)});
+    }
+    {
+        FunctionDescription desc;
+        desc.description = "Returns TRUE if the money amount is within the inclusive range [min, max].";
+        desc.parameter_names = {"money", "min", "max"};
+        desc.parameter_types = {GetMoneyType(), LogicalType::DOUBLE, LogicalType::DOUBLE};
+        desc.examples = {"SELECT money_in_range(money(15.00, 'USD'), 10.0, 20.0);"};
+        desc.categories = {"money", "validation"};
+        ScalarFunction money_in_range_func("anofox_tab_money_in_range", {GetMoneyType(), LogicalTypeId::DOUBLE, LogicalTypeId::DOUBLE}, LogicalTypeId::BOOLEAN, AnofoxMoneyInRangeFunction);
+        money_in_range_func.bind = MoneyInRangeBind;
+        RegisterScalarFunctionWithAlias(loader, money_in_range_func, "money_in_range", {std::move(desc)});
+    }
+    {
+        FunctionDescription desc;
+        desc.description = "Returns TRUE if two money values have the same currency code.";
+        desc.parameter_names = {"money1", "money2"};
+        desc.parameter_types = {GetMoneyType(), GetMoneyType()};
+        desc.examples = {"SELECT money_same_currency(money(10.00, 'USD'), money(5.00, 'USD'));"};
+        desc.categories = {"money", "comparison"};
+        ScalarFunction money_same_currency_func("anofox_tab_money_same_currency", {GetMoneyType(), GetMoneyType()}, LogicalTypeId::BOOLEAN, AnofoxMoneySameCurrencyFunction);
+        money_same_currency_func.bind = MoneySameCurrencyBind;
+        RegisterScalarFunctionWithAlias(loader, money_same_currency_func, "money_same_currency", {std::move(desc)});
+    }
 
     AnofoxTrace(AnofoxLogLevel::Info, "[anofox] Money module functions registered");
 }

@@ -1391,14 +1391,30 @@ void RegisterMetricFunctions(ExtensionLoader &loader) {
 	                           {LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::BIGINT), LogicalType(LogicalTypeId::BIGINT)},
 	                           nullptr, nullptr);
 	volume_func.bind_replace = MetricVolumeBindReplace;
-	RegisterTableFunctionWithAlias(loader, volume_func, "volume");
+	{
+		FunctionDescription desc;
+		desc.description = "Asserts that a table has between min_rows and max_rows rows, returning the count and assertion status.";
+		desc.parameter_names = {"table_name", "min_rows", "max_rows"};
+		desc.parameter_types = {LogicalType::VARCHAR, LogicalType::BIGINT, LogicalType::BIGINT};
+		desc.examples = {"SELECT * FROM volume('orders', 100, 1000000);"};
+		desc.categories = {"metric", "data-quality"};
+		RegisterTableFunctionWithAlias(loader, volume_func, "volume", {std::move(desc)});
+	}
 
 	// anofox_tab_null_rate(table_name, column_name, max_null_rate) (alias: null_rate)
 	TableFunction null_rate_func("anofox_tab_null_rate",
 	                              {LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::DOUBLE)},
 	                              nullptr, nullptr);
 	null_rate_func.bind_replace = MetricNullRateBindReplace;
-	RegisterTableFunctionWithAlias(loader, null_rate_func, "null_rate");
+	{
+		FunctionDescription desc;
+		desc.description = "Asserts that the fraction of NULL values in a column does not exceed max_null_rate.";
+		desc.parameter_names = {"table_name", "column_name", "max_null_rate"};
+		desc.parameter_types = {LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::DOUBLE};
+		desc.examples = {"SELECT * FROM null_rate('orders', 'email', 0.05);"};
+		desc.categories = {"metric", "data-quality"};
+		RegisterTableFunctionWithAlias(loader, null_rate_func, "null_rate", {std::move(desc)});
+	}
 
 	// anofox_tab_distinct_count(table_name, column_name, min_distinct, max_distinct) (alias: distinct_count)
 	TableFunction distinct_func("anofox_tab_distinct_count",
@@ -1406,28 +1422,60 @@ void RegisterMetricFunctions(ExtensionLoader &loader) {
 	                              LogicalType(LogicalTypeId::BIGINT), LogicalType(LogicalTypeId::BIGINT)},
 	                             nullptr, nullptr);
 	distinct_func.bind_replace = MetricDistinctCountBindReplace;
-	RegisterTableFunctionWithAlias(loader, distinct_func, "distinct_count");
+	{
+		FunctionDescription desc;
+		desc.description = "Asserts that the number of distinct values in a column is between min_distinct and max_distinct.";
+		desc.parameter_names = {"table_name", "column_name", "min_distinct", "max_distinct"};
+		desc.parameter_types = {LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::BIGINT, LogicalType::BIGINT};
+		desc.examples = {"SELECT * FROM distinct_count('orders', 'status', 1, 10);"};
+		desc.categories = {"metric", "data-quality"};
+		RegisterTableFunctionWithAlias(loader, distinct_func, "distinct_count", {std::move(desc)});
+	}
 
 	// anofox_tab_zscore(table_name, column_name, threshold) (alias: zscore)
 	TableFunction zscore_func("anofox_tab_zscore",
 	                           {LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::DOUBLE)},
 	                           nullptr, nullptr);
 	zscore_func.bind_replace = MetricZscoreBindReplace;
-	RegisterTableFunctionWithAlias(loader, zscore_func, "zscore");
+	{
+		FunctionDescription desc;
+		desc.description = "Identifies rows where a numeric column value deviates more than threshold standard deviations from the mean.";
+		desc.parameter_names = {"table_name", "column_name", "threshold"};
+		desc.parameter_types = {LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::DOUBLE};
+		desc.examples = {"SELECT * FROM zscore('orders', 'amount', 3.0);"};
+		desc.categories = {"metric", "data-quality"};
+		RegisterTableFunctionWithAlias(loader, zscore_func, "zscore", {std::move(desc)});
+	}
 
 	// anofox_tab_iqr(table_name, column_name, iqr_multiplier) (alias: iqr)
 	TableFunction iqr_func("anofox_tab_iqr",
 	                        {LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::DOUBLE)},
 	                        nullptr, nullptr);
 	iqr_func.bind_replace = MetricIQRBindReplace;
-	RegisterTableFunctionWithAlias(loader, iqr_func, "iqr");
+	{
+		FunctionDescription desc;
+		desc.description = "Identifies rows where a numeric column value is an outlier by the IQR (interquartile range) method.";
+		desc.parameter_names = {"table_name", "column_name", "iqr_multiplier"};
+		desc.parameter_types = {LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::DOUBLE};
+		desc.examples = {"SELECT * FROM iqr('orders', 'amount', 1.5);"};
+		desc.categories = {"metric", "data-quality"};
+		RegisterTableFunctionWithAlias(loader, iqr_func, "iqr", {std::move(desc)});
+	}
 
 	// anofox_tab_schema_check(table_name, required_columns) (alias: schema_check)
 	TableFunction schema_func("anofox_tab_schema_check",
 	                           {LogicalType(LogicalTypeId::VARCHAR), LogicalType::LIST(LogicalType(LogicalTypeId::VARCHAR))},
 	                           nullptr, nullptr);
 	schema_func.bind_replace = MetricSchemaBindReplace;
-	RegisterTableFunctionWithAlias(loader, schema_func, "schema_check");
+	{
+		FunctionDescription desc;
+		desc.description = "Asserts that a table contains all the required column names.";
+		desc.parameter_names = {"table_name", "required_columns"};
+		desc.parameter_types = {LogicalType::VARCHAR, LogicalType::LIST(LogicalType::VARCHAR)};
+		desc.examples = {"SELECT * FROM schema_check('orders', ['id', 'amount', 'status']);"};
+		desc.categories = {"metric", "data-quality"};
+		RegisterTableFunctionWithAlias(loader, schema_func, "schema_check", {std::move(desc)});
+	}
 
 	// anofox_tab_freshness(table_name, timestamp_column, max_age) or (table_name, timestamp_column, max_age, reference_time) (alias: freshness)
 	TableFunctionSet freshness_set("anofox_tab_freshness");
@@ -1447,7 +1495,16 @@ void RegisterMetricFunctions(ExtensionLoader &loader) {
 	freshness_func_full.bind_replace = MetricFreshnessBindReplace;
 	freshness_set.AddFunction(freshness_func_full);
 
-	loader.RegisterFunction(freshness_set);
+	{
+		FunctionDescription desc;
+		desc.description = "Returns rows where the most recent value in a timestamp column is older than the specified maximum age interval. Optionally accepts a reference time.";
+		desc.parameter_names = {"table_name", "timestamp_column", "max_age", "reference_time"};
+		desc.examples = {"SELECT * FROM freshness('events', 'created_at', INTERVAL '1 day');"};
+		desc.categories = {"metric", "data-quality"};
+		CreateTableFunctionInfo freshness_info(freshness_set);
+		freshness_info.descriptions = {std::move(desc)};
+		loader.RegisterFunction(freshness_info);
+	}
 
 	// Register alias
 	TableFunctionSet alias_freshness_set("freshness");
@@ -1485,8 +1542,16 @@ void RegisterMetricFunctions(ExtensionLoader &loader) {
 	                           IsolationForestExecute, IsolationForestBind, IsolationForestInit);
 	iso_forest_set.AddFunction(iso_forest_7);
 
-	CreateTableFunctionInfo iso_forest_info(iso_forest_set);
-	loader.RegisterFunction(iso_forest_info);
+	{
+		FunctionDescription desc;
+		desc.description = "Detects univariate outliers in a numeric column using the Isolation Forest algorithm. Returns scores and outlier labels.";
+		desc.parameter_names = {"table_name", "column_name", "n_trees", "sample_size", "contamination", "output_mode", "seed"};
+		desc.examples = {"SELECT * FROM isolation_forest('sales', 'amount', 100, 256, 0.05, 'all');"};
+		desc.categories = {"metric", "anomaly-detection"};
+		CreateTableFunctionInfo iso_forest_info(iso_forest_set);
+		iso_forest_info.descriptions = {std::move(desc)};
+		loader.RegisterFunction(iso_forest_info);
+	}
 
 	// Register alias: isolation_forest
 	TableFunctionSet alias_iso_forest_set("isolation_forest");
@@ -1581,8 +1646,16 @@ void RegisterMetricFunctions(ExtensionLoader &loader) {
 	                               IsolationForestExecute, IsolationForestMultivariateBind, IsolationForestInit);
 	iso_forest_mv_set.AddFunction(iso_forest_mv_13);
 
-	CreateTableFunctionInfo iso_forest_mv_info(iso_forest_mv_set);
-	loader.RegisterFunction(iso_forest_mv_info);
+	{
+		FunctionDescription desc;
+		desc.description = "Detects multivariate outliers across multiple numeric columns (comma-separated) using the Isolation Forest algorithm.";
+		desc.parameter_names = {"table_name", "column_names", "n_trees", "sample_size", "contamination", "output_mode", "seed"};
+		desc.examples = {"SELECT * FROM isolation_forest_mv('sales', 'amount,qty', 100, 256, 0.05, 'all');"};
+		desc.categories = {"metric", "anomaly-detection"};
+		CreateTableFunctionInfo iso_forest_mv_info(iso_forest_mv_set);
+		iso_forest_mv_info.descriptions = {std::move(desc)};
+		loader.RegisterFunction(iso_forest_mv_info);
+	}
 
 	// Register alias: isolation_forest_mv
 	TableFunctionSet alias_iso_forest_mv_set("isolation_forest_mv");
@@ -1605,7 +1678,15 @@ void RegisterMetricFunctions(ExtensionLoader &loader) {
 	                            LogicalType(LogicalTypeId::VARCHAR)},
 	                           nullptr, nullptr);
 	dbscan_func.bind_replace = MetricDBSCANBindReplace;
-	RegisterTableFunctionWithAlias(loader, dbscan_func, "dbscan");
+	{
+		FunctionDescription desc;
+		desc.description = "Clusters rows by a numeric column using DBSCAN. Returns cluster labels and noise flags.";
+		desc.parameter_names = {"table_name", "column_name", "eps", "min_pts", "output_mode"};
+		desc.parameter_types = {LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::DOUBLE, LogicalType::BIGINT, LogicalType::VARCHAR};
+		desc.examples = {"SELECT * FROM dbscan('orders', 'amount', 0.5, 5, 'all');"};
+		desc.categories = {"metric", "anomaly-detection"};
+		RegisterTableFunctionWithAlias(loader, dbscan_func, "dbscan", {std::move(desc)});
+	}
 
 	// anofox_tab_dbscan_mv(table_name, column_names (comma-separated), eps=0.5, min_pts=5, output_mode='summary') (alias: dbscan_mv)
 	TableFunction dbscan_mv_func("anofox_tab_dbscan_mv",
@@ -1614,7 +1695,15 @@ void RegisterMetricFunctions(ExtensionLoader &loader) {
 	                               LogicalType(LogicalTypeId::VARCHAR)},
 	                              nullptr, nullptr);
 	dbscan_mv_func.bind_replace = MetricDBSCANMultivariateBindReplace;
-	RegisterTableFunctionWithAlias(loader, dbscan_mv_func, "dbscan_mv");
+	{
+		FunctionDescription desc;
+		desc.description = "Clusters rows by multiple numeric columns (comma-separated) using DBSCAN. Returns cluster labels and noise flags.";
+		desc.parameter_names = {"table_name", "column_names", "eps", "min_pts", "output_mode"};
+		desc.parameter_types = {LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::DOUBLE, LogicalType::BIGINT, LogicalType::VARCHAR};
+		desc.examples = {"SELECT * FROM dbscan_mv('orders', 'amount,qty', 0.5, 5, 'all');"};
+		desc.categories = {"metric", "anomaly-detection"};
+		RegisterTableFunctionWithAlias(loader, dbscan_mv_func, "dbscan_mv", {std::move(desc)});
+	}
 }
 
 } // namespace anofox

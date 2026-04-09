@@ -745,7 +745,14 @@ void RegisterEmailFunctions(ExtensionLoader &loader) {
 	validate_single.bind = EmailValidateBind;
 	validate_set.AddFunction(validate_single);
 
-	RegisterScalarFunctionSetWithAlias(loader, validate_set, "email_validate");
+	{
+		FunctionDescription desc;
+		desc.description = "Validates an email address using the specified validation mode ('regex', 'dns', or 'smtp'). Returns a struct with validation details. Defaults to the configured mode.";
+		desc.parameter_names = {"email", "mode"};
+		desc.examples = {"SELECT email_validate('user@example.com');", "SELECT email_validate('user@example.com', 'dns');"};
+		desc.categories = {"email", "validation"};
+		RegisterScalarFunctionSetWithAlias(loader, validate_set, "email_validate", {std::move(desc)});
+	}
 
 	// Register email_is_valid with two overloads
 	ScalarFunctionSet is_valid_set("anofox_tab_email_is_valid");
@@ -761,12 +768,25 @@ void RegisterEmailFunctions(ExtensionLoader &loader) {
 	is_valid_single.bind = EmailIsValidBind;
 	is_valid_set.AddFunction(is_valid_single);
 
-	RegisterScalarFunctionSetWithAlias(loader, is_valid_set, "email_is_valid");
+	{
+		FunctionDescription desc;
+		desc.description = "Returns TRUE if the email address passes validation using the specified mode ('regex', 'dns', or 'smtp'). Defaults to the configured mode.";
+		desc.parameter_names = {"email", "mode"};
+		desc.examples = {"SELECT email_is_valid('user@example.com');", "SELECT email_is_valid('user@example.com', 'smtp');"};
+		desc.categories = {"email", "validation"};
+		RegisterScalarFunctionSetWithAlias(loader, is_valid_set, "email_is_valid", {std::move(desc)});
+	}
 
 	// Register email_config table function
-	TableFunction config_fun("anofox_tab_email_config", {}, EmailConfigFunction, EmailConfigBind);
-	config_fun.init_global = EmailConfigInit;
-	RegisterTableFunctionWithAlias(loader, config_fun, "email_config");
+	{
+		FunctionDescription desc;
+		desc.description = "Returns the current configuration settings for the email validation module.";
+		desc.examples = {"SELECT * FROM email_config();"};
+		desc.categories = {"email", "config"};
+		TableFunction config_fun("anofox_tab_email_config", {}, EmailConfigFunction, EmailConfigBind);
+		config_fun.init_global = EmailConfigInit;
+		RegisterTableFunctionWithAlias(loader, config_fun, "email_config", {std::move(desc)});
+	}
 }
 
 } // namespace anofox

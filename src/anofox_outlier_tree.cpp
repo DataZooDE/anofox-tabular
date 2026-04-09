@@ -1050,7 +1050,13 @@ void RegisterOutlierTreeFunctions(ExtensionLoader &loader) {
         OutlierTreeExecute, OutlierTreeBind, OutlierTreeInit);
     outlier_tree_set.AddFunction(outlier_tree_9);
 
+    FunctionDescription ot_desc;
+    ot_desc.description = "Identifies statistical outliers in a table using the OutlierTree algorithm, returning an explanation of which conditions make each row an outlier.";
+    ot_desc.parameter_names = {"table_name", "columns", "mode"};
+    ot_desc.examples = {"SELECT * FROM outlier_tree('transactions', 'amount,balance', 'summary');"};
+    ot_desc.categories = {"metric", "anomaly-detection"};
     CreateTableFunctionInfo outlier_tree_info(outlier_tree_set);
+    outlier_tree_info.descriptions = {std::move(ot_desc)};
     loader.RegisterFunction(outlier_tree_info);
 
     // Register alias: outlier_tree

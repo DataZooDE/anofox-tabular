@@ -53,6 +53,11 @@ static void RegisterTelemetryOptions(ExtensionLoader &loader) {
 }
 
 void LoadInternal(ExtensionLoader &loader) {
+	loader.SetDescription(
+	    "Data quality validation and improvement primitives: "
+	    "email, phone, postal address, VAT, PII detection/masking, "
+	    "money, diffing, profiling, and anomaly detection.");
+
 	// Register telemetry options FIRST (allows users to disable via SQL settings)
 	// Note: Environment variable DATAZOO_DISABLE_TELEMETRY is always checked by posthog-telemetry
 	RegisterTelemetryOptions(loader);
