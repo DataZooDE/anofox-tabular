@@ -63,10 +63,10 @@ if command -v apk &> /dev/null; then
     ./bootstrap.sh
     # Install to /usr/local with data in /usr/local/share/libpostal
     # CRITICAL: Use CFLAGS=-fPIC to enable linking into shared libraries
-    # trie_search.c returns 'false' (_Bool) where 'phrase_array *' is expected.
-    # Newer GCC treats this as a hard error; patch the source to return NULL instead.
-    sed -i 's/\breturn false;/return NULL;/g' src/trie_search.c || true
-    CFLAGS="-fPIC" ./configure --datadir=/usr/local/share/libpostal
+    # CRITICAL: Use -std=gnu11 to avoid C23 incompatibilities in libpostal source
+    #           (GCC 14+ defaults to -std=gnu23 where 'false' has type _Bool,
+    #           breaking libpostal's 'return false' in phrase_array* functions)
+    CFLAGS="-fPIC -std=gnu11" ./configure --datadir=/usr/local/share/libpostal
     make -j$(nproc)
     make install
 
@@ -112,10 +112,10 @@ elif command -v apt-get &> /dev/null; then
     ./bootstrap.sh
     # Install to /usr/local with data in /usr/local/share/libpostal
     # CRITICAL: Use CFLAGS=-fPIC to enable linking into shared libraries
-    # trie_search.c returns 'false' (_Bool) where 'phrase_array *' is expected.
-    # Newer GCC treats this as a hard error; patch the source to return NULL instead.
-    sed -i 's/\breturn false;/return NULL;/g' src/trie_search.c || true
-    CFLAGS="-fPIC" ./configure --datadir=/usr/local/share/libpostal
+    # CRITICAL: Use -std=gnu11 to avoid C23 incompatibilities in libpostal source
+    #           (GCC 14+ defaults to -std=gnu23 where 'false' has type _Bool,
+    #           breaking libpostal's 'return false' in phrase_array* functions)
+    CFLAGS="-fPIC -std=gnu11" ./configure --datadir=/usr/local/share/libpostal
     make -j$(nproc)
     $SUDO_CMD make install
 
@@ -155,10 +155,10 @@ elif command -v yum &> /dev/null; then
     ./bootstrap.sh
     # Install to /usr/local with data in /usr/local/share/libpostal
     # CRITICAL: Use CFLAGS=-fPIC to enable linking into shared libraries
-    # trie_search.c returns 'false' (_Bool) where 'phrase_array *' is expected.
-    # Newer GCC treats this as a hard error; patch the source to return NULL instead.
-    sed -i 's/\breturn false;/return NULL;/g' src/trie_search.c || true
-    CFLAGS="-fPIC" ./configure --datadir=/usr/local/share/libpostal
+    # CRITICAL: Use -std=gnu11 to avoid C23 incompatibilities in libpostal source
+    #           (GCC 14+ defaults to -std=gnu23 where 'false' has type _Bool,
+    #           breaking libpostal's 'return false' in phrase_array* functions)
+    CFLAGS="-fPIC -std=gnu11" ./configure --datadir=/usr/local/share/libpostal
     make -j$(nproc)
     $SUDO_CMD make install
 
