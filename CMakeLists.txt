@@ -272,6 +272,16 @@ endif()
 target_include_directories(${LOADABLE_EXTENSION_NAME} PRIVATE
     ${LIBPOSTAL_INCLUDE_DIRS}
 )
+
+# Work around GCC 14 COMDAT vs non-COMDAT conflict on Linux for DuckDB v1.5+.
+# DuckDB compiles with C++11 (setting static constexpr defs as non-COMDAT), while
+# this extension uses C++17 (GCC 14 emits COMDAT for the same inline constexpr
+# members in DuckDB headers). The linker rejects both definitions as duplicates.
+# --allow-multiple-definition silences this harmless ODR quirk on Linux.
+if(UNIX AND NOT APPLE)
+    target_link_options(${LOADABLE_EXTENSION_NAME} PRIVATE -Wl,--allow-multiple-definition)
+endif()
+
 # --- Installation ---
 
 install(
