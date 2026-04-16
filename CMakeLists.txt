@@ -274,10 +274,12 @@ endif()
 target_include_directories(${LOADABLE_EXTENSION_NAME} PRIVATE
     ${LIBPOSTAL_INCLUDE_DIRS}
 )
-# DuckDB v1.5.x added static constexpr const char *Name members to catalog entry classes.
-# When building with EXTENSION_STATIC_BUILD=1, these constexpr static members produce
-# COMDAT definitions in extension .o files but non-COMDAT definitions in libduckdb_static.a,
-# causing a spurious multiple-definition linker error. The values are identical, so this is safe.
+
+# Work around GCC 14 COMDAT vs non-COMDAT conflict on Linux for DuckDB v1.5+.
+# DuckDB compiles with C++11 (setting static constexpr defs as non-COMDAT), while
+# this extension uses C++17 (GCC 14 emits COMDAT for the same inline constexpr
+# members in DuckDB headers). The linker rejects both definitions as duplicates.
+# --allow-multiple-definition silences this harmless ODR quirk on Linux.
 if(UNIX AND NOT APPLE)
     # PUBLIC so the flag propagates to the duckdb CLI binary that links this static library
     target_link_options(${EXTENSION_NAME} PUBLIC -Wl,--allow-multiple-definition)
