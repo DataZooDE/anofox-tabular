@@ -63,7 +63,10 @@ if command -v apk &> /dev/null; then
     ./bootstrap.sh
     # Install to /usr/local with data in /usr/local/share/libpostal
     # CRITICAL: Use CFLAGS=-fPIC to enable linking into shared libraries
-    CFLAGS="-fPIC" ./configure --datadir=/usr/local/share/libpostal
+    # CRITICAL: Use -std=gnu11 to avoid C23 incompatibilities in libpostal source
+    #           (GCC 14+ defaults to -std=gnu23 where 'false' has type _Bool,
+    #           breaking libpostal's 'return false' in phrase_array* functions)
+    CFLAGS="-fPIC -std=gnu11" ./configure --datadir=/usr/local/share/libpostal
     make -j$(nproc)
     make install
 
@@ -109,7 +112,10 @@ elif command -v apt-get &> /dev/null; then
     ./bootstrap.sh
     # Install to /usr/local with data in /usr/local/share/libpostal
     # CRITICAL: Use CFLAGS=-fPIC to enable linking into shared libraries
-    CFLAGS="-fPIC" ./configure --datadir=/usr/local/share/libpostal
+    # CRITICAL: Use -std=gnu11 to avoid C23 incompatibilities in libpostal source
+    #           (GCC 14+ defaults to -std=gnu23 where 'false' has type _Bool,
+    #           breaking libpostal's 'return false' in phrase_array* functions)
+    CFLAGS="-fPIC -std=gnu11" ./configure --datadir=/usr/local/share/libpostal
     make -j$(nproc)
     $SUDO_CMD make install
 
@@ -149,7 +155,10 @@ elif command -v yum &> /dev/null; then
     ./bootstrap.sh
     # Install to /usr/local with data in /usr/local/share/libpostal
     # CRITICAL: Use CFLAGS=-fPIC to enable linking into shared libraries
-    CFLAGS="-fPIC" ./configure --datadir=/usr/local/share/libpostal
+    # CRITICAL: Use -std=gnu11 to avoid C23 incompatibilities in libpostal source
+    #           (GCC 14+ defaults to -std=gnu23 where 'false' has type _Bool,
+    #           breaking libpostal's 'return false' in phrase_array* functions)
+    CFLAGS="-fPIC -std=gnu11" ./configure --datadir=/usr/local/share/libpostal
     make -j$(nproc)
     $SUDO_CMD make install
 
