@@ -790,7 +790,15 @@ void RegisterProfileFunctions(ExtensionLoader &loader) {
 	TableFunction summary_func("anofox_tab_profile_summary", {LogicalType(LogicalTypeId::VARCHAR)}, nullptr,
 	                           nullptr);
 	summary_func.bind_replace = ProfileSummaryBindReplace;
-	RegisterTableFunctionWithAlias(loader, summary_func, "profile_summary");
+	{
+		FunctionDescription desc;
+		desc.description = "Returns a summary profile of all columns in a table, including min, max, null_count, and distinct_count.";
+		desc.parameter_names = {"table_name"};
+		desc.parameter_types = {LogicalType::VARCHAR};
+		desc.examples = {"SELECT * FROM profile_summary('orders');"};
+		desc.categories = {"profiling", "data-quality"};
+		RegisterTableFunctionWithAlias(loader, summary_func, "profile_summary", {std::move(desc)});
+	}
 
 	// profile_table(table_name [, cols [, sample_size [, exact]]]) — multiple overloads
 	TableFunctionSet profile_set("anofox_tab_profile_table");
@@ -816,7 +824,14 @@ void RegisterProfileFunctions(ExtensionLoader &loader) {
 	                 ProfileTableExecute, ProfileTableBind, ProfileTableInit);
 	profile_set.AddFunction(p4);
 
-	RegisterTableFunctionSetWithAlias(loader, profile_set, "profile_table");
+	{
+		FunctionDescription desc;
+		desc.description = "Profiles selected columns of a table with detailed statistics (min, max, mean, stddev, null_count, distinct_count, sample rows). Optionally filters columns, sets sample size, or uses exact counts.";
+		desc.parameter_names = {"table_name", "columns", "sample_size", "exact"};
+		desc.examples = {"SELECT * FROM profile_table('orders');", "SELECT * FROM profile_table('orders', ['amount', 'status']);"};
+		desc.categories = {"profiling", "data-quality"};
+		RegisterTableFunctionSetWithAlias(loader, profile_set, "profile_table", {std::move(desc)});
+	}
 
 	// profile_correlations(table_name [, cols]) — two overloads
 	TableFunctionSet corr_set("anofox_tab_profile_correlations");
@@ -832,7 +847,14 @@ void RegisterProfileFunctions(ExtensionLoader &loader) {
 	                 ProfileCorrelationsInit);
 	corr_set.AddFunction(c2);
 
-	RegisterTableFunctionSetWithAlias(loader, corr_set, "profile_correlations");
+	{
+		FunctionDescription desc;
+		desc.description = "Computes pairwise Pearson correlation coefficients for numeric columns in a table.";
+		desc.parameter_names = {"table_name", "columns"};
+		desc.examples = {"SELECT * FROM profile_correlations('orders');", "SELECT * FROM profile_correlations('orders', ['amount', 'qty']);"};
+		desc.categories = {"profiling", "statistics"};
+		RegisterTableFunctionSetWithAlias(loader, corr_set, "profile_correlations", {std::move(desc)});
+	}
 }
 
 } // namespace anofox

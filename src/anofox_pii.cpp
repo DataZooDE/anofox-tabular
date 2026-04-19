@@ -3302,122 +3302,281 @@ void RegisterPIIOptions(ExtensionLoader &loader) {
 }
 
 void RegisterPIIFunctions(ExtensionLoader &loader) {
-    // anofox_tab_pii_detect (alias: pii_detect) - returns LIST(STRUCT(...))
-    // Idiomatic DuckDB version with queryable struct fields
-    auto pii_detect_func = PIIDetectFunction::GetFunction();
-    pii_detect_func.bind = PIIDetectBind;
-    RegisterScalarFunctionWithAlias(loader, pii_detect_func, "pii_detect");
-
+    // anofox_tab_pii_detect (alias: pii_detect)
+    {
+        FunctionDescription desc;
+        desc.description = "Detects all PII entities in a text string and returns them as a list of structs with type, value, start, and end positions.";
+        desc.parameter_names = {"text"};
+        desc.parameter_types = {LogicalType::VARCHAR};
+        desc.examples = {"SELECT pii_detect('Contact John at john@example.com or +1-555-123-4567');"};
+        desc.categories = {"pii", "detection"};
+        auto pii_detect_func = PIIDetectFunction::GetFunction();
+        pii_detect_func.bind = PIIDetectBind;
+        RegisterScalarFunctionWithAlias(loader, pii_detect_func, "pii_detect", {std::move(desc)});
+    }
     // anofox_tab_pii_mask (alias: pii_mask) - with function set for overloads
-    ScalarFunctionSet mask_set("anofox_tab_pii_mask");
-    auto pii_mask_func = PIIMaskFunction::GetFunction();
-    pii_mask_func.bind = PIIMaskBind;
-    mask_set.AddFunction(pii_mask_func);
-    auto pii_mask_default_func = PIIMaskDefaultFunction::GetFunction();
-    pii_mask_default_func.bind = PIIMaskBind;
-    mask_set.AddFunction(pii_mask_default_func);
-    RegisterScalarFunctionSetWithAlias(loader, mask_set, "pii_mask");
-
+    {
+        FunctionDescription desc;
+        desc.description = "Masks all detected PII in a text string using the specified strategy ('redact', 'hash', 'partial'). Defaults to 'redact'.";
+        desc.parameter_names = {"text", "strategy"};
+        desc.examples = {"SELECT pii_mask('Call me at +1-555-123-4567');", "SELECT pii_mask('john@example.com', 'hash');"};
+        desc.categories = {"pii", "masking"};
+        ScalarFunctionSet mask_set("anofox_tab_pii_mask");
+        auto pii_mask_func = PIIMaskFunction::GetFunction();
+        pii_mask_func.bind = PIIMaskBind;
+        mask_set.AddFunction(pii_mask_func);
+        auto pii_mask_default_func = PIIMaskDefaultFunction::GetFunction();
+        pii_mask_default_func.bind = PIIMaskBind;
+        mask_set.AddFunction(pii_mask_default_func);
+        RegisterScalarFunctionSetWithAlias(loader, mask_set, "pii_mask", {std::move(desc)});
+    }
     // anofox_tab_pii_contains (alias: pii_contains)
-    auto pii_contains_func = PIIContainsFunction::GetFunction();
-    pii_contains_func.bind = PIIContainsBind;
-    RegisterScalarFunctionWithAlias(loader, pii_contains_func, "pii_contains");
-
+    {
+        FunctionDescription desc;
+        desc.description = "Returns TRUE if the text contains any PII of the specified type (e.g., 'email', 'phone', 'ssn').";
+        desc.parameter_names = {"text", "pii_type"};
+        desc.parameter_types = {LogicalType::VARCHAR, LogicalType::VARCHAR};
+        desc.examples = {"SELECT pii_contains('Contact us at info@company.com', 'email');"};
+        desc.categories = {"pii", "detection"};
+        auto pii_contains_func = PIIContainsFunction::GetFunction();
+        pii_contains_func.bind = PIIContainsBind;
+        RegisterScalarFunctionWithAlias(loader, pii_contains_func, "pii_contains", {std::move(desc)});
+    }
     // anofox_tab_pii_count (alias: pii_count)
-    auto pii_count_func = PIICountFunction::GetFunction();
-    pii_count_func.bind = PIICountBind;
-    RegisterScalarFunctionWithAlias(loader, pii_count_func, "pii_count");
-
+    {
+        FunctionDescription desc;
+        desc.description = "Returns the total count of PII entities detected in the text.";
+        desc.parameter_names = {"text"};
+        desc.parameter_types = {LogicalType::VARCHAR};
+        desc.examples = {"SELECT pii_count('John at john@example.com, tel: +1-555-0100');"};
+        desc.categories = {"pii", "detection"};
+        auto pii_count_func = PIICountFunction::GetFunction();
+        pii_count_func.bind = PIICountBind;
+        RegisterScalarFunctionWithAlias(loader, pii_count_func, "pii_count", {std::move(desc)});
+    }
     // Individual validation functions
-    auto pii_valid_ssn_func = PIIIsValidSSNFunction::GetFunction();
-    pii_valid_ssn_func.bind = PIIIsValidSSNBind;
-    RegisterScalarFunctionWithAlias(loader, pii_valid_ssn_func, "pii_is_valid_ssn");
-
-    auto pii_valid_iban_func = PIIIsValidIBANFunction::GetFunction();
-    pii_valid_iban_func.bind = PIIIsValidIBANBind;
-    RegisterScalarFunctionWithAlias(loader, pii_valid_iban_func, "pii_is_valid_iban");
-
-    auto pii_valid_cc_func = PIIIsValidCreditCardFunction::GetFunction();
-    pii_valid_cc_func.bind = PIIIsValidCreditCardBind;
-    RegisterScalarFunctionWithAlias(loader, pii_valid_cc_func, "pii_is_valid_credit_card");
-
-    auto pii_valid_nino_func = PIIIsValidNINOFunction::GetFunction();
-    pii_valid_nino_func.bind = PIIIsValidNINOBind;
-    RegisterScalarFunctionWithAlias(loader, pii_valid_nino_func, "pii_is_valid_nino");
-
-    auto pii_valid_de_tax_func = PIIIsValidDETaxIDFunction::GetFunction();
-    pii_valid_de_tax_func.bind = PIIIsValidDETaxIDBind;
-    RegisterScalarFunctionWithAlias(loader, pii_valid_de_tax_func, "pii_is_valid_de_tax_id");
-
-    auto pii_valid_crypto_func = PIIIsValidCryptoFunction::GetFunction();
-    pii_valid_crypto_func.bind = PIIIsValidCryptoBind;
-    RegisterScalarFunctionWithAlias(loader, pii_valid_crypto_func, "pii_is_valid_crypto_address");
-
+    {
+        FunctionDescription desc;
+        desc.description = "Returns TRUE if the string is a valid US Social Security Number (SSN).";
+        desc.parameter_names = {"ssn"};
+        desc.parameter_types = {LogicalType::VARCHAR};
+        desc.examples = {"SELECT pii_is_valid_ssn('123-45-6789');"};
+        desc.categories = {"pii", "validation"};
+        auto pii_valid_ssn_func = PIIIsValidSSNFunction::GetFunction();
+        pii_valid_ssn_func.bind = PIIIsValidSSNBind;
+        RegisterScalarFunctionWithAlias(loader, pii_valid_ssn_func, "pii_is_valid_ssn", {std::move(desc)});
+    }
+    {
+        FunctionDescription desc;
+        desc.description = "Returns TRUE if the string is a valid IBAN (International Bank Account Number).";
+        desc.parameter_names = {"iban"};
+        desc.parameter_types = {LogicalType::VARCHAR};
+        desc.examples = {"SELECT pii_is_valid_iban('DE89370400440532013000');"};
+        desc.categories = {"pii", "validation"};
+        auto pii_valid_iban_func = PIIIsValidIBANFunction::GetFunction();
+        pii_valid_iban_func.bind = PIIIsValidIBANBind;
+        RegisterScalarFunctionWithAlias(loader, pii_valid_iban_func, "pii_is_valid_iban", {std::move(desc)});
+    }
+    {
+        FunctionDescription desc;
+        desc.description = "Returns TRUE if the string is a valid credit card number (uses Luhn algorithm).";
+        desc.parameter_names = {"card_number"};
+        desc.parameter_types = {LogicalType::VARCHAR};
+        desc.examples = {"SELECT pii_is_valid_credit_card('4111111111111111');"};
+        desc.categories = {"pii", "validation"};
+        auto pii_valid_cc_func = PIIIsValidCreditCardFunction::GetFunction();
+        pii_valid_cc_func.bind = PIIIsValidCreditCardBind;
+        RegisterScalarFunctionWithAlias(loader, pii_valid_cc_func, "pii_is_valid_credit_card", {std::move(desc)});
+    }
+    {
+        FunctionDescription desc;
+        desc.description = "Returns TRUE if the string is a valid UK National Insurance Number (NINO).";
+        desc.parameter_names = {"nino"};
+        desc.parameter_types = {LogicalType::VARCHAR};
+        desc.examples = {"SELECT pii_is_valid_nino('AB123456C');"};
+        desc.categories = {"pii", "validation"};
+        auto pii_valid_nino_func = PIIIsValidNINOFunction::GetFunction();
+        pii_valid_nino_func.bind = PIIIsValidNINOBind;
+        RegisterScalarFunctionWithAlias(loader, pii_valid_nino_func, "pii_is_valid_nino", {std::move(desc)});
+    }
+    {
+        FunctionDescription desc;
+        desc.description = "Returns TRUE if the string is a valid German tax identification number (Steueridentifikationsnummer).";
+        desc.parameter_names = {"tax_id"};
+        desc.parameter_types = {LogicalType::VARCHAR};
+        desc.examples = {"SELECT pii_is_valid_de_tax_id('12345678901');"};
+        desc.categories = {"pii", "validation"};
+        auto pii_valid_de_tax_func = PIIIsValidDETaxIDFunction::GetFunction();
+        pii_valid_de_tax_func.bind = PIIIsValidDETaxIDBind;
+        RegisterScalarFunctionWithAlias(loader, pii_valid_de_tax_func, "pii_is_valid_de_tax_id", {std::move(desc)});
+    }
+    {
+        FunctionDescription desc;
+        desc.description = "Returns TRUE if the string is a valid cryptocurrency wallet address (Bitcoin, Ethereum, etc.).";
+        desc.parameter_names = {"address"};
+        desc.parameter_types = {LogicalType::VARCHAR};
+        desc.examples = {"SELECT pii_is_valid_crypto_address('1A1zP1eP5QGefi2DMPTfTL5SLmv7Divf');"};
+        desc.categories = {"pii", "validation"};
+        auto pii_valid_crypto_func = PIIIsValidCryptoFunction::GetFunction();
+        pii_valid_crypto_func.bind = PIIIsValidCryptoBind;
+        RegisterScalarFunctionWithAlias(loader, pii_valid_crypto_func, "pii_is_valid_crypto_address", {std::move(desc)});
+    }
     // Type-specific detection functions
-    auto pii_detect_emails_func = PIIDetectEmailsFunction::GetFunction();
-    pii_detect_emails_func.bind = PIIDetectEmailsBind;
-    RegisterScalarFunctionWithAlias(loader, pii_detect_emails_func, "pii_detect_emails");
-
-    auto pii_detect_phones_func = PIIDetectPhonesFunction::GetFunction();
-    pii_detect_phones_func.bind = PIIDetectPhonesBind;
-    RegisterScalarFunctionWithAlias(loader, pii_detect_phones_func, "pii_detect_phones");
-
-    auto pii_detect_cc_func = PIIDetectCreditCardsFunction::GetFunction();
-    pii_detect_cc_func.bind = PIIDetectCreditCardsBind;
-    RegisterScalarFunctionWithAlias(loader, pii_detect_cc_func, "pii_detect_credit_cards");
-
-    auto pii_detect_ssns_func = PIIDetectSSNsFunction::GetFunction();
-    pii_detect_ssns_func.bind = PIIDetectSSNsBind;
-    RegisterScalarFunctionWithAlias(loader, pii_detect_ssns_func, "pii_detect_ssns");
-
-    auto pii_detect_names_func = PIIDetectNamesFunction::GetFunction();
-    pii_detect_names_func.bind = PIIDetectNamesBind;
-    RegisterScalarFunctionWithAlias(loader, pii_detect_names_func, "pii_detect_names");
-
-    auto pii_detect_ibans_func = PIIDetectIBANsFunction::GetFunction();
-    pii_detect_ibans_func.bind = PIIDetectIBANsBind;
-    RegisterScalarFunctionWithAlias(loader, pii_detect_ibans_func, "pii_detect_ibans");
-
+    {
+        FunctionDescription desc;
+        desc.description = "Detects all email addresses in the text and returns them as a list of structs.";
+        desc.parameter_names = {"text"};
+        desc.parameter_types = {LogicalType::VARCHAR};
+        desc.examples = {"SELECT pii_detect_emails('Contact jane@example.com or bob@company.org');"};
+        desc.categories = {"pii", "detection"};
+        auto pii_detect_emails_func = PIIDetectEmailsFunction::GetFunction();
+        pii_detect_emails_func.bind = PIIDetectEmailsBind;
+        RegisterScalarFunctionWithAlias(loader, pii_detect_emails_func, "pii_detect_emails", {std::move(desc)});
+    }
+    {
+        FunctionDescription desc;
+        desc.description = "Detects all phone numbers in the text and returns them as a list of structs.";
+        desc.parameter_names = {"text"};
+        desc.parameter_types = {LogicalType::VARCHAR};
+        desc.examples = {"SELECT pii_detect_phones('Call +1-555-0100 or 0800 123 456');"};
+        desc.categories = {"pii", "detection"};
+        auto pii_detect_phones_func = PIIDetectPhonesFunction::GetFunction();
+        pii_detect_phones_func.bind = PIIDetectPhonesBind;
+        RegisterScalarFunctionWithAlias(loader, pii_detect_phones_func, "pii_detect_phones", {std::move(desc)});
+    }
+    {
+        FunctionDescription desc;
+        desc.description = "Detects all credit card numbers in the text and returns them as a list of structs.";
+        desc.parameter_names = {"text"};
+        desc.parameter_types = {LogicalType::VARCHAR};
+        desc.examples = {"SELECT pii_detect_credit_cards('Pay with 4111111111111111');"};
+        desc.categories = {"pii", "detection"};
+        auto pii_detect_cc_func = PIIDetectCreditCardsFunction::GetFunction();
+        pii_detect_cc_func.bind = PIIDetectCreditCardsBind;
+        RegisterScalarFunctionWithAlias(loader, pii_detect_cc_func, "pii_detect_credit_cards", {std::move(desc)});
+    }
+    {
+        FunctionDescription desc;
+        desc.description = "Detects all Social Security Numbers (SSNs) in the text and returns them as a list of structs.";
+        desc.parameter_names = {"text"};
+        desc.parameter_types = {LogicalType::VARCHAR};
+        desc.examples = {"SELECT pii_detect_ssns('SSN: 123-45-6789');"};
+        desc.categories = {"pii", "detection"};
+        auto pii_detect_ssns_func = PIIDetectSSNsFunction::GetFunction();
+        pii_detect_ssns_func.bind = PIIDetectSSNsBind;
+        RegisterScalarFunctionWithAlias(loader, pii_detect_ssns_func, "pii_detect_ssns", {std::move(desc)});
+    }
+    {
+        FunctionDescription desc;
+        desc.description = "Detects all person names in the text using NLP and returns them as a list of structs.";
+        desc.parameter_names = {"text"};
+        desc.parameter_types = {LogicalType::VARCHAR};
+        desc.examples = {"SELECT pii_detect_names('Signed by John Smith and Jane Doe');"};
+        desc.categories = {"pii", "detection"};
+        auto pii_detect_names_func = PIIDetectNamesFunction::GetFunction();
+        pii_detect_names_func.bind = PIIDetectNamesBind;
+        RegisterScalarFunctionWithAlias(loader, pii_detect_names_func, "pii_detect_names", {std::move(desc)});
+    }
+    {
+        FunctionDescription desc;
+        desc.description = "Detects all IBAN numbers in the text and returns them as a list of structs.";
+        desc.parameter_names = {"text"};
+        desc.parameter_types = {LogicalType::VARCHAR};
+        desc.examples = {"SELECT pii_detect_ibans('Bank: DE89370400440532013000');"};
+        desc.categories = {"pii", "detection"};
+        auto pii_detect_ibans_func = PIIDetectIBANsFunction::GetFunction();
+        pii_detect_ibans_func.bind = PIIDetectIBANsBind;
+        RegisterScalarFunctionWithAlias(loader, pii_detect_ibans_func, "pii_detect_ibans", {std::move(desc)});
+    }
     // Batch detection function
-    auto pii_detect_batch_func = PIIDetectBatchFunction::GetFunction();
-    pii_detect_batch_func.bind = PIIDetectBatchBind;
-    RegisterScalarFunctionWithAlias(loader, pii_detect_batch_func, "pii_detect_batch");
-
+    {
+        FunctionDescription desc;
+        desc.description = "Runs all PII detectors on an array of text strings and returns a combined list of all detected entities per input.";
+        desc.parameter_names = {"texts"};
+        desc.parameter_types = {LogicalType::LIST(LogicalType::VARCHAR)};
+        desc.examples = {"SELECT pii_detect_batch(['john@example.com', 'SSN: 123-45-6789']);"};
+        desc.categories = {"pii", "detection"};
+        auto pii_detect_batch_func = PIIDetectBatchFunction::GetFunction();
+        pii_detect_batch_func.bind = PIIDetectBatchBind;
+        RegisterScalarFunctionWithAlias(loader, pii_detect_batch_func, "pii_detect_batch", {std::move(desc)});
+    }
     // Advanced masking functions
-    // pii_mask_column(value, pii_type, strategy) - type-specific masking
-    auto pii_mask_column_func = PIIMaskColumnFunction::GetFunction();
-    pii_mask_column_func.bind = PIIMaskColumnBind;
-    RegisterScalarFunctionWithAlias(loader, pii_mask_column_func, "pii_mask_column");
-
+    {
+        FunctionDescription desc;
+        desc.description = "Masks a value of a specific PII type using the specified strategy ('redact', 'hash', 'partial').";
+        desc.parameter_names = {"value", "pii_type", "strategy"};
+        desc.parameter_types = {LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR};
+        desc.examples = {"SELECT pii_mask_column('john@example.com', 'email', 'hash');"};
+        desc.categories = {"pii", "masking"};
+        auto pii_mask_column_func = PIIMaskColumnFunction::GetFunction();
+        pii_mask_column_func.bind = PIIMaskColumnBind;
+        RegisterScalarFunctionWithAlias(loader, pii_mask_column_func, "pii_mask_column", {std::move(desc)});
+    }
     // pii_redact_column(value, strategy?) - mask all PII, optional strategy
-    ScalarFunctionSet redact_column_set("anofox_tab_pii_redact_column");
-    auto pii_redact_column_func = PIIRedactColumnFunction::GetFunction();
-    pii_redact_column_func.bind = PIIRedactColumnBind;
-    redact_column_set.AddFunction(pii_redact_column_func);
-    auto pii_redact_column_default_func = PIIRedactColumnDefaultFunction::GetFunction();
-    pii_redact_column_default_func.bind = PIIRedactColumnBind;
-    redact_column_set.AddFunction(pii_redact_column_default_func);
-    RegisterScalarFunctionSetWithAlias(loader, redact_column_set, "pii_redact_column");
-
-    // anofox_tab_pii_status (alias: pii_status) - table function
-    auto pii_status_func = CreatePIIStatusFunction();
-    RegisterTableFunctionWithAlias(loader, pii_status_func, "pii_status");
-
-    // anofox_tab_pii_scan_table (alias: pii_scan_table) - table function set
-    auto pii_scan_set = CreatePIIScanTableFunctionSet();
-    RegisterTableFunctionSetWithAlias(loader, pii_scan_set, "pii_scan_table");
-
-    // anofox_tab_pii_audit_table (alias: pii_audit_table) - row-level audit function
-    auto pii_audit_set = CreatePIIAuditTableFunctionSet();
-    RegisterTableFunctionSetWithAlias(loader, pii_audit_set, "pii_audit_table");
-
+    {
+        FunctionDescription desc;
+        desc.description = "Detects and redacts all PII in a text value using the specified strategy. Defaults to 'redact'.";
+        desc.parameter_names = {"value", "strategy"};
+        desc.examples = {"SELECT pii_redact_column('john@example.com');", "SELECT pii_redact_column('john@example.com', 'hash');"};
+        desc.categories = {"pii", "masking"};
+        ScalarFunctionSet redact_column_set("anofox_tab_pii_redact_column");
+        auto pii_redact_column_func = PIIRedactColumnFunction::GetFunction();
+        pii_redact_column_func.bind = PIIRedactColumnBind;
+        redact_column_set.AddFunction(pii_redact_column_func);
+        auto pii_redact_column_default_func = PIIRedactColumnDefaultFunction::GetFunction();
+        pii_redact_column_default_func.bind = PIIRedactColumnBind;
+        redact_column_set.AddFunction(pii_redact_column_default_func);
+        RegisterScalarFunctionSetWithAlias(loader, redact_column_set, "pii_redact_column", {std::move(desc)});
+    }
+    // anofox_tab_pii_status (alias: pii_status)
+    {
+        FunctionDescription desc;
+        desc.description = "Returns the current configuration and status of the PII detection module.";
+        desc.examples = {"SELECT * FROM pii_status();"};
+        desc.categories = {"pii", "status"};
+        auto pii_status_func = CreatePIIStatusFunction();
+        RegisterTableFunctionWithAlias(loader, pii_status_func, "pii_status", {std::move(desc)});
+    }
+    // anofox_tab_pii_scan_table (alias: pii_scan_table)
+    {
+        FunctionDescription desc;
+        desc.description = "Scans all string columns of a table and returns a summary of detected PII types per column.";
+        desc.parameter_names = {"table_name"};
+        desc.examples = {"SELECT * FROM pii_scan_table('customers');"};
+        desc.categories = {"pii", "audit"};
+        auto pii_scan_set = CreatePIIScanTableFunctionSet();
+        RegisterTableFunctionSetWithAlias(loader, pii_scan_set, "pii_scan_table", {std::move(desc)});
+    }
+    // anofox_tab_pii_audit_table (alias: pii_audit_table)
+    {
+        FunctionDescription desc;
+        desc.description = "Returns a row-level audit of PII detected in all string columns of a table.";
+        desc.parameter_names = {"table_name"};
+        desc.examples = {"SELECT * FROM pii_audit_table('customers');"};
+        desc.categories = {"pii", "audit"};
+        auto pii_audit_set = CreatePIIAuditTableFunctionSet();
+        RegisterTableFunctionSetWithAlias(loader, pii_audit_set, "pii_audit_table", {std::move(desc)});
+    }
     // anofox_ner_status - NER model status (no alias, direct name)
-    auto ner_status_func = CreateNERStatusFunction();
-    loader.RegisterFunction(ner_status_func);
-
-    // anofox_tab_pii_config (alias: pii_config) - configuration display
-    auto pii_config_func = CreatePIIConfigFunction();
-    RegisterTableFunctionWithAlias(loader, pii_config_func, "pii_config");
+    {
+        FunctionDescription desc;
+        desc.description = "Returns the status of the NER (Named Entity Recognition) model used for name detection.";
+        desc.examples = {"SELECT * FROM anofox_ner_status();"};
+        desc.categories = {"pii", "status"};
+        auto ner_status_func = CreateNERStatusFunction();
+        CreateTableFunctionInfo ner_info(ner_status_func);
+        ner_info.descriptions = {std::move(desc)};
+        loader.RegisterFunction(ner_info);
+    }
+    // anofox_tab_pii_config (alias: pii_config)
+    {
+        FunctionDescription desc;
+        desc.description = "Returns the current configuration settings of the PII detection module.";
+        desc.examples = {"SELECT * FROM pii_config();"};
+        desc.categories = {"pii", "config"};
+        auto pii_config_func = CreatePIIConfigFunction();
+        RegisterTableFunctionWithAlias(loader, pii_config_func, "pii_config", {std::move(desc)});
+    }
 
     AnofoxTrace(AnofoxLogLevel::Info, "[anofox] PII detection functions registered");
 }

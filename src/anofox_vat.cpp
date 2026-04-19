@@ -233,67 +233,116 @@ void RegisterVATOptions(ExtensionLoader& loader) {
 }
 
 void RegisterVATFunctions(ExtensionLoader& loader) {
-  // Phase 2: Basic VAT Operations
-  ScalarFunction vat_func("anofox_tab_vat", {LogicalTypeId::VARCHAR}, GetVATType(),
-                         VATParseFunc);
-  vat_func.bind = VatBind;
-  anofox::RegisterScalarFunctionWithAlias(loader, vat_func, "vat");
-
-  ScalarFunction is_valid_country_func("anofox_tab_is_valid_vat_country",
-                                       {LogicalTypeId::VARCHAR},
-                                       LogicalTypeId::BOOLEAN,
-                                       IsValidVATCountryFunc);
-  is_valid_country_func.bind = IsValidVatCountryBind;
-  anofox::RegisterScalarFunctionWithAlias(loader, is_valid_country_func, "is_valid_vat_country");
-
-  ScalarFunction normalize_func("anofox_tab_vat_normalize",
-                               {LogicalTypeId::VARCHAR},
-                               LogicalTypeId::VARCHAR, VATNormalizeFunc);
-  normalize_func.bind = VatNormalizeBind;
-  anofox::RegisterScalarFunctionWithAlias(loader, normalize_func, "vat_normalize");
-
-  // Phase 3: Syntax Validation
-  ScalarFunction is_valid_syntax_func("anofox_tab_vat_is_valid_syntax",
-                                      {LogicalTypeId::VARCHAR},
-                                      LogicalTypeId::BOOLEAN,
-                                      VATIsValidSyntaxFunc);
-  is_valid_syntax_func.bind = VatIsValidSyntaxBind;
-  anofox::RegisterScalarFunctionWithAlias(loader, is_valid_syntax_func, "vat_is_valid_syntax");
-
-  ScalarFunction split_func("anofox_tab_vat_split", {LogicalTypeId::VARCHAR},
-                           GetVATType(), VATSplitFunc);
-  split_func.bind = VatSplitBind;
-  anofox::RegisterScalarFunctionWithAlias(loader, split_func, "vat_split");
-
-  ScalarFunction exists_func("anofox_tab_vat_exists", {LogicalTypeId::VARCHAR},
-                            LogicalTypeId::BOOLEAN, VATExistsFunc);
-  exists_func.bind = VatExistsBind;
-  anofox::RegisterScalarFunctionWithAlias(loader, exists_func, "vat_exists");
-
-  // Phase 5: EU Utilities
-  ScalarFunction is_eu_member_func("anofox_tab_vat_is_eu_member",
-                                   {LogicalTypeId::VARCHAR},
-                                   LogicalTypeId::BOOLEAN, VATIsEUMemberFunc);
-  is_eu_member_func.bind = VatIsEuMemberBind;
-  anofox::RegisterScalarFunctionWithAlias(loader, is_eu_member_func, "vat_is_eu_member");
-
-  ScalarFunction country_name_func("anofox_tab_vat_country_name",
-                                   {LogicalTypeId::VARCHAR},
-                                   LogicalTypeId::VARCHAR, VATCountryNameFunc);
-  country_name_func.bind = VatCountryNameBind;
-  anofox::RegisterScalarFunctionWithAlias(loader, country_name_func, "vat_country_name");
-
-  ScalarFunction format_func("anofox_tab_vat_format",
-                            {LogicalTypeId::VARCHAR, LogicalTypeId::VARCHAR},
-                            LogicalTypeId::VARCHAR, VATFormatFunc);
-  format_func.bind = VatFormatBind;
-  anofox::RegisterScalarFunctionWithAlias(loader, format_func, "vat_format");
-
-  // Phase 6: Combined Validation
-  ScalarFunction is_valid_func("anofox_tab_vat_is_valid", {LogicalTypeId::VARCHAR},
-                              LogicalTypeId::BOOLEAN, VATIsValidFunc);
-  is_valid_func.bind = VatIsValidBind;
-  anofox::RegisterScalarFunctionWithAlias(loader, is_valid_func, "vat_is_valid");
+  {
+    FunctionDescription desc;
+    desc.description = "Parses a VAT number string and returns a struct with country code, normalized number, and validity flags.";
+    desc.parameter_names = {"vat_number"};
+    desc.parameter_types = {LogicalType::VARCHAR};
+    desc.examples = {"SELECT vat('DE123456789');"};
+    desc.categories = {"vat", "parsing"};
+    ScalarFunction vat_func("anofox_tab_vat", {LogicalTypeId::VARCHAR}, GetVATType(), VATParseFunc);
+    vat_func.bind = VatBind;
+    anofox::RegisterScalarFunctionWithAlias(loader, vat_func, "vat", {std::move(desc)});
+  }
+  {
+    FunctionDescription desc;
+    desc.description = "Returns TRUE if the 2-letter string is a country that uses VAT numbers.";
+    desc.parameter_names = {"country_code"};
+    desc.parameter_types = {LogicalType::VARCHAR};
+    desc.examples = {"SELECT is_valid_vat_country('DE');"};
+    desc.categories = {"vat", "validation"};
+    ScalarFunction is_valid_country_func("anofox_tab_is_valid_vat_country", {LogicalTypeId::VARCHAR}, LogicalTypeId::BOOLEAN, IsValidVATCountryFunc);
+    is_valid_country_func.bind = IsValidVatCountryBind;
+    anofox::RegisterScalarFunctionWithAlias(loader, is_valid_country_func, "is_valid_vat_country", {std::move(desc)});
+  }
+  {
+    FunctionDescription desc;
+    desc.description = "Normalizes a VAT number by removing spaces, dashes, and other formatting characters.";
+    desc.parameter_names = {"vat_number"};
+    desc.parameter_types = {LogicalType::VARCHAR};
+    desc.examples = {"SELECT vat_normalize('DE 123 456 789');"};
+    desc.categories = {"vat"};
+    ScalarFunction normalize_func("anofox_tab_vat_normalize", {LogicalTypeId::VARCHAR}, LogicalTypeId::VARCHAR, VATNormalizeFunc);
+    normalize_func.bind = VatNormalizeBind;
+    anofox::RegisterScalarFunctionWithAlias(loader, normalize_func, "vat_normalize", {std::move(desc)});
+  }
+  {
+    FunctionDescription desc;
+    desc.description = "Returns TRUE if the VAT number matches the expected syntax for its country prefix (no network check).";
+    desc.parameter_names = {"vat_number"};
+    desc.parameter_types = {LogicalType::VARCHAR};
+    desc.examples = {"SELECT vat_is_valid_syntax('DE123456789');"};
+    desc.categories = {"vat", "validation"};
+    ScalarFunction is_valid_syntax_func("anofox_tab_vat_is_valid_syntax", {LogicalTypeId::VARCHAR}, LogicalTypeId::BOOLEAN, VATIsValidSyntaxFunc);
+    is_valid_syntax_func.bind = VatIsValidSyntaxBind;
+    anofox::RegisterScalarFunctionWithAlias(loader, is_valid_syntax_func, "vat_is_valid_syntax", {std::move(desc)});
+  }
+  {
+    FunctionDescription desc;
+    desc.description = "Splits a VAT number into a struct with 'country_code' and 'number' fields.";
+    desc.parameter_names = {"vat_number"};
+    desc.parameter_types = {LogicalType::VARCHAR};
+    desc.examples = {"SELECT vat_split('DE123456789');"};
+    desc.categories = {"vat", "parsing"};
+    ScalarFunction split_func("anofox_tab_vat_split", {LogicalTypeId::VARCHAR}, GetVATType(), VATSplitFunc);
+    split_func.bind = VatSplitBind;
+    anofox::RegisterScalarFunctionWithAlias(loader, split_func, "vat_split", {std::move(desc)});
+  }
+  {
+    FunctionDescription desc;
+    desc.description = "Returns TRUE if the country prefix of the VAT number exists in the supported country list.";
+    desc.parameter_names = {"vat_number"};
+    desc.parameter_types = {LogicalType::VARCHAR};
+    desc.examples = {"SELECT vat_exists('DE123456789');"};
+    desc.categories = {"vat", "validation"};
+    ScalarFunction exists_func("anofox_tab_vat_exists", {LogicalTypeId::VARCHAR}, LogicalTypeId::BOOLEAN, VATExistsFunc);
+    exists_func.bind = VatExistsBind;
+    anofox::RegisterScalarFunctionWithAlias(loader, exists_func, "vat_exists", {std::move(desc)});
+  }
+  {
+    FunctionDescription desc;
+    desc.description = "Returns TRUE if the VAT number belongs to an EU member state.";
+    desc.parameter_names = {"vat_number"};
+    desc.parameter_types = {LogicalType::VARCHAR};
+    desc.examples = {"SELECT vat_is_eu_member('DE123456789');"};
+    desc.categories = {"vat", "utility"};
+    ScalarFunction is_eu_member_func("anofox_tab_vat_is_eu_member", {LogicalTypeId::VARCHAR}, LogicalTypeId::BOOLEAN, VATIsEUMemberFunc);
+    is_eu_member_func.bind = VatIsEuMemberBind;
+    anofox::RegisterScalarFunctionWithAlias(loader, is_eu_member_func, "vat_is_eu_member", {std::move(desc)});
+  }
+  {
+    FunctionDescription desc;
+    desc.description = "Returns the English country name for the VAT number's country prefix (e.g., 'Germany').";
+    desc.parameter_names = {"vat_number"};
+    desc.parameter_types = {LogicalType::VARCHAR};
+    desc.examples = {"SELECT vat_country_name('DE123456789');"};
+    desc.categories = {"vat", "utility"};
+    ScalarFunction country_name_func("anofox_tab_vat_country_name", {LogicalTypeId::VARCHAR}, LogicalTypeId::VARCHAR, VATCountryNameFunc);
+    country_name_func.bind = VatCountryNameBind;
+    anofox::RegisterScalarFunctionWithAlias(loader, country_name_func, "vat_country_name", {std::move(desc)});
+  }
+  {
+    FunctionDescription desc;
+    desc.description = "Formats a raw VAT number using the specified format style (e.g., 'standard', 'compact').";
+    desc.parameter_names = {"vat_number", "format_style"};
+    desc.parameter_types = {LogicalType::VARCHAR, LogicalType::VARCHAR};
+    desc.examples = {"SELECT vat_format('DE123456789', 'standard');"};
+    desc.categories = {"vat", "formatting"};
+    ScalarFunction format_func("anofox_tab_vat_format", {LogicalTypeId::VARCHAR, LogicalTypeId::VARCHAR}, LogicalTypeId::VARCHAR, VATFormatFunc);
+    format_func.bind = VatFormatBind;
+    anofox::RegisterScalarFunctionWithAlias(loader, format_func, "vat_format", {std::move(desc)});
+  }
+  {
+    FunctionDescription desc;
+    desc.description = "Returns TRUE if the VAT number has valid syntax and exists in the known country registry.";
+    desc.parameter_names = {"vat_number"};
+    desc.parameter_types = {LogicalType::VARCHAR};
+    desc.examples = {"SELECT vat_is_valid('DE123456789');"};
+    desc.categories = {"vat", "validation"};
+    ScalarFunction is_valid_func("anofox_tab_vat_is_valid", {LogicalTypeId::VARCHAR}, LogicalTypeId::BOOLEAN, VATIsValidFunc);
+    is_valid_func.bind = VatIsValidBind;
+    anofox::RegisterScalarFunctionWithAlias(loader, is_valid_func, "vat_is_valid", {std::move(desc)});
+  }
 }
 
 }  // namespace duckdb
