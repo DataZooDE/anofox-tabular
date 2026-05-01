@@ -34,3 +34,29 @@ test_debug_internal:
 
 test_reldebug_internal:
 	DATAZOO_DISABLE_TELEMETRY=1 ./build/reldebug/test/unittest "test/*"
+
+# ── Smoke test ─────────────────────────────────────────────────────────────────
+# Downloads the real DuckDB CLI for the version the extension was built against,
+# then loads the built extension artifact and runs basic assertions.
+# This verifies the artifact works for a real user, not just the internal test runner.
+#
+# Override the DuckDB version: make smoke_test DUCKDB_VERSION=v1.4.4
+DUCKDB_VERSION ?= $(shell git -C $(PROJ_DIR)duckdb describe --tags --exact-match 2>/dev/null)
+
+.PHONY: smoke_test smoke_test_debug
+
+# Depend on the artifact file, not the full 'release' target, because the
+# loadable extension is built independently of test/unittest and libduckdb.so.
+# The script validates the artifact's presence and prints a clear error if missing.
+SMOKE_EXT_RELEASE := $(PROJ_DIR)build/release/extension/anofox_tabular/anofox_tabular.duckdb_extension
+SMOKE_EXT_DEBUG   := $(PROJ_DIR)build/debug/extension/anofox_tabular/anofox_tabular.duckdb_extension
+
+smoke_test: $(SMOKE_EXT_RELEASE)
+	bash $(PROJ_DIR)test/smoke/smoke_test.sh \
+		"$(SMOKE_EXT_RELEASE)" \
+		"$(DUCKDB_VERSION)"
+
+smoke_test_debug: $(SMOKE_EXT_DEBUG)
+	bash $(PROJ_DIR)test/smoke/smoke_test.sh \
+		"$(SMOKE_EXT_DEBUG)" \
+		"$(DUCKDB_VERSION)"
