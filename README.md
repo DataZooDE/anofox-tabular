@@ -2,7 +2,7 @@
 
 > **A data quality and validation toolkit for DuckDB**
 
-[![DuckDB](https://img.shields.io/badge/DuckDB-1.5.1-green)](https://duckdb.org/)
+[![DuckDB](https://img.shields.io/badge/DuckDB-1.4_LTS_%7C_1.5.3-green)](https://duckdb.org/)
 [![C++17](https://img.shields.io/badge/C++-17-blue.svg)](https://isocpp.org/)
 [![License](https://img.shields.io/badge/license-BSL%201.1-blue.svg)](LICENSE)
 [![Functions](https://img.shields.io/badge/Functions-81-green)]()
