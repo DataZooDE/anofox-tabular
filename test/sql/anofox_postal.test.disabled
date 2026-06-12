@@ -7,7 +7,7 @@ statement ok
 SELECT initialized, data_present FROM anofox_postal_status();
 
 statement ok
-SET anofox_postal_data_path='duckdb_unittest_tempdir/libpostal';
+SET anofox_tab_postal_data_path='duckdb_unittest_tempdir/libpostal';
 
 statement ok
 SELECT initialized, data_present FROM anofox_postal_status();
