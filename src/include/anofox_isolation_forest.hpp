@@ -334,6 +334,7 @@ private:
     size_t actual_sample_size_;  // Actual sample size used (min of sample_size_ and data size)
     size_t n_features_;
     double contamination_;
+    uint64_t seed_;       // Stored so refits reproduce a freshly constructed forest
     std::mt19937 rng_;
     std::vector<ColumnInfo> column_info_;  // Column metadata for mixed-type support
     bool is_mixed_type_;  // Whether the forest was trained with mixed-type data
@@ -395,6 +396,7 @@ public:
           actual_sample_size_(sample_size),
           n_features_(0),
           contamination_(contamination),
+          seed_(seed),
           rng_(seed),
           is_mixed_type_(false),
           ndim_(ndim > 0 ? ndim : 1),
@@ -406,15 +408,21 @@ public:
 
     /**
      * Fit forest to numeric-only data (legacy)
+     * Resets all model state, so refitting behaves exactly like fitting a
+     * freshly constructed forest with the same parameters.
      * @param data: Data where data[row][col] is column-major format
+     * @throws std::invalid_argument on ragged rows or rows without features
      */
     void Fit(const std::vector<std::vector<double>>& data);
 
     /**
      * Fit forest to mixed-type data
+     * Resets all model state, so refitting behaves exactly like fitting a
+     * freshly constructed forest with the same parameters.
      * @param data: Column data (mixed numeric/categorical)
      * @param column_info: Column metadata
      * @param sample_weights: Optional sample weights (empty = uniform sampling)
+     * @throws std::invalid_argument on column count/type/length mismatches
      */
     void FitMixed(
         const std::vector<ColumnData>& data,

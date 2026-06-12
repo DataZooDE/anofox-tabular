@@ -389,6 +389,12 @@ void IsolationTree::BuildTree(
     size_t max_depth,
     std::mt19937& rng
 ) {
+    // Root call of a (re)build: drop any state from a previous build
+    if (current_depth == 0) {
+        nodes_.clear();
+        root_idx_ = 0;
+    }
+
     size_t n_samples = sample_indices.size();
     size_t n_features = data[0].size();
 
@@ -526,6 +532,12 @@ void IsolationTree::BuildTreeMixed(
     size_t ntry,
     double prob_pick_avg_gain
 ) {
+    // Root call of a (re)build: drop any state from a previous build
+    if (current_depth == 0) {
+        nodes_.clear();
+        root_idx_ = 0;
+    }
+
     size_t n_samples = sample_indices.size();
     size_t n_features = data.size();
 
@@ -942,7 +954,33 @@ void IsolationForest::Fit(const std::vector<std::vector<double>>& data) {
         return;
     }
 
-    n_features_ = data[0].size();
+    // Validate input shape at the public API boundary
+    const size_t n_features = data[0].size();
+    if (n_features == 0) {
+        throw std::invalid_argument(
+            "IsolationForest::Fit: rows must contain at least one feature");
+    }
+    if (n_features > std::numeric_limits<uint16_t>::max()) {
+        throw std::invalid_argument(
+            "IsolationForest::Fit: too many features (maximum 65535)");
+    }
+    for (const auto& row : data) {
+        if (row.size() != n_features) {
+            throw std::invalid_argument(
+                "IsolationForest::Fit: all rows must have the same number of features");
+        }
+    }
+
+    // Reset all model state so a refit behaves exactly like a freshly
+    // constructed forest with the same parameters.
+    rng_.seed(static_cast<std::mt19937::result_type>(seed_));
+    trees_.assign(n_trees_, IsolationTree());
+    is_mixed_type_ = false;
+    column_info_.clear();
+    sample_weights_.clear();
+    total_volume_ = 0.0;
+
+    n_features_ = n_features;
 
     // Ensure sample_size doesn't exceed data size
     actual_sample_size_ = std::min(sample_size_, data.size());
@@ -950,9 +988,6 @@ void IsolationForest::Fit(const std::vector<std::vector<double>>& data) {
     // Compute max depth for trees
     // Default: ceil(log2(sample_size)) + 1
     size_t max_depth = static_cast<size_t>(std::ceil(std::log2(actual_sample_size_))) + 1;
-
-    // Build all trees
-    trees_.resize(n_trees_);
 
     for (size_t t = 0; t < n_trees_; t++) {
         // Create random subsample of indices
@@ -971,6 +1006,15 @@ void IsolationForest::Fit(const std::vector<std::vector<double>>& data) {
 double IsolationForest::Score(const std::vector<double>& point) const {
     if (trees_.empty()) {
         return 0.0;
+    }
+
+    if (is_mixed_type_) {
+        throw std::invalid_argument(
+            "IsolationForest::Score: forest was fitted on mixed-type data; use ScoreMixed");
+    }
+    if (point.size() != n_features_) {
+        throw std::invalid_argument(
+            "IsolationForest::Score: point width does not match the fitted feature count");
     }
 
     // Compute average path length across all trees
@@ -1119,16 +1163,45 @@ void IsolationForest::FitMixed(
     const std::vector<ColumnInfo>& column_info,
     const std::vector<double>& sample_weights
 ) {
+    // Validate input shape at the public API boundary
+    if (data.size() != column_info.size()) {
+        throw std::invalid_argument(
+            "IsolationForest::FitMixed: data and column_info must have the same number of columns");
+    }
     if (data.empty() || data[0].size() == 0) {
         return;
     }
+    if (data.size() > std::numeric_limits<uint16_t>::max()) {
+        throw std::invalid_argument(
+            "IsolationForest::FitMixed: too many columns (maximum 65535)");
+    }
+    if (ndim_ > std::numeric_limits<uint8_t>::max()) {
+        throw std::invalid_argument(
+            "IsolationForest::FitMixed: ndim exceeds the supported maximum (255)");
+    }
+
+    size_t n_rows = data[0].size();
+    for (size_t col = 0; col < data.size(); col++) {
+        if (data[col].type != column_info[col].type) {
+            throw std::invalid_argument(
+                "IsolationForest::FitMixed: column type mismatch between data and column_info");
+        }
+        if (data[col].size() != n_rows) {
+            throw std::invalid_argument(
+                "IsolationForest::FitMixed: all columns must have the same number of rows");
+        }
+    }
+
+    // Reset all model state so a refit behaves exactly like a freshly
+    // constructed forest with the same parameters.
+    rng_.seed(static_cast<std::mt19937::result_type>(seed_));
+    trees_.assign(n_trees_, IsolationTree());
+    total_volume_ = 0.0;
 
     n_features_ = data.size();
     column_info_ = column_info;
     is_mixed_type_ = true;
     sample_weights_ = sample_weights;
-
-    size_t n_rows = data[0].size();
 
     // Validate sample weights if provided
     if (!sample_weights_.empty()) {
@@ -1173,8 +1246,6 @@ void IsolationForest::FitMixed(
     size_t max_depth = static_cast<size_t>(std::ceil(std::log2(actual_sample_size_))) + 1;
 
     // Build all trees
-    trees_.resize(n_trees_);
-
     for (size_t t = 0; t < n_trees_; t++) {
         std::vector<size_t> sample_indices;
 
@@ -1201,6 +1272,15 @@ double IsolationForest::ScoreMixed(
 ) const {
     if (trees_.empty()) {
         return 0.0;
+    }
+
+    if (!is_mixed_type_) {
+        throw std::invalid_argument(
+            "IsolationForest::ScoreMixed: forest was fitted on numeric-only data; use Score");
+    }
+    if (numeric_values.size() != n_features_ || category_indices.size() != n_features_) {
+        throw std::invalid_argument(
+            "IsolationForest::ScoreMixed: point width does not match the fitted column count");
     }
 
     if (scoring_metric_ == ScoringMetric::Density) {
@@ -1263,6 +1343,13 @@ std::vector<double> IsolationForest::ScoreBatchMixed(
 
     size_t n_rows = data[0].size();
     size_t n_features = data.size();
+
+    for (size_t col = 0; col < n_features; col++) {
+        if (data[col].size() != n_rows) {
+            throw std::invalid_argument(
+                "IsolationForest::ScoreBatchMixed: all columns must have the same number of rows");
+        }
+    }
 
     std::vector<double> scores;
     scores.reserve(n_rows);
