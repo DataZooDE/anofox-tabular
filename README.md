@@ -1136,6 +1136,8 @@ SELECT postal_load_data();
 SET anofox_tab_phonenumber_default_region = 'US';  -- Default region code
 ```
 
+The default region must be a supported 2-letter ISO region code; unknown codes are rejected.
+
 ### Tracing
 
 ```sql

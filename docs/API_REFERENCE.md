@@ -283,10 +283,10 @@ anofox_tab_phonenumber_format(number VARCHAR, region VARCHAR, format VARCHAR) â†
 ```
 
 **Parameters:**
-- `format`: Format style - `'E164'`, `'INTERNATIONAL'`, `'NATIONAL'`, or `'RFC3966'`
+- `format`: Format style - `'E164'`, `'INTERNATIONAL'`, `'NATIONAL'`, or `'RFC3966'` (case-insensitive). Any other value raises an `Invalid Input` error.
 
 **Returns:**
-- `VARCHAR`: Formatted phone number
+- `VARCHAR`: Formatted phone number, or `NULL` if the number cannot be parsed as a valid phone number
 
 **Example:**
 ```sql
@@ -1968,6 +1968,9 @@ SELECT postal_load_data();
 ```sql
 SET anofox_tab_phonenumber_default_region = 'US';  -- Default region code
 ```
+
+The default region must be a supported 2-letter ISO region code; unknown codes are rejected.
+The value is session-scoped and snapshotted when a query is bound, so changing it mid-query has no effect on running queries.
 
 ### Tracing
 
