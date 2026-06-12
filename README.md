@@ -1343,7 +1343,7 @@ Anofox Tabular collects **anonymous usage data** to help improve the extension. 
 
 ### Disabling Telemetry
 
-**Option 1: Environment Variable** (recommended for CI/Docker)
+**Option 1: Environment Variable** (recommended — also suppresses the extension-load event)
 
 ```bash
 export DATAZOO_DISABLE_TELEMETRY=1
@@ -1353,6 +1353,19 @@ export DATAZOO_DISABLE_TELEMETRY=1
 
 ```sql
 SET anofox_telemetry_enabled = false;
+```
+
+Note: SQL `SET` can only run after the extension is loaded, so it disables all
+*subsequent* events (function executions) but cannot suppress the one-time
+extension-load event. To opt out of that event too, use the environment variable,
+or pre-set the option in the client configuration before loading the extension
+(requires `allow_unrecognized_options`), e.g. in Python:
+
+```python
+con = duckdb.connect(config={
+    "allow_unrecognized_options": True,
+    "anofox_telemetry_enabled": False,
+})
 ```
 
 ---
