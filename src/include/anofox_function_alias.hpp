@@ -13,13 +13,14 @@ namespace anofox {
 inline void RegisterScalarFunctionWithAlias(ExtensionLoader &loader, ScalarFunction func, const std::string &alias_name) {
 	// Register primary function
 	loader.RegisterFunction(func);
-	
+
 	// Register alias
 	ScalarFunction alias_func(alias_name, func.arguments, func.return_type, func.function);
 	alias_func.null_handling = func.null_handling;
 	alias_func.stability = func.stability;
 	alias_func.varargs = func.varargs;
 	alias_func.bind = func.bind;
+	alias_func.SetErrorMode(func.GetErrorMode());
 
 	CreateScalarFunctionInfo alias_info(alias_func);
 	alias_info.alias_of = func.name;
@@ -39,9 +40,10 @@ inline void RegisterScalarFunctionSetWithAlias(ExtensionLoader &loader, ScalarFu
 		alias_func.stability = func.stability;
 		alias_func.varargs = func.varargs;
 		alias_func.bind = func.bind;
+		alias_func.SetErrorMode(func.GetErrorMode());
 		alias_set.AddFunction(alias_func);
 	}
-	
+
 	CreateScalarFunctionInfo alias_info(alias_set);
 	alias_info.alias_of = func_set.name;
 	loader.RegisterFunction(alias_info);
@@ -100,6 +102,7 @@ inline void RegisterScalarFunctionWithAlias(ExtensionLoader &loader, ScalarFunct
     alias_func.stability = func.stability;
     alias_func.varargs = func.varargs;
     alias_func.bind = func.bind;
+    alias_func.SetErrorMode(func.GetErrorMode());
     CreateScalarFunctionInfo alias_info(alias_func);
     alias_info.alias_of = func.name;
     loader.RegisterFunction(alias_info);
@@ -122,6 +125,7 @@ inline void RegisterScalarFunctionSetWithAlias(ExtensionLoader &loader, ScalarFu
         alias_func.stability = func.stability;
         alias_func.varargs = func.varargs;
         alias_func.bind = func.bind;
+        alias_func.SetErrorMode(func.GetErrorMode());
         alias_set.AddFunction(alias_func);
     }
     CreateScalarFunctionInfo alias_info(alias_set);

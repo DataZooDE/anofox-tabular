@@ -1,0 +1,195 @@
+# name: test/sql/anofox_money_correctness.test
+# description: Correctness tests for the money module (issue #43):
+#   - money_from_cents must divide by the currency's subunit_to_unit
+#   - currency codes must be canonicalized to the ISO code at construction
+#   - NULL/invalid rows must yield SQL NULL parent structs (f(NULL) IS NULL)
+#   - invalid currency codes must raise
+# group: [anofox_tabular]
+
+require anofox_tabular
+
+#----------------------------------------------------------------------------------------------------------------------
+# money_from_cents: subunit division
+#----------------------------------------------------------------------------------------------------------------------
+
+# USD has 100 subunits per unit -> 10050 cents = 100.50 USD
+query T
+SELECT anofox_tab_money_from_cents(10050, 'USD');
+----
+{'amount': 100.5, 'currency': USD}
+
+query R
+SELECT anofox_tab_money_amount(anofox_tab_money_from_cents(1999, 'EUR'));
+----
+19.99
+
+# JPY is a zero-decimal currency (subunit_to_unit = 1) -> 1000 stays 1000
+query T
+SELECT anofox_tab_money_from_cents(1000, 'JPY');
+----
+{'amount': 1000.0, 'currency': JPY}
+
+# Negative cents
+query T
+SELECT anofox_tab_money_from_cents(-500, 'USD');
+----
+{'amount': -5.0, 'currency': USD}
+
+# Large cent values
+query R
+SELECT anofox_tab_money_amount(anofox_tab_money_from_cents(922337203685477, 'USD'));
+----
+9223372036854.77
+
+#----------------------------------------------------------------------------------------------------------------------
+# Currency canonicalization: lower/mixed case input is stored as the canonical ISO code
+#----------------------------------------------------------------------------------------------------------------------
+
+query T
+SELECT anofox_tab_money(100.0, 'usd');
+----
+{'amount': 100.0, 'currency': USD}
+
+query T
+SELECT anofox_tab_money(50.0, 'eUr');
+----
+{'amount': 50.0, 'currency': EUR}
+
+query T
+SELECT anofox_tab_money_from_cents(1000, 'usd');
+----
+{'amount': 10.0, 'currency': USD}
+
+query T
+SELECT anofox_tab_money_currency(anofox_tab_money(1.0, 'gbp'));
+----
+GBP
+
+# Mixed-case arithmetic must work: same currency in different case
+query T
+SELECT anofox_tab_money_add(anofox_tab_money(1.0, 'usd'), anofox_tab_money(1.0, 'USD'));
+----
+{'amount': 2.0, 'currency': USD}
+
+query T
+SELECT anofox_tab_money_subtract(anofox_tab_money(5.0, 'Eur'), anofox_tab_money(2.0, 'EUR'));
+----
+{'amount': 3.0, 'currency': EUR}
+
+query I
+SELECT anofox_tab_money_same_currency(anofox_tab_money(1.0, 'usd'), anofox_tab_money(1.0, 'USD'));
+----
+true
+
+# Truly different currencies must still raise
+statement error
+SELECT anofox_tab_money_add(anofox_tab_money(1.0, 'USD'), anofox_tab_money(1.0, 'EUR'));
+----
+different currencies
+
+#----------------------------------------------------------------------------------------------------------------------
+# Invalid currency codes raise
+#----------------------------------------------------------------------------------------------------------------------
+
+statement error
+SELECT anofox_tab_money(1.0, 'ZZZ');
+----
+Invalid currency code
+
+statement error
+SELECT anofox_tab_money_from_cents(100, 'ZZZ');
+----
+Invalid currency code
+
+#----------------------------------------------------------------------------------------------------------------------
+# NULL propagation: parent struct must be SQL NULL (not a struct of NULL fields)
+# Use table-sourced NULLs so the binder cannot constant-fold the NULL away.
+#----------------------------------------------------------------------------------------------------------------------
+
+query I
+SELECT anofox_tab_money(a, c) IS NULL
+FROM (VALUES (NULL, 'USD'), (1.5, NULL), (1.5, 'USD')) t(a, c);
+----
+true
+true
+false
+
+query I
+SELECT anofox_tab_money_from_cents(cents, c) IS NULL
+FROM (VALUES (NULL, 'USD'), (150, 'USD')) t(cents, c);
+----
+true
+false
+
+statement ok
+CREATE TABLE money_null_tbl AS
+SELECT anofox_tab_money(1.0, 'USD') AS m
+UNION ALL
+SELECT NULL;
+
+query I
+SELECT anofox_tab_money_amount(m) IS NULL FROM money_null_tbl ORDER BY 1;
+----
+false
+true
+
+query I
+SELECT anofox_tab_money_currency(m) IS NULL FROM money_null_tbl ORDER BY 1;
+----
+false
+true
+
+query I
+SELECT anofox_tab_money_abs(m) IS NULL FROM money_null_tbl ORDER BY 1;
+----
+false
+true
+
+query I
+SELECT anofox_tab_money_add(m, anofox_tab_money(1.0, 'USD')) IS NULL FROM money_null_tbl ORDER BY 1;
+----
+false
+true
+
+query I
+SELECT anofox_tab_money_multiply(m, 2.0) IS NULL FROM money_null_tbl ORDER BY 1;
+----
+false
+true
+
+statement ok
+DROP TABLE money_null_tbl;
+
+# Manually constructed structs with NULL children are treated as NULL money values:
+# the parent struct of the result must be SQL NULL.
+query I
+SELECT anofox_tab_money_abs(s) IS NULL
+FROM (SELECT {'amount': NULL, 'currency': 'USD'}::STRUCT(amount DOUBLE, currency VARCHAR) AS s) t;
+----
+true
+
+query I
+SELECT anofox_tab_money_add(s, anofox_tab_money(1.0, 'USD')) IS NULL
+FROM (SELECT {'amount': 2.0, 'currency': NULL}::STRUCT(amount DOUBLE, currency VARCHAR) AS s) t;
+----
+true
+
+query I
+SELECT anofox_tab_money_amount(s) IS NULL
+FROM (SELECT {'amount': NULL, 'currency': 'USD'}::STRUCT(amount DOUBLE, currency VARCHAR) AS s) t;
+----
+true
+
+#----------------------------------------------------------------------------------------------------------------------
+# Sanity: results of constructors stay usable downstream after canonicalization
+#----------------------------------------------------------------------------------------------------------------------
+
+query T
+SELECT anofox_tab_money_format(anofox_tab_money_from_cents(10050, 'usd'), 'code');
+----
+100.50 USD
+
+query I
+SELECT anofox_tab_money_is_positive(anofox_tab_money_from_cents(1, 'USD'));
+----
+true

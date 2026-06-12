@@ -51,7 +51,9 @@ def money_from_cents(conn: Any, cents: int, currency: str) -> dict:
     Returns
     -------
     dict
-        ``{"amount": float, "currency": str}``
+        ``{"amount": float, "currency": str}`` where ``amount`` is in major
+        units (the cents value divided by the currency's ``subunit_to_unit``,
+        e.g. ``1000`` cents -> ``10.0`` USD).
     """
     result = conn.execute(
         f"SELECT anofox_tab_money_from_cents({cents}, '{currency}')"

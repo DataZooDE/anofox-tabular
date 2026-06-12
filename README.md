@@ -844,7 +844,7 @@ WHERE money_in_range(amount, 0.01, 99999.99)
 | Function | Signature | Returns | Description |
 |----------|-----------|---------|-------------|
 | `anofox_tab_money` | `(amount, currency_code)` | STRUCT | Create a money value from amount and currency code |
-| `anofox_tab_money_from_cents` | `(cents, currency_code)` | STRUCT | Create a money value from integer cents |
+| `anofox_tab_money_from_cents` | `(cents, currency_code)` | STRUCT | Create a money value from an integer amount in the smallest currency unit (e.g. 10050 cents → 100.50 USD) |
 | `anofox_tab_money_amount` | `(money)` | DOUBLE | Extract amount from money struct |
 | `anofox_tab_money_currency` | `(money)` | VARCHAR | Extract currency code from money struct |
 

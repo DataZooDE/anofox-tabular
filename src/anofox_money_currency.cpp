@@ -4,17 +4,16 @@
 namespace duckdb {
 namespace anofox {
 
-CurrencyRegistry &CurrencyRegistry::GetInstance() {
-    static CurrencyRegistry instance;
-    if (!instance.initialized) {
-        instance.Initialize();
-    }
-    return instance;
+CurrencyRegistry::CurrencyRegistry() {
+    LoadCurrencies();
 }
 
-void CurrencyRegistry::Initialize() {
-    LoadCurrencies();
-    initialized = true;
+CurrencyRegistry &CurrencyRegistry::GetInstance() {
+    // Thread-safe under C++11 magic statics: the constructor fully populates the
+    // registry before the reference can escape to any thread, and the registry is
+    // immutable afterwards (issue #43).
+    static CurrencyRegistry instance;
+    return instance;
 }
 
 void CurrencyRegistry::LoadCurrencies() {
