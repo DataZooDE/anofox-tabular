@@ -14,7 +14,6 @@
 #include "duckdb/main/client_context.hpp"
 #include <algorithm>
 #include <chrono>
-#include <random>
 
 namespace duckdb {
 namespace anofox {
@@ -29,6 +28,29 @@ static unique_ptr<SubqueryRef> ParseSubquery(const string &query, const ParserOp
 	}
 	auto select_stmt = unique_ptr_cast<SQLStatement, SelectStatement>(std::move(parser.statements[0]));
 	return make_uniq<SubqueryRef>(std::move(select_stmt));
+}
+
+// Helper: parse a comma-separated column list, trimming whitespace and surrounding quotes
+static vector<string> ParseCommaSeparatedColumns(const string &columns_str) {
+	vector<string> column_names;
+	size_t start = 0;
+	for (size_t i = 0; i <= columns_str.length(); ++i) {
+		if (i == columns_str.length() || columns_str[i] == ',') {
+			string col = columns_str.substr(start, i - start);
+			size_t col_start = col.find_first_not_of(" \t\n\r");
+			size_t col_end = col.find_last_not_of(" \t\n\r");
+			if (col_start != string::npos) {
+				col = col.substr(col_start, col_end - col_start + 1);
+				if (col.length() >= 2 && ((col.front() == '"' && col.back() == '"') ||
+				                          (col.front() == '\'' && col.back() == '\''))) {
+					col = col.substr(1, col.length() - 2);
+				}
+				column_names.push_back(col);
+			}
+			start = i + 1;
+		}
+	}
+	return column_names;
 }
 
 // Helper: Generate SQL for volume metrics
@@ -469,6 +491,9 @@ static unique_ptr<FunctionData> IsolationForestBind(ClientContext &context, Tabl
 	if (contamination < 0.0 || contamination > 0.5) {
 		throw BinderException("contamination must be between 0.0 and 0.5");
 	}
+	if (output_mode != "summary" && output_mode != "scores") {
+		throw BinderException("isolation_forest: output_mode must be 'summary' or 'scores'");
+	}
 
 	// Define output schema based on mode
 	if (output_mode == "scores") {
@@ -513,28 +538,7 @@ static unique_ptr<FunctionData> IsolationForestMultivariateBind(ClientContext &c
 	string table_name = input.inputs[0].ToString();
 
 	// Parse comma-separated column names
-	string columns_str = input.inputs[1].ToString();
-	vector<string> column_names;
-
-	size_t start = 0;
-	for (size_t i = 0; i <= columns_str.length(); ++i) {
-		if (i == columns_str.length() || columns_str[i] == ',') {
-			string col = columns_str.substr(start, i - start);
-			size_t col_start = col.find_first_not_of(" \t\n\r");
-			size_t col_end = col.find_last_not_of(" \t\n\r");
-			if (col_start != string::npos) {
-				col = col.substr(col_start, col_end - col_start + 1);
-				// Remove quotes if present
-				if ((col.front() == '"' && col.back() == '"') ||
-				    (col.front() == '\'' && col.back() == '\'')) {
-					col = col.substr(1, col.length() - 2);
-				}
-				column_names.push_back(col);
-			}
-			start = i + 1;
-		}
-	}
-
+	auto column_names = ParseCommaSeparatedColumns(input.inputs[1].ToString());
 	if (column_names.empty()) {
 		throw BinderException("column_names must contain at least one column");
 	}
@@ -627,6 +631,9 @@ static unique_ptr<FunctionData> IsolationForestMultivariateBind(ClientContext &c
 	}
 	if (contamination < 0.0 || contamination > 0.5) {
 		throw BinderException("contamination must be between 0.0 and 0.5");
+	}
+	if (output_mode != "summary" && output_mode != "scores") {
+		throw BinderException("isolation_forest_mv: output_mode must be 'summary' or 'scores'");
 	}
 
 	// Define output schema based on mode
@@ -976,412 +983,309 @@ static void IsolationForestExecute(ClientContext &context, TableFunctionInput &d
 }
 
 //===--------------------------------------------------------------------===//
-// Legacy SQL Generation Functions (kept for reference, no longer used)
+// DBSCAN Table Function - Actual C++ Execution
 //===--------------------------------------------------------------------===//
 
-// Helper: Generate SQL for isolation forest metrics (summary mode) - DEPRECATED
-static string GenerateIsolationForestSummarySQL(
-	const string &table_ref,
-	const string &column_name,
-	size_t n_trees,
-	size_t sample_size,
-	double contamination
-) {
-	string n_trees_str = std::to_string(n_trees);
-	string sample_size_str = std::to_string(sample_size);
-	string contamination_str = std::to_string(contamination);
-
-	return "WITH data_sample AS ("
-		"SELECT ROW_NUMBER() OVER () as row_id, CAST(" + QuoteSqlIdentifier(column_name) + " AS DOUBLE) as value "
-		"FROM (SELECT * FROM " + table_ref + ") WHERE " + QuoteSqlIdentifier(column_name) + " IS NOT NULL"
-		"), "
-		"summary AS ("
-		"SELECT "
-		"  COUNT(*) as total_count, "
-		"  AVG(value) as avg_value, "
-		"  STDDEV(value) as stddev_value, "
-		"  COUNT(CASE WHEN value > 300 THEN 1 END) as outlier_count "
-		"FROM data_sample"
-		") "
-		"SELECT "
-		"CASE WHEN outlier_count > 0 THEN 'fail' ELSE 'pass' END as status, "
-		"outlier_count, "
-		"total_count, "
-		"CAST(avg_value AS DOUBLE) as avg_value, "
-		+ contamination_str + " as contamination, "
-		+ n_trees_str + " as n_trees, "
-		"CASE "
-		"  WHEN outlier_count = 0 THEN 'No anomalies detected by isolation forest' "
-		"  ELSE CAST(outlier_count AS VARCHAR) || ' anomalies detected' "
-		"END as message "
-		"FROM summary";
-}
-
-// Helper: Generate SQL for isolation forest metrics (scores mode)
-static string GenerateIsolationForestScoresSQL(
-	const string &table_ref,
-	const string &column_name,
-	size_t n_trees,
-	size_t sample_size,
-	double contamination
-) {
-	string n_trees_str = std::to_string(n_trees);
-	string sample_size_str = std::to_string(sample_size);
-	string contamination_str = std::to_string(contamination);
-
-	return "WITH data_sample AS ("
-		"SELECT ROW_NUMBER() OVER () as row_id, CAST(" + QuoteSqlIdentifier(column_name) + " AS DOUBLE) as value "
-		"FROM (SELECT * FROM " + table_ref + ") WHERE " + QuoteSqlIdentifier(column_name) + " IS NOT NULL"
-		"), "
-		"computed_scores AS ("
-		"SELECT "
-		"  row_id, "
-		"  value, "
-		"  CASE WHEN value > 300 THEN 0.75 ELSE 0.25 END as anomaly_score "
-		"FROM data_sample"
-		"), "
-		"threshold_calc AS ("
-		"SELECT QUANTILE_CONT(anomaly_score, 1.0 - " + contamination_str + ") as threshold "
-		"FROM computed_scores"
-		") "
-		"SELECT "
-		"row_id, "
-		"value, "
-		"c.anomaly_score, "
-		"c.anomaly_score >= t.threshold as is_anomaly "
-		"FROM computed_scores c, threshold_calc t "
-		"ORDER BY row_id";
-}
-
-// Helper: Generate SQL for isolation forest metrics - multivariate summary mode
-static string GenerateIsolationForestMultivariateSummarySQL(
-	const string &table_ref,
-	const vector<string> &column_names,
-	size_t n_trees,
-	size_t sample_size,
-	double contamination
-) {
-	string n_trees_str = std::to_string(n_trees);
-	string sample_size_str = std::to_string(sample_size);
-	string contamination_str = std::to_string(contamination);
-
-	// Build column list with NULL filtering
-	string column_list;
-	string null_checks;
-	for (size_t i = 0; i < column_names.size(); ++i) {
-		if (i > 0) {
-			column_list += ", ";
-			null_checks += " AND ";
-		}
-		column_list += "CAST(" + QuoteSqlIdentifier(column_names[i]) + " AS DOUBLE) as col_" + std::to_string(i);
-		null_checks += QuoteSqlIdentifier(column_names[i]) + " IS NOT NULL";
-	}
-
-	// Build anomaly detection condition based on number of columns
-	string anomaly_condition;
-	if (column_names.size() == 1) {
-		anomaly_condition = "col_0 > 300";
-	} else if (column_names.size() == 2) {
-		anomaly_condition = "(col_0 + col_1) > 600";
-	} else {
-		// For 3+ columns, use sum of all columns
-		anomaly_condition = "(col_0 + col_1 + col_2";
-		for (size_t i = 3; i < column_names.size(); ++i) {
-			anomaly_condition += " + col_" + std::to_string(i);
-		}
-		anomaly_condition += ") > (300 * " + std::to_string(column_names.size()) + ")";
-	}
-
-	return "WITH data_sample AS ("
-		"SELECT ROW_NUMBER() OVER () as row_id, " + column_list + " "
-		"FROM (SELECT * FROM " + table_ref + ") WHERE " + null_checks +
-		"), "
-		"summary AS ("
-		"SELECT "
-		"  COUNT(*) as total_count, "
-		"  COUNT(CASE WHEN " + anomaly_condition + " THEN 1 END) as outlier_count "
-		"FROM data_sample"
-		") "
-		"SELECT "
-		"CASE WHEN outlier_count > 0 THEN 'fail' ELSE 'pass' END as status, "
-		"outlier_count, "
-		"total_count, "
-		"CAST(" + std::to_string(column_names.size()) + " AS INTEGER) as n_columns, "
-		+ contamination_str + " as contamination, "
-		+ n_trees_str + " as n_trees, "
-		"CASE "
-		"  WHEN outlier_count = 0 THEN 'No anomalies detected' "
-		"  ELSE CAST(outlier_count AS VARCHAR) || ' anomalies detected' "
-		"END as message "
-		"FROM summary";
-}
-
-// Helper: Generate SQL for isolation forest metrics - multivariate scores mode
-static string GenerateIsolationForestMultivariateScoresSQL(
-	const string &table_ref,
-	const vector<string> &column_names,
-	size_t n_trees,
-	size_t sample_size,
-	double contamination
-) {
-	string n_trees_str = std::to_string(n_trees);
-	string sample_size_str = std::to_string(sample_size);
-	string contamination_str = std::to_string(contamination);
-
-	// Build column list with NULL filtering
-	string column_list;
-	string null_checks;
-	for (size_t i = 0; i < column_names.size(); ++i) {
-		if (i > 0) {
-			column_list += ", ";
-			null_checks += " AND ";
-		}
-		column_list += "CAST(" + QuoteSqlIdentifier(column_names[i]) + " AS DOUBLE) as col_" + std::to_string(i);
-		null_checks += QuoteSqlIdentifier(column_names[i]) + " IS NOT NULL";
-	}
-
-	// Build anomaly detection condition based on number of columns
-	string anomaly_condition;
-	if (column_names.size() == 1) {
-		anomaly_condition = "col_0 > 300";
-	} else if (column_names.size() == 2) {
-		anomaly_condition = "(col_0 + col_1) > 600";
-	} else {
-		// For 3+ columns, use sum of all columns
-		anomaly_condition = "(col_0 + col_1 + col_2";
-		for (size_t i = 3; i < column_names.size(); ++i) {
-			anomaly_condition += " + col_" + std::to_string(i);
-		}
-		anomaly_condition += ") > (300 * " + std::to_string(column_names.size()) + ")";
-	}
-
-	return "WITH data_sample AS ("
-		"SELECT ROW_NUMBER() OVER () as row_id, " + column_list + " "
-		"FROM (SELECT * FROM " + table_ref + ") WHERE " + null_checks +
-		"), "
-		"computed_scores AS ("
-		"SELECT "
-		"  row_id, "
-		"  CASE WHEN " + anomaly_condition + " THEN 0.75 ELSE 0.25 END as anomaly_score "
-		"FROM data_sample"
-		"), "
-		"threshold_calc AS ("
-		"SELECT QUANTILE_CONT(anomaly_score, 1.0 - " + contamination_str + ") as threshold "
-		"FROM computed_scores"
-		") "
-		"SELECT "
-		"row_id, "
-		"c.anomaly_score, "
-		"c.anomaly_score >= t.threshold as is_anomaly "
-		"FROM computed_scores c, threshold_calc t "
-		"ORDER BY row_id";
-}
-
-// Bind function for isolation forest
-static unique_ptr<TableRef> MetricIsolationForestBindReplace(ClientContext &context, TableFunctionBindInput &input) {
-	if (input.inputs.size() < 2) {
-		throw BinderException("anofox_metric_isolation_forest requires at least 2 arguments: table_name, column_name");
-	}
-
-	string table_name = input.inputs[0].ToString();
-	string column_name = input.inputs[1].ToString();
-
-	// Optional parameters with defaults
-	size_t n_trees = input.inputs.size() > 2 ? input.inputs[2].GetValue<int64_t>() : 100;
-	size_t sample_size = input.inputs.size() > 3 ? input.inputs[3].GetValue<int64_t>() : 256;
-	double contamination = input.inputs.size() > 4 ? input.inputs[4].GetValue<double>() : 0.1;
-	string output_mode = input.inputs.size() > 5 ? input.inputs[5].ToString() : "summary";
-
-	// Validate parameters
-	if (n_trees == 0 || n_trees > 500) {
-		throw BinderException("n_trees must be between 1 and 500");
-	}
-	if (sample_size == 0 || sample_size > 10000) {
-		throw BinderException("sample_size must be between 1 and 10000");
-	}
-	if (contamination < 0.0 || contamination > 0.5) {
-		throw BinderException("contamination must be between 0.0 and 0.5");
-	}
-
-	string table_ref = BuildQueryTableRef(table_name);
-	string sql = (output_mode == "scores") ?
-		GenerateIsolationForestScoresSQL(table_ref, column_name, n_trees, sample_size, contamination) :
-		GenerateIsolationForestSummarySQL(table_ref, column_name, n_trees, sample_size, contamination);
-
-	return ParseSubquery(sql, context.GetParserOptions(), "Failed to parse isolation forest metric query");
-}
-
-// Bind function for multivariate isolation forest
-static unique_ptr<TableRef> MetricIsolationForestMultivariateBindReplace(ClientContext &context, TableFunctionBindInput &input) {
-	if (input.inputs.size() < 3) {
-		throw BinderException("anofox_metric_isolation_forest_multivariate requires at least 3 arguments: table_name, column_names (VARCHAR comma-separated), output_mode");
-	}
-
-	string table_name = input.inputs[0].ToString();
-
-	// Parse comma-separated column names from a single string parameter
-	string columns_str = input.inputs[1].ToString();
+// Bind data for DBSCAN table function (immutable after bind)
+struct DBSCANBindData : public TableFunctionData {
+	string table_name;
 	vector<string> column_names;
+	double eps;
+	int64_t min_pts;
+	string output_mode; // "summary" or "clusters"
+	bool is_multivariate;
 
-	// Split by comma and trim whitespace
-	size_t start = 0;
-	for (size_t i = 0; i <= columns_str.length(); ++i) {
-		if (i == columns_str.length() || columns_str[i] == ',') {
-			string col = columns_str.substr(start, i - start);
-			// Trim whitespace
-			size_t col_start = col.find_first_not_of(" \t\n\r");
-			size_t col_end = col.find_last_not_of(" \t\n\r");
-			if (col_start != string::npos) {
-				col = col.substr(col_start, col_end - col_start + 1);
-				// Remove quotes if present
-				if ((col.front() == '"' && col.back() == '"') ||
-				    (col.front() == '\'' && col.back() == '\'')) {
-					col = col.substr(1, col.length() - 2);
-				}
-				column_names.push_back(col);
-			}
-			start = i + 1;
+	DBSCANBindData(string tbl, vector<string> cols, double eps_val, int64_t min_pts_val, string mode,
+	               bool force_multivariate)
+	    : table_name(std::move(tbl)), column_names(std::move(cols)), eps(eps_val), min_pts(min_pts_val),
+	      output_mode(std::move(mode)), is_multivariate(force_multivariate || column_names.size() > 1) {
+	}
+};
+
+// Global state for DBSCAN execution - stores mutable execution state
+struct DBSCANGlobalState : public GlobalTableFunctionState {
+	bool executed = false;
+	idx_t current_row = 0;
+
+	// Results computed during execution (stored here because bind_data is const)
+	std::vector<DBSCANPoint> points;
+	std::vector<double> anomaly_scores;
+	std::vector<double> first_column_values; // univariate only
+	int64_t total_count = 0;
+	int64_t cluster_count = 0;
+	int64_t noise_count = 0;
+	int64_t largest_cluster_size = 0;
+};
+
+// Initialize global state
+static unique_ptr<GlobalTableFunctionState> DBSCANInit(ClientContext &, TableFunctionInitInput &) {
+	return make_uniq<DBSCANGlobalState>();
+}
+
+// Shared optional-parameter handling and validation for both DBSCAN bind functions
+static void ParseDBSCANParameters(TableFunctionBindInput &input, const string &function_name, double &eps,
+                                  int64_t &min_pts, string &output_mode) {
+	eps = input.inputs.size() > 2 ? input.inputs[2].GetValue<double>() : 0.5;
+	min_pts = input.inputs.size() > 3 ? input.inputs[3].GetValue<int64_t>() : 5;
+	output_mode = input.inputs.size() > 4 ? input.inputs[4].ToString() : "summary";
+
+	if (eps <= 0.0) {
+		throw BinderException(function_name + ": eps must be > 0.0");
+	}
+	if (min_pts < 1) {
+		throw BinderException(function_name + ": min_pts must be >= 1");
+	}
+	if (output_mode != "summary" && output_mode != "clusters") {
+		throw BinderException(function_name + ": output_mode must be 'summary' or 'clusters'");
+	}
+}
+
+// Shared output schema for both DBSCAN functions
+static void DefineDBSCANSchema(const string &output_mode, bool include_value, bool include_n_columns,
+                               vector<LogicalType> &return_types, vector<string> &names) {
+	if (output_mode == "clusters") {
+		// Per-row output: one row per non-NULL input row
+		names.emplace_back("row_id");
+		return_types.emplace_back(LogicalType(LogicalTypeId::BIGINT));
+		if (include_value) {
+			names.emplace_back("value");
+			return_types.emplace_back(LogicalType(LogicalTypeId::DOUBLE));
 		}
+		names.emplace_back("cluster_id");
+		return_types.emplace_back(LogicalType(LogicalTypeId::INTEGER));
+		names.emplace_back("point_type");
+		return_types.emplace_back(LogicalType(LogicalTypeId::VARCHAR));
+		names.emplace_back("neighbor_count");
+		return_types.emplace_back(LogicalType(LogicalTypeId::BIGINT));
+		names.emplace_back("anomaly_score");
+		return_types.emplace_back(LogicalType(LogicalTypeId::DOUBLE));
+		names.emplace_back("is_anomaly");
+		return_types.emplace_back(LogicalType(LogicalTypeId::BOOLEAN));
+	} else {
+		// Summary output: a single row with aggregate clustering statistics
+		names.emplace_back("status");
+		return_types.emplace_back(LogicalType(LogicalTypeId::VARCHAR));
+		names.emplace_back("cluster_count");
+		return_types.emplace_back(LogicalType(LogicalTypeId::BIGINT));
+		names.emplace_back("noise_count");
+		return_types.emplace_back(LogicalType(LogicalTypeId::BIGINT));
+		names.emplace_back("total_count");
+		return_types.emplace_back(LogicalType(LogicalTypeId::BIGINT));
+		names.emplace_back("noise_rate");
+		return_types.emplace_back(LogicalType(LogicalTypeId::DOUBLE));
+		names.emplace_back("largest_cluster_size");
+		return_types.emplace_back(LogicalType(LogicalTypeId::BIGINT));
+		names.emplace_back("eps");
+		return_types.emplace_back(LogicalType(LogicalTypeId::DOUBLE));
+		names.emplace_back("min_pts");
+		return_types.emplace_back(LogicalType(LogicalTypeId::BIGINT));
+		if (include_n_columns) {
+			names.emplace_back("n_columns");
+			return_types.emplace_back(LogicalType(LogicalTypeId::INTEGER));
+		}
+		names.emplace_back("message");
+		return_types.emplace_back(LogicalType(LogicalTypeId::VARCHAR));
 	}
-
-	if (column_names.empty()) {
-		throw BinderException("column_names must contain at least one column");
-	}
-
-	// Optional parameters with defaults
-	size_t n_trees = input.inputs.size() > 2 ? input.inputs[2].GetValue<int64_t>() : 100;
-	size_t sample_size = input.inputs.size() > 3 ? input.inputs[3].GetValue<int64_t>() : 256;
-	double contamination = input.inputs.size() > 4 ? input.inputs[4].GetValue<double>() : 0.1;
-	string output_mode = input.inputs.size() > 5 ? input.inputs[5].ToString() : "summary";
-
-	// Validate parameters
-	if (n_trees == 0 || n_trees > 500) {
-		throw BinderException("n_trees must be between 1 and 500");
-	}
-	if (sample_size == 0 || sample_size > 10000) {
-		throw BinderException("sample_size must be between 1 and 10000");
-	}
-	if (contamination < 0.0 || contamination > 0.5) {
-		throw BinderException("contamination must be between 0.0 and 0.5");
-	}
-
-	string table_ref = BuildQueryTableRef(table_name);
-	string sql = (output_mode == "scores") ?
-		GenerateIsolationForestMultivariateScoresSQL(table_ref, column_names, n_trees, sample_size, contamination) :
-		GenerateIsolationForestMultivariateSummarySQL(table_ref, column_names, n_trees, sample_size, contamination);
-
-	return ParseSubquery(sql, context.GetParserOptions(), "Failed to parse multivariate isolation forest metric query");
 }
 
 // Bind function for univariate DBSCAN
-static unique_ptr<TableRef> MetricDBSCANBindReplace(ClientContext &context, TableFunctionBindInput &input) {
+static unique_ptr<FunctionData> DBSCANBind(ClientContext &context, TableFunctionBindInput &input,
+                                           vector<LogicalType> &return_types, vector<string> &names) {
 	PostHogTelemetry::Instance().CaptureFunctionExecution("metric_dbscan");
 	if (input.inputs.size() < 2) {
-		throw BinderException("anofox_metric_dbscan requires at least 2 arguments: table_name, column_name");
+		throw BinderException("dbscan requires at least 2 arguments: table_name, column_name");
 	}
 
 	string table_name = input.inputs[0].ToString();
-	string column_name = input.inputs[1].ToString();
+	vector<string> column_names = {input.inputs[1].ToString()};
 
-	// Optional parameters with defaults
-	double eps = input.inputs.size() > 2 ? input.inputs[2].GetValue<double>() : 0.5;
-	size_t min_pts = input.inputs.size() > 3 ? input.inputs[3].GetValue<int64_t>() : 5;
-	string output_mode = input.inputs.size() > 4 ? input.inputs[4].ToString() : "summary";
+	double eps;
+	int64_t min_pts;
+	string output_mode;
+	ParseDBSCANParameters(input, "dbscan", eps, min_pts, output_mode);
 
-	// Validate parameters
-	if (eps <= 0.0) {
-		throw BinderException("eps must be > 0.0");
-	}
-	if (min_pts < 1) {
-		throw BinderException("min_pts must be >= 1");
-	}
-
-	string table_ref = BuildQueryTableRef(table_name);
-
-	// For now, use simple placeholder SQL (distance > eps detection)
-	string sql = (output_mode == "clusters") ?
-		"WITH data_sample AS ("
-		"SELECT ROW_NUMBER() OVER () as row_id, CAST(" + QuoteSqlIdentifier(column_name) + " AS DOUBLE) as value "
-		"FROM (SELECT * FROM " + table_ref + ") WHERE " + QuoteSqlIdentifier(column_name) + " IS NOT NULL"
-		") "
-		"SELECT row_id, value, 0 as cluster_id, CAST('CORE' AS VARCHAR) as point_type, 5 as neighbor_count, 0.5 as anomaly_score, false as is_anomaly "
-		"FROM data_sample ORDER BY row_id" :
-		"WITH data_sample AS ("
-		"SELECT COUNT(*) as total_count, COUNT(DISTINCT CAST(" + QuoteSqlIdentifier(column_name) + " AS DOUBLE)) as cluster_count, "
-		"COUNT(CASE WHEN CAST(" + QuoteSqlIdentifier(column_name) + " AS DOUBLE) > 1000 THEN 1 END) as noise_count "
-		"FROM (SELECT * FROM " + table_ref + ") WHERE " + QuoteSqlIdentifier(column_name) + " IS NOT NULL"
-		") "
-		"SELECT 'pass' as status, cluster_count, noise_count, total_count, "
-		"CAST(noise_count AS DOUBLE) / CAST(total_count AS DOUBLE) as noise_rate, "
-		"cluster_count as largest_cluster_size, CAST(" + std::to_string(eps) + " AS DOUBLE) as eps, "
-		"CAST(" + std::to_string(min_pts) + " AS BIGINT) as min_pts, 'DBSCAN clustering complete' as message "
-		"FROM data_sample";
-
-	return ParseSubquery(sql, context.GetParserOptions(), "Failed to parse DBSCAN metric query");
+	DefineDBSCANSchema(output_mode, /*include_value=*/true, /*include_n_columns=*/false, return_types, names);
+	return make_uniq<DBSCANBindData>(table_name, std::move(column_names), eps, min_pts, output_mode, false);
 }
 
 // Bind function for multivariate DBSCAN
-static unique_ptr<TableRef> MetricDBSCANMultivariateBindReplace(ClientContext &context, TableFunctionBindInput &input) {
+static unique_ptr<FunctionData> DBSCANMultivariateBind(ClientContext &context, TableFunctionBindInput &input,
+                                                       vector<LogicalType> &return_types, vector<string> &names) {
 	PostHogTelemetry::Instance().CaptureFunctionExecution("metric_dbscan_mv");
 	if (input.inputs.size() < 2) {
-		throw BinderException("anofox_metric_dbscan_multivariate requires at least 2 arguments: table_name, column_names");
+		throw BinderException("dbscan_mv requires at least 2 arguments: table_name, column_names");
 	}
 
 	string table_name = input.inputs[0].ToString();
-
-	// Parse comma-separated column names
-	string columns_str = input.inputs[1].ToString();
-	vector<string> column_names;
-
-	size_t start = 0;
-	for (size_t i = 0; i <= columns_str.length(); ++i) {
-		if (i == columns_str.length() || columns_str[i] == ',') {
-			string col = columns_str.substr(start, i - start);
-			size_t col_start = col.find_first_not_of(" \t\n\r");
-			size_t col_end = col.find_last_not_of(" \t\n\r");
-			if (col_start != string::npos) {
-				col = col.substr(col_start, col_end - col_start + 1);
-				if ((col.front() == '"' && col.back() == '"') ||
-				    (col.front() == '\'' && col.back() == '\'')) {
-					col = col.substr(1, col.length() - 2);
-				}
-				column_names.push_back(col);
-			}
-			start = i + 1;
-		}
-	}
-
+	auto column_names = ParseCommaSeparatedColumns(input.inputs[1].ToString());
 	if (column_names.empty()) {
 		throw BinderException("column_names must contain at least one column");
 	}
 
-	double eps = input.inputs.size() > 2 ? input.inputs[2].GetValue<double>() : 0.5;
-	size_t min_pts = input.inputs.size() > 3 ? input.inputs[3].GetValue<int64_t>() : 5;
-	string output_mode = input.inputs.size() > 4 ? input.inputs[4].ToString() : "summary";
+	double eps;
+	int64_t min_pts;
+	string output_mode;
+	ParseDBSCANParameters(input, "dbscan_mv", eps, min_pts, output_mode);
 
-	if (eps <= 0.0) {
-		throw BinderException("eps must be > 0.0");
+	DefineDBSCANSchema(output_mode, /*include_value=*/false, /*include_n_columns=*/true, return_types, names);
+	return make_uniq<DBSCANBindData>(table_name, std::move(column_names), eps, min_pts, output_mode, true);
+}
+
+static const char *DBSCANPointTypeToString(PointType type) {
+	switch (type) {
+	case PointType::CORE:
+		return "CORE";
+	case PointType::BORDER:
+		return "BORDER";
+	case PointType::NOISE:
+		return "NOISE";
+	default:
+		return "UNVISITED";
 	}
-	if (min_pts < 1) {
-		throw BinderException("min_pts must be >= 1");
+}
+
+// Execute DBSCAN clustering
+static void DBSCANExecute(ClientContext &context, TableFunctionInput &data_p, DataChunk &output) {
+	auto &bind_data = data_p.bind_data->Cast<DBSCANBindData>();
+	auto &state = data_p.global_state->Cast<DBSCANGlobalState>();
+
+	// Execute algorithm only once
+	if (!state.executed) {
+		state.executed = true;
+
+		Connection con(*context.db);
+
+		// Materialize the selected columns as DOUBLE, skipping rows with NULLs
+		// (same query path as the isolation forest table function)
+		string column_list;
+		string null_checks;
+		for (size_t i = 0; i < bind_data.column_names.size(); ++i) {
+			if (i > 0) {
+				column_list += ", ";
+				null_checks += " AND ";
+			}
+			column_list += "CAST(" + QuoteSqlIdentifier(bind_data.column_names[i]) + " AS DOUBLE)";
+			null_checks += QuoteSqlIdentifier(bind_data.column_names[i]) + " IS NOT NULL";
+		}
+		string query = "SELECT " + column_list + " FROM " + BuildQueryTableRef(bind_data.table_name) + " WHERE " +
+		               null_checks;
+
+		auto result = con.Query(query);
+		if (result->HasError()) {
+			throw InvalidInputException("Failed to query source table: %s", result->GetError());
+		}
+
+		std::vector<std::vector<double>> data;
+		while (true) {
+			auto chunk = result->Fetch();
+			if (!chunk || chunk->size() == 0) {
+				break;
+			}
+			for (idx_t row = 0; row < chunk->size(); ++row) {
+				std::vector<double> point;
+				point.reserve(chunk->ColumnCount());
+				bool valid_row = true;
+				for (idx_t col = 0; col < chunk->ColumnCount(); ++col) {
+					auto val = chunk->GetValue(col, row);
+					if (val.IsNull()) {
+						valid_row = false;
+						break;
+					}
+					point.push_back(val.GetValue<double>());
+				}
+				if (valid_row) {
+					if (!bind_data.is_multivariate) {
+						state.first_column_values.push_back(point[0]);
+					}
+					data.push_back(std::move(point));
+				}
+			}
+		}
+
+		state.total_count = static_cast<int64_t>(data.size());
+
+		if (!data.empty()) {
+			DBSCAN dbscan(bind_data.eps, static_cast<size_t>(bind_data.min_pts));
+			dbscan.Fit(data);
+
+			state.points = dbscan.GetResults();
+			state.anomaly_scores = dbscan.ComputeAnomalyScores();
+			state.cluster_count = static_cast<int64_t>(dbscan.GetClusterCount());
+			state.noise_count = static_cast<int64_t>(dbscan.GetNoiseCount());
+			state.largest_cluster_size = static_cast<int64_t>(dbscan.GetLargestClusterSize());
+		}
+
+		AnofoxTrace(AnofoxLogLevel::Debug, "metric: dbscan table='" + bind_data.table_name +
+		                                       "' rows=" + std::to_string(state.total_count) +
+		                                       " clusters=" + std::to_string(state.cluster_count) +
+		                                       " noise=" + std::to_string(state.noise_count));
 	}
 
-	string table_ref = BuildQueryTableRef(table_name);
+	// Output results
+	if (bind_data.output_mode == "clusters") {
+		// Clusters mode - return one row per input point
+		idx_t count = 0;
+		while (state.current_row < state.points.size() && count < STANDARD_VECTOR_SIZE) {
+			auto &pt = state.points[state.current_row];
+			idx_t col = 0;
+			output.SetValue(col++, count, Value::BIGINT(static_cast<int64_t>(state.current_row + 1))); // 1-indexed
+			if (!bind_data.is_multivariate) {
+				output.SetValue(col++, count, Value::DOUBLE(state.first_column_values[state.current_row]));
+			}
+			output.SetValue(col++, count, Value::INTEGER(pt.cluster_id));
+			output.SetValue(col++, count, Value(DBSCANPointTypeToString(pt.point_type)));
+			output.SetValue(col++, count, Value::BIGINT(static_cast<int64_t>(pt.neighbor_count)));
+			output.SetValue(col++, count, Value::DOUBLE(state.anomaly_scores[state.current_row]));
+			output.SetValue(col++, count, Value::BOOLEAN(pt.cluster_id == -1));
+			state.current_row++;
+			count++;
+		}
+		output.SetCardinality(count);
+	} else {
+		// Summary mode - return single row
+		if (state.current_row == 0) {
+			string status = state.noise_count > 0 ? "fail" : "pass";
+			string message = state.noise_count == 0
+			                     ? "No noise points detected"
+			                     : std::to_string(state.noise_count) + " noise point(s) detected";
+			double noise_rate = state.total_count > 0
+			                        ? static_cast<double>(state.noise_count) / static_cast<double>(state.total_count)
+			                        : 0.0;
 
-	// Placeholder SQL for multivariate DBSCAN
-	string sql = (output_mode == "clusters") ?
-		"WITH data_sample AS ("
-		"SELECT ROW_NUMBER() OVER () as row_id "
-		"FROM (SELECT * FROM " + table_ref + ") LIMIT 10"
-		") "
-		"SELECT row_id, 0 as cluster_id, CAST('CORE' AS VARCHAR) as point_type, 5 as neighbor_count, 0.5 as anomaly_score, false as is_anomaly "
-		"FROM data_sample ORDER BY row_id" :
-		"SELECT 'pass' as status, 3 as cluster_count, 1 as noise_count, 10 as total_count, "
-		"0.1 as noise_rate, 5 as largest_cluster_size, CAST(" + std::to_string(eps) + " AS DOUBLE) as eps, "
-		"CAST(" + std::to_string(min_pts) + " AS BIGINT) as min_pts, CAST(" + std::to_string(column_names.size()) + " AS INTEGER) as n_columns, "
-		"'DBSCAN multivariate clustering complete' as message";
+			idx_t col = 0;
+			output.SetValue(col++, 0, Value(status));
+			output.SetValue(col++, 0, Value::BIGINT(state.cluster_count));
+			output.SetValue(col++, 0, Value::BIGINT(state.noise_count));
+			output.SetValue(col++, 0, Value::BIGINT(state.total_count));
+			output.SetValue(col++, 0, Value::DOUBLE(noise_rate));
+			output.SetValue(col++, 0, Value::BIGINT(state.largest_cluster_size));
+			output.SetValue(col++, 0, Value::DOUBLE(bind_data.eps));
+			output.SetValue(col++, 0, Value::BIGINT(bind_data.min_pts));
+			if (bind_data.is_multivariate) {
+				output.SetValue(col++, 0, Value::INTEGER(static_cast<int32_t>(bind_data.column_names.size())));
+			}
+			output.SetValue(col++, 0, Value(message));
+			output.SetCardinality(1);
+			state.current_row = 1;
+		} else {
+			output.SetCardinality(0);
+		}
+	}
+}
 
-	return ParseSubquery(sql, context.GetParserOptions(), "Failed to parse multivariate DBSCAN metric query");
+//===--------------------------------------------------------------------===//
+// Registration
+//===--------------------------------------------------------------------===//
+
+// Helper: register every prefix arity of full_args (from min_arity up) in a function set,
+// so that all trailing parameters with bind-time defaults are optional.
+static void AddPrefixArities(TableFunctionSet &set, const string &name, const vector<LogicalType> &full_args,
+                             idx_t min_arity, table_function_t function, table_function_bind_t bind,
+                             table_function_init_global_t init_global) {
+	for (idx_t arity = min_arity; arity <= full_args.size(); ++arity) {
+		vector<LogicalType> args(full_args.begin(), full_args.begin() + arity);
+		set.AddFunction(TableFunction(name, std::move(args), function, bind, init_global));
+	}
 }
 
 void RegisterMetricFunctions(ExtensionLoader &loader) {
@@ -1522,189 +1426,84 @@ void RegisterMetricFunctions(ExtensionLoader &loader) {
 	alias_freshness_info.alias_of = "anofox_tab_freshness";
 	loader.RegisterFunction(alias_freshness_info);
 
-	// anofox_tab_isolation_forest(table_name, column_name, n_trees=100, sample_size=256, contamination=0.1, output_mode='summary', seed=NULL)
-	// (alias: isolation_forest)
-	// Uses actual C++ isolation forest algorithm
+	// anofox_tab_isolation_forest(table_name, column_name, n_trees=100, sample_size=256, contamination=0.1,
+	//                             output_mode='summary', seed=NULL) (alias: isolation_forest)
+	// All parameters after column_name are optional; defaults are applied at bind time.
+	// Uses actual C++ isolation forest algorithm.
+	const vector<LogicalType> iso_forest_args = {
+	    LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::BIGINT),
+	    LogicalType(LogicalTypeId::BIGINT),  LogicalType(LogicalTypeId::DOUBLE),  LogicalType(LogicalTypeId::VARCHAR),
+	    LogicalType(LogicalTypeId::BIGINT)};
 	TableFunctionSet iso_forest_set("anofox_tab_isolation_forest");
-
-	// 6-parameter version (without seed)
-	TableFunction iso_forest_6("anofox_tab_isolation_forest",
-	                           {LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::VARCHAR),
-	                            LogicalType(LogicalTypeId::BIGINT), LogicalType(LogicalTypeId::BIGINT),
-	                            LogicalType(LogicalTypeId::DOUBLE), LogicalType(LogicalTypeId::VARCHAR)},
-	                           IsolationForestExecute, IsolationForestBind, IsolationForestInit);
-	iso_forest_set.AddFunction(iso_forest_6);
-
-	// 7-parameter version (with seed)
-	TableFunction iso_forest_7("anofox_tab_isolation_forest",
-	                           {LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::VARCHAR),
-	                            LogicalType(LogicalTypeId::BIGINT), LogicalType(LogicalTypeId::BIGINT),
-	                            LogicalType(LogicalTypeId::DOUBLE), LogicalType(LogicalTypeId::VARCHAR),
-	                            LogicalType(LogicalTypeId::BIGINT)},
-	                           IsolationForestExecute, IsolationForestBind, IsolationForestInit);
-	iso_forest_set.AddFunction(iso_forest_7);
-
+	AddPrefixArities(iso_forest_set, "anofox_tab_isolation_forest", iso_forest_args, 2, IsolationForestExecute,
+	                 IsolationForestBind, IsolationForestInit);
 	{
 		FunctionDescription desc;
-		desc.description = "Detects univariate outliers in a numeric column using the Isolation Forest algorithm. Returns scores and outlier labels.";
+		desc.description =
+		    "Detects univariate outliers in a numeric column using the Isolation Forest algorithm. Returns scores and outlier labels.";
 		desc.parameter_names = {"table_name", "column_name", "n_trees", "sample_size", "contamination", "output_mode", "seed"};
-		desc.examples = {"SELECT * FROM isolation_forest('sales', 'amount', 100, 256, 0.05, 'all');"};
+		desc.examples = {"SELECT * FROM isolation_forest('sales', 'amount', 100, 256, 0.05, 'scores');"};
 		desc.categories = {"metric", "anomaly-detection"};
-		CreateTableFunctionInfo iso_forest_info(iso_forest_set);
-		iso_forest_info.descriptions = {std::move(desc)};
-		loader.RegisterFunction(iso_forest_info);
+		RegisterTableFunctionSetWithAlias(loader, iso_forest_set, "isolation_forest", {std::move(desc)});
 	}
 
-	// Register alias: isolation_forest
-	TableFunctionSet alias_iso_forest_set("isolation_forest");
-	alias_iso_forest_set.AddFunction(iso_forest_6);
-	alias_iso_forest_set.AddFunction(iso_forest_7);
-	CreateTableFunctionInfo alias_iso_forest_info(alias_iso_forest_set);
-	alias_iso_forest_info.alias_of = "anofox_tab_isolation_forest";
-	loader.RegisterFunction(alias_iso_forest_info);
-
-	// anofox_tab_isolation_forest_mv(table_name, column_names (comma-separated), n_trees=100, sample_size=256, contamination=0.1, output_mode='summary', seed=NULL)
-	// (alias: isolation_forest_mv)
-	// Uses actual C++ isolation forest algorithm
+	// anofox_tab_isolation_forest_mv(table_name, column_names (comma-separated), n_trees=100, sample_size=256,
+	//                                contamination=0.1, output_mode='summary', seed=NULL, ndim=1,
+	//                                coef_type='uniform', scoring_metric='depth', weight_column=NULL, ntry=1,
+	//                                prob_pick_avg_gain=0.0) (alias: isolation_forest_mv)
+	// All parameters after column_names are optional; defaults are applied at bind time.
+	const vector<LogicalType> iso_forest_mv_args = {
+	    LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::BIGINT),
+	    LogicalType(LogicalTypeId::BIGINT),  LogicalType(LogicalTypeId::DOUBLE),  LogicalType(LogicalTypeId::VARCHAR),
+	    LogicalType(LogicalTypeId::BIGINT),  LogicalType(LogicalTypeId::BIGINT),  LogicalType(LogicalTypeId::VARCHAR),
+	    LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::BIGINT),
+	    LogicalType(LogicalTypeId::DOUBLE)};
 	TableFunctionSet iso_forest_mv_set("anofox_tab_isolation_forest_mv");
-
-	// 6-parameter version (without seed)
-	TableFunction iso_forest_mv_6("anofox_tab_isolation_forest_mv",
-	                              {LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::VARCHAR),
-	                               LogicalType(LogicalTypeId::BIGINT), LogicalType(LogicalTypeId::BIGINT),
-	                               LogicalType(LogicalTypeId::DOUBLE), LogicalType(LogicalTypeId::VARCHAR)},
-	                              IsolationForestExecute, IsolationForestMultivariateBind, IsolationForestInit);
-	iso_forest_mv_set.AddFunction(iso_forest_mv_6);
-
-	// 7-parameter version (with seed)
-	TableFunction iso_forest_mv_7("anofox_tab_isolation_forest_mv",
-	                              {LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::VARCHAR),
-	                               LogicalType(LogicalTypeId::BIGINT), LogicalType(LogicalTypeId::BIGINT),
-	                               LogicalType(LogicalTypeId::DOUBLE), LogicalType(LogicalTypeId::VARCHAR),
-	                               LogicalType(LogicalTypeId::BIGINT)},
-	                              IsolationForestExecute, IsolationForestMultivariateBind, IsolationForestInit);
-	iso_forest_mv_set.AddFunction(iso_forest_mv_7);
-
-	// 8-parameter version (with seed and ndim for Extended IF)
-	TableFunction iso_forest_mv_8("anofox_tab_isolation_forest_mv",
-	                              {LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::VARCHAR),
-	                               LogicalType(LogicalTypeId::BIGINT), LogicalType(LogicalTypeId::BIGINT),
-	                               LogicalType(LogicalTypeId::DOUBLE), LogicalType(LogicalTypeId::VARCHAR),
-	                               LogicalType(LogicalTypeId::BIGINT), LogicalType(LogicalTypeId::BIGINT)},
-	                              IsolationForestExecute, IsolationForestMultivariateBind, IsolationForestInit);
-	iso_forest_mv_set.AddFunction(iso_forest_mv_8);
-
-	// 9-parameter version (with seed, ndim, and coef_type for Extended IF)
-	TableFunction iso_forest_mv_9("anofox_tab_isolation_forest_mv",
-	                              {LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::VARCHAR),
-	                               LogicalType(LogicalTypeId::BIGINT), LogicalType(LogicalTypeId::BIGINT),
-	                               LogicalType(LogicalTypeId::DOUBLE), LogicalType(LogicalTypeId::VARCHAR),
-	                               LogicalType(LogicalTypeId::BIGINT), LogicalType(LogicalTypeId::BIGINT),
-	                               LogicalType(LogicalTypeId::VARCHAR)},
-	                              IsolationForestExecute, IsolationForestMultivariateBind, IsolationForestInit);
-	iso_forest_mv_set.AddFunction(iso_forest_mv_9);
-
-	// 10-parameter version (with scoring_metric)
-	TableFunction iso_forest_mv_10("anofox_tab_isolation_forest_mv",
-	                               {LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::VARCHAR),
-	                                LogicalType(LogicalTypeId::BIGINT), LogicalType(LogicalTypeId::BIGINT),
-	                                LogicalType(LogicalTypeId::DOUBLE), LogicalType(LogicalTypeId::VARCHAR),
-	                                LogicalType(LogicalTypeId::BIGINT), LogicalType(LogicalTypeId::BIGINT),
-	                                LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::VARCHAR)},
-	                               IsolationForestExecute, IsolationForestMultivariateBind, IsolationForestInit);
-	iso_forest_mv_set.AddFunction(iso_forest_mv_10);
-
-	// 11-parameter version (with weight_column)
-	TableFunction iso_forest_mv_11("anofox_tab_isolation_forest_mv",
-	                               {LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::VARCHAR),
-	                                LogicalType(LogicalTypeId::BIGINT), LogicalType(LogicalTypeId::BIGINT),
-	                                LogicalType(LogicalTypeId::DOUBLE), LogicalType(LogicalTypeId::VARCHAR),
-	                                LogicalType(LogicalTypeId::BIGINT), LogicalType(LogicalTypeId::BIGINT),
-	                                LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::VARCHAR),
-	                                LogicalType(LogicalTypeId::VARCHAR)},
-	                               IsolationForestExecute, IsolationForestMultivariateBind, IsolationForestInit);
-	iso_forest_mv_set.AddFunction(iso_forest_mv_11);
-
-	// 12-parameter version (with ntry for SCiForest)
-	TableFunction iso_forest_mv_12("anofox_tab_isolation_forest_mv",
-	                               {LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::VARCHAR),
-	                                LogicalType(LogicalTypeId::BIGINT), LogicalType(LogicalTypeId::BIGINT),
-	                                LogicalType(LogicalTypeId::DOUBLE), LogicalType(LogicalTypeId::VARCHAR),
-	                                LogicalType(LogicalTypeId::BIGINT), LogicalType(LogicalTypeId::BIGINT),
-	                                LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::VARCHAR),
-	                                LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::BIGINT)},
-	                               IsolationForestExecute, IsolationForestMultivariateBind, IsolationForestInit);
-	iso_forest_mv_set.AddFunction(iso_forest_mv_12);
-
-	// 13-parameter version (with ntry and prob_pick_avg_gain for SCiForest)
-	TableFunction iso_forest_mv_13("anofox_tab_isolation_forest_mv",
-	                               {LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::VARCHAR),
-	                                LogicalType(LogicalTypeId::BIGINT), LogicalType(LogicalTypeId::BIGINT),
-	                                LogicalType(LogicalTypeId::DOUBLE), LogicalType(LogicalTypeId::VARCHAR),
-	                                LogicalType(LogicalTypeId::BIGINT), LogicalType(LogicalTypeId::BIGINT),
-	                                LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::VARCHAR),
-	                                LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::BIGINT),
-	                                LogicalType(LogicalTypeId::DOUBLE)},
-	                               IsolationForestExecute, IsolationForestMultivariateBind, IsolationForestInit);
-	iso_forest_mv_set.AddFunction(iso_forest_mv_13);
-
+	AddPrefixArities(iso_forest_mv_set, "anofox_tab_isolation_forest_mv", iso_forest_mv_args, 2,
+	                 IsolationForestExecute, IsolationForestMultivariateBind, IsolationForestInit);
 	{
 		FunctionDescription desc;
-		desc.description = "Detects multivariate outliers across multiple numeric columns (comma-separated) using the Isolation Forest algorithm.";
-		desc.parameter_names = {"table_name", "column_names", "n_trees", "sample_size", "contamination", "output_mode", "seed"};
-		desc.examples = {"SELECT * FROM isolation_forest_mv('sales', 'amount,qty', 100, 256, 0.05, 'all');"};
+		desc.description =
+		    "Detects multivariate outliers across multiple numeric columns (comma-separated) using the Isolation Forest algorithm.";
+		desc.parameter_names = {"table_name",  "column_names",   "n_trees",       "sample_size", "contamination",
+		                        "output_mode", "seed",           "ndim",          "coef_type",   "scoring_metric",
+		                        "weight_column", "ntry",         "prob_pick_avg_gain"};
+		desc.examples = {"SELECT * FROM isolation_forest_mv('sales', 'amount,qty', 100, 256, 0.05, 'scores');"};
 		desc.categories = {"metric", "anomaly-detection"};
-		CreateTableFunctionInfo iso_forest_mv_info(iso_forest_mv_set);
-		iso_forest_mv_info.descriptions = {std::move(desc)};
-		loader.RegisterFunction(iso_forest_mv_info);
+		RegisterTableFunctionSetWithAlias(loader, iso_forest_mv_set, "isolation_forest_mv", {std::move(desc)});
 	}
-
-	// Register alias: isolation_forest_mv
-	TableFunctionSet alias_iso_forest_mv_set("isolation_forest_mv");
-	alias_iso_forest_mv_set.AddFunction(iso_forest_mv_6);
-	alias_iso_forest_mv_set.AddFunction(iso_forest_mv_7);
-	alias_iso_forest_mv_set.AddFunction(iso_forest_mv_8);
-	alias_iso_forest_mv_set.AddFunction(iso_forest_mv_9);
-	alias_iso_forest_mv_set.AddFunction(iso_forest_mv_10);
-	alias_iso_forest_mv_set.AddFunction(iso_forest_mv_11);
-	alias_iso_forest_mv_set.AddFunction(iso_forest_mv_12);
-	alias_iso_forest_mv_set.AddFunction(iso_forest_mv_13);
-	CreateTableFunctionInfo alias_iso_forest_mv_info(alias_iso_forest_mv_set);
-	alias_iso_forest_mv_info.alias_of = "anofox_tab_isolation_forest_mv";
-	loader.RegisterFunction(alias_iso_forest_mv_info);
 
 	// anofox_tab_dbscan(table_name, column_name, eps=0.5, min_pts=5, output_mode='summary') (alias: dbscan)
-	TableFunction dbscan_func("anofox_tab_dbscan",
-	                           {LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::VARCHAR),
-	                            LogicalType(LogicalTypeId::DOUBLE), LogicalType(LogicalTypeId::BIGINT),
-	                            LogicalType(LogicalTypeId::VARCHAR)},
-	                           nullptr, nullptr);
-	dbscan_func.bind_replace = MetricDBSCANBindReplace;
+	// All parameters after column_name are optional; defaults are applied at bind time.
+	// Uses actual C++ DBSCAN algorithm.
+	const vector<LogicalType> dbscan_args = {LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::VARCHAR),
+	                                         LogicalType(LogicalTypeId::DOUBLE), LogicalType(LogicalTypeId::BIGINT),
+	                                         LogicalType(LogicalTypeId::VARCHAR)};
+	TableFunctionSet dbscan_set("anofox_tab_dbscan");
+	AddPrefixArities(dbscan_set, "anofox_tab_dbscan", dbscan_args, 2, DBSCANExecute, DBSCANBind, DBSCANInit);
 	{
 		FunctionDescription desc;
 		desc.description = "Clusters rows by a numeric column using DBSCAN. Returns cluster labels and noise flags.";
 		desc.parameter_names = {"table_name", "column_name", "eps", "min_pts", "output_mode"};
-		desc.parameter_types = {LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::DOUBLE, LogicalType::BIGINT, LogicalType::VARCHAR};
-		desc.examples = {"SELECT * FROM dbscan('orders', 'amount', 0.5, 5, 'all');"};
+		desc.examples = {"SELECT * FROM dbscan('orders', 'amount', 0.5, 5, 'clusters');"};
 		desc.categories = {"metric", "anomaly-detection"};
-		RegisterTableFunctionWithAlias(loader, dbscan_func, "dbscan", {std::move(desc)});
+		RegisterTableFunctionSetWithAlias(loader, dbscan_set, "dbscan", {std::move(desc)});
 	}
 
-	// anofox_tab_dbscan_mv(table_name, column_names (comma-separated), eps=0.5, min_pts=5, output_mode='summary') (alias: dbscan_mv)
-	TableFunction dbscan_mv_func("anofox_tab_dbscan_mv",
-	                              {LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::VARCHAR),
-	                               LogicalType(LogicalTypeId::DOUBLE), LogicalType(LogicalTypeId::BIGINT),
-	                               LogicalType(LogicalTypeId::VARCHAR)},
-	                              nullptr, nullptr);
-	dbscan_mv_func.bind_replace = MetricDBSCANMultivariateBindReplace;
+	// anofox_tab_dbscan_mv(table_name, column_names (comma-separated), eps=0.5, min_pts=5, output_mode='summary')
+	// (alias: dbscan_mv)
+	// All parameters after column_names are optional; defaults are applied at bind time.
+	TableFunctionSet dbscan_mv_set("anofox_tab_dbscan_mv");
+	AddPrefixArities(dbscan_mv_set, "anofox_tab_dbscan_mv", dbscan_args, 2, DBSCANExecute, DBSCANMultivariateBind,
+	                 DBSCANInit);
 	{
 		FunctionDescription desc;
-		desc.description = "Clusters rows by multiple numeric columns (comma-separated) using DBSCAN. Returns cluster labels and noise flags.";
+		desc.description =
+		    "Clusters rows by multiple numeric columns (comma-separated) using DBSCAN. Returns cluster labels and noise flags.";
 		desc.parameter_names = {"table_name", "column_names", "eps", "min_pts", "output_mode"};
-		desc.parameter_types = {LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::DOUBLE, LogicalType::BIGINT, LogicalType::VARCHAR};
-		desc.examples = {"SELECT * FROM dbscan_mv('orders', 'amount,qty', 0.5, 5, 'all');"};
+		desc.examples = {"SELECT * FROM dbscan_mv('orders', 'amount,qty', 0.5, 5, 'clusters');"};
 		desc.categories = {"metric", "anomaly-detection"};
-		RegisterTableFunctionWithAlias(loader, dbscan_mv_func, "dbscan_mv", {std::move(desc)});
+		RegisterTableFunctionSetWithAlias(loader, dbscan_mv_set, "dbscan_mv", {std::move(desc)});
 	}
 }
 

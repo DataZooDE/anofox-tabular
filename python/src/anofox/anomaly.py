@@ -121,17 +121,21 @@ def dbscan(
     column:
         Numeric column name.
     output_mode:
-        ``"summary"`` → dict; ``"scores"`` → DataFrame.
+        ``"summary"`` → dict; ``"scores"`` (or ``"clusters"``) → DataFrame
+        with one row per input row.
     epsilon:
         Neighbourhood radius ε (default 0.5).
     min_points:
         Minimum cluster size (default 5).
     """
     table_name, registered = resolve_table(conn, table_or_df)
+    # The extension's per-row DBSCAN mode is named 'clusters'; keep the
+    # package-level "scores" naming consistent with the other detectors.
+    sql_mode = "clusters" if output_mode == "scores" else output_mode
     try:
         query = (
             f"SELECT * FROM anofox_tab_dbscan("
-            f"'{table_name}', '{column}', {epsilon}, {min_points}, '{output_mode}')"
+            f"'{table_name}', '{column}', {epsilon}, {min_points}, '{sql_mode}')"
         )
         return _execute_anomaly(conn, query, output_mode)
     finally:
@@ -158,7 +162,8 @@ def dbscan_mv(
     columns:
         List of numeric column names.
     output_mode:
-        ``"summary"`` → dict; ``"scores"`` → DataFrame.
+        ``"summary"`` → dict; ``"scores"`` (or ``"clusters"``) → DataFrame
+        with one row per input row.
     epsilon:
         Neighbourhood radius ε (default 0.5).
     min_points:
@@ -166,10 +171,11 @@ def dbscan_mv(
     """
     table_name, registered = resolve_table(conn, table_or_df)
     cols_csv = ",".join(columns)
+    sql_mode = "clusters" if output_mode == "scores" else output_mode
     try:
         query = (
             f"SELECT * FROM anofox_tab_dbscan_mv("
-            f"'{table_name}', '{cols_csv}', {epsilon}, {min_points}, '{output_mode}')"
+            f"'{table_name}', '{cols_csv}', {epsilon}, {min_points}, '{sql_mode}')"
         )
         return _execute_anomaly(conn, query, output_mode)
     finally:

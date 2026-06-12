@@ -16,7 +16,7 @@ SET anofox_tab_trace_enabled = false
 # ===--------------------------------------------------------------------===
 
 statement ok
-CREATE TEMP TABLE dbscan_normal_data (
+CREATE TABLE dbscan_normal_data (
     id INTEGER,
     value DOUBLE
 )
@@ -31,7 +31,7 @@ INSERT INTO dbscan_normal_data VALUES
     (6, 500.0)
 
 statement ok
-CREATE TEMP TABLE dbscan_small_data (
+CREATE TABLE dbscan_small_data (
     id INTEGER,
     value DOUBLE
 )
@@ -42,7 +42,7 @@ INSERT INTO dbscan_small_data VALUES
     (2, 12.0)
 
 statement ok
-CREATE TEMP TABLE dbscan_single_row (
+CREATE TABLE dbscan_single_row (
     id INTEGER,
     value DOUBLE
 )
@@ -52,7 +52,7 @@ INSERT INTO dbscan_single_row VALUES
     (1, 42.0)
 
 statement ok
-CREATE TEMP TABLE dbscan_identical_values (
+CREATE TABLE dbscan_identical_values (
     id INTEGER,
     value DOUBLE
 )
@@ -65,7 +65,7 @@ INSERT INTO dbscan_identical_values VALUES
     (4, 50.0)
 
 statement ok
-CREATE TEMP TABLE dbscan_with_nulls (
+CREATE TABLE dbscan_with_nulls (
     id INTEGER,
     value DOUBLE
 )
@@ -80,13 +80,13 @@ INSERT INTO dbscan_with_nulls VALUES
     (6, 101.0)
 
 statement ok
-CREATE TEMP TABLE dbscan_empty (
+CREATE TABLE dbscan_empty (
     id INTEGER,
     value DOUBLE
 )
 
 statement ok
-CREATE TEMP TABLE dbscan_clustered_data (
+CREATE TABLE dbscan_clustered_data (
     id INTEGER,
     value DOUBLE
 )
@@ -108,7 +108,7 @@ INSERT INTO dbscan_clustered_data VALUES
 # point 100.0. With eps=0.5 and min_pts=2 this must yield exactly 2 clusters
 # and 1 noise point.
 statement ok
-CREATE TEMP TABLE dbscan_known_clusters (
+CREATE TABLE dbscan_known_clusters (
     id INTEGER,
     value DOUBLE
 )
@@ -193,7 +193,7 @@ pass	1	0
 
 # Test K9: Multivariate summary returns the true counts (same structure in 2D)
 statement ok
-CREATE TEMP TABLE dbscan_mv_known (
+CREATE TABLE dbscan_mv_known (
     id INTEGER,
     x DOUBLE,
     y DOUBLE
@@ -551,7 +551,7 @@ SELECT COUNT(DISTINCT point_type) FROM dbscan('dbscan_normal_data', 'value', 0.5
 # ===--------------------------------------------------------------------===
 
 statement ok
-CREATE TEMP TABLE dbscan_large_values (
+CREATE TABLE dbscan_large_values (
     id INTEGER,
     value DOUBLE
 )
@@ -582,7 +582,7 @@ SELECT COUNT(*) FROM dbscan('dbscan_large_values', 'value', 1e8, 2, 'clusters')
 # ===--------------------------------------------------------------------===
 
 statement ok
-CREATE TEMP TABLE dbscan_small_values (
+CREATE TABLE dbscan_small_values (
     id INTEGER,
     value DOUBLE
 )
@@ -613,7 +613,7 @@ SELECT COUNT(*) FROM dbscan('dbscan_small_values', 'value', 1e-11, 2, 'clusters'
 # ===--------------------------------------------------------------------===
 
 statement ok
-CREATE TEMP TABLE dbscan_negative_values (
+CREATE TABLE dbscan_negative_values (
     id INTEGER,
     value DOUBLE
 )
@@ -644,7 +644,7 @@ SELECT COUNT(*) FROM dbscan('dbscan_negative_values', 'value', 2.0, 5, 'clusters
 # ===--------------------------------------------------------------------===
 
 statement ok
-CREATE TEMP TABLE dbscan_mixed_sign_values (
+CREATE TABLE dbscan_mixed_sign_values (
     id INTEGER,
     value DOUBLE
 )
@@ -752,7 +752,7 @@ VARCHAR
 # ===--------------------------------------------------------------------===
 
 statement ok
-CREATE TEMP TABLE dbscan_multivar_data (
+CREATE TABLE dbscan_multivar_data (
     id INTEGER,
     x DOUBLE,
     y DOUBLE
@@ -768,7 +768,7 @@ INSERT INTO dbscan_multivar_data VALUES
     (6, 600.0, 300.0)
 
 statement ok
-CREATE TEMP TABLE dbscan_multivar_3col (
+CREATE TABLE dbscan_multivar_3col (
     id INTEGER,
     a DOUBLE,
     b DOUBLE,
@@ -900,7 +900,7 @@ WHERE cluster_id >= 0
 # ===--------------------------------------------------------------------===
 
 statement ok
-CREATE TEMP TABLE dbscan_dense_sparse (
+CREATE TABLE dbscan_dense_sparse (
     id INTEGER,
     value DOUBLE
 )
@@ -934,7 +934,7 @@ WHERE value > 50.0
 # ===--------------------------------------------------------------------===
 
 statement ok
-CREATE TEMP TABLE dbscan_uniform_data (
+CREATE TABLE dbscan_uniform_data (
     id INTEGER,
     value DOUBLE
 )

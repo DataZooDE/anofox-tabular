@@ -1542,51 +1542,54 @@ SELECT * FROM metric_isolation_forest_multivariate(
 
 ### DBSCAN Clustering
 
-#### `anofox_tab_metric_ (alias: metric_dbscan`
+#### `anofox_tab_dbscan` (alias: `dbscan`)
 
 Univariate DBSCAN clustering for single column anomaly detection.
 
 **Signature:**
 ```sql
-anofox_tab_metric_ (alias: metric_dbscan(
+anofox_tab_dbscan(
     table_name VARCHAR,
     column_name VARCHAR,
-    eps DOUBLE,
-    min_pts BIGINT,
-    output_mode VARCHAR
+    eps DOUBLE,          -- optional, default 0.5
+    min_pts BIGINT,      -- optional, default 5
+    output_mode VARCHAR  -- optional, default 'summary'
 ) → TABLE
 ```
 
 **Parameters:**
-- `eps`: Neighborhood radius (default: 0.5)
-- `min_pts`: Minimum points for dense region (default: 5)
+- `eps`: Neighborhood radius, must be > 0.0 (default: 0.5)
+- `min_pts`: Minimum points for dense region, must be >= 1 (default: 5)
 - `output_mode`: `'summary'` (aggregate stats) or `'clusters'` (per-row results)
 
+All parameters after `column_name` are optional.
+
 **Returns:**
-- `TABLE`: Clustering results with `row_id`, `cluster_id`, `point_type`, `anomaly_score`
+- `'summary'`: one row with `status` (`fail` when noise points exist), `cluster_count`, `noise_count`, `total_count`, `noise_rate`, `largest_cluster_size`, `eps`, `min_pts`, `message`
+- `'clusters'`: one row per non-NULL input row with `row_id`, `value`, `cluster_id` (`-1` = noise), `point_type`, `neighbor_count`, `anomaly_score`, `is_anomaly`
 - `point_type`: `'CORE'` (dense region), `'BORDER'` (cluster edge), or `'NOISE'` (outlier)
 
 **Example:**
 ```sql
-SELECT * FROM anofox_tab_metric_ (alias: metric_dbscan(
+SELECT * FROM dbscan(
     'transactions', 'amount', 10.0, 5, 'clusters'
 ) WHERE point_type = 'NOISE';
 ```
 
 ---
 
-#### `anofox_tab_metric_ (alias: metric_dbscan_multivariate`
+#### `anofox_tab_dbscan_mv` (alias: `dbscan_mv`)
 
 Multivariate DBSCAN clustering for multiple column anomaly detection.
 
 **Signature:**
 ```sql
-anofox_tab_metric_ (alias: metric_dbscan_multivariate(
+anofox_tab_dbscan_mv(
     table_name VARCHAR,
     columns VARCHAR,
-    eps DOUBLE,
-    min_pts BIGINT,
-    output_mode VARCHAR
+    eps DOUBLE,          -- optional, default 0.5
+    min_pts BIGINT,      -- optional, default 5
+    output_mode VARCHAR  -- optional, default 'summary'
 ) → TABLE
 ```
 
@@ -1594,7 +1597,8 @@ anofox_tab_metric_ (alias: metric_dbscan_multivariate(
 - `columns`: Comma-separated column names
 
 **Returns:**
-- `TABLE`: Clustering results with `row_id`, `cluster_id`, `point_type`, `anomaly_score`
+- `'summary'`: same columns as `anofox_tab_dbscan` plus `n_columns` (no `value` column in `'clusters'` mode)
+- `'clusters'`: one row per non-NULL input row with `row_id`, `cluster_id`, `point_type`, `neighbor_count`, `anomaly_score`, `is_anomaly`
 
 ---
 
