@@ -10,3 +10,7 @@ vcpkg_installed/
 .ai/
 ai/
 third_party/
+.cache/
+
+# Codex delegation data (AI session responses)
+.codex-delegate/
