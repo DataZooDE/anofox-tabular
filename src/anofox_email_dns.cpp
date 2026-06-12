@@ -14,6 +14,7 @@
 #include <unordered_map>
 #include <vector>
 #include "anofox_email_logging.hpp"
+#include "anofox_raii.hpp"
 #include "duckdb/common/string_util.hpp"
 
 #ifdef _WIN32
@@ -392,19 +393,32 @@ DnsResult DnsResolver::Resolve(const std::string &domain) {
 	resolver_options.sock_state_cb = OnSocketState;
 	resolver_options.sock_state_cb_data = &tracker;
 
-	ares_channel_t *channel = nullptr;
-	int init_rc = ares_init_options(&channel, &resolver_options,
+	// Declared before the channel guard: destroying the channel can still fire
+	// callbacks that touch these states (and the socket tracker above), so the
+	// guard must be torn down first on every exit path.
+	int pending = 0;
+	MxQueryState mx_state;
+	mx_state.pending = &pending;
+	AddrInfoState addrinfo_state;
+	addrinfo_state.pending = &pending;
+
+	ares_channel_t *raw_channel = nullptr;
+	int init_rc = ares_init_options(&raw_channel, &resolver_options,
 	                                ARES_OPT_TIMEOUTMS | ARES_OPT_TRIES | ARES_OPT_SOCK_STATE_CB);
 	if (init_rc != ARES_SUCCESS) {
 		result.reason = MapAresStatus(init_rc);
 		return result;
 	}
+	// RAII channel ownership (issue #60): released on every exit path.
+	struct AresChannelDestroyer {
+		void operator()(ares_channel_t *channel) const {
+			ares_destroy(channel);
+		}
+	};
+	UniqueHandle<ares_channel_t *, AresChannelDestroyer, nullptr> channel(raw_channel);
 
-	int pending = 0;
-	MxQueryState mx_state;
-	mx_state.pending = &pending;
-
-	auto mx_rc = ares_query_dnsrec(channel, domain.c_str(), ARES_CLASS_IN, ARES_REC_TYPE_MX, OnMxQuery, &mx_state, nullptr);
+	auto mx_rc = ares_query_dnsrec(channel.Get(), domain.c_str(), ARES_CLASS_IN, ARES_REC_TYPE_MX, OnMxQuery,
+	                               &mx_state, nullptr);
 	if (mx_rc == ARES_SUCCESS) {
 		pending++;
 	} else {
@@ -412,16 +426,13 @@ DnsResult DnsResolver::Resolve(const std::string &domain) {
 		mx_state.error = ares_strerror(static_cast<int>(mx_rc));
 	}
 
-	AddrInfoState addrinfo_state;
-	addrinfo_state.pending = &pending;
-
 	ares_addrinfo_hints hints;
 	std::memset(&hints, 0, sizeof(hints));
 	hints.ai_family = AF_UNSPEC;
 	hints.ai_socktype = SOCK_STREAM;
 
 	pending++;
-	ares_getaddrinfo(channel, domain.c_str(), nullptr, &hints, OnAddrInfo, &addrinfo_state);
+	ares_getaddrinfo(channel.Get(), domain.c_str(), nullptr, &hints, OnAddrInfo, &addrinfo_state);
 
 	std::string loop_error;
 	uint32_t loop_timeout_ms = DnsOptions::MAX_TIMEOUT_MS;
@@ -434,10 +445,9 @@ DnsResult DnsResolver::Resolve(const std::string &domain) {
 	if (total_timeout < loop_timeout_ms) {
 		loop_timeout_ms = static_cast<uint32_t>(total_timeout);
 	}
-	bool loop_ok = RunEventLoop(channel, tracker, pending, loop_error, loop_timeout_ms);
-	if (channel) {
-		ares_destroy(channel);
-	}
+	bool loop_ok = RunEventLoop(channel.Get(), tracker, pending, loop_error, loop_timeout_ms);
+	// Cancel outstanding queries now so the states above are settled before use.
+	channel.Reset();
 
 	if (!loop_ok) {
 		result.reason = loop_error.empty() ? "dns_loop_failure" : loop_error;

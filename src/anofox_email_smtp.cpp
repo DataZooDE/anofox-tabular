@@ -18,6 +18,7 @@
 #include <ares.h>
 
 #include "anofox_email_logging.hpp"
+#include "anofox_raii.hpp"
 
 #ifdef _WIN32
 #include <winsock2.h>
@@ -113,16 +114,25 @@ std::string SocketErrorMessage(int err) {
 #endif
 }
 
-void CloseSocketHandle(socket_handle sock) {
-	if (sock == INVALID_SOCKET_HANDLE) {
-		return;
-	}
+//! Stateless closers for the RAII guards below (issue #60): socket handles and
+//! c-ares channels are owned by UniqueHandle so every exit path cleans up.
+struct SocketHandleCloser {
+	void operator()(socket_handle sock) const {
 #ifdef _WIN32
-	closesocket(sock);
+		closesocket(sock);
 #else
-	close(sock);
+		close(sock);
 #endif
-}
+	}
+};
+using SocketGuard = UniqueHandle<socket_handle, SocketHandleCloser, INVALID_SOCKET_HANDLE>;
+
+struct AresChannelDestroyer {
+	void operator()(ares_channel_t *channel) const {
+		ares_destroy(channel);
+	}
+};
+using AresChannelGuard = UniqueHandle<ares_channel_t *, AresChannelDestroyer, nullptr>;
 
 bool SetNonBlocking(socket_handle sock, bool enable) {
 #ifdef _WIN32
@@ -509,18 +519,22 @@ bool ResolveHostEndpoints(const std::string &host, uint16_t port, std::chrono::m
 	resolver_options.sock_state_cb = ResolverOnSocketState;
 	resolver_options.sock_state_cb_data = &tracker;
 
-	ares_channel_t *channel = nullptr;
-	int init_rc = ares_init_options(&channel, &resolver_options,
+	// Declared before the channel guard: destroying the channel can still fire
+	// callbacks that touch `state` (and the socket tracker above), so the guard
+	// must be torn down first on every exit path.
+	int pending = 0;
+	AddressResolveState state;
+	state.pending = &pending;
+
+	ares_channel_t *raw_channel = nullptr;
+	int init_rc = ares_init_options(&raw_channel, &resolver_options,
 	                                ARES_OPT_TIMEOUTMS | ARES_OPT_TRIES | ARES_OPT_SOCK_STATE_CB);
 	if (init_rc != ARES_SUCCESS) {
 		result.reason = "smtp_" + DnsStatusToReason(init_rc);
         EmailTrace(AnofoxLogLevel::Warn, "ResolveHostEndpoints init options failed reason=" + result.reason);
 		return false;
 	}
-
-	int pending = 0;
-	AddressResolveState state;
-	state.pending = &pending;
+	AresChannelGuard channel(raw_channel);
 
 	std::string service = std::to_string(port);
 	ares_addrinfo_hints hints;
@@ -529,13 +543,13 @@ bool ResolveHostEndpoints(const std::string &host, uint16_t port, std::chrono::m
 	hints.ai_socktype = SOCK_STREAM;
 
 	pending++;
-	ares_getaddrinfo(channel, host.c_str(), service.c_str(), &hints, OnAddressResolved, &state);
+	ares_getaddrinfo(channel.Get(), host.c_str(), service.c_str(), &hints, OnAddressResolved, &state);
 
 	std::string loop_error;
-	bool loop_ok = RunResolverLoop(channel, tracker, pending, loop_error, timeout);
-	if (channel) {
-		ares_destroy(channel);
-	}
+	bool loop_ok = RunResolverLoop(channel.Get(), tracker, pending, loop_error, timeout);
+	// Cancel outstanding queries before `state`/`tracker` leave scope; the
+	// guard would otherwise destroy the channel only at function exit.
+	channel.Reset();
 
 	if (!loop_ok) {
 		result.reason = loop_error.empty() ? "smtp_dns_timeout" : loop_error;
@@ -810,16 +824,17 @@ SmtpResult AttemptHost(const std::string &email, const std::string &host, const 
     EmailTrace(AnofoxLogLevel::Info,
                "SMTP attempting " + std::to_string(endpoints.size()) + " endpoints for host=" + host);
 	for (auto &endpoint : endpoints) {
-		socket_handle sock = socket(endpoint.address.ss_family, SOCK_STREAM, 0);
-		if (sock == INVALID_SOCKET_HANDLE) {
+		// RAII socket ownership (issue #60): the guard closes the descriptor on
+		// every continue/return below, so no manual close calls are needed.
+		SocketGuard sock(socket(endpoint.address.ss_family, SOCK_STREAM, 0));
+		if (!sock.IsValid()) {
 			attempt.transcript.push_back({"Socket creation failed: " + SocketErrorMessage(LastSocketError())});
             EmailTrace(AnofoxLogLevel::Warn,
                        "SMTP socket creation failed endpoint=" + endpoint.description);
 			continue;
 		}
-		if (!SetNonBlocking(sock, true)) {
+		if (!SetNonBlocking(sock.Get(), true)) {
 			attempt.transcript.push_back({"Failed to set non-blocking mode: " + SocketErrorMessage(LastSocketError())});
-			CloseSocketHandle(sock);
             EmailTrace(AnofoxLogLevel::Warn,
                        "SMTP failed to set non-blocking endpoint=" + endpoint.description);
 			continue;
@@ -830,9 +845,8 @@ SmtpResult AttemptHost(const std::string &email, const std::string &host, const 
 		}
 
 		std::string endpoint_str;
-		if (!ConnectSocket(sock, reinterpret_cast<const sockaddr *>(&endpoint.address), endpoint.length, connect_timeout,
-		                   deadline, endpoint_str, attempt)) {
-			CloseSocketHandle(sock);
+		if (!ConnectSocket(sock.Get(), reinterpret_cast<const sockaddr *>(&endpoint.address), endpoint.length,
+		                   connect_timeout, deadline, endpoint_str, attempt)) {
             EmailTrace(AnofoxLogLevel::Warn,
                        "SMTP connect failed endpoint=" + endpoint.description + " reason=" + attempt.reason);
 			if (!attempt.reason.empty()) {
@@ -846,79 +860,68 @@ SmtpResult AttemptHost(const std::string &email, const std::string &host, const 
 		read_buffer.clear();
 
 		int code = 0;
-		if (!ReadResponse(sock, read_buffer, io_timeout, deadline, attempt, code, "smtp_greeting_timeout",
+		if (!ReadResponse(sock.Get(), read_buffer, io_timeout, deadline, attempt, code, "smtp_greeting_timeout",
 		                  "smtp_greeting_error")) {
-			CloseSocketHandle(sock);
             EmailTrace(AnofoxLogLevel::Warn,
                        "SMTP greeting read failed reason=" + attempt.reason);
 			return attempt;
 		}
 		if (code / 100 != 2) {
 			attempt.reason = "smtp_invalid_greeting";
-			CloseSocketHandle(sock);
             EmailTrace(AnofoxLogLevel::Warn,
                        "SMTP greeting invalid code=" + std::to_string(code));
 			return attempt;
 		}
 
-		if (!SendCommand(sock, "EHLO " + options.helo_domain, io_timeout, deadline, attempt)) {
-			CloseSocketHandle(sock);
+		if (!SendCommand(sock.Get(), "EHLO " + options.helo_domain, io_timeout, deadline, attempt)) {
             EmailTrace(AnofoxLogLevel::Warn,
                        "SMTP EHLO send failed reason=" + attempt.reason);
 			return attempt;
 		}
-		if (!ReadResponse(sock, read_buffer, io_timeout, deadline, attempt, code, "smtp_read_timeout",
+		if (!ReadResponse(sock.Get(), read_buffer, io_timeout, deadline, attempt, code, "smtp_read_timeout",
 		                  "smtp_read_error")) {
-			CloseSocketHandle(sock);
             EmailTrace(AnofoxLogLevel::Warn,
                        "SMTP EHLO response failed reason=" + attempt.reason);
 			return attempt;
 		}
 		if (code / 100 != 2) {
 			attempt.reason = "smtp_helo_rejected";
-			CloseSocketHandle(sock);
             EmailTrace(AnofoxLogLevel::Warn,
                        "SMTP EHLO rejected code=" + std::to_string(code));
 			return attempt;
 		}
 
-		if (!SendCommand(sock, "MAIL FROM:<" + options.mail_from + ">", io_timeout, deadline, attempt)) {
-			CloseSocketHandle(sock);
+		if (!SendCommand(sock.Get(), "MAIL FROM:<" + options.mail_from + ">", io_timeout, deadline, attempt)) {
             EmailTrace(AnofoxLogLevel::Warn,
                        "SMTP MAIL FROM send failed reason=" + attempt.reason);
 			return attempt;
 		}
-		if (!ReadResponse(sock, read_buffer, io_timeout, deadline, attempt, code, "smtp_read_timeout",
+		if (!ReadResponse(sock.Get(), read_buffer, io_timeout, deadline, attempt, code, "smtp_read_timeout",
 		                  "smtp_read_error")) {
-			CloseSocketHandle(sock);
             EmailTrace(AnofoxLogLevel::Warn,
                        "SMTP MAIL FROM response failed reason=" + attempt.reason);
 			return attempt;
 		}
 		if (code / 100 != 2) {
 			attempt.reason = "smtp_mail_from_rejected";
-			CloseSocketHandle(sock);
             EmailTrace(AnofoxLogLevel::Warn,
                        "SMTP MAIL FROM rejected code=" + std::to_string(code));
 			return attempt;
 		}
 
-		if (!SendCommand(sock, "RCPT TO:<" + email + ">", io_timeout, deadline, attempt)) {
-			CloseSocketHandle(sock);
+		if (!SendCommand(sock.Get(), "RCPT TO:<" + email + ">", io_timeout, deadline, attempt)) {
             EmailTrace(AnofoxLogLevel::Warn,
                        "SMTP RCPT TO send failed reason=" + attempt.reason);
 			return attempt;
 		}
-		if (!ReadResponse(sock, read_buffer, io_timeout, deadline, attempt, code, "smtp_read_timeout",
+		if (!ReadResponse(sock.Get(), read_buffer, io_timeout, deadline, attempt, code, "smtp_read_timeout",
 		                  "smtp_read_error")) {
-			CloseSocketHandle(sock);
             EmailTrace(AnofoxLogLevel::Warn,
                        "SMTP RCPT TO response failed reason=" + attempt.reason);
 			return attempt;
 		}
 		if (code / 100 != 2) {
 			attempt.reason = "smtp_recipient_rejected";
-			CloseSocketHandle(sock);
             EmailTrace(AnofoxLogLevel::Warn,
                        "SMTP RCPT TO rejected code=" + std::to_string(code));
 			return attempt;
@@ -926,8 +929,7 @@ SmtpResult AttemptHost(const std::string &email, const std::string &host, const 
 
 		attempt.success = true;
 		attempt.reason.clear();
-		SendCommand(sock, "QUIT", io_timeout, deadline, attempt);
-		CloseSocketHandle(sock);
+		SendCommand(sock.Get(), "QUIT", io_timeout, deadline, attempt);
         EmailTrace(AnofoxLogLevel::Info, "SMTP verification success host=" + host);
 		return attempt;
 	}
