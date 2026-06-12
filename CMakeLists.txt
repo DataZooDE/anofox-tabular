@@ -181,6 +181,7 @@ set(EXTENSION_SOURCES
         src/anofox_money_currency.cpp
         src/anofox_vat.cpp
         src/anofox_vat_country.cpp
+        src/anofox_vat_checksum.cpp
         src/anofox_pii.cpp
         src/anofox_ner.cpp
 )

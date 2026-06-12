@@ -371,7 +371,8 @@ European VAT number validation for regulatory compliance and data quality.
 - 10 SQL functions for VAT operations
 - 29 countries supported (28 EU + UK)
 - Syntax validation with country-specific regex patterns
-- EU membership checks
+- Check-digit (checksum) validation for 16 countries: AT, BE, DE, DK, ES, FI, FR, GR/EL, IE, IT, LU, NL, PL, PT, SE, SI
+- EU membership checks (accepts lowercase codes and the EL/XI VAT aliases)
 - Country name and information lookup
 
 ```sql
@@ -907,12 +908,15 @@ WHERE money_in_range(amount, 0.01, 99999.99)
 |----------|-----------|---------|-------------|
 | `anofox_tab_vat_is_eu_member` | `(country_code)` | BOOLEAN | Check if country is EU member |
 | `anofox_tab_vat_country_name` | `(country_code)` | VARCHAR | Get full country name |
-| `anofox_tab_vat_format` | `(vat_string, style)` | VARCHAR | Format VAT for display |
+| `anofox_tab_vat_format` | `(vat_string, style)` | VARCHAR | Format VAT for display: `'plain'` (digits only) or `'iso'` (VAT country prefix + digits) |
 
 #### Combined Validation
 | Function | Signature | Returns | Description |
 |----------|-----------|---------|-------------|
-| `anofox_tab_vat_is_valid` | `(vat_string)` | BOOLEAN | Full validation (syntax + country check) |
+| `anofox_tab_vat_is_valid` | `(vat_string)` | BOOLEAN | Full validation (syntax + check digit where implemented) |
+
+Check-digit (checksum) validation is implemented for: AT, BE, DE, DK, ES, FI, FR, GR/EL, IE, IT, LU, NL, PL, PT, SE, SI.
+All other countries are validated by syntax only. French VAT keys containing letters are accepted without check-digit verification.
 
 ### PII Detection Functions
 
