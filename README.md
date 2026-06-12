@@ -1104,7 +1104,7 @@ Set options via SQL or DuckDB's configuration file:
 SET anofox_tab_email_default_validation = 'regex';  -- Default: regex
 SET anofox_tab_email_regex_pattern = '<your-pattern>';  -- RFC 5322 inspired
 SET anofox_tab_email_dns_timeout_ms = 1000;  -- DNS timeout per try (1-5000ms)
-SET anofox_tab_email_dns_tries = 1;  -- DNS retry count
+SET anofox_tab_email_dns_tries = 1;  -- DNS retry count (1-10)
 SET anofox_tab_email_smtp_port = 25;  -- SMTP port
 SET anofox_tab_email_smtp_connect_timeout_ms = 5000;  -- TCP connect timeout
 SET anofox_tab_email_smtp_read_timeout_ms = 5000;  -- Read/write timeout

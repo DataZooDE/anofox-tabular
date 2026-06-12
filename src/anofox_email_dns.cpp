@@ -26,8 +26,8 @@
 #include <arpa/inet.h>
 #include <netdb.h>
 #include <netinet/in.h>
+#include <poll.h>
 #include <sys/socket.h>
-#include <sys/select.h>
 #include <sys/time.h>
 #include <unistd.h>
 #endif
@@ -47,7 +47,7 @@ struct MxQueryState {
 	int *pending = nullptr;
 	ares_status_t status = ARES_EDESTRUCTION;
 	std::string error;
-	std::vector<std::pair<uint16_t, std::string>> records;
+	std::vector<MxRecord> records;
 };
 
 struct AddrInfoState {
@@ -81,6 +81,16 @@ std::string MapAresStatus(int status) {
 	default:
 		return "dns_error_" + std::to_string(status);
 	}
+}
+
+//! poll()/WSAPoll() wrapper: unlike select(), it has no FD_SETSIZE limit, so
+//! arbitrary descriptor values are safe (issue #47).
+int PollSockets(struct pollfd *fds, size_t count, int timeout_ms) {
+#ifdef _WIN32
+	return WSAPoll(fds, static_cast<ULONG>(count), timeout_ms);
+#else
+	return poll(fds, static_cast<nfds_t>(count), timeout_ms);
+#endif
 }
 
 void OnSocketState(void *arg, ares_socket_t socket_fd, int readable, int writable) {
@@ -121,7 +131,7 @@ void OnMxQuery(void *arg, ares_status_t status, size_t timeouts, const ares_dns_
 				auto preference = ares_dns_rr_get_u16(rr, ARES_RR_MX_PREFERENCE);
 				auto exchange = ares_dns_rr_get_str(rr, ARES_RR_MX_EXCHANGE);
 				if (exchange) {
-					state.records.emplace_back(preference, exchange);
+					state.records.push_back(MxRecord {preference, exchange});
 				}
 			}
 		}
@@ -180,24 +190,23 @@ bool RunEventLoop(ares_channel_t *channel, SocketTracker &tracker, int &pending,
 			remaining = std::chrono::milliseconds(DnsOptions::MIN_TIMEOUT_MS);
 		}
 
-		fd_set read_fds;
-		fd_set write_fds;
-		FD_ZERO(&read_fds);
-		FD_ZERO(&write_fds);
-		ares_socket_t max_fd = ARES_SOCKET_BAD;
+		std::vector<struct pollfd> poll_fds;
+		poll_fds.reserve(tracker.sockets.size());
 		for (auto &entry : tracker.sockets) {
-			auto sock = entry.first;
 			const auto &state = entry.second;
+			short poll_events = 0;
 			if (state.readable) {
-				FD_SET(sock, &read_fds);
+				poll_events |= POLLIN;
 			}
 			if (state.writable) {
-				FD_SET(sock, &write_fds);
+				poll_events |= POLLOUT;
 			}
-			if (state.readable || state.writable) {
-				if (max_fd == ARES_SOCKET_BAD || sock > max_fd) {
-					max_fd = sock;
-				}
+			if (poll_events != 0) {
+				struct pollfd pfd;
+				pfd.fd = entry.first;
+				pfd.events = poll_events;
+				pfd.revents = 0;
+				poll_fds.push_back(pfd);
 			}
 		}
 
@@ -210,54 +219,53 @@ bool RunEventLoop(ares_channel_t *channel, SocketTracker &tracker, int &pending,
 		if (!tv_ptr) {
 			tv_ptr = &capped_timeout;
 		}
-
-		int select_result = 0;
-		if (max_fd != ARES_SOCKET_BAD) {
-			int nfds = static_cast<int>(max_fd) + 1;
-			select_result = select(nfds, &read_fds, &write_fds, nullptr, tv_ptr);
-		} else {
-			auto sleep_ms = static_cast<uint32_t>(tv_ptr->tv_sec * 1000 + static_cast<long>(tv_ptr->tv_usec / 1000));
-			auto capped_ms = static_cast<uint32_t>(remaining.count());
-			if (sleep_ms == 0) {
-				sleep_ms = capped_ms;
-			}
-			if (sleep_ms > capped_ms) {
-				sleep_ms = capped_ms;
-			}
-			if (sleep_ms == 0) {
-				sleep_ms = DnsOptions::MIN_TIMEOUT_MS;
-			}
-			std::this_thread::sleep_for(std::chrono::milliseconds(sleep_ms));
+		// Round up so a sub-millisecond budget does not busy-spin.
+		auto wait_ms = static_cast<uint32_t>(tv_ptr->tv_sec * 1000 + (tv_ptr->tv_usec + 999) / 1000);
+		auto capped_ms = static_cast<uint32_t>(remaining.count());
+		if (wait_ms > capped_ms) {
+			wait_ms = capped_ms;
 		}
-		if (select_result < 0) {
+		if (wait_ms == 0) {
+			wait_ms = DnsOptions::MIN_TIMEOUT_MS;
+		}
+
+		int poll_result = 0;
+		if (!poll_fds.empty()) {
+			poll_result = PollSockets(poll_fds.data(), poll_fds.size(), static_cast<int>(wait_ms));
+		} else {
+			std::this_thread::sleep_for(std::chrono::milliseconds(wait_ms));
+		}
+		if (poll_result < 0) {
 #ifdef _WIN32
 			int wsa_error = WSAGetLastError();
 			if (wsa_error == WSAEINTR) {
 				continue;
 			}
-			error_reason = "dns_select_failed_" + std::to_string(wsa_error);
+			error_reason = "dns_poll_failed_" + std::to_string(wsa_error);
 #else
 			if (errno == EINTR) {
 				continue;
 			}
-			error_reason = "dns_select_failed_" + std::to_string(errno);
+			error_reason = "dns_poll_failed_" + std::to_string(errno);
 #endif
 			return false;
 		}
 
 		std::vector<ares_fd_events_t> events;
-		if (select_result > 0) {
-			for (auto &entry : tracker.sockets) {
-				auto sock = entry.first;
+		if (poll_result > 0) {
+			for (auto &pfd : poll_fds) {
+				if (pfd.revents == 0) {
+					continue;
+				}
 				unsigned int event_mask = ARES_FD_EVENT_NONE;
-				if (FD_ISSET(sock, &read_fds)) {
+				if (pfd.revents & (POLLIN | POLLERR | POLLHUP | POLLNVAL)) {
 					event_mask |= ARES_FD_EVENT_READ;
 				}
-				if (FD_ISSET(sock, &write_fds)) {
+				if (pfd.revents & POLLOUT) {
 					event_mask |= ARES_FD_EVENT_WRITE;
 				}
 				if (event_mask != ARES_FD_EVENT_NONE) {
-					events.push_back({sock, event_mask});
+					events.push_back({pfd.fd, event_mask});
 				}
 			}
 		}
@@ -318,6 +326,11 @@ MxSelection SelectMxHosts(std::vector<MxRecord> records) {
 		return lhs.preference < rhs.preference;
 	});
 	for (auto &record : records) {
+		if (record.exchange.empty() || record.exchange == ".") {
+			// RFC 7505 Null MX: the domain explicitly does not accept mail.
+			selection.null_mx = true;
+			continue;
+		}
 		selection.hosts.emplace_back(std::move(record.exchange));
 	}
 	return selection;
@@ -344,6 +357,7 @@ DnsResolver::DnsResolver(const DnsOptions &options_p) : options(options_p) {
 	if (options.tries == 0) {
 		options.tries = DEFAULT_TRIES;
 	}
+	options.tries = std::min(std::max(options.tries, DnsOptions::MIN_TRIES), DnsOptions::MAX_TRIES);
 	options.timeout_ms = std::min(std::max(options.timeout_ms, DnsOptions::MIN_TIMEOUT_MS), DnsOptions::MAX_TIMEOUT_MS);
 }
 
@@ -438,21 +452,21 @@ DnsResult DnsResolver::Resolve(const std::string &domain) {
 	}
 
 	if (mx_state.status == ARES_SUCCESS && !mx_state.records.empty()) {
-		std::sort(mx_state.records.begin(), mx_state.records.end(),
-		          [](const std::pair<uint16_t, std::string> &lhs, const std::pair<uint16_t, std::string> &rhs) {
-			          if (lhs.first == rhs.first) {
-				          return lhs.second < rhs.second;
-			          }
-			          return lhs.first < rhs.first;
-		          });
-		result.success = true;
-		result.mx_hosts.reserve(mx_state.records.size());
-		for (auto &entry : mx_state.records) {
-			result.mx_hosts.emplace_back(entry.second);
+		auto selection = SelectMxHosts(std::move(mx_state.records));
+		if (!selection.hosts.empty()) {
+			result.success = true;
+			result.mx_hosts = std::move(selection.hosts);
+			EmailTrace(AnofoxLogLevel::Info,
+			           "DNS MX success records=" + std::to_string(result.mx_hosts.size()));
+			return result;
 		}
-		EmailTrace(AnofoxLogLevel::Info,
-		           "DNS MX success records=" + std::to_string(result.mx_hosts.size()));
-		return result;
+		if (selection.null_mx) {
+			// RFC 7505 Null MX: the domain explicitly refuses mail; do not fall
+			// back to direct host resolution.
+			result.reason = "dns_null_mx";
+			EmailTrace(AnofoxLogLevel::Warn, "DNS Null MX (RFC 7505) for domain=" + domain);
+			return result;
+		}
 	}
 
 	// MX lookup failed, attempt to fall back to direct host resolution.
