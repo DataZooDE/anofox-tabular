@@ -56,10 +56,19 @@ public:
     }
 
     /**
-     * Insert or update value in cache
+     * Insert or update value in cache.
+     * With capacity 0 the cache is disabled and Put is a safe no-op.
      */
     void Put(const Key& key, const Value& value) {
         std::lock_guard<std::mutex> lock(mutex_);
+
+        if (capacity_ == 0) {
+            // Cache disabled (e.g. SET anofox_ner_cache_size = 0). This must
+            // be checked under the lock: callers cannot rely on a Capacity()
+            // pre-check because another thread may shrink the capacity in
+            // between (issue #50).
+            return;
+        }
 
         auto it = cache_.find(key);
         if (it != cache_.end()) {
@@ -70,7 +79,7 @@ public:
         }
 
         // Evict if at capacity
-        if (cache_.size() >= capacity_) {
+        while (cache_.size() >= capacity_ && !lru_list_.empty()) {
             const Key& lru_key = lru_list_.back();
             cache_.erase(lru_key);
             lru_list_.pop_back();
@@ -101,7 +110,10 @@ public:
     /**
      * Get cache capacity
      */
-    size_t Capacity() const { return capacity_; }
+    size_t Capacity() const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return capacity_;
+    }
 
     /**
      * Set new capacity (may evict entries)
@@ -154,14 +166,25 @@ enum class NERStatus {
 };
 
 /**
- * Abstract base class for tokenizers
+ * Result of tokenizing a text: token ids plus the byte offsets of each token
+ * in the original text. Returned by value so that concurrent Encode() calls
+ * never share mutable tokenizer state (issue #50).
+ */
+struct TokenizedInput {
+    std::vector<int64_t> ids;
+    std::vector<std::pair<size_t, size_t>> offsets;
+};
+
+/**
+ * Abstract base class for tokenizers.
+ * Encode() is const and returns all per-call state by value, so a loaded
+ * tokenizer can be shared across DuckDB worker threads.
  */
 class ITokenizer {
 public:
     virtual ~ITokenizer() = default;
     virtual bool Load(const std::string &model_path) = 0;
-    virtual std::vector<int64_t> Encode(const std::string &text) = 0;
-    virtual const std::vector<std::pair<size_t, size_t>>& GetOffsets() const = 0;
+    virtual TokenizedInput Encode(const std::string &text) const = 0;
     virtual bool IsLoaded() const = 0;
 };
 
@@ -180,14 +203,9 @@ public:
     bool LoadVocab(const std::string &vocab_path) { return Load(vocab_path); }
 
     /**
-     * Encode text to token IDs
+     * Encode text to token IDs and byte offsets (returned by value)
      */
-    std::vector<int64_t> Encode(const std::string &text) override;
-
-    /**
-     * Get byte offsets for each token (for mapping back to original text)
-     */
-    const std::vector<std::pair<size_t, size_t>>& GetOffsets() const override { return offsets_; }
+    TokenizedInput Encode(const std::string &text) const override;
 
     /**
      * Check if vocabulary is loaded
@@ -196,9 +214,8 @@ public:
 
 private:
     std::unordered_map<std::string, int> vocab_;
-    std::vector<std::pair<size_t, size_t>> offsets_;
 
-    std::vector<std::string> Tokenize(const std::string &text);
+    static std::vector<std::string> Tokenize(const std::string &text);
     int TokenToId(const std::string &token) const;
 };
 
@@ -217,14 +234,9 @@ public:
     bool Load(const std::string &model_path) override;
 
     /**
-     * Encode text to token IDs
+     * Encode text to token IDs and byte offsets (returned by value)
      */
-    std::vector<int64_t> Encode(const std::string &text) override;
-
-    /**
-     * Get byte offsets for each token (for mapping back to original text)
-     */
-    const std::vector<std::pair<size_t, size_t>>& GetOffsets() const override { return offsets_; }
+    TokenizedInput Encode(const std::string &text) const override;
 
     /**
      * Check if model is loaded
@@ -233,7 +245,6 @@ public:
 
 private:
     std::unique_ptr<::sentencepiece::SentencePieceProcessor> processor_;
-    std::vector<std::pair<size_t, size_t>> offsets_;
 
     // XLM-RoBERTa special tokens
     static constexpr int BOS_TOKEN_ID = 0;  // <s>
@@ -243,6 +254,19 @@ private:
 #endif
 
 /**
+ * Immutable snapshot of the NER model manager status.
+ * Returned by value under a mutex so status table functions never observe
+ * torn strings while a loader thread updates the fields (issue #50).
+ */
+struct NERStatusSnapshot {
+    NERStatus status = NERStatus::NOT_LOADED;
+    std::string message;
+    std::string model_path;
+    std::string model_name;
+    std::string device;
+};
+
+/**
  * Singleton OpenVINO NER Model Manager
  *
  * Responsibilities:
@@ -250,6 +274,12 @@ private:
  * - Download model from HuggingFace if not cached locally
  * - Thread-safe initialization
  * - Provide entity extraction interface using OpenVINO
+ *
+ * Thread safety: after LoadModel() publishes NERStatus::LOADED, tokenizer_
+ * and compiled_model_ are treated as immutable. Each inference call creates
+ * its own ov::InferRequest (compiled models are thread-safe for creating
+ * requests), and tokenization returns its state by value, so ExtractEntities
+ * can be called concurrently from DuckDB worker threads.
  */
 class NERModelManager {
 public:
@@ -270,15 +300,14 @@ public:
     std::vector<NEREntity> ExtractEntities(const std::string &text);
 
     /**
-     * Extract entities from multiple texts (batch processing)
-     * More efficient than calling ExtractEntities for each text
+     * Extract entities from multiple texts.
+     * Deduplicates the inputs and shares the result cache with
+     * ExtractEntities; inference itself runs one text at a time.
      * @param texts Vector of input texts
-     * @param max_batch_size Maximum texts to process in single inference
      * @return Vector of entity vectors (one per input text)
      */
     std::vector<std::vector<NEREntity>> ExtractEntitiesBatch(
-        const std::vector<std::string> &texts,
-        size_t max_batch_size = 32
+        const std::vector<std::string> &texts
     );
 
     /**
@@ -324,6 +353,11 @@ public:
     NERStatus GetStatus() const { return status_.load(); }
 
     /**
+     * Get a consistent snapshot of status, message, model path/name and device
+     */
+    NERStatusSnapshot GetStatusSnapshot() const;
+
+    /**
      * Get status message for display
      */
     std::string GetStatusMessage() const;
@@ -353,21 +387,47 @@ private:
         const std::vector<std::pair<size_t, size_t>> &offsets
     );
 
+    /**
+     * Run cache lookup, tokenization, inference and post-processing for one
+     * text. Shared by ExtractEntities and ExtractEntitiesBatch so the
+     * thread-safety guarantees live in exactly one place.
+     * Precondition: IsAvailable() returned true.
+     */
+    std::vector<NEREntity> RunSingleInference(const std::string &text);
+
+    /**
+     * Update status_message_ under state_mutex_
+     */
+    void SetStatusMessage(const std::string &message);
+
+    /**
+     * Compute the default on-disk model path (no member state accessed)
+     */
+    static std::string DefaultModelPath();
+
     std::atomic<NERStatus> status_{NERStatus::NOT_LOADED};
     std::mutex init_lock_;
+
+    // Guards status_message_, model_path_, current_model_name_ and
+    // device_name_ against torn reads from status table functions while a
+    // loader thread updates them (issue #50)
+    mutable std::mutex state_mutex_;
     std::string status_message_;
     std::string model_path_;
     std::string device_name_ = "AUTO";
 
 #if HAVE_OPENVINO
     std::shared_ptr<ov::Core> core_;
+    // Immutable after LoadModel() publishes NERStatus::LOADED; inference
+    // requests are created per call (ov::InferRequest is stateful and must
+    // not be shared across threads)
     std::shared_ptr<ov::CompiledModel> compiled_model_;
-    std::shared_ptr<ov::InferRequest> infer_request_;
 #endif
 
-    // Tokenizer (WordPiece for DistilBERT, SentencePiece for XLM-RoBERTa)
+    // Tokenizer (WordPiece for DistilBERT, SentencePiece for XLM-RoBERTa);
+    // immutable after LoadModel() publishes NERStatus::LOADED
     std::unique_ptr<ITokenizer> tokenizer_;
-    std::string current_model_name_;  // Track which model is loaded
+    std::string current_model_name_;  // Track which model is loaded (guarded by state_mutex_)
 
     // Result cache for repeated texts
     std::unique_ptr<LRUCache<std::string, std::vector<NEREntity>>> result_cache_;
