@@ -47,14 +47,15 @@ double DBSCAN::ComputeDensityScore(size_t neighbor_count, size_t max_neighbors) 
 	return std::min(1.0, static_cast<double>(neighbor_count) / static_cast<double>(max_neighbors));
 }
 
-std::vector<size_t> DBSCAN::RegionQuery(
+void DBSCAN::RegionQuery(
 	const std::vector<std::vector<double>>& data,
-	size_t point_idx
+	size_t point_idx,
+	std::vector<size_t>& neighbors
 ) const {
-	std::vector<size_t> neighbors;
+	neighbors.clear();
 
 	if (point_idx >= data.size()) {
-		return neighbors;
+		return;
 	}
 
 	const auto& query_point = data[point_idx];
@@ -67,8 +68,6 @@ std::vector<size_t> DBSCAN::RegionQuery(
 			}
 		}
 	}
-
-	return neighbors;
 }
 
 void DBSCAN::ExpandCluster(
@@ -90,6 +89,9 @@ void DBSCAN::ExpandCluster(
 		queue.push(seed_idx);
 	}
 
+	// Scratch buffer reused across all region queries of this expansion (issue #60)
+	std::vector<size_t> current_neighbors;
+
 	while (!queue.empty()) {
 		size_t current_idx = queue.front();
 		queue.pop();
@@ -109,7 +111,7 @@ void DBSCAN::ExpandCluster(
 		results_[current_idx].cluster_id = cluster_id;
 
 		// Find neighbors of current point
-		std::vector<size_t> current_neighbors = RegionQuery(data, current_idx);
+		RegionQuery(data, current_idx, current_neighbors);
 		results_[current_idx].neighbor_count = current_neighbors.size();
 
 		// Standard minPts semantics: the eps-neighborhood includes the point itself
@@ -158,13 +160,16 @@ void DBSCAN::Fit(const std::vector<std::vector<double>>& data) {
 	std::vector<PointType> point_types(n_points, PointType::UNVISITED);
 	int32_t cluster_id = 0;
 
+	// Scratch buffer reused across all region queries of the fit (issue #60)
+	std::vector<size_t> neighbors;
+
 	// Main DBSCAN loop
 	for (size_t i = 0; i < n_points; ++i) {
 		if (!visited[i]) {
 			visited[i] = true;
 
 			// Find neighbors of point i
-			std::vector<size_t> neighbors = RegionQuery(data, i);
+			RegionQuery(data, i, neighbors);
 			results_[i].neighbor_count = neighbors.size();
 
 			// Standard minPts semantics: the eps-neighborhood includes the point itself

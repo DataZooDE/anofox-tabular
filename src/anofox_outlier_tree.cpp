@@ -104,39 +104,54 @@ void OutlierTree::BuildTreeForColumn(
         return;
     }
 
-    // Find best split among all predictor columns
+    // Cache the parent-cluster statistic once: it depends only on the target
+    // column and the current row subset, so it is identical for every
+    // candidate split evaluated below (issue #60).
+    const bool numeric_target = column_info[target_col].type == FeatureType::NUMERIC;
+    double current_target_metric;
+    if (numeric_target) {
+        current_target_metric = ComputeVariance(data[target_col], row_indices);
+    } else {
+        auto stats = ComputeCategoricalStats(data[target_col], column_info[target_col], row_indices);
+        current_target_metric = ComputeEntropy(stats.category_counts, stats.n_samples);
+    }
+
+    // Find best split among all predictor columns. The partitions of the best
+    // split are kept so the winning split is not partitioned a second time.
     std::optional<SplitCondition> best_split;
     double best_gain = 0.0;
+    std::vector<size_t> left_indices, right_indices;            // per-candidate scratch
+    std::vector<size_t> best_left_indices, best_right_indices;  // partitions of best_split
 
     for (size_t pred_col = 0; pred_col < data.size(); ++pred_col) {
         if (pred_col == target_col) continue;  // Skip target column
 
         std::optional<SplitCondition> split;
         if (column_info[pred_col].type == FeatureType::NUMERIC) {
-            split = FindBestNumericSplit(data, column_info, pred_col, target_col, row_indices);
+            split = FindBestNumericSplit(data, column_info, pred_col, target_col, row_indices,
+                                         current_target_metric);
         } else {
-            split = FindBestCategoricalSplit(data, column_info, pred_col, target_col, row_indices);
+            split = FindBestCategoricalSplit(data, column_info, pred_col, target_col, row_indices,
+                                             current_target_metric);
         }
 
         if (split) {
             // Compute gain for this split
-            std::vector<size_t> left_indices, right_indices;
             PartitionRows(data, *split, row_indices, left_indices, right_indices);
 
             double gain = 0.0;
-            if (column_info[target_col].type == FeatureType::NUMERIC) {
-                double current_var = ComputeVariance(data[target_col], row_indices);
-                gain = ComputeVarianceGain(left_indices, right_indices, data[target_col], current_var);
+            if (numeric_target) {
+                gain = ComputeVarianceGain(left_indices, right_indices, data[target_col], current_target_metric);
             } else {
-                auto stats = ComputeCategoricalStats(data[target_col], column_info[target_col], row_indices);
-                double current_entropy = ComputeEntropy(stats.category_counts, stats.n_samples);
                 gain = ComputeInfoGain(left_indices, right_indices, data[target_col],
-                                       column_info[target_col], current_entropy);
+                                       column_info[target_col], current_target_metric);
             }
 
             if (gain > best_gain) {
                 best_gain = gain;
                 best_split = split;
+                best_left_indices.swap(left_indices);
+                best_right_indices.swap(right_indices);
             }
         }
     }
@@ -145,10 +160,6 @@ void OutlierTree::BuildTreeForColumn(
     if (!best_split) {
         return;
     }
-
-    // Partition and recurse
-    std::vector<size_t> left_indices, right_indices;
-    PartitionRows(data, *best_split, row_indices, left_indices, right_indices);
 
     // Create conditions for left and right branches
     std::vector<SplitCondition> left_conditions = current_conditions;
@@ -166,12 +177,12 @@ void OutlierTree::BuildTreeForColumn(
     right_conditions.push_back(right_condition);
 
     // Recurse on both branches
-    if (left_indices.size() >= min_size) {
-        BuildTreeForColumn(data, column_info, target_col, left_indices,
+    if (best_left_indices.size() >= min_size) {
+        BuildTreeForColumn(data, column_info, target_col, best_left_indices,
                           left_conditions, current_depth + 1, outliers);
     }
-    if (right_indices.size() >= min_size) {
-        BuildTreeForColumn(data, column_info, target_col, right_indices,
+    if (best_right_indices.size() >= min_size) {
+        BuildTreeForColumn(data, column_info, target_col, best_right_indices,
                           right_conditions, current_depth + 1, outliers);
     }
 }
@@ -337,7 +348,8 @@ std::optional<SplitCondition> OutlierTree::FindBestNumericSplit(
     const std::vector<ColumnInfo>& column_info,
     size_t predictor_col,
     size_t target_col,
-    const std::vector<size_t>& row_indices
+    const std::vector<size_t>& row_indices,
+    double current_target_metric
 ) {
     if (row_indices.size() < 2 * params_.min_size_numeric) {
         return std::nullopt;
@@ -376,8 +388,14 @@ std::optional<SplitCondition> OutlierTree::FindBestNumericSplit(
         }
     }
 
+    // Scratch buffers reused across candidate split points (issue #60)
+    std::vector<size_t> left_idx, right_idx;
+    left_idx.reserve(values.size());
+    right_idx.reserve(values.size());
+
     for (double split_val : candidates) {
-        std::vector<size_t> left_idx, right_idx;
+        left_idx.clear();
+        right_idx.clear();
         for (const auto& [val, idx] : values) {
             if (val <= split_val) {
                 left_idx.push_back(idx);
@@ -390,15 +408,14 @@ std::optional<SplitCondition> OutlierTree::FindBestNumericSplit(
             continue;
         }
 
+        // The parent statistic is supplied by the caller; it is constant for
+        // all candidates of this (target, row subset) pair.
         double gain = 0.0;
         if (column_info[target_col].type == FeatureType::NUMERIC) {
-            double current_var = ComputeVariance(data[target_col], row_indices);
-            gain = ComputeVarianceGain(left_idx, right_idx, data[target_col], current_var);
+            gain = ComputeVarianceGain(left_idx, right_idx, data[target_col], current_target_metric);
         } else {
-            auto stats = ComputeCategoricalStats(data[target_col], column_info[target_col], row_indices);
-            double current_entropy = ComputeEntropy(stats.category_counts, stats.n_samples);
             gain = ComputeInfoGain(left_idx, right_idx, data[target_col],
-                                   column_info[target_col], current_entropy);
+                                   column_info[target_col], current_target_metric);
         }
 
         if (gain > best_gain) {
@@ -426,7 +443,8 @@ std::optional<SplitCondition> OutlierTree::FindBestCategoricalSplit(
     const std::vector<ColumnInfo>& column_info,
     size_t predictor_col,
     size_t target_col,
-    const std::vector<size_t>& row_indices
+    const std::vector<size_t>& row_indices,
+    double current_target_metric
 ) {
     if (row_indices.size() < 2 * params_.min_size_categ) {
         return std::nullopt;
@@ -472,16 +490,13 @@ std::optional<SplitCondition> OutlierTree::FindBestCategoricalSplit(
         return std::nullopt;
     }
 
-    // Compute gain
+    // Compute gain against the caller-supplied parent statistic (issue #60)
     double gain = 0.0;
     if (column_info[target_col].type == FeatureType::NUMERIC) {
-        double current_var = ComputeVariance(data[target_col], row_indices);
-        gain = ComputeVarianceGain(left_idx, right_idx, data[target_col], current_var);
+        gain = ComputeVarianceGain(left_idx, right_idx, data[target_col], current_target_metric);
     } else {
-        auto stats = ComputeCategoricalStats(data[target_col], column_info[target_col], row_indices);
-        double current_entropy = ComputeEntropy(stats.category_counts, stats.n_samples);
         gain = ComputeInfoGain(left_idx, right_idx, data[target_col],
-                               column_info[target_col], current_entropy);
+                               column_info[target_col], current_target_metric);
     }
 
     if (gain <= 0) {

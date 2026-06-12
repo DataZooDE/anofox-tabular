@@ -8,6 +8,7 @@
 #include <optional>
 #include <regex>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 
 namespace duckdb {
@@ -22,10 +23,11 @@ struct VAT {
 // ============================================================================
 // Handles all boilerplate: vector format conversion, validity checking, loop,
 // and result verification. The operation lambda/function receives each valid
-// input string and the output index.
+// input as a std::string_view into the input vector (no per-row std::string
+// copy) and the output index.
 //
 // Usage:
-//   IterateSingleStringInput(args, result, [&](const std::string& input, size_t idx) {
+//   IterateSingleStringInput(args, result, [&](std::string_view input, size_t idx) {
 //       auto value = registry.DoSomething(input);
 //       SetBoolResult(result, idx, value);
 //   });
@@ -37,7 +39,7 @@ inline void IterateSingleStringInput(DataChunk& args, Vector& result,
 
   UnifiedVectorFormat idata;
   input_vec.ToUnifiedFormat(count, idata);
-  auto input_strings = (string_t*)idata.data;
+  auto input_strings = UnifiedVectorFormat::GetData<string_t>(idata);
 
   for (size_t i = 0; i < count; i++) {
     size_t idx = idata.sel->get_index(i);
@@ -46,8 +48,8 @@ inline void IterateSingleStringInput(DataChunk& args, Vector& result,
       continue;
     }
 
-    std::string input = input_strings[idx].GetString();
-    op(input, i);
+    auto& input = input_strings[idx];
+    op(std::string_view(input.GetData(), input.GetSize()), i);
   }
 
   result.Verify(count);
@@ -66,8 +68,8 @@ inline void IterateTwoStringInputs(DataChunk& args, Vector& result,
   UnifiedVectorFormat idata1, idata2;
   input1_vec.ToUnifiedFormat(count, idata1);
   input2_vec.ToUnifiedFormat(count, idata2);
-  auto input1_strings = (string_t*)idata1.data;
-  auto input2_strings = (string_t*)idata2.data;
+  auto input1_strings = UnifiedVectorFormat::GetData<string_t>(idata1);
+  auto input2_strings = UnifiedVectorFormat::GetData<string_t>(idata2);
 
   for (size_t i = 0; i < count; i++) {
     size_t idx1 = idata1.sel->get_index(i);
@@ -79,9 +81,10 @@ inline void IterateTwoStringInputs(DataChunk& args, Vector& result,
       continue;
     }
 
-    std::string input1 = input1_strings[idx1].GetString();
-    std::string input2 = input2_strings[idx2].GetString();
-    op(input1, input2, i);
+    auto& input1 = input1_strings[idx1];
+    auto& input2 = input2_strings[idx2];
+    op(std::string_view(input1.GetData(), input1.GetSize()),
+       std::string_view(input2.GetData(), input2.GetSize()), i);
   }
 
   result.Verify(count);
@@ -122,18 +125,18 @@ class VATRegistry {
  public:
   static VATRegistry& Instance();
 
-  bool IsValidCountry(const std::string& code) const;
-  bool IsEUMember(const std::string& code) const;
-  std::string GetCountryName(const std::string& code) const;
+  bool IsValidCountry(std::string_view code) const;
+  bool IsEUMember(std::string_view code) const;
+  std::string GetCountryName(std::string_view code) const;
   bool IsValidSyntax(const std::string& country, const std::string& digits) const;
   // Validates the country-specific check digits. Returns true for countries
   // without an implemented checksum (syntax-only validation).
   bool IsValidChecksum(const std::string& country, const std::string& digits) const;
-  std::string NormalizeVAT(const std::string& input) const;
+  std::string NormalizeVAT(std::string_view input) const;
   // Uppercases the code and resolves VAT prefixes (EL -> GR, XI -> GB) to ISO.
-  std::string NormalizeCountryCode(const std::string& code) const;
+  std::string NormalizeCountryCode(std::string_view code) const;
   std::optional<std::pair<std::string, std::string>> SplitVAT(
-      const std::string& input) const;
+      std::string_view input) const;
   std::string ConvertVATToISO(const std::string& vat_country) const;
   std::string ConvertISOToVAT(const std::string& iso_country) const;
 

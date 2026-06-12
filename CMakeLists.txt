@@ -304,6 +304,7 @@ if(NOT CLANG_TIDY AND NOT EMSCRIPTEN AND CMAKE_VERSION VERSION_GREATER_EQUAL "3.
     add_library(anofox_tabular_unittest_tests OBJECT
         test/cpp/test_anofox_dbscan.cpp
         test/cpp/test_anofox_isolation_forest.cpp
+        test/cpp/test_anofox_outlier_tree.cpp
         test/cpp/test_email_internal.cpp
     )
     target_compile_features(anofox_tabular_unittest_tests PRIVATE cxx_std_17)
@@ -338,6 +339,7 @@ if(EXISTS "${DUCKDB_CATCH_DIR}/catch.hpp")
     add_executable(anofox_tabular_cpp_tests
         test/cpp/test_ner_lru_cache.cpp
         test/cpp/test_ner_input_bounding.cpp
+        test/cpp/test_anofox_raii.cpp
     )
     target_include_directories(anofox_tabular_cpp_tests PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src/include

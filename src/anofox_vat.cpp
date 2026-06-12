@@ -26,7 +26,7 @@ static LogicalType GetVATType() {
 static void VATParseFunc(DataChunk& args, ExpressionState& state,
                         Vector& result) {
   auto& registry = VATRegistry::Instance();
-  IterateSingleStringInput(args, result, [&](const std::string& input, size_t idx) {
+  IterateSingleStringInput(args, result, [&](std::string_view input, size_t idx) {
     auto split_result = registry.SplitVAT(input);
     if (!split_result.has_value()) {
       FlatVector::SetNull(result, idx, true);
@@ -41,7 +41,7 @@ static void VATParseFunc(DataChunk& args, ExpressionState& state,
 static void IsValidVATCountryFunc(DataChunk& args, ExpressionState& state,
                                  Vector& result) {
   auto& registry = VATRegistry::Instance();
-  IterateSingleStringInput(args, result, [&](const std::string& country, size_t idx) {
+  IterateSingleStringInput(args, result, [&](std::string_view country, size_t idx) {
     SetBoolResult(result, idx, registry.IsValidCountry(country));
   });
 }
@@ -50,7 +50,7 @@ static void IsValidVATCountryFunc(DataChunk& args, ExpressionState& state,
 static void VATNormalizeFunc(DataChunk& args, ExpressionState& state,
                             Vector& result) {
   auto& registry = VATRegistry::Instance();
-  IterateSingleStringInput(args, result, [&](const std::string& input, size_t idx) {
+  IterateSingleStringInput(args, result, [&](std::string_view input, size_t idx) {
     SetStringResult(result, idx, registry.NormalizeVAT(input));
   });
 }
@@ -63,7 +63,7 @@ static void VATNormalizeFunc(DataChunk& args, ExpressionState& state,
 static void VATIsValidSyntaxFunc(DataChunk& args, ExpressionState& state,
                                 Vector& result) {
   auto& registry = VATRegistry::Instance();
-  IterateSingleStringInput(args, result, [&](const std::string& input, size_t idx) {
+  IterateSingleStringInput(args, result, [&](std::string_view input, size_t idx) {
     auto split_result = registry.SplitVAT(input);
     if (!split_result.has_value()) {
       SetBoolResult(result, idx, false);
@@ -78,7 +78,7 @@ static void VATIsValidSyntaxFunc(DataChunk& args, ExpressionState& state,
 static void VATSplitFunc(DataChunk& args, ExpressionState& state,
                         Vector& result) {
   auto& registry = VATRegistry::Instance();
-  IterateSingleStringInput(args, result, [&](const std::string& input, size_t idx) {
+  IterateSingleStringInput(args, result, [&](std::string_view input, size_t idx) {
     auto split_result = registry.SplitVAT(input);
     if (!split_result.has_value()) {
       FlatVector::SetNull(result, idx, true);
@@ -93,7 +93,7 @@ static void VATSplitFunc(DataChunk& args, ExpressionState& state,
 static void VATExistsFunc(DataChunk& args, ExpressionState& state,
                          Vector& result) {
   auto& registry = VATRegistry::Instance();
-  IterateSingleStringInput(args, result, [&](const std::string& input, size_t idx) {
+  IterateSingleStringInput(args, result, [&](std::string_view input, size_t idx) {
     SetBoolResult(result, idx, registry.SplitVAT(input).has_value());
   });
 }
@@ -106,7 +106,7 @@ static void VATExistsFunc(DataChunk& args, ExpressionState& state,
 static void VATIsEUMemberFunc(DataChunk& args, ExpressionState& state,
                              Vector& result) {
   auto& registry = VATRegistry::Instance();
-  IterateSingleStringInput(args, result, [&](const std::string& country, size_t idx) {
+  IterateSingleStringInput(args, result, [&](std::string_view country, size_t idx) {
     SetBoolResult(result, idx, registry.IsEUMember(country));
   });
 }
@@ -115,7 +115,7 @@ static void VATIsEUMemberFunc(DataChunk& args, ExpressionState& state,
 static void VATCountryNameFunc(DataChunk& args, ExpressionState& state,
                               Vector& result) {
   auto& registry = VATRegistry::Instance();
-  IterateSingleStringInput(args, result, [&](const std::string& country, size_t idx) {
+  IterateSingleStringInput(args, result, [&](std::string_view country, size_t idx) {
     std::string name = registry.GetCountryName(country);
     if (name.empty()) {
       FlatVector::SetNull(result, idx, true);
@@ -130,8 +130,8 @@ static void VATCountryNameFunc(DataChunk& args, ExpressionState& state,
 static void VATFormatFunc(DataChunk& args, ExpressionState& state,
                          Vector& result) {
   auto& registry = VATRegistry::Instance();
-  IterateTwoStringInputs(args, result, [&](const std::string& vat,
-                                           const std::string& style,
+  IterateTwoStringInputs(args, result, [&](std::string_view vat,
+                                           std::string_view style,
                                            size_t idx) {
     auto split_result = registry.SplitVAT(vat);
     if (!split_result.has_value()) {
@@ -139,15 +139,14 @@ static void VATFormatFunc(DataChunk& args, ExpressionState& state,
       return;
     }
     auto [country, digits] = split_result.value();
-    auto normalized_style = StringUtil::Lower(style);
-    if (normalized_style == "plain") {
+    if (StringUtil::CIEquals(style.data(), style.size(), "plain", 5)) {
       SetStringResult(result, idx, digits);
-    } else if (normalized_style == "iso") {
+    } else if (StringUtil::CIEquals(style.data(), style.size(), "iso", 3)) {
       SetStringResult(result, idx, registry.ConvertISOToVAT(country) + digits);
     } else {
       throw InvalidInputException(
           "Unsupported VAT format style: %s (expected 'plain' or 'iso')",
-          style);
+          std::string(style));
     }
   });
 }
@@ -161,7 +160,7 @@ static void VATFormatFunc(DataChunk& args, ExpressionState& state,
 static void VATIsValidFunc(DataChunk& args, ExpressionState& state,
                           Vector& result) {
   auto& registry = VATRegistry::Instance();
-  IterateSingleStringInput(args, result, [&](const std::string& input, size_t idx) {
+  IterateSingleStringInput(args, result, [&](std::string_view input, size_t idx) {
     auto split_result = registry.SplitVAT(input);
     if (!split_result.has_value()) {
       SetBoolResult(result, idx, false);

@@ -1,4 +1,5 @@
 #include "anofox_ner.hpp"
+#include "anofox_raii.hpp"
 #include "anofox_trace.hpp"
 #include "yyjson.hpp"
 #include "duckdb.hpp"
@@ -168,16 +169,21 @@ bool WordPieceTokenizer::Load(const std::string &vocab_path) {
     std::string json_str = buffer.str();
     file.close();
 
-    // Parse JSON using yyjson
-    yyjson_doc *doc = yyjson_read(json_str.c_str(), json_str.size(), 0);
+    // Parse JSON using yyjson; the RAII guard frees the document on every
+    // exit path (issue #60).
+    struct YyjsonDocFree {
+        void operator()(yyjson_doc *doc_handle) const {
+            yyjson_doc_free(doc_handle);
+        }
+    };
+    UniqueHandle<yyjson_doc *, YyjsonDocFree, nullptr> doc(yyjson_read(json_str.c_str(), json_str.size(), 0));
     if (!doc) {
         AnofoxTrace(AnofoxLogLevel::Error, "ner: Failed to parse tokenizer JSON");
         return false;
     }
 
-    yyjson_val *root = yyjson_doc_get_root(doc);
+    yyjson_val *root = yyjson_doc_get_root(doc.Get());
     if (!root) {
-        yyjson_doc_free(doc);
         AnofoxTrace(AnofoxLogLevel::Error, "ner: Empty tokenizer JSON");
         return false;
     }
@@ -185,14 +191,12 @@ bool WordPieceTokenizer::Load(const std::string &vocab_path) {
     // Navigate to model.vocab
     yyjson_val *model = yyjson_obj_get(root, "model");
     if (!model) {
-        yyjson_doc_free(doc);
         AnofoxTrace(AnofoxLogLevel::Error, "ner: No 'model' key in tokenizer JSON");
         return false;
     }
 
     yyjson_val *vocab = yyjson_obj_get(model, "vocab");
     if (!vocab) {
-        yyjson_doc_free(doc);
         AnofoxTrace(AnofoxLogLevel::Error, "ner: No 'model.vocab' key in tokenizer JSON");
         return false;
     }
@@ -208,8 +212,6 @@ bool WordPieceTokenizer::Load(const std::string &vocab_path) {
             vocab_[std::string(token_str)] = token_id;
         }
     }
-
-    yyjson_doc_free(doc);
 
     AnofoxTrace(AnofoxLogLevel::Info, "ner: Loaded vocabulary with " + std::to_string(vocab_.size()) + " tokens");
     return !vocab_.empty();

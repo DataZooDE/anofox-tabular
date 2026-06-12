@@ -68,11 +68,14 @@ private:
 	 * Find all neighbors within epsilon radius
 	 * @param data: All data points
 	 * @param point_idx: Index of query point
-	 * @return Indices of neighbor points
+	 * @param neighbors: Output - indices of neighbor points; cleared first.
+	 *        Passed in so callers can reuse one scratch buffer across the
+	 *        many region queries of a fit (issue #60).
 	 */
-	std::vector<size_t> RegionQuery(
+	void RegionQuery(
 		const std::vector<std::vector<double>>& data,
-		size_t point_idx
+		size_t point_idx,
+		std::vector<size_t>& neighbors
 	) const;
 
 	/**
