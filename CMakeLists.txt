@@ -286,6 +286,34 @@ if(UNIX AND NOT APPLE)
     target_link_options(${LOADABLE_EXTENSION_NAME} PRIVATE -Wl,--allow-multiple-definition)
 endif()
 
+# --- C++ unit tests (Catch2, linked into DuckDB's unittest runner) ---
+
+# The `unittest` target is created by duckdb/test, which is configured *after*
+# out-of-tree extensions, so the registration has to be deferred to the end of
+# the top-level configure pass. Deferred-call arguments are re-evaluated at
+# execution time (in the deferring directory's scope), so the paths are stashed
+# in cache variables instead of being passed as arguments.
+set(ANOFOX_TABULAR_CPP_TEST_SOURCES
+    "${CMAKE_CURRENT_SOURCE_DIR}/test/cpp/test_email_internal.cpp"
+    CACHE INTERNAL "anofox_tabular C++ unit test sources")
+set(ANOFOX_TABULAR_CPP_TEST_INCLUDE_DIR
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/include"
+    CACHE INTERNAL "anofox_tabular C++ unit test include dir")
+
+function(anofox_register_cpp_tests)
+    if(TARGET unittest AND TARGET anofox_tabular_extension)
+        target_sources(unittest PRIVATE ${ANOFOX_TABULAR_CPP_TEST_SOURCES})
+        target_include_directories(unittest PRIVATE ${ANOFOX_TABULAR_CPP_TEST_INCLUDE_DIR})
+    endif()
+endfunction()
+
+# Note: not gated on ENABLE_UNITTEST_CPP_TESTS — that option only controls
+# DuckDB's own C++ test subdirectories (extension-ci-tools disables it), while
+# these tests belong to this extension and should always ship with `unittest`.
+if(CMAKE_VERSION VERSION_GREATER_EQUAL "3.19")
+    cmake_language(DEFER DIRECTORY ${CMAKE_SOURCE_DIR} CALL anofox_register_cpp_tests)
+endif()
+
 # --- Installation ---
 
 install(
