@@ -2696,6 +2696,29 @@ struct PIIAuditTableBindData : public TableFunctionData {
         : table_name(table), column_filter(cols) {}
 };
 
+// Resolve the VARCHAR columns of a table, optionally restricted to a filter list.
+// Shared by pii_audit_table and pii_scan_table.
+static std::vector<std::string> ResolvePIIScanColumns(ClientContext &context, const std::string &table_name,
+                                                      const std::vector<std::string> &column_filter) {
+    auto qname = QualifiedName::Parse(table_name);
+    auto &catalog = Catalog::GetCatalog(context, qname.catalog);
+    auto &entry =
+        catalog.GetEntry(context, CatalogType::TABLE_ENTRY, qname.schema, qname.name).Cast<TableCatalogEntry>();
+
+    std::vector<std::string> columns;
+    for (auto &col : entry.GetColumns().Logical()) {
+        if (col.Type().id() != LogicalTypeId::VARCHAR) {
+            continue;
+        }
+        if (!column_filter.empty() &&
+            std::find(column_filter.begin(), column_filter.end(), col.Name()) == column_filter.end()) {
+            continue;
+        }
+        columns.push_back(col.Name());
+    }
+    return columns;
+}
+
 struct PIIAuditTableResult {
     int64_t row_id;
     std::string column_name;
@@ -2710,10 +2733,25 @@ struct PIIAuditTableResult {
                             start_pos(0), end_pos(0), confidence(0.0) {}
 };
 
+// Streaming audit state: the source table is scanned column by column and
+// chunk by chunk; only the matches of the most recent input chunk are
+// buffered, so neither the input nor the full match set is materialized.
 struct PIIAuditTableState : public GlobalTableFunctionState {
-    idx_t current_index = 0;
-    std::vector<PIIAuditTableResult> results;
-    bool scanned = false;
+    bool initialized = false;
+    // Columns to audit (resolved from the catalog on first call)
+    std::vector<std::string> columns_to_scan;
+    idx_t column_idx = 0;
+    // Active streaming scan over the current column; the connection must
+    // outlive its streaming query result
+    unique_ptr<Connection> connection;
+    unique_ptr<QueryResult> column_result;
+    int64_t source_row = 0;  // 1-based row position within the current column scan
+    // Configuration snapshot taken once for the whole audit
+    PIIConfigSnapshot config;
+    MaskStrategy mask_strategy = MaskStrategy::REDACT;
+    // Matches detected but not yet emitted (bounded: refilled only when drained)
+    std::vector<PIIAuditTableResult> pending;
+    idx_t pending_offset = 0;
 };
 
 unique_ptr<GlobalTableFunctionState> PIIAuditTableInit(ClientContext &, TableFunctionInitInput &) {
@@ -2778,139 +2816,132 @@ unique_ptr<FunctionData> PIIAuditTableBind(ClientContext &context, TableFunction
 void PIIAuditTableFunction(ClientContext &context, TableFunctionInput &input, DataChunk &output) {
     auto &state = input.global_state->Cast<PIIAuditTableState>();
     auto &bind_data = input.bind_data->Cast<PIIAuditTableBindData>();
+    auto &engine = PIIEngine::Instance();
 
-    // On first call, scan the table
-    if (!state.scanned) {
-        state.scanned = true;
+    try {
+        if (!state.initialized) {
+            state.initialized = true;
+            // Resolve the VARCHAR columns to audit and snapshot the
+            // configuration once for the whole scan; enabled_types and
+            // min_confidence are applied centrally by PIIEngine::Detect
+            state.columns_to_scan = ResolvePIIScanColumns(context, bind_data.table_name, bind_data.column_filter);
+            state.config = PIIConfig::Get().Snapshot();
+            state.mask_strategy = state.config.default_mask_strategy;
+        }
 
-        try {
-            // Get table metadata from catalog
-            auto qname = QualifiedName::Parse(bind_data.table_name);
-            auto &catalog = Catalog::GetCatalog(context, qname.catalog);
-            auto &entry = catalog.GetEntry(context, CatalogType::TABLE_ENTRY, qname.schema, qname.name).Cast<TableCatalogEntry>();
+        // Refill the pending buffer by streaming input chunks until at least
+        // one match is found or all columns are exhausted. The buffer only
+        // ever holds the matches of a single input chunk.
+        while (state.pending_offset >= state.pending.size()) {
+            state.pending.clear();
+            state.pending_offset = 0;
 
-            // Get list of VARCHAR columns to scan
-            std::vector<std::string> columns_to_scan;
-            for (auto &col : entry.GetColumns().Logical()) {
-                if (col.Type().id() == LogicalTypeId::VARCHAR) {
-                    // If column filter is set, check if this column is in the filter
-                    if (!bind_data.column_filter.empty()) {
-                        bool found = false;
-                        for (const auto &filter_col : bind_data.column_filter) {
-                            if (filter_col == col.Name()) {
-                                found = true;
-                                break;
-                            }
-                        }
-                        if (!found) continue;
-                    }
-                    columns_to_scan.push_back(col.Name());
+            if (!state.column_result) {
+                if (state.column_idx >= state.columns_to_scan.size()) {
+                    break;  // All columns audited
                 }
-            }
+                const auto &col_name = state.columns_to_scan[state.column_idx];
+                std::string query =
+                    "SELECT " + QuoteSqlIdentifier(col_name) + " FROM " + BuildQueryTableRef(bind_data.table_name);
 
-            // Get PII engine and a snapshot of the configuration (taken once
-            // for the whole scan; enabled_types and min_confidence are
-            // applied centrally by PIIEngine::Detect)
-            auto &engine = PIIEngine::Instance();
-            const auto config = PIIConfig::Get().Snapshot();
-            auto mask_strategy = config.default_mask_strategy;
-
-            // For each column, query values and detect PII (row-level)
-            for (const auto &col_name : columns_to_scan) {
-                // Build query to get column values with row numbers
-                std::string query = "SELECT row_number() OVER () as _row_id, " + QuoteSqlIdentifier(col_name) +
-                                    " FROM " + BuildQueryTableRef(bind_data.table_name);
-
-                // Execute query using a new connection
-                Connection con(*context.db);
-                auto result = con.Query(query);
-
+                // Execute as a streaming query on a dedicated connection
+                // (the connection must outlive the streaming result)
+                state.connection = make_uniq<Connection>(*context.db);
+                auto result = state.connection->SendQuery(query);
                 if (result->HasError()) {
                     AnofoxTrace(AnofoxLogLevel::Warn, "pii_audit_table: Error querying column " + col_name);
+                    state.connection.reset();
+                    state.column_idx++;
                     continue;
                 }
-
-                while (true) {
-                    auto chunk = result->Fetch();
-                    if (!chunk || chunk->size() == 0) break;
-
-                    // Process each row
-                    for (idx_t row = 0; row < chunk->size(); row++) {
-                        auto row_id_val = chunk->GetValue(0, row);
-                        auto text_val = chunk->GetValue(1, row);
-
-                        if (text_val.IsNull()) continue;
-
-                        int64_t row_id = row_id_val.GetValue<int64_t>();
-                        std::string text = text_val.GetValue<std::string>();
-
-                        // Detect PII in this value (the snapshot's
-                        // enabled_types and min_confidence are applied)
-                        auto matches = engine.Detect(text, {}, config);
-
-                        // Add each match as a result row
-                        for (const auto &match : matches) {
-                            PIIAuditTableResult res;
-                            res.row_id = row_id;
-                            res.column_name = col_name;
-                            res.pii_type = match.type;
-                            res.original_value = text;
-                            res.masked_value = engine.Mask(text, mask_strategy, {}, config);
-                            res.start_pos = static_cast<int64_t>(match.start_pos);
-                            res.end_pos = static_cast<int64_t>(match.end_pos);
-                            res.confidence = match.confidence;
-
-                            state.results.push_back(std::move(res));
-                        }
-                    }
-                }
+                state.column_result = std::move(result);
+                state.source_row = 0;
             }
 
-        } catch (const std::exception &e) {
-            throw InvalidInputException("pii_audit_table: Failed to audit table - %s", e.what());
+            auto chunk = state.column_result->Fetch();
+            if (!chunk || chunk->size() == 0) {
+                if (state.column_result->HasError()) {
+                    AnofoxTrace(AnofoxLogLevel::Warn, "pii_audit_table: Error querying column " +
+                                                          state.columns_to_scan[state.column_idx]);
+                }
+                state.column_result.reset();
+                state.connection.reset();
+                state.column_idx++;
+                continue;
+            }
+
+            const auto &col_name = state.columns_to_scan[state.column_idx];
+            UnifiedVectorFormat fmt;
+            chunk->data[0].ToUnifiedFormat(chunk->size(), fmt);
+            auto values = UnifiedVectorFormat::GetData<string_t>(fmt);
+
+            for (idx_t row = 0; row < chunk->size(); row++) {
+                state.source_row++;  // NULL rows keep their position in the numbering
+                auto idx = fmt.sel->get_index(row);
+                if (!fmt.validity.RowIsValid(idx)) {
+                    continue;
+                }
+                std::string text = values[idx].GetString();
+
+                // Detect PII in this value (the snapshot's enabled_types and
+                // min_confidence are applied)
+                auto matches = engine.Detect(text, {}, state.config);
+                if (matches.empty()) {
+                    continue;
+                }
+                // Mask covers the whole value, so it is identical for every
+                // match of this row; compute it once
+                std::string masked = engine.Mask(text, state.mask_strategy, {}, state.config);
+
+                for (const auto &match : matches) {
+                    PIIAuditTableResult res;
+                    res.row_id = state.source_row;
+                    res.column_name = col_name;
+                    res.pii_type = match.type;
+                    res.original_value = text;
+                    res.masked_value = masked;
+                    res.start_pos = static_cast<int64_t>(match.start_pos);
+                    res.end_pos = static_cast<int64_t>(match.end_pos);
+                    res.confidence = match.confidence;
+
+                    state.pending.push_back(std::move(res));
+                }
+            }
         }
+    } catch (const std::exception &e) {
+        throw InvalidInputException("pii_audit_table: Failed to audit table - %s", e.what());
     }
 
-    // Output results
-    if (state.current_index >= state.results.size()) {
-        output.SetCardinality(0);
+    // Emit up to STANDARD_VECTOR_SIZE pending match rows
+    idx_t remaining = state.pending.size() - state.pending_offset;
+    idx_t count = MinValue<idx_t>(remaining, STANDARD_VECTOR_SIZE);
+    output.SetCardinality(count);
+    if (count == 0) {
         return;
     }
 
-    idx_t remaining = state.results.size() - state.current_index;
-    idx_t count = MinValue<idx_t>(remaining, STANDARD_VECTOR_SIZE);
-
-    output.SetCardinality(count);
+    auto row_ids = FlatVector::GetData<int64_t>(output.data[0]);
+    auto column_names = FlatVector::GetData<string_t>(output.data[1]);
+    auto pii_types = FlatVector::GetData<string_t>(output.data[2]);
+    auto original_values = FlatVector::GetData<string_t>(output.data[3]);
+    auto masked_values = FlatVector::GetData<string_t>(output.data[4]);
+    auto start_positions = FlatVector::GetData<int64_t>(output.data[5]);
+    auto end_positions = FlatVector::GetData<int64_t>(output.data[6]);
+    auto confidences = FlatVector::GetData<double>(output.data[7]);
 
     for (idx_t i = 0; i < count; i++) {
-        const auto &res = state.results[state.current_index + i];
-
-        // Column 0: row_id
-        output.SetValue(0, i, Value::BIGINT(res.row_id));
-
-        // Column 1: column_name
-        output.SetValue(1, i, Value(res.column_name));
-
-        // Column 2: pii_type
-        output.SetValue(2, i, Value(PIITypeToString(res.pii_type)));
-
-        // Column 3: original_value
-        output.SetValue(3, i, Value(res.original_value));
-
-        // Column 4: masked_value
-        output.SetValue(4, i, Value(res.masked_value));
-
-        // Column 5: start_pos
-        output.SetValue(5, i, Value::BIGINT(res.start_pos));
-
-        // Column 6: end_pos
-        output.SetValue(6, i, Value::BIGINT(res.end_pos));
-
-        // Column 7: confidence
-        output.SetValue(7, i, Value::DOUBLE(res.confidence));
+        const auto &res = state.pending[state.pending_offset + i];
+        row_ids[i] = res.row_id;
+        column_names[i] = StringVector::AddString(output.data[1], res.column_name);
+        pii_types[i] = StringVector::AddString(output.data[2], PIITypeToString(res.pii_type));
+        original_values[i] = StringVector::AddString(output.data[3], res.original_value);
+        masked_values[i] = StringVector::AddString(output.data[4], res.masked_value);
+        start_positions[i] = res.start_pos;
+        end_positions[i] = res.end_pos;
+        confidences[i] = res.confidence;
     }
 
-    state.current_index += count;
+    state.pending_offset += count;
 }
 
 TableFunctionSet CreatePIIAuditTableFunctionSet() {
@@ -2953,10 +2984,19 @@ struct PIIScanTableResult {
     PIIScanTableResult() : pii_type(PIIType::UNKNOWN), match_count(0), confidence(1.0) {}
 };
 
+// Streaming scan state: columns are scanned one at a time with streamed
+// input chunks; only the (small) per-column aggregates of columns that have
+// not been emitted yet are buffered.
 struct PIIScanTableState : public GlobalTableFunctionState {
-    idx_t current_index = 0;
-    std::vector<PIIScanTableResult> results;
-    bool scanned = false;
+    bool initialized = false;
+    // Columns to scan (resolved from the catalog on first call)
+    std::vector<std::string> columns_to_scan;
+    idx_t column_idx = 0;
+    // Configuration snapshot taken once for the whole scan
+    PIIConfigSnapshot config;
+    // Aggregated results of scanned columns that have not been emitted yet
+    std::vector<PIIScanTableResult> pending;
+    idx_t pending_offset = 0;
 };
 
 unique_ptr<GlobalTableFunctionState> PIIScanTableInit(ClientContext &, TableFunctionInitInput &) {
@@ -3012,121 +3052,102 @@ unique_ptr<FunctionData> PIIScanTableBind(ClientContext &context, TableFunctionB
 void PIIScanTableFunction(ClientContext &context, TableFunctionInput &input, DataChunk &output) {
     auto &state = input.global_state->Cast<PIIScanTableState>();
     auto &bind_data = input.bind_data->Cast<PIIScanTableBindData>();
+    auto &engine = PIIEngine::Instance();
 
-    // On first call, scan the table
-    if (!state.scanned) {
-        state.scanned = true;
-
-        try {
-            // Get table metadata from catalog
-            auto qname = QualifiedName::Parse(bind_data.table_name);
-            auto &catalog = Catalog::GetCatalog(context, qname.catalog);
-            auto &entry = catalog.GetEntry(context, CatalogType::TABLE_ENTRY, qname.schema, qname.name).Cast<TableCatalogEntry>();
-
-            // Get list of VARCHAR columns to scan
-            std::vector<std::string> columns_to_scan;
-            for (auto &col : entry.GetColumns().Logical()) {
-                if (col.Type().id() == LogicalTypeId::VARCHAR) {
-                    // If column filter is set, check if this column is in the filter
-                    if (!bind_data.column_filter.empty()) {
-                        bool found = false;
-                        for (const auto &filter_col : bind_data.column_filter) {
-                            if (filter_col == col.Name()) {
-                                found = true;
-                                break;
-                            }
-                        }
-                        if (!found) continue;
-                    }
-                    columns_to_scan.push_back(col.Name());
-                }
-            }
-
-            // For each column, query values and detect PII. The
-            // configuration snapshot is taken once for the whole scan.
-            auto &engine = PIIEngine::Instance();
-            const auto config = PIIConfig::Get().Snapshot();
-
-            for (const auto &col_name : columns_to_scan) {
-                // Build query to get column values
-                std::string query = "SELECT " + QuoteSqlIdentifier(col_name) + " FROM " +
-                                   BuildQueryTableRef(bind_data.table_name) +
-                                   " WHERE " + QuoteSqlIdentifier(col_name) + " IS NOT NULL";
-
-                // Execute query using a new connection
-                Connection con(*context.db);
-                auto result = con.Query(query);
-
-                if (result->HasError()) {
-                    AnofoxTrace(AnofoxLogLevel::Warn, "pii_scan_table: Error querying column " + col_name);
-                    continue;
-                }
-
-                // Aggregate PII detections by type
-                std::unordered_map<PIIType, PIIScanTableResult> col_results;
-
-                while (true) {
-                    auto chunk = result->Fetch();
-                    if (!chunk || chunk->size() == 0) break;
-
-                    // Collect all texts from this chunk for batch processing
-                    std::vector<std::string> batch_texts;
-                    batch_texts.reserve(chunk->size());
-
-                    for (idx_t row = 0; row < chunk->size(); row++) {
-                        auto val = chunk->GetValue(0, row);
-                        if (val.IsNull()) {
-                            batch_texts.push_back("");  // Placeholder for null values
-                        } else {
-                            batch_texts.push_back(val.GetValue<std::string>());
-                        }
-                    }
-
-                    // Run batch detection (pre-warms NER cache)
-                    auto batch_matches = engine.DetectBatch(batch_texts, {}, config);
-
-                    // Process results
-                    for (size_t i = 0; i < batch_matches.size(); i++) {
-                        for (const auto &match : batch_matches[i]) {
-                            auto &res = col_results[match.type];
-                            res.column_name = col_name;
-                            res.pii_type = match.type;
-                            res.match_count++;
-                            // Keep up to 5 samples
-                            if (res.sample_values.size() < 5) {
-                                res.sample_values.push_back(match.matched_text);
-                            }
-                            res.confidence = 1.0;  // Regex matches have full confidence
-                        }
-                    }
-                }
-
-                // Add results to output
-                for (auto &[type, res] : col_results) {
-                    state.results.push_back(std::move(res));
-                }
-            }
-
-        } catch (const std::exception &e) {
-            throw InvalidInputException("pii_scan_table: Failed to scan table - %s", e.what());
+    try {
+        if (!state.initialized) {
+            state.initialized = true;
+            // Resolve the VARCHAR columns to scan and snapshot the
+            // configuration once for the whole scan
+            state.columns_to_scan = ResolvePIIScanColumns(context, bind_data.table_name, bind_data.column_filter);
+            state.config = PIIConfig::Get().Snapshot();
         }
+
+        // Scan one source column at a time until at least one aggregate row
+        // is available; input chunks are streamed and never fully
+        // materialized. Per-type aggregation requires consuming a full
+        // column before its summary rows can be emitted.
+        while (state.pending_offset >= state.pending.size() && state.column_idx < state.columns_to_scan.size()) {
+            state.pending.clear();
+            state.pending_offset = 0;
+
+            const auto &col_name = state.columns_to_scan[state.column_idx];
+            state.column_idx++;
+
+            // Build query to get the non-NULL column values
+            std::string query = "SELECT " + QuoteSqlIdentifier(col_name) + " FROM " +
+                                BuildQueryTableRef(bind_data.table_name) + " WHERE " +
+                                QuoteSqlIdentifier(col_name) + " IS NOT NULL";
+
+            // Execute as a streaming query using a new connection
+            Connection con(*context.db);
+            auto result = con.SendQuery(query);
+            if (result->HasError()) {
+                AnofoxTrace(AnofoxLogLevel::Warn, "pii_scan_table: Error querying column " + col_name);
+                continue;
+            }
+
+            // Aggregate PII detections by type
+            std::unordered_map<PIIType, PIIScanTableResult> col_results;
+            std::vector<std::string> batch_texts;
+
+            while (true) {
+                auto chunk = result->Fetch();
+                if (!chunk || chunk->size() == 0) break;
+
+                UnifiedVectorFormat fmt;
+                chunk->data[0].ToUnifiedFormat(chunk->size(), fmt);
+                auto values = UnifiedVectorFormat::GetData<string_t>(fmt);
+
+                // Collect all texts from this chunk for batch processing
+                // (NULLs are filtered in the query; keep a placeholder for safety)
+                batch_texts.clear();
+                batch_texts.reserve(chunk->size());
+                for (idx_t row = 0; row < chunk->size(); row++) {
+                    auto idx = fmt.sel->get_index(row);
+                    batch_texts.emplace_back(fmt.validity.RowIsValid(idx) ? values[idx].GetString()
+                                                                          : std::string());
+                }
+
+                // Run batch detection (pre-warms NER cache)
+                auto batch_matches = engine.DetectBatch(batch_texts, {}, state.config);
+
+                // Process results
+                for (size_t i = 0; i < batch_matches.size(); i++) {
+                    for (const auto &match : batch_matches[i]) {
+                        auto &res = col_results[match.type];
+                        res.column_name = col_name;
+                        res.pii_type = match.type;
+                        res.match_count++;
+                        // Keep up to 5 samples
+                        if (res.sample_values.size() < 5) {
+                            res.sample_values.push_back(match.matched_text);
+                        }
+                        res.confidence = 1.0;  // Regex matches have full confidence
+                    }
+                }
+            }
+            if (result->HasError()) {
+                AnofoxTrace(AnofoxLogLevel::Warn, "pii_scan_table: Error querying column " + col_name);
+                continue;
+            }
+
+            // Stage this column's aggregates for emission
+            for (auto &[type, res] : col_results) {
+                state.pending.push_back(std::move(res));
+            }
+        }
+    } catch (const std::exception &e) {
+        throw InvalidInputException("pii_scan_table: Failed to scan table - %s", e.what());
     }
 
-    // Output results
-    if (state.current_index >= state.results.size()) {
-        output.SetCardinality(0);
-        return;
-    }
-
-    idx_t remaining = state.results.size() - state.current_index;
+    // Emit pending aggregate rows (at most a handful per column)
+    idx_t remaining = state.pending.size() - state.pending_offset;
     idx_t count = MinValue<idx_t>(remaining, STANDARD_VECTOR_SIZE);
-
     output.SetCardinality(count);
 
-    auto &sample_vec = output.data[3];
-
     for (idx_t i = 0; i < count; i++) {
-        const auto &res = state.results[state.current_index + i];
+        const auto &res = state.pending[state.pending_offset + i];
 
         // Column 0: column_name
         output.SetValue(0, i, Value(res.column_name));
@@ -3148,7 +3169,7 @@ void PIIScanTableFunction(ClientContext &context, TableFunctionInput &input, Dat
         output.SetValue(4, i, Value::DOUBLE(res.confidence));
     }
 
-    state.current_index += count;
+    state.pending_offset += count;
 }
 
 TableFunctionSet CreatePIIScanTableFunctionSet() {
