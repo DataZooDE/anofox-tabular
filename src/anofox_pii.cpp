@@ -2641,14 +2641,16 @@ void NERStatusFunction(ClientContext &, TableFunctionInput &input, DataChunk &ou
 
 #if HAVE_OPENVINO
     auto &ner = NERModelManager::Instance();
-    auto status = ner.GetStatus();
+    // Single consistent snapshot: status, message and paths are read under
+    // one lock so a concurrently loading model cannot produce torn strings
+    auto snapshot = ner.GetStatusSnapshot();
 
     // onnx_available (keep column name for backward compatibility)
     output.data[0].SetValue(0, Value::BOOLEAN(true));
 
     // model_status
     std::string status_str;
-    switch (status) {
+    switch (snapshot.status) {
         case NERStatus::NOT_LOADED: status_str = "NOT_LOADED"; break;
         case NERStatus::DOWNLOADING: status_str = "DOWNLOADING"; break;
         case NERStatus::LOADED: status_str = "LOADED"; break;
@@ -2659,13 +2661,13 @@ void NERStatusFunction(ClientContext &, TableFunctionInput &input, DataChunk &ou
     output.data[1].SetValue(0, Value(status_str));
 
     // model_path
-    output.data[2].SetValue(0, Value(ner.GetModelPath()));
+    output.data[2].SetValue(0, Value(snapshot.model_path));
 
     // model_size_mb
     output.data[3].SetValue(0, Value::DOUBLE(ner.GetModelSizeMB()));
 
     // status_message
-    output.data[4].SetValue(0, Value(ner.GetStatusMessage()));
+    output.data[4].SetValue(0, Value(snapshot.message));
 #else
     // OpenVINO not compiled in
     output.data[0].SetValue(0, Value::BOOLEAN(false));

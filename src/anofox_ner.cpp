@@ -11,7 +11,9 @@
 #include <cctype>
 #include <thread>
 #include <chrono>
+#include <cstdio>
 #include <cstring>
+#include <system_error>
 #include <curl/curl.h>
 
 #if HAVE_SENTENCEPIECE
@@ -55,16 +57,26 @@ const std::vector<std::string>& NERModelManager::GetLabels() {
 // ============================================================================
 
 /**
- * Metadata for supported NER models
+ * Metadata for supported NER models.
+ *
+ * All on-disk asset paths and download URLs are derived from this registry
+ * (one directory per model name), so a model may only be listed here if its
+ * assets are actually downloadable (issue #56). The previously advertised
+ * "xlm-roberta-multi" entry was removed: its HuggingFace URLs do not exist
+ * (HTTP 401, the repository has no ONNX export) and SentencePiece support is
+ * disabled in the build, so selecting it silently ran DistilBERT instead.
  */
 struct ModelMetadata {
-    std::string name;           // Short identifier (e.g., "distilbert-en")
-    std::string display_name;   // Human-readable name
-    std::string model_url;      // URL to download ONNX model
-    std::string tokenizer_url;  // URL to download tokenizer config
-    std::string tokenizer_type; // "wordpiece" or "openvino"
+    std::string name;            // Short identifier (e.g., "distilbert-en")
+    std::string display_name;    // Human-readable name
+    std::string model_url;       // URL to download ONNX model
+    std::string tokenizer_url;   // URL to download tokenizer config
+    std::string model_file;      // On-disk model file name inside the model directory
+    std::string tokenizer_file;  // On-disk tokenizer file name inside the model directory
+    std::string tokenizer_type;  // "wordpiece" or "sentencepiece"
     std::vector<std::string> languages;  // Supported languages
-    size_t model_size_mb;       // Approximate model size in MB
+    size_t model_size_mb;        // Approximate model size in MB
+    size_t max_seq_length;       // Maximum input sequence length (incl. special tokens)
 };
 
 /**
@@ -77,18 +89,12 @@ static const std::vector<ModelMetadata>& GetSupportedModels() {
             "DistilBERT English (Fast, 66MB)",
             "https://huggingface.co/onnx-community/distilbert-base-cased-finetuned-conll03-english-ONNX/resolve/main/onnx/model_quantized.onnx",
             "https://huggingface.co/onnx-community/distilbert-base-cased-finetuned-conll03-english-ONNX/resolve/main/tokenizer.json",
+            "model_quantized.onnx",
+            "tokenizer.json",
             "wordpiece",
             {"en"},
-            66
-        },
-        {
-            "xlm-roberta-multi",
-            "XLM-RoBERTa Multilingual Quantized (280MB)",
-            "https://huggingface.co/Davlan/xlm-roberta-large-finetuned-conll03-english/resolve/main/onnx/model_quantized.onnx",
-            "https://huggingface.co/Davlan/xlm-roberta-large-finetuned-conll03-english/resolve/main/tokenizer.json",
-            "openvino",  // Will use OpenVINO Tokenizers extension
-            {"en", "de", "es", "nl", "fr", "it", "pt", "pl", "ru", "zh", "ja", "ar"},
-            280
+            66,
+            NER_MAX_SEQ_LENGTH
         }
     };
     return models;
@@ -209,33 +215,8 @@ bool WordPieceTokenizer::Load(const std::string &vocab_path) {
     return !vocab_.empty();
 }
 
-std::vector<std::string> WordPieceTokenizer::Tokenize(const std::string &text) {
-    // Basic tokenization: split on whitespace and punctuation
-    std::vector<std::string> words;
-    std::string current_word;
-
-    for (size_t i = 0; i < text.size(); ++i) {
-        char c = text[i];
-        if (std::isspace(static_cast<unsigned char>(c))) {
-            if (!current_word.empty()) {
-                words.push_back(current_word);
-                current_word.clear();
-            }
-        } else if (std::ispunct(static_cast<unsigned char>(c))) {
-            if (!current_word.empty()) {
-                words.push_back(current_word);
-                current_word.clear();
-            }
-            words.push_back(std::string(1, c));
-        } else {
-            current_word += c;
-        }
-    }
-    if (!current_word.empty()) {
-        words.push_back(current_word);
-    }
-
-    return words;
+int64_t WordPieceTokenizer::SequenceEndTokenId() const {
+    return SEP_TOKEN_ID;
 }
 
 int WordPieceTokenizer::TokenToId(const std::string &token) const {
@@ -246,21 +227,22 @@ int WordPieceTokenizer::TokenToId(const std::string &token) const {
     return UNK_TOKEN_ID;
 }
 
-std::vector<int64_t> WordPieceTokenizer::Encode(const std::string &text) {
-    offsets_.clear();
-    std::vector<int64_t> input_ids;
+TokenizedInput WordPieceTokenizer::Encode(const std::string &text) const {
+    // All per-call state lives in `result`; this method only reads the shared
+    // vocabulary, so concurrent Encode() calls are safe (issue #50)
+    TokenizedInput result;
 
     if (vocab_.empty()) {
         AnofoxTrace(AnofoxLogLevel::Warn, "ner: Vocabulary not loaded, cannot encode");
-        return {};
+        return result;
     }
 
     // Add [CLS] token
-    input_ids.push_back(CLS_TOKEN_ID);
-    offsets_.push_back({0, 0});  // CLS has no text position
+    result.ids.push_back(CLS_TOKEN_ID);
+    result.offsets.push_back({0, 0});  // CLS has no text position
 
-    // Tokenize text into words
-    std::vector<std::string> words = Tokenize(text);
+    // Tokenize text into words (ASCII-focused splitting, see BasicWordSplit)
+    std::vector<std::string> words = BasicWordSplit(text);
 
     // Track position in original text
     size_t text_pos = 0;
@@ -285,12 +267,13 @@ std::vector<int64_t> WordPieceTokenizer::Encode(const std::string &text) {
             // Try to find longest matching subword in vocabulary
             while (end > start) {
                 std::string subword = prefix + word.substr(start, end - start);
-                if (vocab_.find(subword) != vocab_.end()) {
-                    input_ids.push_back(vocab_.at(subword));
+                auto it = vocab_.find(subword);
+                if (it != vocab_.end()) {
+                    result.ids.push_back(it->second);
                     // Calculate byte offsets for this subword
                     size_t byte_start = word_start + start;
                     size_t byte_end = word_start + end;
-                    offsets_.push_back({byte_start, byte_end});
+                    result.offsets.push_back({byte_start, byte_end});
                     start = end;
                     found = true;
                     break;
@@ -300,8 +283,8 @@ std::vector<int64_t> WordPieceTokenizer::Encode(const std::string &text) {
 
             if (!found) {
                 // No matching subword found, use [UNK]
-                input_ids.push_back(UNK_TOKEN_ID);
-                offsets_.push_back({word_start + start, word_start + start + 1});
+                result.ids.push_back(UNK_TOKEN_ID);
+                result.offsets.push_back({word_start + start, word_start + start + 1});
                 ++start;
             }
 
@@ -310,10 +293,10 @@ std::vector<int64_t> WordPieceTokenizer::Encode(const std::string &text) {
     }
 
     // Add [SEP] token
-    input_ids.push_back(SEP_TOKEN_ID);
-    offsets_.push_back({text.size(), text.size()});  // SEP has no text position
+    result.ids.push_back(SEP_TOKEN_ID);
+    result.offsets.push_back({text.size(), text.size()});  // SEP has no text position
 
-    return input_ids;
+    return result;
 }
 
 // ============================================================================
@@ -348,11 +331,13 @@ bool SentencePieceTokenizer::IsLoaded() const {
     return processor_ && processor_->GetPieceSize() > 0;
 }
 
-std::vector<int64_t> SentencePieceTokenizer::Encode(const std::string &text) {
-    offsets_.clear();
+TokenizedInput SentencePieceTokenizer::Encode(const std::string &text) const {
+    // All per-call state lives in `result`; the SentencePiece processor is
+    // only read, so concurrent Encode() calls are safe (issue #50)
+    TokenizedInput result;
 
     if (!IsLoaded() || text.empty()) {
-        return {};
+        return result;
     }
 
     // Tokenize using SentencePiece
@@ -361,17 +346,17 @@ std::vector<int64_t> SentencePieceTokenizer::Encode(const std::string &text) {
     if (!status.ok()) {
         AnofoxTrace(AnofoxLogLevel::Error,
                     "ner: SentencePiece encoding error: " + std::string(status.message()));
-        return {};
+        return result;
     }
 
     // Convert to int64_t and add special tokens
     // XLM-RoBERTa format: <s> tokens </s>
-    std::vector<int64_t> input_ids;
-    input_ids.reserve(piece_ids.size() + 2);
+    result.ids.reserve(piece_ids.size() + 2);
+    result.offsets.reserve(piece_ids.size() + 2);
 
     // Add <s> (BOS) token
-    input_ids.push_back(BOS_TOKEN_ID);
-    offsets_.push_back(std::make_pair(size_t(0), size_t(0)));  // BOS has no text position
+    result.ids.push_back(BOS_TOKEN_ID);
+    result.offsets.push_back(std::make_pair(size_t(0), size_t(0)));  // BOS has no text position
 
     // Get pieces with their byte offsets
     ::sentencepiece::SentencePieceText spt;
@@ -379,24 +364,24 @@ std::vector<int64_t> SentencePieceTokenizer::Encode(const std::string &text) {
     if (!status.ok()) {
         // Fallback: use the piece_ids without offsets
         for (int pid : piece_ids) {
-            input_ids.push_back(static_cast<int64_t>(pid));
-            offsets_.push_back(std::make_pair(size_t(0), size_t(0)));  // No offset info available
+            result.ids.push_back(static_cast<int64_t>(pid));
+            result.offsets.push_back(std::make_pair(size_t(0), size_t(0)));  // No offset info available
         }
     } else {
         // Use proper offsets from SentencePieceText
         for (int i = 0; i < spt.pieces_size(); ++i) {
             const auto &piece = spt.pieces(i);
-            input_ids.push_back(static_cast<int64_t>(piece.id()));
-            offsets_.push_back(std::make_pair(static_cast<size_t>(piece.begin()),
-                                              static_cast<size_t>(piece.end())));
+            result.ids.push_back(static_cast<int64_t>(piece.id()));
+            result.offsets.push_back(std::make_pair(static_cast<size_t>(piece.begin()),
+                                                    static_cast<size_t>(piece.end())));
         }
     }
 
     // Add </s> (EOS) token
-    input_ids.push_back(EOS_TOKEN_ID);
-    offsets_.push_back(std::make_pair(text.size(), text.size()));  // EOS has no text position
+    result.ids.push_back(EOS_TOKEN_ID);
+    result.offsets.push_back(std::make_pair(text.size(), text.size()));  // EOS has no text position
 
-    return input_ids;
+    return result;
 }
 
 #endif  // HAVE_SENTENCEPIECE
@@ -430,31 +415,117 @@ bool NERModelManager::IsAvailable() const {
 #endif
 }
 
+NERStatusSnapshot NERModelManager::GetStatusSnapshot() const {
+    NERStatusSnapshot snapshot;
+    {
+        std::lock_guard<std::mutex> lock(state_mutex_);
+        snapshot.status = status_.load();
+        snapshot.message = status_message_;
+        snapshot.model_path = model_path_;
+        snapshot.model_name = current_model_name_;
+        snapshot.device = device_name_;
+    }
+    if (snapshot.model_path.empty()) {
+        snapshot.model_path = DefaultModelPath();
+    }
+    return snapshot;
+}
+
+void NERModelManager::SetStatusMessage(const std::string &message) {
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    status_message_ = message;
+}
+
 std::string NERModelManager::GetStatusMessage() const {
+    std::lock_guard<std::mutex> lock(state_mutex_);
     return status_message_;
 }
 
-std::string NERModelManager::GetModelPath() const {
-    if (model_path_.empty()) {
-        // Default path: ~/.duckdb/extensions/anofox/ner/
+/**
+ * Base directory for all NER model assets: ~/.duckdb/extensions/anofox/ner
+ * Returns an empty path when no home directory can be determined.
+ */
+static std::filesystem::path NERModelBaseDir() {
 #ifdef _WIN32
-        // Windows: use USERPROFILE environment variable
-        const char* userprofile = std::getenv("USERPROFILE");
-        if (userprofile) {
-            auto path = std::filesystem::path(userprofile) / ".duckdb" / "extensions" / "anofox" / "ner" / "model_quantized.onnx";
-            return path.string();
-        }
+    // Windows: use USERPROFILE environment variable
+    const char* userprofile = std::getenv("USERPROFILE");
+    if (userprofile) {
+        return std::filesystem::path(userprofile) / ".duckdb" / "extensions" / "anofox" / "ner";
+    }
 #else
-        // Unix-like: use HOME environment variable
-        const char* home = std::getenv("HOME");
-        if (home) {
-            auto path = std::filesystem::path(home) / ".duckdb" / "extensions" / "anofox" / "ner" / "model_quantized.onnx";
-            return path.string();
-        }
+    // Unix-like: use HOME environment variable
+    const char* home = std::getenv("HOME");
+    if (home) {
+        return std::filesystem::path(home) / ".duckdb" / "extensions" / "anofox" / "ner";
+    }
 #endif
+    return {};
+}
+
+/**
+ * Per-model asset directory derived from the metadata registry:
+ * <base>/<model name> (issue #56: one directory per model so tokenizer and
+ * model assets always form a matched pair).
+ */
+static std::filesystem::path NERModelDir(const ModelMetadata &metadata) {
+    auto base = NERModelBaseDir();
+    if (base.empty()) {
+        return {};
+    }
+    return base / metadata.name;
+}
+
+/**
+ * Versions before issue #56 stored the DistilBERT assets directly in the
+ * base directory. Move them into the per-model directory so existing
+ * installations do not re-download ~66 MB.
+ */
+static void MigrateLegacyAssets(const ModelMetadata &metadata,
+                                const std::filesystem::path &model_dir) {
+    if (metadata.name != "distilbert-en" || model_dir.empty()) {
+        return;
+    }
+    namespace fs = std::filesystem;
+    try {
+        const auto base = model_dir.parent_path();
+        const auto legacy_model = base / metadata.model_file;
+        const auto legacy_tokenizer = base / metadata.tokenizer_file;
+        const auto new_model = model_dir / metadata.model_file;
+        const auto new_tokenizer = model_dir / metadata.tokenizer_file;
+        if (fs::exists(legacy_model) && fs::exists(legacy_tokenizer) &&
+            !fs::exists(new_model) && !fs::exists(new_tokenizer)) {
+            fs::create_directories(model_dir);
+            fs::rename(legacy_model, new_model);
+            fs::rename(legacy_tokenizer, new_tokenizer);
+            AnofoxTrace(AnofoxLogLevel::Info,
+                        "ner: Migrated legacy model assets to " + model_dir.string());
+        }
+    } catch (const std::exception &e) {
+        AnofoxTrace(AnofoxLogLevel::Warn,
+                    std::string("ner: Legacy asset migration failed: ") + e.what());
+    }
+}
+
+std::string NERModelManager::DefaultModelPath() {
+    const auto *metadata = GetModelMetadata(GetCurrentModelName());
+    if (!metadata) {
         return "";
     }
-    return model_path_;
+    auto model_dir = NERModelDir(*metadata);
+    if (model_dir.empty()) {
+        return "";
+    }
+    return (model_dir / metadata->model_file).string();
+}
+
+std::string NERModelManager::GetModelPath() const {
+    {
+        std::lock_guard<std::mutex> lock(state_mutex_);
+        if (!model_path_.empty()) {
+            return model_path_;
+        }
+    }
+    return DefaultModelPath();
 }
 
 double NERModelManager::GetModelSizeMB() const {
@@ -489,7 +560,7 @@ void NERModelManager::EnsureInitialized() {
     LoadModel();
 #else
     status_.store(NERStatus::NOT_AVAILABLE);
-    status_message_ = "OpenVINO not compiled in";
+    SetStatusMessage("OpenVINO not compiled in");
 #endif
 }
 
@@ -497,21 +568,49 @@ void NERModelManager::LoadModel() {
 #if HAVE_OPENVINO
     AnofoxTrace(AnofoxLogLevel::Info, "ner: Loading NER model...");
 
-    model_path_ = GetModelPath();
+    // Resolve the configured model in the metadata registry; all asset paths
+    // and download URLs are derived from the metadata (issue #56)
+    const std::string model_name = GetCurrentModelName();
+    const ModelMetadata *metadata = GetModelMetadata(model_name);
+    if (!metadata) {
+        status_.store(NERStatus::FAILED);
+        SetStatusMessage("Unknown NER model '" + model_name + "'. Valid models: " + GetValidModelNames());
+        AnofoxTrace(AnofoxLogLevel::Error, "ner: Unknown model: " + model_name);
+        return;
+    }
 
-    // Check if model file exists
-    if (!std::filesystem::exists(model_path_)) {
-        AnofoxTrace(AnofoxLogLevel::Info, "ner: Model not found, attempting download...");
+    const std::filesystem::path model_dir = NERModelDir(*metadata);
+    if (model_dir.empty()) {
+        status_.store(NERStatus::FAILED);
+        SetStatusMessage("Cannot determine NER model directory (HOME/USERPROFILE not set)");
+        AnofoxTrace(AnofoxLogLevel::Error, "ner: Cannot determine model directory");
+        return;
+    }
+    const std::string model_path = (model_dir / metadata->model_file).string();
+    const std::string tokenizer_path = (model_dir / metadata->tokenizer_file).string();
+    const std::string device_name = GetDevice();
+    {
+        std::lock_guard<std::mutex> lock(state_mutex_);
+        model_path_ = model_path;
+        current_model_name_ = model_name;
+    }
+
+    // Reuse assets downloaded by older versions into the flat base directory
+    MigrateLegacyAssets(*metadata, model_dir);
+
+    // Model and tokenizer must be present as a matched pair; if either is
+    // missing, (re-)download both from the metadata URLs
+    if (!std::filesystem::exists(model_path) || !std::filesystem::exists(tokenizer_path)) {
+        AnofoxTrace(AnofoxLogLevel::Info, "ner: Model assets not found, attempting download...");
         status_.store(NERStatus::DOWNLOADING);
-        status_message_ = "Downloading model from HuggingFace...";
+        SetStatusMessage("Downloading model from HuggingFace...");
 
         // Create directory if it doesn't exist
-        std::filesystem::path dir_path = std::filesystem::path(model_path_).parent_path();
-        std::filesystem::create_directories(dir_path);
+        std::filesystem::create_directories(model_dir);
 
-        if (!DownloadModel(model_path_)) {
+        if (!DownloadModel(*metadata, model_path, tokenizer_path)) {
             status_.store(NERStatus::FAILED);
-            status_message_ = "Failed to download model";
+            SetStatusMessage("Failed to download model");
             AnofoxTrace(AnofoxLogLevel::Error, "ner: Model download failed");
             return;
         }
@@ -520,7 +619,7 @@ void NERModelManager::LoadModel() {
     try {
         // Read model (supports .onnx directly via ONNX frontend)
         AnofoxTrace(AnofoxLogLevel::Info, "ner: Reading ONNX model with OpenVINO...");
-        std::shared_ptr<ov::Model> model = core_->read_model(model_path_);
+        std::shared_ptr<ov::Model> model = core_->read_model(model_path);
 
         // Reshape model to accept dynamic batch and sequence length
         // The ONNX model has dynamic shapes, but OpenVINO needs explicit configuration
@@ -538,9 +637,9 @@ void NERModelManager::LoadModel() {
         AnofoxTrace(AnofoxLogLevel::Info, "ner: Available OpenVINO devices: " + dev_list);
 
         // Compile model for configured device (default AUTO: selects GPU if available, falls back to CPU)
-        AnofoxTrace(AnofoxLogLevel::Info, "ner: Compiling model for device: " + device_name_);
+        AnofoxTrace(AnofoxLogLevel::Info, "ner: Compiling model for device: " + device_name);
         compiled_model_ = std::make_shared<ov::CompiledModel>(
-            core_->compile_model(model, device_name_)
+            core_->compile_model(model, device_name)
         );
 
         // Log the actual execution device(s) chosen by AUTO or by explicit selection
@@ -552,82 +651,157 @@ void NERModelManager::LoadModel() {
         }
         AnofoxTrace(AnofoxLogLevel::Info, "ner: Executing on: " + exec_dev_str);
 
-        // Create inference request
-        infer_request_ = std::make_shared<ov::InferRequest>(
-            compiled_model_->create_infer_request()
-        );
+        // Note: inference requests are created per ExtractEntities call;
+        // a single ov::InferRequest is stateful and must not be shared
+        // across DuckDB worker threads (issue #50)
 
-        // Create and load tokenizer based on model type
-        std::string model_name = GetCurrentModelName();
-        auto* metadata = GetModelMetadata(model_name);
-
-        if (metadata && metadata->tokenizer_type == "wordpiece") {
+        // Create and load the tokenizer matching the model's metadata. A
+        // model without a working tokenizer must not report LOADED, otherwise
+        // inference silently returns no entities (issue #56)
+        if (metadata->tokenizer_type == "wordpiece") {
             // DistilBERT uses WordPiece tokenizer (tokenizer.json)
             tokenizer_ = std::make_unique<WordPieceTokenizer>();
-            auto tokenizer_path = std::filesystem::path(model_path_).parent_path() / "tokenizer.json";
-            if (!tokenizer_->Load(tokenizer_path.string())) {
-                AnofoxTrace(AnofoxLogLevel::Warn, "ner: Failed to load tokenizer vocabulary, NER may not work correctly");
-            }
         }
 #if HAVE_SENTENCEPIECE
-        else if (metadata && metadata->tokenizer_type == "openvino") {
-            // XLM-RoBERTa uses SentencePiece tokenizer
+        else if (metadata->tokenizer_type == "sentencepiece") {
+            // XLM-RoBERTa class models use SentencePiece tokenizers
             tokenizer_ = std::make_unique<SentencePieceTokenizer>();
-            auto tokenizer_path = std::filesystem::path(model_path_).parent_path() / "sentencepiece.bpe.model";
-            if (!tokenizer_->Load(tokenizer_path.string())) {
-                AnofoxTrace(AnofoxLogLevel::Warn, "ner: Failed to load SentencePiece model, NER may not work correctly");
-            }
         }
 #endif
         else {
-            // Default to WordPiece for backward compatibility
-            tokenizer_ = std::make_unique<WordPieceTokenizer>();
-            auto tokenizer_path = std::filesystem::path(model_path_).parent_path() / "tokenizer.json";
-            if (!tokenizer_->Load(tokenizer_path.string())) {
-                AnofoxTrace(AnofoxLogLevel::Warn, "ner: Failed to load tokenizer vocabulary, NER may not work correctly");
-            }
+            status_.store(NERStatus::FAILED);
+            SetStatusMessage("Tokenizer type '" + metadata->tokenizer_type +
+                             "' is not supported in this build");
+            AnofoxTrace(AnofoxLogLevel::Error,
+                        "ner: Unsupported tokenizer type: " + metadata->tokenizer_type);
+            return;
         }
 
-        current_model_name_ = model_name;
+        if (!tokenizer_->Load(tokenizer_path)) {
+            status_.store(NERStatus::FAILED);
+            SetStatusMessage("Failed to load tokenizer from " + tokenizer_path);
+            AnofoxTrace(AnofoxLogLevel::Error,
+                        "ner: Failed to load tokenizer: " + tokenizer_path);
+            return;
+        }
+
+        // Bound inputs at the model's maximum sequence length (issue #56);
+        // written before LOADED is published, immutable afterwards
+        max_seq_length_ = metadata->max_seq_length;
+
+        {
+            std::lock_guard<std::mutex> lock(state_mutex_);
+            status_message_ = "Model loaded successfully (" + model_name + ", device: " + exec_dev_str + ")";
+        }
+        // Publish LOADED last: readers that observe LOADED are guaranteed to
+        // see the fully constructed compiled_model_ and tokenizer_
         status_.store(NERStatus::LOADED);
-        status_message_ = "Model loaded successfully (" + model_name + ", device: " + exec_dev_str + ")";
-        AnofoxTrace(AnofoxLogLevel::Info, "ner: NER model loaded from: " + model_path_);
+        AnofoxTrace(AnofoxLogLevel::Info, "ner: NER model loaded from: " + model_path);
 
     } catch (const ov::Exception &e) {
         status_.store(NERStatus::FAILED);
-        status_message_ = std::string("OpenVINO error: ") + e.what();
+        SetStatusMessage(std::string("OpenVINO error: ") + e.what());
         AnofoxTrace(AnofoxLogLevel::Error, "ner: Failed to load model: " + std::string(e.what()));
     } catch (const std::exception &e) {
         status_.store(NERStatus::FAILED);
-        status_message_ = std::string("Error: ") + e.what();
+        SetStatusMessage(std::string("Error: ") + e.what());
         AnofoxTrace(AnofoxLogLevel::Error, "ner: Failed to load model: " + std::string(e.what()));
     }
 #else
     status_.store(NERStatus::NOT_AVAILABLE);
-    status_message_ = "OpenVINO not compiled in";
+    SetStatusMessage("OpenVINO not compiled in");
 #endif
 }
 
-bool NERModelManager::DownloadModel(const std::string &dest_path) {
-    // HuggingFace URLs for the DistilBERT NER model
-    static const std::string MODEL_URL =
-        "https://huggingface.co/onnx-community/distilbert-base-cased-finetuned-conll03-english-ONNX/resolve/main/onnx/model_quantized.onnx";
-    static const std::string TOKENIZER_URL =
-        "https://huggingface.co/onnx-community/distilbert-base-cased-finetuned-conll03-english-ONNX/resolve/main/tokenizer.json";
+namespace {
 
-    std::filesystem::path model_dir = std::filesystem::path(dest_path).parent_path();
-    std::string tokenizer_path = (model_dir / "tokenizer.json").string();
+// RAII wrappers for the C resources used during download (issue #56)
+struct FileDeleter {
+    void operator()(std::FILE *file) const noexcept {
+        if (file) {
+            fclose(file);
+        }
+    }
+};
+using FileHandle = std::unique_ptr<std::FILE, FileDeleter>;
 
-    // Download both files
+struct CurlDeleter {
+    void operator()(CURL *curl) const noexcept {
+        if (curl) {
+            curl_easy_cleanup(curl);
+        }
+    }
+};
+using CurlHandle = std::unique_ptr<CURL, CurlDeleter>;
+
+/**
+ * Download `url` into a `<dest>.tmp` file and atomically rename it to `dest`
+ * on success, so a partially written file can never be mistaken for a valid
+ * asset. Returns an empty string on success, an error description otherwise.
+ */
+std::string DownloadToFileAtomic(const std::string &url, const std::string &dest) {
+    const std::string tmp_path = dest + ".tmp";
+
+    {
+        FileHandle file(fopen(tmp_path.c_str(), "wb"));
+        if (!file) {
+            return "failed to open file for writing: " + tmp_path;
+        }
+
+        CurlHandle curl(curl_easy_init());
+        if (!curl) {
+            return "failed to initialize curl";
+        }
+
+        curl_easy_setopt(curl.get(), CURLOPT_URL, url.c_str());
+        curl_easy_setopt(curl.get(), CURLOPT_WRITEFUNCTION, WriteDataToFile);
+        curl_easy_setopt(curl.get(), CURLOPT_WRITEDATA, file.get());
+        curl_easy_setopt(curl.get(), CURLOPT_FOLLOWLOCATION, 1L);
+        curl_easy_setopt(curl.get(), CURLOPT_CONNECTTIMEOUT, 30L);
+        curl_easy_setopt(curl.get(), CURLOPT_TIMEOUT, 600L);  // 10 minute timeout for large model
+        curl_easy_setopt(curl.get(), CURLOPT_FAILONERROR, 1L);
+        curl_easy_setopt(curl.get(), CURLOPT_SSL_VERIFYPEER, 1L);
+        curl_easy_setopt(curl.get(), CURLOPT_SSL_VERIFYHOST, 2L);
+        curl_easy_setopt(curl.get(), CURLOPT_USERAGENT, "anofox-tabular/1.0");
+
+        CURLcode res = curl_easy_perform(curl.get());
+        long http_code = 0;
+        curl_easy_getinfo(curl.get(), CURLINFO_RESPONSE_CODE, &http_code);
+
+        if (res != CURLE_OK) {
+            std::error_code ignored;
+            std::filesystem::remove(tmp_path, ignored);
+            return std::string(curl_easy_strerror(res)) + " (HTTP " + std::to_string(http_code) + ")";
+        }
+        // FileHandle goes out of scope here, flushing and closing the file
+        // before the rename below
+    }
+
+    try {
+        std::filesystem::rename(tmp_path, dest);
+    } catch (const std::exception &e) {
+        std::error_code ignored;
+        std::filesystem::remove(tmp_path, ignored);
+        return std::string("failed to rename downloaded file: ") + e.what();
+    }
+    return "";
+}
+
+} // anonymous namespace
+
+bool NERModelManager::DownloadModel(const ModelMetadata &metadata, const std::string &model_dest,
+                                    const std::string &tokenizer_dest) {
+    // Download both assets of the model described by the metadata registry;
+    // URLs are never hard-coded here (issue #56)
     struct FileToDownload {
         std::string url;
         std::string dest;
         std::string name;
     };
 
-    std::vector<FileToDownload> files = {
-        {TOKENIZER_URL, tokenizer_path, "tokenizer.json"},
-        {MODEL_URL, dest_path, "model_quantized.onnx"}
+    const std::vector<FileToDownload> files = {
+        {metadata.tokenizer_url, tokenizer_dest, metadata.tokenizer_file},
+        {metadata.model_url, model_dest, metadata.model_file}
     };
 
     const int max_retries = 3;
@@ -643,54 +817,15 @@ bool NERModelManager::DownloadModel(const std::string &dest_path) {
                 AnofoxTrace(AnofoxLogLevel::Info, "ner: Downloading " + file.name + " from HuggingFace...");
             }
 
-            status_message_ = "Downloading " + file.name + "...";
+            SetStatusMessage("Downloading " + file.name + "...");
 
-            // Open file for writing
-            FILE *fp = fopen(file.dest.c_str(), "wb");
-            if (!fp) {
-                AnofoxTrace(AnofoxLogLevel::Error, "ner: Failed to open file for writing: " + file.dest);
-                return false;
-            }
-
-            // Initialize curl
-            CURL *curl = curl_easy_init();
-            if (!curl) {
-                fclose(fp);
-                AnofoxTrace(AnofoxLogLevel::Error, "ner: Failed to initialize curl");
-                return false;
-            }
-
-            // Configure curl options
-            curl_easy_setopt(curl, CURLOPT_URL, file.url.c_str());
-            curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteDataToFile);
-            curl_easy_setopt(curl, CURLOPT_WRITEDATA, fp);
-            curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
-            curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 30L);
-            curl_easy_setopt(curl, CURLOPT_TIMEOUT, 600L);  // 10 minute timeout for large model
-            curl_easy_setopt(curl, CURLOPT_FAILONERROR, 1L);
-            curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 1L);
-            curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 2L);
-            curl_easy_setopt(curl, CURLOPT_USERAGENT, "anofox-tabular/1.0");
-
-            // Perform download
-            CURLcode res = curl_easy_perform(curl);
-            long http_code = 0;
-            curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
-
-            curl_easy_cleanup(curl);
-            fclose(fp);
-
-            if (res == CURLE_OK) {
+            std::string error = DownloadToFileAtomic(file.url, file.dest);
+            if (error.empty()) {
                 download_success = true;
                 AnofoxTrace(AnofoxLogLevel::Info, "ner: Download complete: " + file.name);
             } else {
-                const char *error_msg = curl_easy_strerror(res);
                 AnofoxTrace(AnofoxLogLevel::Warn,
-                    "ner: Download attempt " + std::to_string(attempt) + " failed: " +
-                    std::string(error_msg) + " (HTTP " + std::to_string(http_code) + ")");
-
-                // Remove partial file
-                std::filesystem::remove(file.dest);
+                    "ner: Download attempt " + std::to_string(attempt) + " failed: " + error);
 
                 if (attempt < max_retries) {
                     int wait_time = 1 << attempt;
@@ -704,23 +839,29 @@ bool NERModelManager::DownloadModel(const std::string &dest_path) {
         if (!download_success) {
             AnofoxTrace(AnofoxLogLevel::Error,
                 "ner: Failed to download " + file.name + " after " + std::to_string(max_retries) + " attempts");
-            status_message_ = "Failed to download " + file.name;
+            SetStatusMessage("Failed to download " + file.name);
             return false;
         }
     }
 
-    status_message_ = "Download complete";
+    // Both assets must exist as a matched pair before declaring success
+    if (!std::filesystem::exists(model_dest) || !std::filesystem::exists(tokenizer_dest)) {
+        AnofoxTrace(AnofoxLogLevel::Error,
+            "ner: Download finished but assets are incomplete (model/tokenizer pair mismatch)");
+        SetStatusMessage("Download incomplete: model/tokenizer asset pair mismatch");
+        return false;
+    }
+
+    SetStatusMessage("Download complete");
     return true;
 }
 
-std::vector<NEREntity> NERModelManager::ExtractEntities(const std::string &text) {
+std::vector<NEREntity> NERModelManager::RunSingleInference(const std::string &text) {
 #if HAVE_OPENVINO
-    if (!IsAvailable()) {
-        return {};
-    }
-
-    // Check cache first
-    if (result_cache_ && result_cache_->Capacity() > 0) {
+    // Check cache first. Get/Put are fully synchronized internally and Put is
+    // a safe no-op when the capacity is 0, so no unsynchronized
+    // Capacity() pre-check is needed (issue #50)
+    if (result_cache_) {
         auto cached = result_cache_->Get(text);
         if (cached) {
             AnofoxTrace(AnofoxLogLevel::Debug, "ner: Cache hit");
@@ -729,18 +870,31 @@ std::vector<NEREntity> NERModelManager::ExtractEntities(const std::string &text)
     }
 
     try {
-        // Tokenize input
+        // tokenizer_ and compiled_model_ are immutable once status_ is
+        // LOADED (checked by the callers), so reading them here is safe
         if (!tokenizer_ || !tokenizer_->IsLoaded()) {
             AnofoxTrace(AnofoxLogLevel::Error, "ner: Tokenizer not loaded");
             return {};
         }
-        auto input_ids = tokenizer_->Encode(text);
-        if (input_ids.empty()) {
+
+        // Tokenize input; ids and offsets are returned by value so no
+        // tokenizer state is shared between concurrent calls (issue #50)
+        TokenizedInput tokenized = tokenizer_->Encode(text);
+        if (tokenized.ids.empty()) {
             return {};
         }
 
-        auto offsets = tokenizer_->GetOffsets();
-        size_t actual_length = input_ids.size();
+        // Bound the sequence at the model's maximum length (issue #56).
+        // Truncation drops whole tokens only, so the retained byte offsets
+        // are still valid; text beyond the limit is ignored.
+        if (tokenized.ids.size() > max_seq_length_) {
+            AnofoxTrace(AnofoxLogLevel::Debug,
+                "ner: Truncating input from " + std::to_string(tokenized.ids.size()) +
+                " to " + std::to_string(max_seq_length_) + " tokens (model limit)");
+            TruncateTokenizedInput(tokenized, max_seq_length_, tokenizer_->SequenceEndTokenId());
+        }
+
+        size_t actual_length = tokenized.ids.size();
 
         // Pad to minimum length to avoid OpenVINO shape inference issues
         // with very short sequences in the quantized model
@@ -754,7 +908,7 @@ std::vector<NEREntity> NERModelManager::ExtractEntities(const std::string &text)
         }
 
         // Pad input_ids with 0 (PAD token)
-        input_ids.resize(seq_length, 0);
+        tokenized.ids.resize(seq_length, 0);
 
         // Create input tensors
         ov::Shape input_shape = {1, seq_length};
@@ -765,26 +919,34 @@ std::vector<NEREntity> NERModelManager::ExtractEntities(const std::string &text)
         // Copy data to tensors
         int64_t* input_ids_data = input_ids_tensor.data<int64_t>();
         int64_t* attention_data = attention_mask_tensor.data<int64_t>();
-        std::memcpy(input_ids_data, input_ids.data(), input_ids.size() * sizeof(int64_t));
+        std::memcpy(input_ids_data, tokenized.ids.data(), tokenized.ids.size() * sizeof(int64_t));
         std::memcpy(attention_data, attention_mask.data(), attention_mask.size() * sizeof(int64_t));
 
+        // Create a per-call inference request: ov::CompiledModel is
+        // thread-safe for creating requests, while a single ov::InferRequest
+        // is stateful and must not be shared across threads (issue #50)
+        ov::InferRequest infer_request = compiled_model_->create_infer_request();
+
         // Set input tensors
-        infer_request_->set_tensor("input_ids", input_ids_tensor);
-        infer_request_->set_tensor("attention_mask", attention_mask_tensor);
+        infer_request.set_tensor("input_ids", input_ids_tensor);
+        infer_request.set_tensor("attention_mask", attention_mask_tensor);
 
         // Run inference
-        infer_request_->infer();
+        infer_request.infer();
 
-        // Get output tensor
-        ov::Tensor output_tensor = infer_request_->get_output_tensor(0);
-        float* logits_data = output_tensor.data<float>();
+        // Get output tensor and validate its shape before reading any logits;
+        // a mismatch would mean an out-of-bounds read (issue #56)
+        ov::Tensor output_tensor = infer_request.get_output_tensor(0);
+        const ov::Shape &output_shape = output_tensor.get_shape();
+        ValidateLogitsShape(output_shape, seq_length, static_cast<size_t>(NUM_LABELS));
+        const float* logits_data = output_tensor.data<float>();
 
         std::vector<float> logits(logits_data, logits_data + seq_length * NUM_LABELS);
 
-        auto entities = PostProcess(logits, seq_length, text, offsets);
+        auto entities = PostProcess(logits, seq_length, text, tokenized.offsets);
 
-        // Store in cache
-        if (result_cache_ && result_cache_->Capacity() > 0) {
+        // Store in cache (no-op when the cache is disabled)
+        if (result_cache_) {
             result_cache_->Put(text, entities);
         }
 
@@ -797,6 +959,17 @@ std::vector<NEREntity> NERModelManager::ExtractEntities(const std::string &text)
         AnofoxTrace(AnofoxLogLevel::Error, "ner: Inference error: " + std::string(e.what()));
         return {};
     }
+#else
+    return {};
+#endif
+}
+
+std::vector<NEREntity> NERModelManager::ExtractEntities(const std::string &text) {
+#if HAVE_OPENVINO
+    if (!IsAvailable() || text.empty()) {
+        return {};
+    }
+    return RunSingleInference(text);
 #else
     return {};
 #endif
@@ -999,12 +1172,16 @@ void NERModelManager::ClearCache() {
 }
 
 void NERModelManager::SetDevice(const std::string &device_name) {
-    device_name_ = device_name;
+    {
+        std::lock_guard<std::mutex> lock(state_mutex_);
+        device_name_ = device_name;
+    }
     AnofoxTrace(AnofoxLogLevel::Info,
                 "ner: Device set to '" + device_name + "' (reload required for changes to take effect)");
 }
 
 std::string NERModelManager::GetDevice() const {
+    std::lock_guard<std::mutex> lock(state_mutex_);
     return device_name_;
 }
 
@@ -1021,138 +1198,39 @@ std::vector<std::string> NERModelManager::GetAvailableDevices() const {
 // ============================================================================
 
 std::vector<std::vector<NEREntity>> NERModelManager::ExtractEntitiesBatch(
-    const std::vector<std::string> &texts,
-    size_t max_batch_size
+    const std::vector<std::string> &texts
 ) {
-#if HAVE_OPENVINO
     std::vector<std::vector<NEREntity>> all_results(texts.size());
 
+#if HAVE_OPENVINO
     if (!IsAvailable() || texts.empty()) {
         return all_results;
     }
 
-    // Phase 1: Check cache for all texts and identify cache misses
-    std::vector<size_t> cache_miss_indices;
+    // Deduplicate inputs; RunSingleInference consults the result cache
+    // itself, so duplicate texts (and previously cached texts) only run
+    // inference once
     std::unordered_map<std::string, std::vector<size_t>> text_to_indices;
-
     for (size_t i = 0; i < texts.size(); ++i) {
-        const auto &text = texts[i];
-        if (text.empty()) {
-            // Empty text gets empty result
-            continue;
+        if (!texts[i].empty()) {
+            // Empty texts keep their default empty result
+            text_to_indices[texts[i]].push_back(i);
         }
-
-        // Check cache first
-        if (result_cache_ && result_cache_->Capacity() > 0) {
-            auto cached = result_cache_->Get(text);
-            if (cached) {
-                all_results[i] = *cached;
-                AnofoxTrace(AnofoxLogLevel::Debug, "ner: Batch cache hit");
-                continue;
-            }
-        }
-
-        // Track which indices need this text (deduplication)
-        auto it = text_to_indices.find(text);
-        if (it == text_to_indices.end()) {
-            cache_miss_indices.push_back(i);
-            text_to_indices[text] = {i};
-        } else {
-            it->second.push_back(i);
-        }
-    }
-
-    if (cache_miss_indices.empty()) {
-        // All texts were in cache
-        return all_results;
     }
 
     AnofoxTrace(AnofoxLogLevel::Debug,
-                "ner: Batch processing " + std::to_string(cache_miss_indices.size()) +
+                "ner: Batch processing " + std::to_string(text_to_indices.size()) +
                 " unique texts (" + std::to_string(texts.size()) + " total)");
 
-    // Phase 2: Process cache misses sequentially (true batching would require dynamic model)
-    // Note: We still get cache benefit for duplicate texts within the batch
-    for (size_t idx : cache_miss_indices) {
-        const auto &text = texts[idx];
-
-        try {
-            // Tokenize input
-            if (!tokenizer_ || !tokenizer_->IsLoaded()) {
-                continue;
-            }
-            auto input_ids = tokenizer_->Encode(text);
-            if (input_ids.empty()) {
-                continue;
-            }
-
-            auto offsets = tokenizer_->GetOffsets();
-            size_t actual_length = input_ids.size();
-
-            // Pad to minimum length to avoid OpenVINO shape inference issues
-            static const size_t MIN_SEQ_LENGTH = 16;
-            size_t seq_length = std::max(actual_length, MIN_SEQ_LENGTH);
-
-            // Create attention mask (1 for real tokens, 0 for padding)
-            std::vector<int64_t> attention_mask(seq_length, 0);
-            for (size_t i = 0; i < actual_length; ++i) {
-                attention_mask[i] = 1;
-            }
-
-            // Pad input_ids with 0 (PAD token)
-            input_ids.resize(seq_length, 0);
-
-            // Create input tensors
-            ov::Shape input_shape = {1, seq_length};
-
-            ov::Tensor input_ids_tensor(ov::element::i64, input_shape);
-            ov::Tensor attention_mask_tensor(ov::element::i64, input_shape);
-
-            // Copy data to tensors
-            int64_t* input_ids_data = input_ids_tensor.data<int64_t>();
-            int64_t* attention_data = attention_mask_tensor.data<int64_t>();
-            std::memcpy(input_ids_data, input_ids.data(), input_ids.size() * sizeof(int64_t));
-            std::memcpy(attention_data, attention_mask.data(), attention_mask.size() * sizeof(int64_t));
-
-            // Set input tensors
-            infer_request_->set_tensor("input_ids", input_ids_tensor);
-            infer_request_->set_tensor("attention_mask", attention_mask_tensor);
-
-            // Run inference
-            infer_request_->infer();
-
-            // Get output tensor
-            ov::Tensor output_tensor = infer_request_->get_output_tensor(0);
-            float* logits_data = output_tensor.data<float>();
-
-            std::vector<float> logits(logits_data, logits_data + seq_length * NUM_LABELS);
-
-            auto entities = PostProcess(logits, seq_length, text, offsets);
-
-            // Store in cache
-            if (result_cache_ && result_cache_->Capacity() > 0) {
-                result_cache_->Put(text, entities);
-            }
-
-            // Assign result to all indices that have this text
-            auto &indices = text_to_indices[text];
-            for (size_t i : indices) {
-                all_results[i] = entities;
-            }
-
-        } catch (const ov::Exception &e) {
-            AnofoxTrace(AnofoxLogLevel::Error,
-                        "ner: OpenVINO batch inference error: " + std::string(e.what()));
-        } catch (const std::exception &e) {
-            AnofoxTrace(AnofoxLogLevel::Error,
-                        "ner: Batch inference error: " + std::string(e.what()));
+    for (const auto &entry : text_to_indices) {
+        auto entities = RunSingleInference(entry.first);
+        for (size_t i : entry.second) {
+            all_results[i] = entities;
         }
     }
+#endif
 
     return all_results;
-#else
-    return {};
-#endif
 }
 
 // ============================================================================
@@ -1178,20 +1256,31 @@ void SetNERModelOption(ClientContext &context, SetScope scope, Value &parameter)
     }
     auto model_name = StringValue::Get(parameter);
 
-    // Validate model name
+    // Validate model name against the metadata registry: only models whose
+    // assets are actually downloadable are listed (issue #56)
     if (!GetModelMetadata(model_name)) {
         throw InvalidInputException(
             "Unsupported NER model: " + model_name + ". Valid models: " + GetValidModelNames());
     }
 
-    // Store the new model name
+    // Switching models after the model has been loaded (or while a load is in
+    // progress) is rejected instead of silently doing nothing: the #50
+    // architecture treats compiled model and tokenizer as immutable once
+    // LOADED is published, so a hot swap is not safe (issue #56)
+    auto snapshot = NERModelManager::Instance().GetStatusSnapshot();
+    const bool load_active = snapshot.status == NERStatus::LOADED ||
+                             snapshot.status == NERStatus::DOWNLOADING;
+    if (load_active && model_name != snapshot.model_name) {
+        throw InvalidInputException(
+            "anofox_ner_model cannot be changed after the NER model has been loaded "
+            "(currently '" + snapshot.model_name + "'). Restart the process to switch models.");
+    }
+
+    // Store the new model name; it takes effect on the first model load
     SetCurrentModelName(model_name);
 
     AnofoxTrace(AnofoxLogLevel::Info,
-                "ner: Model set to '" + model_name + "' (reload required for changes to take effect)");
-
-    // Note: Actual model reload will happen on next EnsureInitialized() call
-    // TODO: Implement NERModelManager::ReloadModel() for immediate reload
+                "ner: Model set to '" + model_name + "' (takes effect on first model load)");
 }
 
 void SetNERDeviceOption(ClientContext &context, SetScope scope, Value &parameter) {
@@ -1214,7 +1303,7 @@ void RegisterNEROptions(ExtensionLoader &loader) {
                               SetNERCacheSizeOption);
 
     config.AddExtensionOption("anofox_ner_model",
-                              "NER model to use: distilbert-en (fast, English) or xlm-roberta-multi (multilingual)",
+                              "NER model to use (supported: distilbert-en); must be set before the model is first loaded",
                               LogicalTypeId::VARCHAR,
                               Value("distilbert-en"),
                               SetNERModelOption);
