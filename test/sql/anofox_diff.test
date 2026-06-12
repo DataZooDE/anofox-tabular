@@ -295,17 +295,17 @@ added	3	2024-01-03	300.00	pending
 changed	1	2024-01-02	200.00	completed
 removed	2	2024-01-01	NULL	NULL
 
-# Test 4: HashDiff with custom bisection_threshold
-query I
+# Test 4: HashDiff rejects the unimplemented bisection_threshold parameter
+statement error
 SELECT COUNT(*) FROM diff_hashdiff('source_data', 'target_data', 'id', 1000);
 ----
-3
+bisection
 
-# Test 5: HashDiff with bisection_threshold and bisection_factor
-query I
+# Test 5: HashDiff rejects bisection_threshold and bisection_factor
+statement error
 SELECT COUNT(*) FROM diff_hashdiff('source_data', 'target_data', 'id', 1000, 5);
 ----
-3
+bisection
 
 # Test 6: Verify HashDiff produces same results as JoinDiff
 statement ok

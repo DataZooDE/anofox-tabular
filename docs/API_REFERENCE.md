@@ -1731,73 +1731,80 @@ Compare tables and identify changes for migration validation and regression test
 
 ### Functions
 
-#### `anofox_tab_diff_ (alias: diff_hashdiff`
+#### `anofox_tab_diff_joindiff` (alias: `diff_joindiff`)
 
-Fast hash-based summary diff (efficient for large tables).
+Detailed row-level diff between two tables or views.
 
 **Signature:**
 ```sql
-anofox_tab_diff_ (alias: diff_hashdiff(
+anofox_tab_diff_joindiff(
     source VARCHAR,
     target VARCHAR,
-    pk_cols LIST<VARCHAR>
-    [, compare_cols LIST<VARCHAR>]
+    primary_key VARCHAR | LIST<VARCHAR>
+    [, compare_columns LIST<VARCHAR>]
+    [, include_all BOOLEAN]
 ) → TABLE
 ```
 
 **Parameters:**
-- `source`: Source table name
-- `target`: Target table name
-- `pk_cols`: Primary key columns for matching rows
-- `compare_cols`: Optional list of columns to compare (default: all columns)
+- `source`: Source table or view name
+- `target`: Target table or view name
+- `primary_key`: Primary key column(s) for matching rows (single name or list)
+- `compare_columns`: Optional list of columns to compare (default: all
+  non-key columns present in both tables)
+- `include_all`: Include `unchanged` rows in the output (default: `false`)
 
-**Returns:**
-```sql
-TABLE(
-    added BIGINT,
-    removed BIGINT,
-    changed BIGINT,
-    unchanged BIGINT
-)
-```
-
-**Example:**
-```sql
-SELECT * FROM anofox_tab_diff_ (alias: diff_hashdiff('source_tbl', 'target_tbl', ['id']);
--- Returns: {added: 150, removed: 25, changed: 300, unchanged: 10000}
-```
-
----
-
-#### `anofox_tab_diff_ (alias: diff_joindiff`
-
-Detailed row-level diff with source/target data (slower but comprehensive).
-
-**Signature:**
-```sql
-anofox_tab_diff_ (alias: diff_joindiff(
-    source VARCHAR,
-    target VARCHAR,
-    pk_cols LIST<VARCHAR>
-    [, compare_cols LIST<VARCHAR>]
-) → TABLE
-```
+**Semantics:**
+- Primary keys are matched NULL-safely (`IS NOT DISTINCT FROM`), so rows with
+  NULL key values are compared across sides instead of being misreported as
+  added/removed.
+- Primary key and compare columns are validated against both table schemas at
+  bind time; missing columns or tables produce a clear binder error.
 
 **Returns:**
 ```sql
 TABLE(
     diff_type VARCHAR,      -- 'added', 'removed', 'changed', 'unchanged'
-    row_id BIGINT,          -- Row identifier
-    source_* VARCHAR,       -- Source column values (prefixed with 'source_')
-    target_* VARCHAR        -- Target column values (prefixed with 'target_')
+    <primary key columns>,  -- COALESCE of source/target key values
+    <target columns>        -- remaining target columns (NULL for removed rows)
 )
 ```
 
 **Example:**
 ```sql
-SELECT * FROM anofox_tab_diff_ (alias: diff_joindiff('source_tbl', 'target_tbl', ['user_id', 'date'])
+SELECT * FROM diff_joindiff('source_tbl', 'target_tbl', ['user_id', 'date'])
 WHERE diff_type IN ('added', 'changed')
 LIMIT 100;
+```
+
+---
+
+#### `anofox_tab_diff_hashdiff` (alias: `diff_hashdiff`)
+
+Row-level diff between two tables or views. Currently computes exactly the
+same result as `diff_joindiff` (without `compare_columns`/`include_all`).
+
+**Signature:**
+```sql
+anofox_tab_diff_hashdiff(
+    source VARCHAR,
+    target VARCHAR,
+    primary_key VARCHAR | LIST<VARCHAR>
+) → TABLE
+```
+
+**Parameters:**
+- `source`: Source table or view name
+- `target`: Target table or view name
+- `primary_key`: Primary key column(s) for matching rows (single name or list)
+
+**Note:** The `bisection_threshold` and `bisection_factor` parameters of the
+hash/bisection algorithm are **not implemented**. Passing them raises a binder
+error instead of being silently ignored.
+
+**Example:**
+```sql
+SELECT * FROM diff_hashdiff('source_tbl', 'target_tbl', ['id']);
 ```
 
 ---
@@ -2079,9 +2086,10 @@ SET anofox_telemetry_key = 'your_custom_key';
    - Use `'summary'` output mode for large tables to reduce memory usage
 
 9. **Data diffing**:
-   - `anofox_tab_diff_ (alias: diff_hashdiff`: Fast, O(n) complexity, returns summary statistics only
-   - `anofox_tab_diff_ (alias: diff_joindiff`: Slower, O(n log n) complexity, returns detailed row-level changes
-   - Both functions support compound primary keys
+   - `anofox_tab_diff_joindiff` (alias `diff_joindiff`): detailed row-level changes
+   - `anofox_tab_diff_hashdiff` (alias `diff_hashdiff`): currently identical to
+     `diff_joindiff`; the bisection parameters are not implemented and rejected
+   - Both functions support compound primary keys and match keys NULL-safely
 
 ---
 
