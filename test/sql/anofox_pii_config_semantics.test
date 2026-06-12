@@ -1,0 +1,187 @@
+# name: test/sql/anofox_pii_config_semantics.test
+# description: PII configuration semantics (enabled_types, min_confidence) and overlap-safe masking (#49)
+# group: [anofox_tabular]
+
+require anofox_tabular
+
+statement ok
+LOAD anofox_tabular
+
+# ============================================================================
+# anofox_pii_enabled_types must be honored by the scalar APIs
+# ============================================================================
+
+statement ok
+SET anofox_pii_enabled_types = 'EMAIL';
+
+# pii_detect: only EMAIL reported even though the text also contains a phone number
+query I
+SELECT list_transform(pii_detect('Email: a@b.com, Phone: (555) 123-4567'), x -> x.type);
+----
+[EMAIL]
+
+# pii_contains: phone-only text contains no enabled PII
+query I
+SELECT pii_contains('Phone: (555) 123-4567');
+----
+false
+
+# pii_count: only the email is counted
+query I
+SELECT pii_count('Email: a@b.com, Phone: (555) 123-4567');
+----
+1
+
+# pii_mask: only the email is masked, the phone number is left intact
+query I
+SELECT pii_mask('Email: a@b.com, Phone: (555) 123-4567', 'redact');
+----
+Email: [EMAIL], Phone: (555) 123-4567
+
+# Explicit type arguments override the config filter (documented contract)
+query I
+SELECT len(pii_detect_phones('Phone: (555) 123-4567'));
+----
+1
+
+query I
+SELECT pii_mask_column('SSN: 123-45-6789', 'US_SSN', 'redact');
+----
+SSN: [US_SSN]
+
+# Table APIs honor enabled_types as well (pii_scan_table)
+statement ok
+CREATE TABLE pii_cfg_scan (email VARCHAR, notes VARCHAR);
+
+statement ok
+INSERT INTO pii_cfg_scan VALUES ('user@example.com', 'SSN: 123-45-6789');
+
+query I
+SELECT COUNT(*) FROM pii_scan_table('pii_cfg_scan') WHERE pii_type = 'EMAIL';
+----
+1
+
+query I
+SELECT COUNT(*) FROM pii_scan_table('pii_cfg_scan') WHERE pii_type <> 'EMAIL';
+----
+0
+
+statement ok
+DROP TABLE pii_cfg_scan;
+
+statement ok
+SET anofox_pii_enabled_types = '';
+
+# ============================================================================
+# anofox_pii_min_confidence must be honored by the scalar APIs
+# ============================================================================
+# Dictionary-based NAME matches carry confidence 0.5; regex matches carry 1.0.
+
+statement ok
+SET anofox_pii_min_confidence = 0.99;
+
+# Dictionary-based NAME match (confidence 0.5) is filtered out
+query I
+SELECT pii_contains('Contact John for details');
+----
+false
+
+query I
+SELECT pii_detect('Contact John for details');
+----
+[]
+
+# Full-confidence regex matches still pass the threshold
+query I
+SELECT pii_count('Email: a@b.com');
+----
+1
+
+statement ok
+SET anofox_pii_min_confidence = 0.5;
+
+# At the default threshold the dictionary match (confidence 0.5) is kept
+query I
+SELECT pii_contains('Contact John for details');
+----
+true
+
+# ============================================================================
+# Overlapping matches must be resolved deterministically before masking
+# ============================================================================
+# Priority: earlier start wins; on ties the longer match wins, then the higher
+# confidence, then the lower PIIType enumeration value (more specific type).
+
+# An email embedded in a URL: the longer URL match wins, the EMAIL inside is dropped
+query I
+SELECT list_transform(pii_detect('Visit https://user@example.com/path now'), x -> x.type);
+----
+[URL]
+
+# Masking must replace the overlapping region exactly once; trailing text intact
+query I
+SELECT pii_mask('Visit https://user@example.com/path now', 'redact');
+----
+Visit [URL] now
+
+# Identical span matched by two recognizers (bare 9 digits: US_SSN and US_PASSPORT):
+# the checksum-validated US_SSN wins deterministically
+query I
+SELECT list_transform(pii_detect('Ref: 123456789'), x -> x.type);
+----
+[US_SSN]
+
+query I
+SELECT pii_mask('Ref: 123456789 end', 'redact');
+----
+Ref: [US_SSN] end
+
+# A 9-digit number that cannot be an SSN (9xx area) is still reported as a passport
+query I
+SELECT list_transform(pii_detect('Ref: 987654321'), x -> x.type);
+----
+[US_PASSPORT]
+
+# Crypto address also matches the generic API_KEY pattern over the same span:
+# CRYPTO_ADDRESS wins deterministically
+query I
+SELECT list_transform(pii_detect('bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq'), x -> x.type);
+----
+[CRYPTO_ADDRESS]
+
+# ============================================================================
+# Parallel stress smoke: crypto-address validation from cold start
+# ============================================================================
+# Exercises the Base58 lookup-table initialization concurrently. Not a
+# deterministic race reproducer; thread safety is verified structurally.
+
+statement ok
+PRAGMA threads=8;
+
+statement ok
+CREATE TABLE pii_crypto_stress AS
+SELECT CASE WHEN i % 2 = 0
+            THEN '1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa'
+            ELSE '3J98t1WpEZ73CNmQviecrnyiWrnqRhWNLy' END AS addr
+FROM range(10000) t(i);
+
+query I
+SELECT COUNT(*) FROM pii_crypto_stress WHERE pii_is_valid_crypto_address(addr);
+----
+10000
+
+statement ok
+DROP TABLE pii_crypto_stress;
+
+# ============================================================================
+# Reset configuration so later test files are unaffected
+# ============================================================================
+
+statement ok
+SET anofox_pii_enabled_types = '';
+
+statement ok
+SET anofox_pii_min_confidence = 0.5;
+
+statement ok
+SET anofox_pii_default_mask_strategy = 'redact';

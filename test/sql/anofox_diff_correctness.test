@@ -1,0 +1,198 @@
+# name: test/sql/anofox_diff_correctness.test
+# description: Diff correctness — NULL-safe primary keys, bind-time schema validation,
+#              honest hashdiff parameters (issue #46)
+# group: [anofox_tabular]
+
+require anofox_tabular
+
+statement ok
+LOAD anofox_tabular;
+
+#############################
+# NULL primary keys (single key)
+#############################
+
+statement ok
+CREATE TABLE npk_source (id INTEGER, val VARCHAR);
+
+statement ok
+CREATE TABLE npk_target (id INTEGER, val VARCHAR);
+
+statement ok
+INSERT INTO npk_source VALUES (NULL, 'same'), (1, 'a'), (2, 'old');
+
+statement ok
+INSERT INTO npk_target VALUES (NULL, 'same'), (1, 'a'), (2, 'new');
+
+# A NULL-key row present on both sides with identical values must not be
+# reported as added+removed — the only diff is the changed id=2 row.
+query III rowsort
+SELECT diff_type, id, val FROM diff_joindiff('npk_source', 'npk_target', 'id');
+----
+changed	2	new
+
+# With include_all the NULL-key row classifies as unchanged
+query II
+SELECT diff_type, val FROM diff_joindiff('npk_source', 'npk_target', 'id', NULL, true) WHERE id IS NULL;
+----
+unchanged	same
+
+# A NULL-key row whose value changed must classify as changed, not added+removed
+statement ok
+CREATE TABLE npk_chg_source (id INTEGER, val VARCHAR);
+
+statement ok
+CREATE TABLE npk_chg_target (id INTEGER, val VARCHAR);
+
+statement ok
+INSERT INTO npk_chg_source VALUES (NULL, 'before');
+
+statement ok
+INSERT INTO npk_chg_target VALUES (NULL, 'after');
+
+query III
+SELECT diff_type, id, val FROM diff_joindiff('npk_chg_source', 'npk_chg_target', 'id');
+----
+changed	NULL	after
+
+# A NULL-key row only present in the source is removed, not added
+statement ok
+CREATE TABLE npk_rm_source (id INTEGER, val VARCHAR);
+
+statement ok
+CREATE TABLE npk_rm_target (id INTEGER, val VARCHAR);
+
+statement ok
+INSERT INTO npk_rm_source VALUES (NULL, 'gone');
+
+query III
+SELECT diff_type, id, val FROM diff_joindiff('npk_rm_source', 'npk_rm_target', 'id');
+----
+removed	NULL	NULL
+
+#############################
+# Compound key with NULL first component
+#############################
+
+statement ok
+CREATE TABLE cpk_source (k1 INTEGER, k2 INTEGER, val VARCHAR);
+
+statement ok
+CREATE TABLE cpk_target (k1 INTEGER, k2 INTEGER, val VARCHAR);
+
+statement ok
+INSERT INTO cpk_source VALUES (NULL, 1, 'stable'), (1, 1, 'x');
+
+statement ok
+INSERT INTO cpk_target VALUES (NULL, 1, 'stable'), (1, 1, 'y');
+
+# The (NULL, 1) row exists unchanged on both sides; only (1, 1) changed.
+query IIII rowsort
+SELECT diff_type, k1, k2, val FROM diff_joindiff('cpk_source', 'cpk_target', ['k1', 'k2']);
+----
+changed	1	1	y
+
+# hashdiff must agree with joindiff on NULL-safe key matching
+query IIII rowsort
+SELECT diff_type, k1, k2, val FROM diff_hashdiff('cpk_source', 'cpk_target', ['k1', 'k2']);
+----
+changed	1	1	y
+
+#############################
+# Bind-time schema validation
+#############################
+
+# Missing primary key column -> clear binder error
+statement error
+SELECT * FROM diff_joindiff('npk_source', 'npk_target', 'missing_pk');
+----
+Primary key column 'missing_pk' not found
+
+# Primary key present in source but missing in target
+statement ok
+CREATE TABLE pk_only_source (id INTEGER, other_id INTEGER, val VARCHAR);
+
+statement ok
+CREATE TABLE pk_only_target (other_id INTEGER, val VARCHAR);
+
+statement error
+SELECT * FROM diff_joindiff('pk_only_source', 'pk_only_target', 'id');
+----
+Primary key column 'id' not found in target
+
+# Missing compare column -> clear binder error
+statement error
+SELECT * FROM diff_joindiff('npk_source', 'npk_target', 'id', ['no_such_col']);
+----
+Compare column 'no_such_col' not found
+
+# Nonexistent table -> clear error naming the table
+statement error
+SELECT * FROM diff_joindiff('no_such_table_xyz', 'npk_target', 'id');
+----
+no_such_table_xyz
+
+# Default compare set is the shared non-PK columns: a column that exists only
+# in the source must neither error out nor mark shared-equal rows as changed.
+statement ok
+CREATE TABLE extra_source (id INTEGER, val VARCHAR, source_only VARCHAR);
+
+statement ok
+CREATE TABLE extra_target (id INTEGER, val VARCHAR);
+
+statement ok
+INSERT INTO extra_source VALUES (1, 'a', 'ignore-me');
+
+statement ok
+INSERT INTO extra_target VALUES (1, 'a');
+
+query I
+SELECT COUNT(*) FROM diff_joindiff('extra_source', 'extra_target', 'id');
+----
+0
+
+#############################
+# Regression guards: views and temp tables keep working with bind validation
+#############################
+
+statement ok
+CREATE VIEW npk_source_v AS SELECT * FROM npk_source;
+
+statement ok
+CREATE VIEW npk_target_v AS SELECT * FROM npk_target;
+
+query III rowsort
+SELECT diff_type, id, val FROM diff_joindiff('npk_source_v', 'npk_target_v', 'id');
+----
+changed	2	new
+
+statement ok
+CREATE TEMP TABLE npk_tmp_src (id INTEGER, val VARCHAR);
+
+statement ok
+CREATE TEMP TABLE npk_tmp_tgt (id INTEGER, val VARCHAR);
+
+statement ok
+INSERT INTO npk_tmp_src VALUES (1, 'a');
+
+statement ok
+INSERT INTO npk_tmp_tgt VALUES (1, 'b');
+
+query III
+SELECT diff_type, id, val FROM diff_joindiff('npk_tmp_src', 'npk_tmp_tgt', 'id');
+----
+changed	1	b
+
+#############################
+# diff_hashdiff bisection parameters are not implemented -> binder error
+#############################
+
+statement error
+SELECT * FROM diff_hashdiff('npk_source', 'npk_target', 'id', 1000);
+----
+bisection
+
+statement error
+SELECT * FROM diff_hashdiff('npk_source', 'npk_target', 'id', 1000, 5);
+----
+bisection

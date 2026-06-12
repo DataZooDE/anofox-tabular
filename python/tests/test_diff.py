@@ -102,10 +102,27 @@ class TestHashdiff:
         result = diff.hashdiff(conn, src, tgt, primary_keys="id")
         assert len(result) > 0
 
-    def test_with_bisection_threshold(self, conn, diff_tables):
+    def test_compound_primary_key(self, conn, diff_tables):
         import pandas as pd
         from anofox import diff
         src, tgt = diff_tables
-        # bisection_threshold is optional — exercise the parameter path
-        result = diff.hashdiff(conn, src, tgt, primary_keys="id", bisection_threshold=1000)
+        result = diff.hashdiff(conn, src, tgt, primary_keys=["id", "name"])
         assert isinstance(result, pd.DataFrame)
+        assert len(result) > 0
+
+    def test_bisection_threshold_rejected(self, conn, diff_tables):
+        from anofox import diff
+        src, tgt = diff_tables
+        # The bisection algorithm is not implemented; the extension rejects
+        # the parameters with a clear binder error instead of ignoring them.
+        with pytest.raises(Exception, match="bisection"):
+            diff.hashdiff(conn, src, tgt, primary_keys="id", bisection_threshold=1000)
+
+    def test_bisection_factor_rejected(self, conn, diff_tables):
+        from anofox import diff
+        src, tgt = diff_tables
+        with pytest.raises(Exception, match="bisection"):
+            diff.hashdiff(
+                conn, src, tgt, primary_keys="id",
+                bisection_threshold=1000, bisection_factor=5,
+            )

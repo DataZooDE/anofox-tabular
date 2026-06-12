@@ -534,13 +534,16 @@ Density-based anomaly detection for finding outliers in spatial data:
 
 ```sql
 -- Univariate: find noise points in single dimension
-SELECT * FROM metric_dbscan(
+SELECT * FROM dbscan(
     'transactions',
     'amount',
     10.0,       -- eps: neighborhood radius
     5,          -- min_pts: minimum points for dense region
     'clusters'  -- output mode: 'summary' or 'clusters'
 ) WHERE point_type = 'NOISE';
+
+-- Multivariate over several columns; all trailing parameters are optional
+SELECT * FROM dbscan_mv('transactions', 'amount,quantity');
 ```
 
 **Point Classifications:**
@@ -586,14 +589,15 @@ FROM outlier_tree('employees', 'job_title,salary,years_exp', 'outliers');
 Compare tables and identify changes:
 
 ```sql
--- Hash-based diff (fast, summary statistics)
-SELECT * FROM diff_hashdiff('source_tbl', 'target_tbl', ['id']);
--- Returns: {added: 150, removed: 25, changed: 300, unchanged: 10000}
-
--- Join-based diff (detailed, row-level changes)
+-- Join-based diff (row-level changes)
 SELECT * FROM diff_joindiff('source_tbl', 'target_tbl', ['user_id', 'date'])
 WHERE diff_type IN ('added', 'changed')
 LIMIT 100;
+
+-- diff_hashdiff currently computes the same row-level diff as diff_joindiff.
+-- Its bisection_threshold/bisection_factor parameters are not implemented and
+-- are rejected with a binder error.
+SELECT * FROM diff_hashdiff('source_tbl', 'target_tbl', ['id']);
 ```
 
 **Use Cases:**
@@ -604,7 +608,10 @@ LIMIT 100;
 
 **Features:**
 - Single and compound primary keys
-- Column-specific comparison
+- NULL-safe primary key matching (`IS NOT DISTINCT FROM`): rows with NULL key
+  values are matched across sides instead of being misreported as added/removed
+- Column-specific comparison (default: all non-key columns shared by both tables)
+- Primary key and compare columns are validated against both schemas at bind time
 - Efficient SQL-based implementation
 - Detailed change tracking
 
@@ -971,33 +978,53 @@ All other countries are validated by syntax only. French VAT keys containing let
 | `anofox_tab_metric_zscore` | `(table VARCHAR, column VARCHAR [, threshold DOUBLE]) → TABLE` | Detect outliers via z-score (default: 3.0) |
 | `anofox_tab_metric_iqr` | `(table VARCHAR, column VARCHAR [, multiplier DOUBLE]) → TABLE` | Detect outliers via IQR (default: 1.5) |
 
+**Parameter validation:** numeric parameters are validated at bind time. Negative or out-of-range
+integer parameters and non-finite (`NaN`/`Infinity`) double parameters (`max_null_rate`, `threshold`,
+`multiplier`, `eps`, `contamination`, `prob_pick_avg_gain`, ...) are rejected with a binder error.
+
+**Empty and degenerate input semantics:** every metric returns exactly one summary row, even for
+an empty table or an all-NULL column:
+
+| Metric | Empty table / all-NULL column | Constant column (stddev = 0) |
+|--------|-------------------------------|------------------------------|
+| `volume` | `row_count = 0`, status from thresholds | n/a |
+| `null_rate` | `null_count = 0`, `total_count = 0`, `null_rate = 0.0`, status `pass` ("passed trivially") | n/a |
+| `distinct_count` | `distinct_count = 0`, status from thresholds | n/a |
+| `zscore` | `total_count = 0`, `outlier_count = 0`, `outlier_rate = 0.0`, NULL `mean`/`stddev`, status `pass` | `outlier_count = 0`, status `pass` (z-scores are defined as 0) |
+| `iqr` | `total_count = 0`, `outlier_count = 0`, NULL quantiles/bounds, status `pass` | `outlier_count = 0`, status `pass` |
+| `freshness` | NULL `metric_value`/`age_seconds`, status `fail` ("No timestamp values found") | n/a |
+
 ### Anomaly Detection Functions
 
 | Function | Description |
 |----------|-------------|
-| `anofox_tab_metric_isolation_forest` | Univariate Isolation Forest with all enhancements |
-| `anofox_tab_metric_isolation_forest_multivariate` | Multivariate Isolation Forest |
-| `anofox_tab_metric_dbscan` | Univariate DBSCAN clustering |
-| `anofox_tab_metric_dbscan_multivariate` | Multivariate DBSCAN clustering |
+| `anofox_tab_isolation_forest` (alias `isolation_forest`) | Univariate Isolation Forest with all enhancements |
+| `anofox_tab_isolation_forest_mv` (alias `isolation_forest_mv`) | Multivariate Isolation Forest |
+| `anofox_tab_dbscan` (alias `dbscan`) | Univariate DBSCAN clustering |
+| `anofox_tab_dbscan_mv` (alias `dbscan_mv`) | Multivariate DBSCAN clustering |
 | `outlier_tree` | Explainable outlier detection with conditional distributions |
 
 **Isolation Forest Full Signature:**
 ```sql
-metric_isolation_forest(
+isolation_forest(
     table_name VARCHAR,
     column_name VARCHAR,
     n_trees BIGINT,           -- 1-500, default 100
     sample_size BIGINT,       -- 1-10000, default 256
     contamination DOUBLE,     -- 0.0-0.5, default 0.1
-    output_mode VARCHAR,      -- 'summary' or 'scores'
-    ndim BIGINT,              -- 1-N, default 1 (Extended IF)
-    coef_type VARCHAR,        -- 'uniform' or 'normal'
-    scoring_metric VARCHAR,   -- 'depth', 'density', or 'adj_depth'
-    weight_column VARCHAR,    -- Column for sample weights (NULL = uniform)
-    ntry BIGINT,              -- 1-100, default 1 (SCiForest)
-    prob_pick_avg_gain DOUBLE -- 0.0-1.0, default 0.0
+    output_mode VARCHAR,      -- 'summary' (default) or 'scores'
+    seed BIGINT               -- optional RNG seed
 ) → TABLE
+-- isolation_forest_mv additionally accepts (in order):
+--   ndim BIGINT,              -- 1-N, default 1 (Extended IF)
+--   coef_type VARCHAR,        -- 'uniform' or 'normal'
+--   scoring_metric VARCHAR,   -- 'depth', 'density', or 'adj_depth'
+--   weight_column VARCHAR,    -- Column for sample weights (NULL = uniform)
+--   ntry BIGINT,              -- 1-100, default 1 (SCiForest)
+--   prob_pick_avg_gain DOUBLE -- 0.0-1.0, default 0.0
 ```
+
+All parameters after `column_name` are optional; `isolation_forest('sales', 'amount')` uses the defaults.
 
 **Parameters:**
 | Parameter | Range | Default | Description |
@@ -1005,7 +1032,7 @@ metric_isolation_forest(
 | `n_trees` | 1-500 | 100 | Number of isolation trees |
 | `sample_size` | 1-10000 | 256 | Subsample size per tree |
 | `contamination` | 0.0-0.5 | 0.1 | Expected anomaly fraction |
-| `output_mode` | - | 'scores' | `'summary'` or `'scores'` |
+| `output_mode` | - | 'summary' | `'summary'` or `'scores'` |
 | `ndim` | 1-N | 1 | Hyperplane dimensions (Extended IF) |
 | `coef_type` | - | 'uniform' | `'uniform'` or `'normal'` |
 | `scoring_metric` | - | 'depth' | `'depth'`, `'density'`, `'adj_depth'` |
@@ -1013,17 +1040,30 @@ metric_isolation_forest(
 | `ntry` | 1-100 | 1 | Split candidates (SCiForest) |
 | `prob_pick_avg_gain` | 0.0-1.0 | 0.0 | Gain-based selection probability |
 
-**DBSCAN Parameters:**
-- **eps** (default 0.5): Neighborhood radius
-- **min_pts** (default 5): Minimum points for dense region
-- **output_mode**: `'summary'` or `'clusters'`
+**DBSCAN Full Signature:**
+```sql
+dbscan(
+    table_name VARCHAR,
+    column_name VARCHAR,
+    eps DOUBLE,          -- > 0.0, default 0.5: neighborhood radius
+    min_pts BIGINT,      -- >= 1, default 5: minimum points for dense region
+    output_mode VARCHAR  -- 'summary' (default) or 'clusters'
+) → TABLE
+-- dbscan_mv takes comma-separated column names as the second argument
+```
+
+All parameters after `column_name` are optional; `dbscan('orders', 'amount')` uses the defaults.
+
+**DBSCAN Output:**
+- `'summary'` (one row): `status` (`fail` when noise points exist, else `pass`), `cluster_count`, `noise_count`, `total_count`, `noise_rate`, `largest_cluster_size`, `eps`, `min_pts`, `n_columns` (`dbscan_mv` only), `message`
+- `'clusters'` (one row per non-NULL input row): `row_id`, `value` (univariate only), `cluster_id` (`-1` = noise), `point_type` (`'CORE'`, `'BORDER'`, `'NOISE'`), `neighbor_count`, `anomaly_score` (noise = 1.0), `is_anomaly`
 
 ### Data Diffing Functions
 
 | Function | Signature | Description |
 |----------|-----------|-------------|
-| `anofox_tab_diff_hashdiff` | `(source VARCHAR, target VARCHAR, pk_cols LIST<VARCHAR> [, compare_cols LIST<VARCHAR>]) → TABLE` | Fast hash-based summary diff |
-| `anofox_tab_diff_joindiff` | `(source VARCHAR, target VARCHAR, pk_cols LIST<VARCHAR> [, compare_cols LIST<VARCHAR>]) → TABLE` | Detailed row-level diff with source/target data |
+| `anofox_tab_diff_hashdiff` | `(source VARCHAR, target VARCHAR, pk VARCHAR\|LIST<VARCHAR>) → TABLE` | Row-level diff (currently identical to joindiff; `bisection_threshold`/`bisection_factor` are not implemented and rejected) |
+| `anofox_tab_diff_joindiff` | `(source VARCHAR, target VARCHAR, pk VARCHAR\|LIST<VARCHAR> [, compare_cols LIST<VARCHAR> [, include_all BOOLEAN]]) → TABLE` | Detailed row-level diff with target data |
 
 ### Data Profiling Functions
 

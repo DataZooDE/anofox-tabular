@@ -1011,9 +1011,10 @@ true
 
 # --- Valid Passport Formats ---
 
-# Current format (9 digits)
+# Current format (9 digits). Note: a 9-digit number that also forms a valid
+# SSN is reported as US_SSN by overlap resolution, so use a 9xx number here.
 query I
-SELECT list_contains(list_transform(pii_detect('Passport: 123456789'), x -> x.type), 'US_PASSPORT');
+SELECT list_contains(list_transform(pii_detect('Passport: 987654321'), x -> x.type), 'US_PASSPORT');
 ----
 true
 

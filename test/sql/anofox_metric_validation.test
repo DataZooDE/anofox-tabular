@@ -1,0 +1,339 @@
+# name: test/sql/anofox_metric_validation.test
+# description: Strict numeric parameter validation and defined empty/degenerate-input
+#              semantics for metric functions (#55)
+# group: [anofox_tabular]
+
+require anofox_tabular
+
+statement ok
+LOAD anofox_tabular
+
+statement ok
+SET anofox_tab_trace_enabled = false
+
+# ===--------------------------------------------------------------------===
+# Test Setup
+# ===--------------------------------------------------------------------===
+
+statement ok
+CREATE TABLE val_numeric (v DOUBLE)
+
+statement ok
+INSERT INTO val_numeric VALUES (1), (2), (3), (4), (5), (100)
+
+statement ok
+CREATE TABLE val_mv (a DOUBLE, b DOUBLE)
+
+statement ok
+INSERT INTO val_mv VALUES (1, 1), (2, 2), (3, 3), (4, 4), (5, 5), (100, 100)
+
+statement ok
+CREATE TABLE val_empty (v DOUBLE)
+
+statement ok
+CREATE TABLE val_all_null (v DOUBLE)
+
+statement ok
+INSERT INTO val_all_null VALUES (NULL), (NULL), (NULL)
+
+statement ok
+CREATE TABLE val_constant (v DOUBLE)
+
+statement ok
+INSERT INTO val_constant VALUES (5), (5), (5), (5)
+
+statement ok
+CREATE TABLE val_single (v DOUBLE)
+
+statement ok
+INSERT INTO val_single VALUES (42)
+
+statement ok
+CREATE TABLE val_empty_ts (ts TIMESTAMP)
+
+# ===--------------------------------------------------------------------===
+# Isolation forest: signed integer parameter validation
+# (regression guards — negative values must keep producing binder errors,
+# never wrap through size_t)
+# ===--------------------------------------------------------------------===
+
+statement error
+SELECT * FROM isolation_forest('val_numeric', 'v', -1)
+----
+n_trees must be between 1 and 500
+
+statement error
+SELECT * FROM isolation_forest('val_numeric', 'v', 0)
+----
+n_trees must be between 1 and 500
+
+statement error
+SELECT * FROM isolation_forest('val_numeric', 'v', 100, -5)
+----
+sample_size must be between 1 and 10000
+
+statement error
+SELECT * FROM isolation_forest_mv('val_mv', 'a,b', -1)
+----
+n_trees must be between 1 and 500
+
+statement error
+SELECT * FROM isolation_forest_mv('val_mv', 'a,b', 100, -5)
+----
+sample_size must be between 1 and 10000
+
+# ===--------------------------------------------------------------------===
+# Isolation forest: non-finite double parameters must be rejected at bind
+# ===--------------------------------------------------------------------===
+
+statement error
+SELECT * FROM isolation_forest('val_numeric', 'v', 100, 256, CAST('nan' AS DOUBLE))
+----
+contamination
+
+statement error
+SELECT * FROM isolation_forest('val_numeric', 'v', 100, 256, CAST('inf' AS DOUBLE))
+----
+contamination
+
+statement error
+SELECT * FROM isolation_forest_mv('val_mv', 'a,b', 100, 256, CAST('nan' AS DOUBLE))
+----
+contamination
+
+statement error
+SELECT * FROM isolation_forest_mv('val_mv', 'a,b', 100, 256, 0.1, 'summary', 42, 1, 'uniform', 'depth', NULL, 1, CAST('nan' AS DOUBLE))
+----
+prob_pick_avg_gain
+
+# ntry must be validated, not silently clamped to 1
+statement error
+SELECT * FROM isolation_forest_mv('val_mv', 'a,b', 100, 256, 0.1, 'summary', 42, 1, 'uniform', 'depth', NULL, -3)
+----
+ntry must be >= 1
+
+statement error
+SELECT * FROM isolation_forest_mv('val_mv', 'a,b', 100, 256, 0.1, 'summary', 42, 1, 'uniform', 'depth', NULL, 0)
+----
+ntry must be >= 1
+
+# output_mode regression guards (strict since #52)
+statement error
+SELECT * FROM isolation_forest('val_numeric', 'v', 100, 256, 0.1, 'score')
+----
+output_mode must be 'summary' or 'scores'
+
+statement error
+SELECT * FROM isolation_forest_mv('val_mv', 'a,b', 100, 256, 0.1, 'SUMMARY')
+----
+output_mode must be 'summary' or 'scores'
+
+# ===--------------------------------------------------------------------===
+# DBSCAN: non-finite eps must be rejected at bind
+# ===--------------------------------------------------------------------===
+
+statement error
+SELECT * FROM dbscan('val_numeric', 'v', CAST('nan' AS DOUBLE), 3)
+----
+eps
+
+statement error
+SELECT * FROM dbscan('val_numeric', 'v', CAST('inf' AS DOUBLE), 3)
+----
+eps
+
+statement error
+SELECT * FROM dbscan_mv('val_mv', 'a,b', CAST('nan' AS DOUBLE), 3)
+----
+eps
+
+# regression guards (strict since #52)
+statement error
+SELECT * FROM dbscan('val_numeric', 'v', 0.5, -1)
+----
+min_pts must be >= 1
+
+statement error
+SELECT * FROM dbscan('val_numeric', 'v', 0.5, 5, 'cluster')
+----
+output_mode must be 'summary' or 'clusters'
+
+# ===--------------------------------------------------------------------===
+# SQL-rewrite metrics: non-finite double thresholds must be rejected at bind
+# with a clear error (not a confusing "Referenced column nan" binder error)
+# ===--------------------------------------------------------------------===
+
+statement error
+SELECT * FROM zscore('val_numeric', 'v', CAST('nan' AS DOUBLE))
+----
+threshold must be a finite number
+
+statement error
+SELECT * FROM zscore('val_numeric', 'v', CAST('inf' AS DOUBLE))
+----
+threshold must be a finite number
+
+statement error
+SELECT * FROM iqr('val_numeric', 'v', CAST('nan' AS DOUBLE))
+----
+iqr_multiplier must be a finite number
+
+statement error
+SELECT * FROM null_rate('val_numeric', 'v', CAST('nan' AS DOUBLE))
+----
+max_null_rate must be a finite number
+
+# ===--------------------------------------------------------------------===
+# Empty-input semantics: every SQL-rewrite metric returns exactly one
+# well-defined row for an empty table
+# ===--------------------------------------------------------------------===
+
+# null_rate: empty table -> pass, 0/0 nulls, rate 0.0, defined message
+query I
+SELECT COUNT(*) FROM (SELECT * FROM null_rate('val_empty', 'v', 0.5))
+----
+1
+
+query TIIR
+SELECT status, null_count, total_count, null_rate FROM null_rate('val_empty', 'v', 0.5)
+----
+pass	0	0	0
+
+query I
+SELECT message IS NOT NULL FROM null_rate('val_empty', 'v', 0.5)
+----
+true
+
+# zscore: empty table -> exactly one row, pass, 0 outliers, defined message
+query I
+SELECT COUNT(*) FROM (SELECT * FROM zscore('val_empty', 'v', 3.0))
+----
+1
+
+query TIIR
+SELECT status, outlier_count, total_count, outlier_rate FROM zscore('val_empty', 'v', 3.0)
+----
+pass	0	0	0
+
+query I
+SELECT message IS NOT NULL FROM zscore('val_empty', 'v', 3.0)
+----
+true
+
+# zscore: all-NULL column behaves like empty input
+query I
+SELECT COUNT(*) FROM (SELECT * FROM zscore('val_all_null', 'v', 3.0))
+----
+1
+
+query TII
+SELECT status, outlier_count, total_count FROM zscore('val_all_null', 'v', 3.0)
+----
+pass	0	0
+
+# zscore: constant column (stddev = 0) -> pass with zero outliers
+query TII
+SELECT status, outlier_count, total_count FROM zscore('val_constant', 'v', 3.0)
+----
+pass	0	4
+
+query I
+SELECT message IS NOT NULL FROM zscore('val_constant', 'v', 3.0)
+----
+true
+
+# zscore: single row (sample stddev is NULL) -> pass with zero outliers
+query TII
+SELECT status, outlier_count, total_count FROM zscore('val_single', 'v', 3.0)
+----
+pass	0	1
+
+# iqr: empty table -> one row, pass, 0 outliers, defined message
+query I
+SELECT COUNT(*) FROM (SELECT * FROM iqr('val_empty', 'v', 1.5))
+----
+1
+
+query TII
+SELECT status, outlier_count, total_count FROM iqr('val_empty', 'v', 1.5)
+----
+pass	0	0
+
+query I
+SELECT message IS NOT NULL FROM iqr('val_empty', 'v', 1.5)
+----
+true
+
+# iqr: all-NULL column behaves like empty input
+query TII
+SELECT status, outlier_count, total_count FROM iqr('val_all_null', 'v', 1.5)
+----
+pass	0	0
+
+# iqr: constant column -> pass with zero outliers and defined message
+query TII
+SELECT status, outlier_count, total_count FROM iqr('val_constant', 'v', 1.5)
+----
+pass	0	4
+
+query I
+SELECT message IS NOT NULL FROM iqr('val_constant', 'v', 1.5)
+----
+true
+
+# freshness: empty table -> fail with a defined message, NULL metric_value
+query I
+SELECT COUNT(*) FROM (SELECT * FROM freshness('val_empty_ts', 'ts', INTERVAL '1 day', TIMESTAMP '2026-01-01 00:00:00'))
+----
+1
+
+query TI
+SELECT status, message IS NOT NULL FROM freshness('val_empty_ts', 'ts', INTERVAL '1 day', TIMESTAMP '2026-01-01 00:00:00')
+----
+fail	true
+
+query I
+SELECT metric_value IS NULL FROM freshness('val_empty_ts', 'ts', INTERVAL '1 day', TIMESTAMP '2026-01-01 00:00:00')
+----
+true
+
+# volume: empty table -> defined row (regression guard)
+query TI
+SELECT status, row_count FROM volume('val_empty', 1, 10)
+----
+fail	0
+
+query I
+SELECT message IS NOT NULL FROM volume('val_empty', 1, 10)
+----
+true
+
+# distinct_count: empty table -> defined row (regression guard)
+query TI
+SELECT status, distinct_count FROM distinct_count('val_empty', 'v', NULL, NULL)
+----
+pass	0
+
+query I
+SELECT message IS NOT NULL FROM distinct_count('val_empty', 'v', NULL, NULL)
+----
+true
+
+# ===--------------------------------------------------------------------===
+# Non-empty inputs keep their semantics (sanity)
+# ===--------------------------------------------------------------------===
+
+query TI
+SELECT status, outlier_count FROM zscore('val_numeric', 'v', 1.5)
+----
+fail	1
+
+query TI
+SELECT status, outlier_count FROM iqr('val_numeric', 'v', 1.5)
+----
+fail	1
+
+query TR
+SELECT status, null_rate FROM null_rate('val_all_null', 'v', 0.5)
+----
+fail	1

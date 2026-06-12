@@ -92,9 +92,11 @@ def hashdiff(
     primary_keys:
         Column name(s) forming the primary key.
     bisection_threshold:
-        Row-count threshold for bisection (optional).
+        Row-count threshold for bisection. Not implemented yet — passing a
+        value raises a DuckDB binder error.
     bisection_factor:
-        Bisection factor (optional, requires bisection_threshold).
+        Bisection factor (requires bisection_threshold). Not implemented
+        yet — passing a value raises a DuckDB binder error.
 
     Returns
     -------
@@ -132,5 +134,5 @@ def _format_pk(primary_keys: Union[str, list[str]]) -> str:
         return f"'{primary_keys}'"
     if len(primary_keys) == 1:
         return f"'{primary_keys[0]}'"
-    # Compound key — join as CSV string
-    return f"'{','.join(primary_keys)}'"
+    # Compound key — pass as a LIST<VARCHAR> literal
+    return "[" + ", ".join(f"'{k}'" for k in primary_keys) + "]"

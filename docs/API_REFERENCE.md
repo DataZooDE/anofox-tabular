@@ -1581,51 +1581,54 @@ SELECT * FROM metric_isolation_forest_multivariate(
 
 ### DBSCAN Clustering
 
-#### `anofox_tab_metric_ (alias: metric_dbscan`
+#### `anofox_tab_dbscan` (alias: `dbscan`)
 
 Univariate DBSCAN clustering for single column anomaly detection.
 
 **Signature:**
 ```sql
-anofox_tab_metric_ (alias: metric_dbscan(
+anofox_tab_dbscan(
     table_name VARCHAR,
     column_name VARCHAR,
-    eps DOUBLE,
-    min_pts BIGINT,
-    output_mode VARCHAR
+    eps DOUBLE,          -- optional, default 0.5
+    min_pts BIGINT,      -- optional, default 5
+    output_mode VARCHAR  -- optional, default 'summary'
 ) → TABLE
 ```
 
 **Parameters:**
-- `eps`: Neighborhood radius (default: 0.5)
-- `min_pts`: Minimum points for dense region (default: 5)
+- `eps`: Neighborhood radius, must be > 0.0 (default: 0.5)
+- `min_pts`: Minimum points for dense region, must be >= 1 (default: 5)
 - `output_mode`: `'summary'` (aggregate stats) or `'clusters'` (per-row results)
 
+All parameters after `column_name` are optional.
+
 **Returns:**
-- `TABLE`: Clustering results with `row_id`, `cluster_id`, `point_type`, `anomaly_score`
+- `'summary'`: one row with `status` (`fail` when noise points exist), `cluster_count`, `noise_count`, `total_count`, `noise_rate`, `largest_cluster_size`, `eps`, `min_pts`, `message`
+- `'clusters'`: one row per non-NULL input row with `row_id`, `value`, `cluster_id` (`-1` = noise), `point_type`, `neighbor_count`, `anomaly_score`, `is_anomaly`
 - `point_type`: `'CORE'` (dense region), `'BORDER'` (cluster edge), or `'NOISE'` (outlier)
 
 **Example:**
 ```sql
-SELECT * FROM anofox_tab_metric_ (alias: metric_dbscan(
+SELECT * FROM dbscan(
     'transactions', 'amount', 10.0, 5, 'clusters'
 ) WHERE point_type = 'NOISE';
 ```
 
 ---
 
-#### `anofox_tab_metric_ (alias: metric_dbscan_multivariate`
+#### `anofox_tab_dbscan_mv` (alias: `dbscan_mv`)
 
 Multivariate DBSCAN clustering for multiple column anomaly detection.
 
 **Signature:**
 ```sql
-anofox_tab_metric_ (alias: metric_dbscan_multivariate(
+anofox_tab_dbscan_mv(
     table_name VARCHAR,
     columns VARCHAR,
-    eps DOUBLE,
-    min_pts BIGINT,
-    output_mode VARCHAR
+    eps DOUBLE,          -- optional, default 0.5
+    min_pts BIGINT,      -- optional, default 5
+    output_mode VARCHAR  -- optional, default 'summary'
 ) → TABLE
 ```
 
@@ -1633,7 +1636,8 @@ anofox_tab_metric_ (alias: metric_dbscan_multivariate(
 - `columns`: Comma-separated column names
 
 **Returns:**
-- `TABLE`: Clustering results with `row_id`, `cluster_id`, `point_type`, `anomaly_score`
+- `'summary'`: same columns as `anofox_tab_dbscan` plus `n_columns` (no `value` column in `'clusters'` mode)
+- `'clusters'`: one row per non-NULL input row with `row_id`, `cluster_id`, `point_type`, `neighbor_count`, `anomaly_score`, `is_anomaly`
 
 ---
 
@@ -1743,73 +1747,80 @@ Compare tables and identify changes for migration validation and regression test
 
 ### Functions
 
-#### `anofox_tab_diff_ (alias: diff_hashdiff`
+#### `anofox_tab_diff_joindiff` (alias: `diff_joindiff`)
 
-Fast hash-based summary diff (efficient for large tables).
+Detailed row-level diff between two tables or views.
 
 **Signature:**
 ```sql
-anofox_tab_diff_ (alias: diff_hashdiff(
+anofox_tab_diff_joindiff(
     source VARCHAR,
     target VARCHAR,
-    pk_cols LIST<VARCHAR>
-    [, compare_cols LIST<VARCHAR>]
+    primary_key VARCHAR | LIST<VARCHAR>
+    [, compare_columns LIST<VARCHAR>]
+    [, include_all BOOLEAN]
 ) → TABLE
 ```
 
 **Parameters:**
-- `source`: Source table name
-- `target`: Target table name
-- `pk_cols`: Primary key columns for matching rows
-- `compare_cols`: Optional list of columns to compare (default: all columns)
+- `source`: Source table or view name
+- `target`: Target table or view name
+- `primary_key`: Primary key column(s) for matching rows (single name or list)
+- `compare_columns`: Optional list of columns to compare (default: all
+  non-key columns present in both tables)
+- `include_all`: Include `unchanged` rows in the output (default: `false`)
 
-**Returns:**
-```sql
-TABLE(
-    added BIGINT,
-    removed BIGINT,
-    changed BIGINT,
-    unchanged BIGINT
-)
-```
-
-**Example:**
-```sql
-SELECT * FROM anofox_tab_diff_ (alias: diff_hashdiff('source_tbl', 'target_tbl', ['id']);
--- Returns: {added: 150, removed: 25, changed: 300, unchanged: 10000}
-```
-
----
-
-#### `anofox_tab_diff_ (alias: diff_joindiff`
-
-Detailed row-level diff with source/target data (slower but comprehensive).
-
-**Signature:**
-```sql
-anofox_tab_diff_ (alias: diff_joindiff(
-    source VARCHAR,
-    target VARCHAR,
-    pk_cols LIST<VARCHAR>
-    [, compare_cols LIST<VARCHAR>]
-) → TABLE
-```
+**Semantics:**
+- Primary keys are matched NULL-safely (`IS NOT DISTINCT FROM`), so rows with
+  NULL key values are compared across sides instead of being misreported as
+  added/removed.
+- Primary key and compare columns are validated against both table schemas at
+  bind time; missing columns or tables produce a clear binder error.
 
 **Returns:**
 ```sql
 TABLE(
     diff_type VARCHAR,      -- 'added', 'removed', 'changed', 'unchanged'
-    row_id BIGINT,          -- Row identifier
-    source_* VARCHAR,       -- Source column values (prefixed with 'source_')
-    target_* VARCHAR        -- Target column values (prefixed with 'target_')
+    <primary key columns>,  -- COALESCE of source/target key values
+    <target columns>        -- remaining target columns (NULL for removed rows)
 )
 ```
 
 **Example:**
 ```sql
-SELECT * FROM anofox_tab_diff_ (alias: diff_joindiff('source_tbl', 'target_tbl', ['user_id', 'date'])
+SELECT * FROM diff_joindiff('source_tbl', 'target_tbl', ['user_id', 'date'])
 WHERE diff_type IN ('added', 'changed')
 LIMIT 100;
+```
+
+---
+
+#### `anofox_tab_diff_hashdiff` (alias: `diff_hashdiff`)
+
+Row-level diff between two tables or views. Currently computes exactly the
+same result as `diff_joindiff` (without `compare_columns`/`include_all`).
+
+**Signature:**
+```sql
+anofox_tab_diff_hashdiff(
+    source VARCHAR,
+    target VARCHAR,
+    primary_key VARCHAR | LIST<VARCHAR>
+) → TABLE
+```
+
+**Parameters:**
+- `source`: Source table or view name
+- `target`: Target table or view name
+- `primary_key`: Primary key column(s) for matching rows (single name or list)
+
+**Note:** The `bisection_threshold` and `bisection_factor` parameters of the
+hash/bisection algorithm are **not implemented**. Passing them raises a binder
+error instead of being silently ignored.
+
+**Example:**
+```sql
+SELECT * FROM diff_hashdiff('source_tbl', 'target_tbl', ['id']);
 ```
 
 ---
@@ -2091,9 +2102,10 @@ SET anofox_telemetry_key = 'your_custom_key';
    - Use `'summary'` output mode for large tables to reduce memory usage
 
 9. **Data diffing**:
-   - `anofox_tab_diff_ (alias: diff_hashdiff`: Fast, O(n) complexity, returns summary statistics only
-   - `anofox_tab_diff_ (alias: diff_joindiff`: Slower, O(n log n) complexity, returns detailed row-level changes
-   - Both functions support compound primary keys
+   - `anofox_tab_diff_joindiff` (alias `diff_joindiff`): detailed row-level changes
+   - `anofox_tab_diff_hashdiff` (alias `diff_hashdiff`): currently identical to
+     `diff_joindiff`; the bisection parameters are not implemented and rejected
+   - Both functions support compound primary keys and match keys NULL-safely
 
 ---
 
