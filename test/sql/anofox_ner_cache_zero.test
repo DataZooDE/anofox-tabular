@@ -1,0 +1,68 @@
+# name: test/sql/anofox_ner_cache_zero.test
+# description: NER inference with the result cache disabled / resized (issue #50)
+# group: [anofox_tabular]
+
+# This test file requires OpenVINO to be available (NER model download needed).
+# On platforms without OpenVINO (musl/Alpine), these tests are skipped.
+require-env OPENVINO_AVAILABLE
+
+require anofox_tabular
+
+statement ok
+LOAD anofox_tabular
+
+# Disable the NER result cache: inference must still work and every Put must
+# be a safe no-op (previously UB on an empty LRU list, see issue #50)
+statement ok
+SET anofox_ner_cache_size = 0;
+
+query I
+SELECT list_contains(list_transform(pii_detect('John works at Microsoft'), x -> x.type), 'ORGANIZATION');
+----
+true
+
+# Repeated call with cache disabled re-runs inference and must return the same result
+query I
+SELECT list_contains(list_transform(pii_detect('John works at Microsoft'), x -> x.type), 'ORGANIZATION');
+----
+true
+
+# Multi-row query with cache disabled (exercises the batch path)
+query I
+SELECT bool_and(pii_contains(t)) FROM (VALUES
+    ('Angela Merkel visited Paris'),
+    ('Contact Apple Inc for details'),
+    ('Angela Merkel visited Paris')
+) AS v(t);
+----
+true
+
+# Shrink the cache to a tiny capacity mid-session: eviction must work
+statement ok
+SET anofox_ner_cache_size = 1;
+
+query I
+SELECT bool_and(pii_contains(t)) FROM (VALUES
+    ('John works at Microsoft'),
+    ('Angela Merkel visited Paris'),
+    ('John works at Microsoft')
+) AS v(t);
+----
+true
+
+# Back to 0 and again to a normal size: results stay consistent
+statement ok
+SET anofox_ner_cache_size = 0;
+
+query I
+SELECT pii_contains('She joined Google last year');
+----
+true
+
+statement ok
+SET anofox_ner_cache_size = 10000;
+
+query I
+SELECT pii_contains('She joined Google last year');
+----
+true

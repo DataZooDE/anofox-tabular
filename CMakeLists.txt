@@ -286,6 +286,35 @@ if(UNIX AND NOT APPLE)
     target_link_options(${LOADABLE_EXTENSION_NAME} PRIVATE -Wl,--allow-multiple-definition)
 endif()
 
+# --- C++ unit tests ---
+
+# Standalone Catch2 unit test binary for extension-internal data structures
+# (e.g. the NER LRU cache). Uses the Catch2 header bundled with DuckDB.
+# Run: ./build/<config>/extension/anofox_tabular/anofox_tabular_cpp_tests
+set(DUCKDB_CATCH_DIR "${CMAKE_CURRENT_SOURCE_DIR}/duckdb/third_party/catch")
+if(NOT EXISTS "${DUCKDB_CATCH_DIR}/catch.hpp")
+    # Built from within the DuckDB build tree (extension template): the top-level
+    # CMake project is DuckDB itself
+    set(DUCKDB_CATCH_DIR "${CMAKE_SOURCE_DIR}/third_party/catch")
+endif()
+if(EXISTS "${DUCKDB_CATCH_DIR}/catch.hpp")
+    add_executable(anofox_tabular_cpp_tests
+        test/cpp/test_ner_lru_cache.cpp
+    )
+    target_include_directories(anofox_tabular_cpp_tests PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/include
+        ${DUCKDB_CATCH_DIR}
+    )
+    find_package(Threads REQUIRED)
+    target_link_libraries(anofox_tabular_cpp_tests PRIVATE Threads::Threads)
+    # anofox_ner.hpp includes OpenVINO headers when HAVE_OPENVINO=1
+    if(OPENVINO_FOUND)
+        target_link_libraries(anofox_tabular_cpp_tests PRIVATE openvino::runtime)
+    endif()
+else()
+    message(STATUS "Catch2 header not found - skipping anofox_tabular_cpp_tests")
+endif()
+
 # --- Installation ---
 
 install(
