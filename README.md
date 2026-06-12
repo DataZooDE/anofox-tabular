@@ -570,6 +570,11 @@ FROM outlier_tree('employees', 'job_title,salary,years_exp', 'outliers');
 - `'summary'`: Single row with pass/fail status and outlier count
 - `'outliers'`: Per-outlier rows with z-scores, bounds, and explanations
 
+**Semantics:**
+- Rows containing NULL in any selected column are excluded from the analysis
+- `row_id` is the 1-based position of the row in the source table (NULL rows still count toward the position)
+- `total_rows` (summary mode) is the number of analyzed rows, i.e. rows that are non-NULL in every selected column
+
 ---
 
 ### 🔄 Data Diffing
