@@ -304,6 +304,7 @@ if(NOT CLANG_TIDY AND NOT EMSCRIPTEN AND CMAKE_VERSION VERSION_GREATER_EQUAL "3.
     add_library(anofox_tabular_unittest_tests OBJECT
         test/cpp/test_anofox_dbscan.cpp
         test/cpp/test_anofox_isolation_forest.cpp
+        test/cpp/test_anofox_outlier_tree.cpp
         test/cpp/test_email_internal.cpp
     )
     target_compile_features(anofox_tabular_unittest_tests PRIVATE cxx_std_17)
