@@ -309,6 +309,20 @@ bool EnsureLibraryInitializedInternal(std::string &error_reason) {
 
 } // namespace
 
+MxSelection SelectMxHosts(std::vector<MxRecord> records) {
+	MxSelection selection;
+	std::sort(records.begin(), records.end(), [](const MxRecord &lhs, const MxRecord &rhs) {
+		if (lhs.preference == rhs.preference) {
+			return lhs.exchange < rhs.exchange;
+		}
+		return lhs.preference < rhs.preference;
+	});
+	for (auto &record : records) {
+		selection.hosts.emplace_back(std::move(record.exchange));
+	}
+	return selection;
+}
+
 std::string DnsStatusToReason(int status) {
 	return MapAresStatus(status);
 }

@@ -909,6 +909,24 @@ SmtpResult AttemptHost(const std::string &email, const std::string &host, const 
 
 } // namespace
 
+bool SmtpResponseBudget::AcceptLine(size_t line_bytes) {
+	(void)line_bytes;
+	return true;
+}
+
+bool SmtpResponseBudget::AcceptPartialLine(size_t buffered_bytes) const {
+	(void)buffered_bytes;
+	return true;
+}
+
+std::chrono::milliseconds ClampToDeadline(std::chrono::milliseconds op_timeout,
+                                          std::chrono::steady_clock::time_point now,
+                                          std::chrono::steady_clock::time_point deadline) {
+	(void)now;
+	(void)deadline;
+	return op_timeout;
+}
+
 SmtpClient::SmtpClient(const SmtpOptions &options_p) : options(options_p) {
 	if (options.port == 0) {
 		options.port = 25;
