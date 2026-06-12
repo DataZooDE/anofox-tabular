@@ -46,11 +46,25 @@ private:
 	PostalManager();
 	~PostalManager();
 
+	//! Performs libpostal setup. Caller must hold init_lock.
 	void Initialize(ClientContext &context);
+	//! Downloads and extracts the data bundle. Caller must hold init_lock.
+	void LoadDataInternal(ClientContext &context);
+	//! Computes the current status. Caller must hold init_lock.
+	PostalStatus GetStatusInternal(ClientContext &context) const;
+	//! Tears down exactly the libpostal stages that completed setup.
+	void TeardownInitializedStages();
 
 	std::atomic<bool> initialized {false};
-	std::mutex init_lock;
+	//! Guards data_directory and all libpostal setup/download state.
+	//! Mutable so const accessors can lock it.
+	mutable std::mutex init_lock;
 	std::string data_directory;
+	//! Per-stage setup tracking so a failed initialization only rolls back
+	//! the stages that actually completed.
+	bool core_ready = false;
+	bool parser_ready = false;
+	bool classifier_ready = false;
 };
 
 } // namespace postal

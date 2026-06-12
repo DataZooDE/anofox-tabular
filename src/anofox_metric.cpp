@@ -238,8 +238,10 @@ static string GenerateSchemaSQL(const string &table_name, const vector<string> &
 
 // Helper: Generate SQL for freshness metrics
 static string GenerateFreshnessSQL(const string &table_ref, const string &timestamp_column, const Value &max_age, const Value &reference_time) {
-	string max_age_interval = max_age.IsNull() ? "INTERVAL '1 day'" : "'" + max_age.ToString() + "'::INTERVAL";
-	string ref_time = reference_time.IsNull() ? "now()" : "'" + reference_time.ToString() + "'::TIMESTAMP";
+	string max_age_interval =
+	    max_age.IsNull() ? "INTERVAL '1 day'" : "'" + EscapeSqlStringLiteral(max_age.ToString()) + "'::INTERVAL";
+	string ref_time =
+	    reference_time.IsNull() ? "now()" : "'" + EscapeSqlStringLiteral(reference_time.ToString()) + "'::TIMESTAMP";
 	string col_id = QuoteSqlIdentifier(timestamp_column);
 
 	return "SELECT "
@@ -680,9 +682,9 @@ static void IsolationForestExecute(ClientContext &context, TableFunctionInput &d
 			string type_query = "SELECT ";
 			for (size_t i = 0; i < bind_data.column_names.size(); ++i) {
 				if (i > 0) type_query += ", ";
-				type_query += "\"" + bind_data.column_names[i] + "\"";
+				type_query += QuoteSqlIdentifier(bind_data.column_names[i]);
 			}
-			type_query += " FROM query_table('" + bind_data.table_name + "') LIMIT 0";
+			type_query += " FROM " + BuildQueryTableRef(bind_data.table_name) + " LIMIT 0";
 
 			auto type_result = con.Query(type_query);
 			if (type_result->HasError()) {
@@ -707,28 +709,28 @@ static void IsolationForestExecute(ClientContext &context, TableFunctionInput &d
 		for (size_t i = 0; i < bind_data.column_names.size(); ++i) {
 			if (i > 0) column_list += ", ";
 			if (is_categorical[i]) {
-				column_list += "CAST(\"" + bind_data.column_names[i] + "\" AS VARCHAR)";
+				column_list += "CAST(" + QuoteSqlIdentifier(bind_data.column_names[i]) + " AS VARCHAR)";
 			} else {
-				column_list += "CAST(\"" + bind_data.column_names[i] + "\" AS DOUBLE)";
+				column_list += "CAST(" + QuoteSqlIdentifier(bind_data.column_names[i]) + " AS DOUBLE)";
 			}
 		}
 		// Append weight column to query if provided (will be last column in result)
 		idx_t weight_col_idx = bind_data.column_names.size();  // Index of weight column in result
 		if (bind_data.has_weight_column) {
-			column_list += ", CAST(\"" + bind_data.weight_column + "\" AS DOUBLE)";
+			column_list += ", CAST(" + QuoteSqlIdentifier(bind_data.weight_column) + " AS DOUBLE)";
 		}
 
 		string null_checks;
 		for (size_t i = 0; i < bind_data.column_names.size(); ++i) {
 			if (i > 0) null_checks += " AND ";
-			null_checks += "\"" + bind_data.column_names[i] + "\" IS NOT NULL";
+			null_checks += QuoteSqlIdentifier(bind_data.column_names[i]) + " IS NOT NULL";
 		}
 		// Include weight column in null checks if provided (ensures data and weight queries return same rows)
 		if (bind_data.has_weight_column) {
-			null_checks += " AND \"" + bind_data.weight_column + "\" IS NOT NULL";
+			null_checks += " AND " + QuoteSqlIdentifier(bind_data.weight_column) + " IS NOT NULL";
 		}
 
-		string query = "SELECT " + column_list + " FROM query_table('" + bind_data.table_name + "') WHERE " + null_checks;
+		string query = "SELECT " + column_list + " FROM " + BuildQueryTableRef(bind_data.table_name) + " WHERE " + null_checks;
 
 		auto result = con.Query(query);
 		if (result->HasError()) {
@@ -990,8 +992,8 @@ static string GenerateIsolationForestSummarySQL(
 	string contamination_str = std::to_string(contamination);
 
 	return "WITH data_sample AS ("
-		"SELECT ROW_NUMBER() OVER () as row_id, CAST(\"" + column_name + "\" AS DOUBLE) as value "
-		"FROM (SELECT * FROM " + table_ref + ") WHERE \"" + column_name + "\" IS NOT NULL"
+		"SELECT ROW_NUMBER() OVER () as row_id, CAST(" + QuoteSqlIdentifier(column_name) + " AS DOUBLE) as value "
+		"FROM (SELECT * FROM " + table_ref + ") WHERE " + QuoteSqlIdentifier(column_name) + " IS NOT NULL"
 		"), "
 		"summary AS ("
 		"SELECT "
@@ -1028,8 +1030,8 @@ static string GenerateIsolationForestScoresSQL(
 	string contamination_str = std::to_string(contamination);
 
 	return "WITH data_sample AS ("
-		"SELECT ROW_NUMBER() OVER () as row_id, CAST(\"" + column_name + "\" AS DOUBLE) as value "
-		"FROM (SELECT * FROM " + table_ref + ") WHERE \"" + column_name + "\" IS NOT NULL"
+		"SELECT ROW_NUMBER() OVER () as row_id, CAST(" + QuoteSqlIdentifier(column_name) + " AS DOUBLE) as value "
+		"FROM (SELECT * FROM " + table_ref + ") WHERE " + QuoteSqlIdentifier(column_name) + " IS NOT NULL"
 		"), "
 		"computed_scores AS ("
 		"SELECT "
@@ -1071,8 +1073,8 @@ static string GenerateIsolationForestMultivariateSummarySQL(
 			column_list += ", ";
 			null_checks += " AND ";
 		}
-		column_list += "CAST(\"" + column_names[i] + "\" AS DOUBLE) as col_" + std::to_string(i);
-		null_checks += "\"" + column_names[i] + "\" IS NOT NULL";
+		column_list += "CAST(" + QuoteSqlIdentifier(column_names[i]) + " AS DOUBLE) as col_" + std::to_string(i);
+		null_checks += QuoteSqlIdentifier(column_names[i]) + " IS NOT NULL";
 	}
 
 	// Build anomaly detection condition based on number of columns
@@ -1134,8 +1136,8 @@ static string GenerateIsolationForestMultivariateScoresSQL(
 			column_list += ", ";
 			null_checks += " AND ";
 		}
-		column_list += "CAST(\"" + column_names[i] + "\" AS DOUBLE) as col_" + std::to_string(i);
-		null_checks += "\"" + column_names[i] + "\" IS NOT NULL";
+		column_list += "CAST(" + QuoteSqlIdentifier(column_names[i]) + " AS DOUBLE) as col_" + std::to_string(i);
+		null_checks += QuoteSqlIdentifier(column_names[i]) + " IS NOT NULL";
 	}
 
 	// Build anomaly detection condition based on number of columns
@@ -1201,7 +1203,7 @@ static unique_ptr<TableRef> MetricIsolationForestBindReplace(ClientContext &cont
 		throw BinderException("contamination must be between 0.0 and 0.5");
 	}
 
-	string table_ref = "query_table('" + table_name + "')";
+	string table_ref = BuildQueryTableRef(table_name);
 	string sql = (output_mode == "scores") ?
 		GenerateIsolationForestScoresSQL(table_ref, column_name, n_trees, sample_size, contamination) :
 		GenerateIsolationForestSummarySQL(table_ref, column_name, n_trees, sample_size, contamination);
@@ -1263,7 +1265,7 @@ static unique_ptr<TableRef> MetricIsolationForestMultivariateBindReplace(ClientC
 		throw BinderException("contamination must be between 0.0 and 0.5");
 	}
 
-	string table_ref = "query_table('" + table_name + "')";
+	string table_ref = BuildQueryTableRef(table_name);
 	string sql = (output_mode == "scores") ?
 		GenerateIsolationForestMultivariateScoresSQL(table_ref, column_names, n_trees, sample_size, contamination) :
 		GenerateIsolationForestMultivariateSummarySQL(table_ref, column_names, n_trees, sample_size, contamination);
@@ -1294,20 +1296,20 @@ static unique_ptr<TableRef> MetricDBSCANBindReplace(ClientContext &context, Tabl
 		throw BinderException("min_pts must be >= 1");
 	}
 
-	string table_ref = "query_table('" + table_name + "')";
+	string table_ref = BuildQueryTableRef(table_name);
 
 	// For now, use simple placeholder SQL (distance > eps detection)
 	string sql = (output_mode == "clusters") ?
 		"WITH data_sample AS ("
-		"SELECT ROW_NUMBER() OVER () as row_id, CAST(\"" + column_name + "\" AS DOUBLE) as value "
-		"FROM (SELECT * FROM " + table_ref + ") WHERE \"" + column_name + "\" IS NOT NULL"
+		"SELECT ROW_NUMBER() OVER () as row_id, CAST(" + QuoteSqlIdentifier(column_name) + " AS DOUBLE) as value "
+		"FROM (SELECT * FROM " + table_ref + ") WHERE " + QuoteSqlIdentifier(column_name) + " IS NOT NULL"
 		") "
 		"SELECT row_id, value, 0 as cluster_id, CAST('CORE' AS VARCHAR) as point_type, 5 as neighbor_count, 0.5 as anomaly_score, false as is_anomaly "
 		"FROM data_sample ORDER BY row_id" :
 		"WITH data_sample AS ("
-		"SELECT COUNT(*) as total_count, COUNT(DISTINCT CAST(\"" + column_name + "\" AS DOUBLE)) as cluster_count, "
-		"COUNT(CASE WHEN CAST(\"" + column_name + "\" AS DOUBLE) > 1000 THEN 1 END) as noise_count "
-		"FROM (SELECT * FROM " + table_ref + ") WHERE \"" + column_name + "\" IS NOT NULL"
+		"SELECT COUNT(*) as total_count, COUNT(DISTINCT CAST(" + QuoteSqlIdentifier(column_name) + " AS DOUBLE)) as cluster_count, "
+		"COUNT(CASE WHEN CAST(" + QuoteSqlIdentifier(column_name) + " AS DOUBLE) > 1000 THEN 1 END) as noise_count "
+		"FROM (SELECT * FROM " + table_ref + ") WHERE " + QuoteSqlIdentifier(column_name) + " IS NOT NULL"
 		") "
 		"SELECT 'pass' as status, cluster_count, noise_count, total_count, "
 		"CAST(noise_count AS DOUBLE) / CAST(total_count AS DOUBLE) as noise_rate, "
@@ -1364,7 +1366,7 @@ static unique_ptr<TableRef> MetricDBSCANMultivariateBindReplace(ClientContext &c
 		throw BinderException("min_pts must be >= 1");
 	}
 
-	string table_ref = "query_table('" + table_name + "')";
+	string table_ref = BuildQueryTableRef(table_name);
 
 	// Placeholder SQL for multivariate DBSCAN
 	string sql = (output_mode == "clusters") ?

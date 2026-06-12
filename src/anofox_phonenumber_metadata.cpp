@@ -330,6 +330,44 @@ const std::unordered_map<std::string, CountryMetadata> REGION_METADATA = {
 	}},
 };
 
+namespace {
+
+std::optional<std::regex> CompilePattern(const std::string &pattern) {
+	if (pattern.empty()) {
+		return std::nullopt;
+	}
+	try {
+		return std::regex(pattern, std::regex::optimize);
+	} catch (const std::regex_error &) {
+		// Invalid metadata pattern: treat as absent rather than failing per row.
+		return std::nullopt;
+	}
+}
+
+} // namespace
+
+const CompiledRegionPatterns *GetCompiledPatternsForRegion(const std::string &region_code) {
+	// Built exactly once on first use; magic statics make this thread-safe.
+	static const auto compiled_patterns = [] {
+		std::unordered_map<std::string, CompiledRegionPatterns> result;
+		result.reserve(REGION_METADATA.size());
+		for (const auto &entry : REGION_METADATA) {
+			CompiledRegionPatterns patterns;
+			patterns.fixed_line = CompilePattern(entry.second.fixed_line_pattern);
+			patterns.mobile = CompilePattern(entry.second.mobile_pattern);
+			patterns.toll_free = CompilePattern(entry.second.toll_free_pattern);
+			result.emplace(entry.first, std::move(patterns));
+		}
+		return result;
+	}();
+
+	auto it = compiled_patterns.find(region_code);
+	if (it != compiled_patterns.end()) {
+		return &it->second;
+	}
+	return nullptr;
+}
+
 } // namespace phonenumber
 } // namespace anofox
 } // namespace duckdb

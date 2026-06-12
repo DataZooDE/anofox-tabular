@@ -181,6 +181,7 @@ set(EXTENSION_SOURCES
         src/anofox_money_currency.cpp
         src/anofox_vat.cpp
         src/anofox_vat_country.cpp
+        src/anofox_vat_checksum.cpp
         src/anofox_pii.cpp
         src/anofox_ner.cpp
 )
@@ -286,7 +287,43 @@ if(UNIX AND NOT APPLE)
     target_link_options(${LOADABLE_EXTENSION_NAME} PRIVATE -Wl,--allow-multiple-definition)
 endif()
 
-# --- C++ unit tests ---
+# --- C++ unit tests (Catch2, compiled into DuckDB's test/unittest binary) ---
+
+# This CMakeLists is processed via add_subdirectory() from the DuckDB build
+# before duckdb/test/ creates the `unittest` target, so the test sources are
+# registered through a call deferred to the end of the top-level (DuckDB)
+# directory scope. The tests are compiled as an OBJECT library so that the
+# Catch2 auto-registration translation units are linked into the unittest
+# binary directly (archive members without referenced symbols would be
+# dropped by the linker).
+#
+# Note: not gated on ENABLE_UNITTEST_CPP_TESTS — that option only controls
+# DuckDB's own C++ test subdirectories (extension-ci-tools disables it), while
+# these tests belong to this extension and should always ship with `unittest`.
+if(NOT CLANG_TIDY AND NOT EMSCRIPTEN AND CMAKE_VERSION VERSION_GREATER_EQUAL "3.19")
+    add_library(anofox_tabular_unittest_tests OBJECT
+        test/cpp/test_anofox_dbscan.cpp
+        test/cpp/test_anofox_isolation_forest.cpp
+        test/cpp/test_email_internal.cpp
+    )
+    target_compile_features(anofox_tabular_unittest_tests PRIVATE cxx_std_17)
+    target_include_directories(anofox_tabular_unittest_tests PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/include
+        ${CMAKE_SOURCE_DIR}/third_party/catch
+    )
+    # Propagate DuckDB's include directories (compile-time usage requirements
+    # only — the objects are linked into unittest, which links duckdb itself).
+    target_link_libraries(anofox_tabular_unittest_tests PRIVATE duckdb_static)
+
+    function(anofox_tabular_register_cpp_tests)
+        if(TARGET unittest)
+            target_sources(unittest PRIVATE $<TARGET_OBJECTS:anofox_tabular_unittest_tests>)
+        endif()
+    endfunction()
+    cmake_language(DEFER DIRECTORY ${CMAKE_SOURCE_DIR} CALL anofox_tabular_register_cpp_tests)
+endif()
+
+# --- C++ unit tests (standalone Catch2 binary) ---
 
 # Standalone Catch2 unit test binary for extension-internal data structures
 # (e.g. the NER LRU cache). Uses the Catch2 header bundled with DuckDB.

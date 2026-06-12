@@ -371,7 +371,8 @@ European VAT number validation for regulatory compliance and data quality.
 - 10 SQL functions for VAT operations
 - 29 countries supported (28 EU + UK)
 - Syntax validation with country-specific regex patterns
-- EU membership checks
+- Check-digit (checksum) validation for 16 countries: AT, BE, DE, DK, ES, FI, FR, GR/EL, IE, IT, LU, NL, PL, PT, SE, SI
+- EU membership checks (accepts lowercase codes and the EL/XI VAT aliases)
 - Country name and information lookup
 
 ```sql
@@ -569,6 +570,11 @@ FROM outlier_tree('employees', 'job_title,salary,years_exp', 'outliers');
 **Output Modes:**
 - `'summary'`: Single row with pass/fail status and outlier count
 - `'outliers'`: Per-outlier rows with z-scores, bounds, and explanations
+
+**Semantics:**
+- Rows containing NULL in any selected column are excluded from the analysis
+- `row_id` is the 1-based position of the row in the source table (NULL rows still count toward the position)
+- `total_rows` (summary mode) is the number of analyzed rows, i.e. rows that are non-NULL in every selected column
 
 ---
 
@@ -844,7 +850,7 @@ WHERE money_in_range(amount, 0.01, 99999.99)
 | Function | Signature | Returns | Description |
 |----------|-----------|---------|-------------|
 | `anofox_tab_money` | `(amount, currency_code)` | STRUCT | Create a money value from amount and currency code |
-| `anofox_tab_money_from_cents` | `(cents, currency_code)` | STRUCT | Create a money value from integer cents |
+| `anofox_tab_money_from_cents` | `(cents, currency_code)` | STRUCT | Create a money value from an integer amount in the smallest currency unit (e.g. 10050 cents → 100.50 USD) |
 | `anofox_tab_money_amount` | `(money)` | DOUBLE | Extract amount from money struct |
 | `anofox_tab_money_currency` | `(money)` | VARCHAR | Extract currency code from money struct |
 
@@ -902,12 +908,15 @@ WHERE money_in_range(amount, 0.01, 99999.99)
 |----------|-----------|---------|-------------|
 | `anofox_tab_vat_is_eu_member` | `(country_code)` | BOOLEAN | Check if country is EU member |
 | `anofox_tab_vat_country_name` | `(country_code)` | VARCHAR | Get full country name |
-| `anofox_tab_vat_format` | `(vat_string, style)` | VARCHAR | Format VAT for display |
+| `anofox_tab_vat_format` | `(vat_string, style)` | VARCHAR | Format VAT for display: `'plain'` (digits only) or `'iso'` (VAT country prefix + digits) |
 
 #### Combined Validation
 | Function | Signature | Returns | Description |
 |----------|-----------|---------|-------------|
-| `anofox_tab_vat_is_valid` | `(vat_string)` | BOOLEAN | Full validation (syntax + country check) |
+| `anofox_tab_vat_is_valid` | `(vat_string)` | BOOLEAN | Full validation (syntax + check digit where implemented) |
+
+Check-digit (checksum) validation is implemented for: AT, BE, DE, DK, ES, FI, FR, GR/EL, IE, IT, LU, NL, PL, PT, SE, SI.
+All other countries are validated by syntax only. French VAT keys containing letters are accepted without check-digit verification.
 
 ### PII Detection Functions
 
@@ -1104,7 +1113,7 @@ Set options via SQL or DuckDB's configuration file:
 SET anofox_tab_email_default_validation = 'regex';  -- Default: regex
 SET anofox_tab_email_regex_pattern = '<your-pattern>';  -- RFC 5322 inspired
 SET anofox_tab_email_dns_timeout_ms = 1000;  -- DNS timeout per try (1-5000ms)
-SET anofox_tab_email_dns_tries = 1;  -- DNS retry count
+SET anofox_tab_email_dns_tries = 1;  -- DNS retry count (1-10)
 SET anofox_tab_email_smtp_port = 25;  -- SMTP port
 SET anofox_tab_email_smtp_connect_timeout_ms = 5000;  -- TCP connect timeout
 SET anofox_tab_email_smtp_read_timeout_ms = 5000;  -- Read/write timeout
@@ -1126,6 +1135,8 @@ SELECT postal_load_data();
 ```sql
 SET anofox_tab_phonenumber_default_region = 'US';  -- Default region code
 ```
+
+The default region must be a supported 2-letter ISO region code; unknown codes are rejected.
 
 ### Tracing
 
@@ -1343,7 +1354,7 @@ Anofox Tabular collects **anonymous usage data** to help improve the extension. 
 
 ### Disabling Telemetry
 
-**Option 1: Environment Variable** (recommended for CI/Docker)
+**Option 1: Environment Variable** (recommended — also suppresses the extension-load event)
 
 ```bash
 export DATAZOO_DISABLE_TELEMETRY=1
@@ -1353,6 +1364,19 @@ export DATAZOO_DISABLE_TELEMETRY=1
 
 ```sql
 SET anofox_telemetry_enabled = false;
+```
+
+Note: SQL `SET` can only run after the extension is loaded, so it disables all
+*subsequent* events (function executions) but cannot suppress the one-time
+extension-load event. To opt out of that event too, use the environment variable,
+or pre-set the option in the client configuration before loading the extension
+(requires `allow_unrecognized_options`), e.g. in Python:
+
+```python
+con = duckdb.connect(config={
+    "allow_unrecognized_options": True,
+    "anofox_telemetry_enabled": False,
+})
 ```
 
 ---

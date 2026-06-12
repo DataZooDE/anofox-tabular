@@ -1,0 +1,206 @@
+# name: test/sql/anofox_outlier_tree_issue45.test
+# description: Regression tests for issue #45 — outlier_tree output correctness and parameter validation
+# group: [anofox_tabular]
+
+require anofox_tabular
+
+require json
+
+statement ok
+LOAD anofox_tabular
+
+statement ok
+SET anofox_tab_trace_enabled = false
+
+# ===--------------------------------------------------------------------===
+# Finding 1 (HIGH): negative size parameters must be rejected, not wrap
+# around to huge size_t values that silently pass the "< 1" checks.
+# ===--------------------------------------------------------------------===
+
+statement ok
+CREATE TABLE ot45_simple (v DOUBLE)
+
+statement ok
+INSERT INTO ot45_simple VALUES
+    (10.0), (11.0), (10.0), (11.0), (10.0),
+    (11.0), (10.0), (11.0), (10.0), (11.0),
+    (100.0)
+
+# Negative max_depth must produce a binder error (previously wrapped and passed)
+statement error
+SELECT * FROM outlier_tree('ot45_simple', 'v', 'summary', -1, 0.1::DOUBLE, 3, 3, 2.67, 8.0)
+----
+max_depth
+
+# Negative min_size_numeric must produce a binder error
+statement error
+SELECT * FROM outlier_tree('ot45_simple', 'v', 'summary', 4, 0.1::DOUBLE, -5, 3, 2.67, 8.0)
+----
+min_size_numeric
+
+# Negative min_size_categ must produce a binder error
+statement error
+SELECT * FROM outlier_tree('ot45_simple', 'v', 'summary', 4, 0.1::DOUBLE, 3, -5, 2.67, 8.0)
+----
+min_size_categ
+
+# Unreasonably large max_depth must produce a binder error
+statement error
+SELECT * FROM outlier_tree('ot45_simple', 'v', 'summary', 2000, 0.1::DOUBLE, 3, 3, 2.67, 8.0)
+----
+max_depth
+
+# ===--------------------------------------------------------------------===
+# Finding 2 (MED): reported row_id must refer to the SOURCE table row
+# position, not the position in the NULL-compacted working dataset.
+# Rows 4 and 5 are NULL; the outlier is source row 13.
+# ===--------------------------------------------------------------------===
+
+statement ok
+CREATE TABLE ot45_nulls (v DOUBLE)
+
+statement ok
+INSERT INTO ot45_nulls VALUES
+    (10.0), (11.0), (10.0),
+    (NULL), (NULL),
+    (11.0), (10.0), (11.0), (10.0), (11.0), (10.0), (11.0),
+    (100.0)
+
+query IT
+SELECT row_id, outlier_value
+FROM outlier_tree('ot45_nulls', 'v', 'outliers', 4, 0.1::DOUBLE, 3, 3, 2.67, 8.0)
+----
+13	100
+
+# total_rows in summary mode counts only the analyzed (fully non-NULL) rows
+query I
+SELECT total_rows FROM outlier_tree('ot45_nulls', 'v', 'summary', 4, 0.1::DOUBLE, 3, 3, 2.67, 8.0)
+----
+11
+
+# ===--------------------------------------------------------------------===
+# Finding 3 (MED): a categorical right branch means the row is NOT in the
+# left categories — explanations and conditions JSON must carry negation.
+# Fixture: outlier 1500 is normal globally (root MAD is large) but extreme
+# inside the g <> 'a' branch, so its only conditioning is the right branch.
+# ===--------------------------------------------------------------------===
+
+statement ok
+CREATE TABLE ot45_categ (g VARCHAR, v DOUBLE)
+
+statement ok
+INSERT INTO ot45_categ VALUES
+    ('a', 0), ('a', 20), ('a', 40), ('a', 60), ('a', 80), ('a', 100),
+    ('a', 120), ('a', 140), ('a', 160), ('a', 180), ('a', 200), ('a', 220),
+    ('b', 1000), ('b', 1001), ('b', 1000), ('b', 1001), ('b', 1000),
+    ('b', 1001), ('b', 1000), ('b', 1001), ('b', 1000), ('b', 1001),
+    ('b', 1500)
+
+# Exactly one outlier is found, in the right (g <> 'a') branch
+query I
+SELECT COUNT(*)
+FROM outlier_tree('ot45_categ', 'g,v', 'outliers', 2, 0.1::DOUBLE, 3, 3, 2.67, 8.0)
+----
+1
+
+# The explanation must express negation (NOT IN), and the conditions JSON
+# must carry a negated operator for the categorical right branch.
+query TT
+SELECT
+    CASE WHEN explanation LIKE '%g NOT IN (''a'')%' THEN 'negated' ELSE explanation END,
+    json_extract_string(conditions, '$[0].operator')
+FROM outlier_tree('ot45_categ', 'g,v', 'outliers', 2, 0.1::DOUBLE, 3, 3, 2.67, 8.0)
+----
+negated	not_in
+
+# ===--------------------------------------------------------------------===
+# Finding 4 (MED): the same (row, column) outlier found in several clusters
+# must yield a single finding (the most extreme one), not duplicates.
+# Fixture: outlier 5000 is flagged both at the root cluster and inside the
+# g <> 'a' branch (where its score is more extreme).
+# ===--------------------------------------------------------------------===
+
+statement ok
+CREATE TABLE ot45_dup (g VARCHAR, v DOUBLE)
+
+statement ok
+INSERT INTO ot45_dup VALUES
+    ('a', 0), ('a', 20), ('a', 40), ('a', 60), ('a', 80), ('a', 100),
+    ('a', 120), ('a', 140), ('a', 160), ('a', 180), ('a', 200), ('a', 220),
+    ('b', 1000), ('b', 1001), ('b', 1000), ('b', 1001), ('b', 1000),
+    ('b', 1001), ('b', 1000), ('b', 1001), ('b', 1000), ('b', 1001),
+    ('b', 5000)
+
+# No (row_id, column_name) pair may appear more than once
+query I
+SELECT COUNT(*) FROM (
+    SELECT row_id, column_name
+    FROM outlier_tree('ot45_dup', 'g,v', 'outliers', 2, 0.1::DOUBLE, 3, 3, 2.67, 8.0)
+    GROUP BY row_id, column_name
+    HAVING COUNT(*) > 1
+)
+----
+0
+
+# The single finding kept is the most specific/extreme one (branch cluster)
+query I
+SELECT COUNT(*)
+FROM outlier_tree('ot45_dup', 'g,v', 'outliers', 2, 0.1::DOUBLE, 3, 3, 2.67, 8.0)
+----
+1
+
+# Summary outlier_count must match (no inflated counts)
+query I
+SELECT outlier_count
+FROM outlier_tree('ot45_dup', 'g,v', 'summary', 2, 0.1::DOUBLE, 3, 3, 2.67, 8.0)
+----
+1
+
+# ===--------------------------------------------------------------------===
+# Finding 5 (MED): conditions JSON must stay valid when category values
+# contain quotes or backslashes.
+# ===--------------------------------------------------------------------===
+
+statement ok
+CREATE TABLE ot45_json (g VARCHAR, v DOUBLE)
+
+statement ok
+INSERT INTO ot45_json VALUES
+    ('a"x\', 0), ('a"x\', 20), ('a"x\', 40), ('a"x\', 60), ('a"x\', 80), ('a"x\', 100),
+    ('a"x\', 120), ('a"x\', 140), ('a"x\', 160), ('a"x\', 180), ('a"x\', 200), ('a"x\', 220),
+    ('b', 1000), ('b', 1001), ('b', 1000), ('b', 1001), ('b', 1000),
+    ('b', 1001), ('b', 1000), ('b', 1001), ('b', 1000), ('b', 1001),
+    ('b', 1500)
+
+query I
+SELECT CASE WHEN json_valid(conditions) THEN 1 ELSE 0 END
+FROM outlier_tree('ot45_json', 'g,v', 'outliers', 2, 0.1::DOUBLE, 3, 3, 2.67, 8.0)
+----
+1
+
+# The escaped category value round-trips through json extraction
+query T
+SELECT json_extract_string(conditions, '$[0].values[0]')
+FROM outlier_tree('ot45_json', 'g,v', 'outliers', 2, 0.1::DOUBLE, 3, 3, 2.67, 8.0)
+----
+a"x\
+
+# ===--------------------------------------------------------------------===
+# Cleanup
+# ===--------------------------------------------------------------------===
+
+statement ok
+DROP TABLE ot45_simple
+
+statement ok
+DROP TABLE ot45_nulls
+
+statement ok
+DROP TABLE ot45_categ
+
+statement ok
+DROP TABLE ot45_dup
+
+statement ok
+DROP TABLE ot45_json
+

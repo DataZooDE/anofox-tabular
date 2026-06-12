@@ -27,6 +27,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <netdb.h>
+#include <poll.h>
 #include <sys/socket.h>
 #include <sys/time.h>
 #include <unistd.h>
@@ -50,6 +51,16 @@ constexpr socket_handle INVALID_SOCKET_HANDLE = -1;
 #endif
 
 enum class WaitStatus { Success, Timeout, Error };
+
+//! poll()/WSAPoll() wrapper: unlike select(), it has no FD_SETSIZE limit, so
+//! arbitrary descriptor values are safe (issue #47).
+int PollSockets(struct pollfd *fds, size_t count, int timeout_ms) {
+#ifdef _WIN32
+	return WSAPoll(fds, static_cast<ULONG>(count), timeout_ms);
+#else
+	return poll(fds, static_cast<nfds_t>(count), timeout_ms);
+#endif
+}
 
 void DebugTrace(const std::string &message) {
     EmailTrace(AnofoxLogLevel::Debug, std::string("[SMTP] ") + message);
@@ -142,45 +153,39 @@ milliseconds ToDuration(uint32_t value_ms, uint32_t max_ms) {
 	return milliseconds(clamped);
 }
 
+//! Waits for the socket to become ready. The per-operation timeout is capped
+//! by the absolute overall deadline so a single host cannot exceed the total
+//! SMTP budget (issue #47).
 WaitStatus WaitForSocket(socket_handle sock, bool want_read, bool want_write, milliseconds timeout,
-                         SmtpResult *result, const char *context) {
-	auto deadline = Clock::now() + timeout;
-	while (true) {
-		if (context) {
-			DebugTrace(std::string(context) + " wait start (" + std::to_string(timeout.count()) + "ms)");
-			if (result) {
-				result->transcript.push_back({std::string("wait:start:") + context});
-			}
+                         Clock::time_point overall_deadline, SmtpResult *result, const char *context) {
+	auto start = Clock::now();
+	auto wait_deadline = start + ClampToDeadline(timeout, start, overall_deadline);
+	if (context) {
+		DebugTrace(std::string(context) + " wait start (" + std::to_string(timeout.count()) + "ms)");
+		if (result) {
+			result->transcript.push_back({std::string("wait:start:") + context});
 		}
-		fd_set readfds;
-		fd_set writefds;
-		fd_set exceptfds;
-		FD_ZERO(&readfds);
-		FD_ZERO(&writefds);
-		FD_ZERO(&exceptfds);
+	}
+	while (true) {
+		auto now = Clock::now();
+		auto remaining = (now < wait_deadline)
+		                    ? std::chrono::duration_cast<std::chrono::microseconds>(wait_deadline - now)
+		                    : std::chrono::microseconds(0);
+		// Round up so a sub-millisecond budget still polls once with a short wait.
+		auto remaining_ms = static_cast<int>((remaining.count() + 999) / 1000);
+
+		struct pollfd pfd;
+		pfd.fd = sock;
+		pfd.events = 0;
+		pfd.revents = 0;
 		if (want_read) {
-			FD_SET(sock, &readfds);
+			pfd.events |= POLLIN;
 		}
 		if (want_write) {
-			FD_SET(sock, &writefds);
+			pfd.events |= POLLOUT;
 		}
-		FD_SET(sock, &exceptfds);
 
-		auto now = Clock::now();
-		auto remaining = (now < deadline)
-		                    ? std::chrono::duration_cast<std::chrono::microseconds>(deadline - now)
-		                    : std::chrono::microseconds(0);
-		struct timeval tv;
-		tv.tv_sec = static_cast<long>(remaining.count() / 1000000);
-		tv.tv_usec = static_cast<long>(remaining.count() % 1000000);
-
-		int nfds =
-#ifdef _WIN32
-		    0;
-#else
-		    static_cast<int>(sock) + 1;
-#endif
-		int ret = select(nfds, want_read ? &readfds : nullptr, want_write ? &writefds : nullptr, &exceptfds, &tv);
+		int ret = PollSockets(&pfd, 1, remaining_ms);
 		if (ret == 0) {
 			if (context) {
 				DebugTrace(std::string(context) + " wait timeout");
@@ -209,7 +214,7 @@ WaitStatus WaitForSocket(socket_handle sock, bool want_read, bool want_write, mi
 			}
 			return WaitStatus::Error;
 		}
-		if (FD_ISSET(sock, &exceptfds)) {
+		if (pfd.revents & (POLLERR | POLLNVAL)) {
 			if (context) {
 				DebugTrace(std::string(context) + " wait exception");
 			}
@@ -342,22 +347,23 @@ bool RunResolverLoop(ares_channel_t *channel, ResolverSocketTracker &tracker, in
 			remaining = min_timeout;
 		}
 
-		fd_set read_fds;
-		fd_set write_fds;
-		FD_ZERO(&read_fds);
-		FD_ZERO(&write_fds);
-		ares_socket_t max_fd = ARES_SOCKET_BAD;
+		std::vector<struct pollfd> poll_fds;
+		poll_fds.reserve(tracker.sockets.size());
 		for (auto &entry : tracker.sockets) {
-			auto sock = entry.first;
 			const auto &state = entry.second;
+			short poll_events = 0;
 			if (state.readable) {
-				FD_SET(sock, &read_fds);
+				poll_events |= POLLIN;
 			}
 			if (state.writable) {
-				FD_SET(sock, &write_fds);
+				poll_events |= POLLOUT;
 			}
-			if ((state.readable || state.writable) && (max_fd == ARES_SOCKET_BAD || sock > max_fd)) {
-				max_fd = sock;
+			if (poll_events != 0) {
+				struct pollfd pfd;
+				pfd.fd = entry.first;
+				pfd.events = poll_events;
+				pfd.revents = 0;
+				poll_fds.push_back(pfd);
 			}
 		}
 
@@ -370,51 +376,53 @@ bool RunResolverLoop(ares_channel_t *channel, ResolverSocketTracker &tracker, in
 		if (!tv_ptr) {
 			tv_ptr = &capped_timeout;
 		}
-
-		int select_result = 0;
-		if (max_fd != ARES_SOCKET_BAD) {
-			int nfds = static_cast<int>(max_fd) + 1;
-			select_result = select(nfds, &read_fds, &write_fds, nullptr, tv_ptr);
-		} else {
-			auto sleep_ms = static_cast<uint32_t>(tv_ptr->tv_sec * 1000 + static_cast<long>(tv_ptr->tv_usec / 1000));
-			auto capped_ms = static_cast<uint32_t>(remaining.count());
-			if (sleep_ms == 0 || sleep_ms > capped_ms) {
-				sleep_ms = capped_ms;
-			}
-			if (sleep_ms == 0) {
-				sleep_ms = static_cast<uint32_t>(min_timeout.count());
-			}
-			std::this_thread::sleep_for(std::chrono::milliseconds(sleep_ms));
+		// Round up so a sub-millisecond budget does not busy-spin.
+		auto wait_ms = static_cast<uint32_t>(tv_ptr->tv_sec * 1000 + (tv_ptr->tv_usec + 999) / 1000);
+		auto capped_ms = static_cast<uint32_t>(remaining.count());
+		if (wait_ms > capped_ms) {
+			wait_ms = capped_ms;
 		}
-		if (select_result < 0) {
+		if (wait_ms == 0) {
+			wait_ms = static_cast<uint32_t>(min_timeout.count());
+		}
+
+		int poll_result = 0;
+		if (!poll_fds.empty()) {
+			poll_result = PollSockets(poll_fds.data(), poll_fds.size(), static_cast<int>(wait_ms));
+		} else {
+			std::this_thread::sleep_for(std::chrono::milliseconds(wait_ms));
+		}
+		if (poll_result < 0) {
 #ifdef _WIN32
 			int wsa_error = WSAGetLastError();
 			if (wsa_error == WSAEINTR) {
 				continue;
 			}
-			error_reason = "smtp_dns_select_failed_" + std::to_string(wsa_error);
+			error_reason = "smtp_dns_poll_failed_" + std::to_string(wsa_error);
 #else
 			if (errno == EINTR) {
 				continue;
 			}
-			error_reason = "smtp_dns_select_failed_" + std::to_string(errno);
+			error_reason = "smtp_dns_poll_failed_" + std::to_string(errno);
 #endif
 			return false;
 		}
 
 		std::vector<ares_fd_events_t> events;
-		if (select_result > 0) {
-			for (auto &entry : tracker.sockets) {
-				auto sock = entry.first;
+		if (poll_result > 0) {
+			for (auto &pfd : poll_fds) {
+				if (pfd.revents == 0) {
+					continue;
+				}
 				unsigned int event_mask = ARES_FD_EVENT_NONE;
-				if (FD_ISSET(sock, &read_fds)) {
+				if (pfd.revents & (POLLIN | POLLERR | POLLHUP | POLLNVAL)) {
 					event_mask |= ARES_FD_EVENT_READ;
 				}
-				if (FD_ISSET(sock, &write_fds)) {
+				if (pfd.revents & POLLOUT) {
 					event_mask |= ARES_FD_EVENT_WRITE;
 				}
 				if (event_mask != ARES_FD_EVENT_NONE) {
-					events.push_back({sock, event_mask});
+					events.push_back({pfd.fd, event_mask});
 				}
 			}
 		}
@@ -557,12 +565,13 @@ bool ResolveHostEndpoints(const std::string &host, uint16_t port, std::chrono::m
 	return true;
 }
 
-bool SendBuffer(socket_handle sock, const std::string &data, milliseconds timeout, SmtpResult &result) {
+bool SendBuffer(socket_handle sock, const std::string &data, milliseconds timeout, Clock::time_point deadline,
+                SmtpResult &result) {
 	size_t sent = 0;
 	while (sent < data.size()) {
-		auto status = WaitForSocket(sock, false, true, timeout, &result, "send");
+		auto status = WaitForSocket(sock, false, true, timeout, deadline, &result, "send");
 		if (status == WaitStatus::Timeout) {
-			result.reason = "smtp_write_timeout";
+			result.reason = Clock::now() >= deadline ? "smtp_overall_timeout" : "smtp_write_timeout";
 			return false;
 		}
 		if (status == WaitStatus::Error) {
@@ -595,16 +604,18 @@ bool SendBuffer(socket_handle sock, const std::string &data, milliseconds timeou
 	return true;
 }
 
-bool SendCommand(socket_handle sock, const std::string &command, milliseconds timeout, SmtpResult &result) {
+bool SendCommand(socket_handle sock, const std::string &command, milliseconds timeout, Clock::time_point deadline,
+                 SmtpResult &result) {
 	result.transcript.push_back({"C: " + command});
 	std::string wire = command;
 	if (wire.size() < 2 || wire.substr(wire.size() - 2) != "\r\n") {
 		wire += "\r\n";
 	}
-	return SendBuffer(sock, wire, timeout, result);
+	return SendBuffer(sock, wire, timeout, deadline, result);
 }
 
-bool ReadLine(socket_handle sock, std::string &buffer, std::string &line, milliseconds timeout, SmtpResult &result,
+bool ReadLine(socket_handle sock, std::string &buffer, std::string &line, milliseconds timeout,
+              Clock::time_point deadline, SmtpResponseBudget &budget, SmtpResult &result,
               const std::string &timeout_reason, const std::string &error_reason) {
 	char temp[512];
 	while (true) {
@@ -612,12 +623,22 @@ bool ReadLine(socket_handle sock, std::string &buffer, std::string &line, millis
 		if (pos != std::string::npos) {
 			line = buffer.substr(0, pos);
 			buffer.erase(0, pos + 2);
+			if (!budget.AcceptLine(line.size() + 2)) {
+				result.reason = "smtp_response_too_large";
+				result.transcript.push_back({"Response exceeds SMTP protocol limits"});
+				return false;
+			}
 			result.transcript.push_back({"S: " + line});
 			return true;
 		}
-		auto status = WaitForSocket(sock, true, false, timeout, &result, "read");
+		if (!budget.AcceptPartialLine(buffer.size())) {
+			result.reason = "smtp_response_too_large";
+			result.transcript.push_back({"Response line exceeds maximum length"});
+			return false;
+		}
+		auto status = WaitForSocket(sock, true, false, timeout, deadline, &result, "read");
 		if (status == WaitStatus::Timeout) {
-			result.reason = timeout_reason;
+			result.reason = Clock::now() >= deadline ? "smtp_overall_timeout" : timeout_reason;
 			return false;
 		}
 		if (status == WaitStatus::Error) {
@@ -656,10 +677,12 @@ int ParseSmtpCode(const std::string &response) {
 	return (response[0] - '0') * 100 + (response[1] - '0') * 10 + (response[2] - '0');
 }
 
-bool ReadResponse(socket_handle sock, std::string &buffer, milliseconds timeout, SmtpResult &result, int &code,
-                  const std::string &timeout_reason, const std::string &error_reason) {
+bool ReadResponse(socket_handle sock, std::string &buffer, milliseconds timeout, Clock::time_point deadline,
+                  SmtpResult &result, int &code, const std::string &timeout_reason,
+                  const std::string &error_reason) {
+	SmtpResponseBudget budget;
 	std::string line;
-	if (!ReadLine(sock, buffer, line, timeout, result, timeout_reason, error_reason)) {
+	if (!ReadLine(sock, buffer, line, timeout, deadline, budget, result, timeout_reason, error_reason)) {
 		return false;
 	}
 	code = ParseSmtpCode(line);
@@ -668,7 +691,7 @@ bool ReadResponse(socket_handle sock, std::string &buffer, milliseconds timeout,
 		return false;
 	}
 	while (line.size() > 3 && line[3] == '-') {
-		if (!ReadLine(sock, buffer, line, timeout, result, timeout_reason, error_reason)) {
+		if (!ReadLine(sock, buffer, line, timeout, deadline, budget, result, timeout_reason, error_reason)) {
 			return false;
 		}
 		int line_code = ParseSmtpCode(line);
@@ -681,7 +704,7 @@ bool ReadResponse(socket_handle sock, std::string &buffer, milliseconds timeout,
 }
 
 bool ConnectSocket(socket_handle sock, const sockaddr *addr, socklen_t length, milliseconds timeout,
-                   std::string &endpoint, SmtpResult &result) {
+                   Clock::time_point deadline, std::string &endpoint, SmtpResult &result) {
 	int rc = connect(sock, addr, length);
 	if (rc == 0) {
 		endpoint = EndpointToString(addr, length);
@@ -699,9 +722,9 @@ bool ConnectSocket(socket_handle sock, const sockaddr *addr, socklen_t length, m
 		result.transcript.push_back({"Connect error: " + SocketErrorMessage(err)});
 		return false;
 	}
-	auto status = WaitForSocket(sock, false, true, timeout, &result, "connect");
+	auto status = WaitForSocket(sock, false, true, timeout, deadline, &result, "connect");
 	if (status == WaitStatus::Timeout) {
-		result.reason = "smtp_connect_timeout";
+		result.reason = Clock::now() >= deadline ? "smtp_overall_timeout" : "smtp_connect_timeout";
 		return false;
 	}
 	if (status == WaitStatus::Error) {
@@ -731,7 +754,8 @@ bool ConnectSocket(socket_handle sock, const sockaddr *addr, socklen_t length, m
 	return true;
 }
 
-SmtpResult AttemptHost(const std::string &email, const std::string &host, const SmtpOptions &options) {
+SmtpResult AttemptHost(const std::string &email, const std::string &host, const SmtpOptions &options,
+                       Clock::time_point deadline) {
 	SmtpResult attempt;
 	attempt.transcript.push_back({"Attempt host: " + host});
     EmailTrace(AnofoxLogLevel::Info,
@@ -763,7 +787,13 @@ SmtpResult AttemptHost(const std::string &email, const std::string &host, const 
 			return attempt;
 		} else {
             EmailTrace(AnofoxLogLevel::Info, "SMTP resolving host via DNS: " + host);
-			if (!ResolveHostEndpoints(host, options.port, connect_timeout, endpoints, attempt)) {
+			auto resolve_timeout = ClampToDeadline(connect_timeout, Clock::now(), deadline);
+			if (resolve_timeout <= milliseconds::zero()) {
+				attempt.reason = "smtp_overall_timeout";
+				attempt.transcript.push_back({"Overall SMTP timeout reached before resolving host: " + host});
+				return attempt;
+			}
+			if (!ResolveHostEndpoints(host, options.port, resolve_timeout, endpoints, attempt)) {
                 EmailTrace(AnofoxLogLevel::Warn,
                            "SMTP DNS resolution failed reason=" + attempt.reason);
 				return attempt;
@@ -801,7 +831,7 @@ SmtpResult AttemptHost(const std::string &email, const std::string &host, const 
 
 		std::string endpoint_str;
 		if (!ConnectSocket(sock, reinterpret_cast<const sockaddr *>(&endpoint.address), endpoint.length, connect_timeout,
-		                   endpoint_str, attempt)) {
+		                   deadline, endpoint_str, attempt)) {
 			CloseSocketHandle(sock);
             EmailTrace(AnofoxLogLevel::Warn,
                        "SMTP connect failed endpoint=" + endpoint.description + " reason=" + attempt.reason);
@@ -816,7 +846,7 @@ SmtpResult AttemptHost(const std::string &email, const std::string &host, const 
 		read_buffer.clear();
 
 		int code = 0;
-		if (!ReadResponse(sock, read_buffer, io_timeout, attempt, code, "smtp_greeting_timeout",
+		if (!ReadResponse(sock, read_buffer, io_timeout, deadline, attempt, code, "smtp_greeting_timeout",
 		                  "smtp_greeting_error")) {
 			CloseSocketHandle(sock);
             EmailTrace(AnofoxLogLevel::Warn,
@@ -831,13 +861,13 @@ SmtpResult AttemptHost(const std::string &email, const std::string &host, const 
 			return attempt;
 		}
 
-		if (!SendCommand(sock, "EHLO " + options.helo_domain, io_timeout, attempt)) {
+		if (!SendCommand(sock, "EHLO " + options.helo_domain, io_timeout, deadline, attempt)) {
 			CloseSocketHandle(sock);
             EmailTrace(AnofoxLogLevel::Warn,
                        "SMTP EHLO send failed reason=" + attempt.reason);
 			return attempt;
 		}
-		if (!ReadResponse(sock, read_buffer, io_timeout, attempt, code, "smtp_read_timeout",
+		if (!ReadResponse(sock, read_buffer, io_timeout, deadline, attempt, code, "smtp_read_timeout",
 		                  "smtp_read_error")) {
 			CloseSocketHandle(sock);
             EmailTrace(AnofoxLogLevel::Warn,
@@ -852,13 +882,13 @@ SmtpResult AttemptHost(const std::string &email, const std::string &host, const 
 			return attempt;
 		}
 
-		if (!SendCommand(sock, "MAIL FROM:<" + options.mail_from + ">", io_timeout, attempt)) {
+		if (!SendCommand(sock, "MAIL FROM:<" + options.mail_from + ">", io_timeout, deadline, attempt)) {
 			CloseSocketHandle(sock);
             EmailTrace(AnofoxLogLevel::Warn,
                        "SMTP MAIL FROM send failed reason=" + attempt.reason);
 			return attempt;
 		}
-		if (!ReadResponse(sock, read_buffer, io_timeout, attempt, code, "smtp_read_timeout",
+		if (!ReadResponse(sock, read_buffer, io_timeout, deadline, attempt, code, "smtp_read_timeout",
 		                  "smtp_read_error")) {
 			CloseSocketHandle(sock);
             EmailTrace(AnofoxLogLevel::Warn,
@@ -873,13 +903,13 @@ SmtpResult AttemptHost(const std::string &email, const std::string &host, const 
 			return attempt;
 		}
 
-		if (!SendCommand(sock, "RCPT TO:<" + email + ">", io_timeout, attempt)) {
+		if (!SendCommand(sock, "RCPT TO:<" + email + ">", io_timeout, deadline, attempt)) {
 			CloseSocketHandle(sock);
             EmailTrace(AnofoxLogLevel::Warn,
                        "SMTP RCPT TO send failed reason=" + attempt.reason);
 			return attempt;
 		}
-		if (!ReadResponse(sock, read_buffer, io_timeout, attempt, code, "smtp_read_timeout",
+		if (!ReadResponse(sock, read_buffer, io_timeout, deadline, attempt, code, "smtp_read_timeout",
 		                  "smtp_read_error")) {
 			CloseSocketHandle(sock);
             EmailTrace(AnofoxLogLevel::Warn,
@@ -896,7 +926,7 @@ SmtpResult AttemptHost(const std::string &email, const std::string &host, const 
 
 		attempt.success = true;
 		attempt.reason.clear();
-		SendCommand(sock, "QUIT", io_timeout, attempt);
+		SendCommand(sock, "QUIT", io_timeout, deadline, attempt);
 		CloseSocketHandle(sock);
         EmailTrace(AnofoxLogLevel::Info, "SMTP verification success host=" + host);
 		return attempt;
@@ -908,6 +938,35 @@ SmtpResult AttemptHost(const std::string &email, const std::string &host, const 
 }
 
 } // namespace
+
+bool SmtpResponseBudget::AcceptLine(size_t line_bytes) {
+	if (line_bytes > SmtpLimits::MAX_LINE_BYTES) {
+		return false;
+	}
+	line_count++;
+	if (line_count > SmtpLimits::MAX_RESPONSE_LINES) {
+		return false;
+	}
+	total_bytes += line_bytes;
+	return total_bytes <= SmtpLimits::MAX_RESPONSE_BYTES;
+}
+
+bool SmtpResponseBudget::AcceptPartialLine(size_t buffered_bytes) const {
+	return buffered_bytes <= SmtpLimits::MAX_LINE_BYTES;
+}
+
+std::chrono::milliseconds ClampToDeadline(std::chrono::milliseconds op_timeout,
+                                          std::chrono::steady_clock::time_point now,
+                                          std::chrono::steady_clock::time_point deadline) {
+	if (op_timeout < std::chrono::milliseconds::zero()) {
+		op_timeout = std::chrono::milliseconds::zero();
+	}
+	if (now >= deadline) {
+		return std::chrono::milliseconds::zero();
+	}
+	auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now);
+	return std::min(op_timeout, remaining);
+}
 
 SmtpClient::SmtpClient(const SmtpOptions &options_p) : options(options_p) {
 	if (options.port == 0) {
@@ -952,7 +1011,7 @@ SmtpResult SmtpClient::Verify(const std::string &email, const std::vector<std::s
 			aggregated.transcript.push_back({"Overall SMTP timeout reached before trying host: " + host});
 			return aggregated;
 		}
-		SmtpResult attempt = AttemptHost(email, host, options);
+		SmtpResult attempt = AttemptHost(email, host, options, overall_deadline);
 		aggregated.transcript.insert(aggregated.transcript.end(), attempt.transcript.begin(), attempt.transcript.end());
 		if (attempt.success) {
 			aggregated.success = true;

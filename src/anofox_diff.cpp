@@ -1,5 +1,6 @@
 #include "anofox_diff.hpp"
 #include "anofox_function_alias.hpp"
+#include "anofox_sql_utils.hpp"
 #include "telemetry.hpp"
 
 #include "duckdb/common/string_util.hpp"
@@ -225,7 +226,7 @@ static string GenerateJoinDiffSQL(const string &source_table, const string &targ
 		if (i > 0) {
 			pk_join_condition += " AND ";
 		}
-		pk_join_condition += "s." + primary_keys[i] + " = t." + primary_keys[i];
+		pk_join_condition += "s." + QuoteSqlIdentifier(primary_keys[i]) + " = t." + QuoteSqlIdentifier(primary_keys[i]);
 	}
 
 	// Build the COALESCE expressions for primary keys
@@ -234,25 +235,15 @@ static string GenerateJoinDiffSQL(const string &source_table, const string &targ
 		if (i > 0) {
 			pk_select += ", ";
 		}
-		pk_select += "COALESCE(s." + primary_keys[i] + ", t." + primary_keys[i] + ") AS " + primary_keys[i];
-	}
-
-	// Build column list for comparison
-	string compare_list;
-	if (!compare_columns.empty()) {
-		for (size_t i = 0; i < compare_columns.size(); i++) {
-			if (i > 0) {
-				compare_list += ", ";
-			}
-			compare_list += compare_columns[i];
-		}
+		pk_select += "COALESCE(s." + QuoteSqlIdentifier(primary_keys[i]) + ", t." + QuoteSqlIdentifier(primary_keys[i]) +
+		             ") AS " + QuoteSqlIdentifier(primary_keys[i]);
 	}
 
 	// Generate the diff query
 	string sql = "SELECT ";
 	sql += "CASE ";
-	sql += "WHEN s." + primary_keys[0] + " IS NULL THEN 'added' ";
-	sql += "WHEN t." + primary_keys[0] + " IS NULL THEN 'removed' ";
+	sql += "WHEN s." + QuoteSqlIdentifier(primary_keys[0]) + " IS NULL THEN 'added' ";
+	sql += "WHEN t." + QuoteSqlIdentifier(primary_keys[0]) + " IS NULL THEN 'removed' ";
 
 	// For comparison, we need to check if any non-PK columns differ
 	// Simplified: use a hash-based comparison
@@ -266,7 +257,7 @@ static string GenerateJoinDiffSQL(const string &source_table, const string &targ
 			if (i > 0) {
 				sql += " OR ";
 			}
-			sql += "s." + compare_columns[i] + " IS DISTINCT FROM t." + compare_columns[i];
+			sql += "s." + QuoteSqlIdentifier(compare_columns[i]) + " IS DISTINCT FROM t." + QuoteSqlIdentifier(compare_columns[i]);
 		}
 		sql += ") THEN 'changed' ";
 	}
@@ -280,16 +271,14 @@ static string GenerateJoinDiffSQL(const string &source_table, const string &targ
 		if (i > 0) {
 			sql += ", ";
 		}
-		sql += primary_keys[i];
+		sql += QuoteSqlIdentifier(primary_keys[i]);
 	}
 	sql += ")";
 
-	// Parse table names
-	auto source_qname = QualifiedName::Parse(source_table);
-	auto target_qname = QualifiedName::Parse(target_table);
-
-	sql += " FROM " + source_qname.ToString() + " s ";
-	sql += "FULL OUTER JOIN " + target_qname.ToString() + " t ";
+	// Reference both tables via query_table() so hostile and schema-qualified
+	// names are handled by the shared quoting helpers
+	sql += " FROM " + BuildQueryTableRef(source_table) + " s ";
+	sql += "FULL OUTER JOIN " + BuildQueryTableRef(target_table) + " t ";
 	sql += "ON " + pk_join_condition;
 
 	if (!include_all) {
