@@ -19,6 +19,7 @@
 #include "duckdb/parser/qualified_name.hpp"
 
 #include <algorithm>
+#include <array>
 #include <sstream>
 #include <iomanip>
 #include <cctype>
@@ -27,6 +28,14 @@
 
 namespace duckdb {
 namespace anofox {
+
+namespace {
+// Intrinsic noise floor for NER-based recognizers (PER/ORG/LOC/MISC).
+// Entities below this confidence are model noise and are never reported.
+// The user-configured anofox_pii_min_confidence threshold is applied
+// centrally in PIIEngine::Detect() on top of this floor.
+constexpr double NER_MIN_ENTITY_CONFIDENCE = 0.7;
+} // anonymous namespace
 
 // ============================================================================
 // Type Conversion Functions
@@ -104,6 +113,13 @@ MaskStrategy StringToMaskStrategy(const std::string &str) {
 // PII Configuration Singleton
 // ============================================================================
 
+bool PIIConfigSnapshot::IsTypeEnabled(PIIType type) const {
+    if (enabled_types.empty()) {
+        return true;  // All types enabled when empty
+    }
+    return std::find(enabled_types.begin(), enabled_types.end(), type) != enabled_types.end();
+}
+
 PIIConfig& PIIConfig::Get() {
     static PIIConfig instance;
     return instance;
@@ -115,13 +131,29 @@ PIIConfig::PIIConfig()
       enabled_types_() {
 }
 
+PIIConfigSnapshot PIIConfig::Snapshot() const {
+    std::lock_guard<std::mutex> guard(mutex_);
+    PIIConfigSnapshot snapshot;
+    snapshot.min_confidence = min_confidence_;
+    snapshot.default_mask_strategy = default_mask_strategy_;
+    snapshot.enabled_types = enabled_types_;
+    snapshot.deep_validation = deep_validation_;
+    return snapshot;
+}
+
 void PIIConfig::SetMinConfidence(double value) {
     if (value < MIN_CONFIDENCE || value > MAX_CONFIDENCE) {
         throw InvalidInputException("anofox_pii_min_confidence must be between " +
                                     std::to_string(MIN_CONFIDENCE) + " and " +
                                     std::to_string(MAX_CONFIDENCE));
     }
+    std::lock_guard<std::mutex> guard(mutex_);
     min_confidence_ = value;
+}
+
+std::string PIIConfig::GetDefaultMaskStrategyString() const {
+    std::lock_guard<std::mutex> guard(mutex_);
+    return MaskStrategyToString(default_mask_strategy_);
 }
 
 void PIIConfig::SetDefaultMaskStrategy(const std::string &strategy) {
@@ -130,10 +162,12 @@ void PIIConfig::SetDefaultMaskStrategy(const std::string &strategy) {
         throw InvalidInputException("Invalid mask strategy: " + strategy +
                                     ". Valid values: REDACT, HASH, PARTIAL, ASTERISK, NONE");
     }
+    std::lock_guard<std::mutex> guard(mutex_);
     default_mask_strategy_ = parsed;
 }
 
 std::string PIIConfig::GetEnabledTypesString() const {
+    std::lock_guard<std::mutex> guard(mutex_);
     if (enabled_types_.empty()) {
         return "";  // Empty means all types enabled
     }
@@ -146,13 +180,9 @@ std::string PIIConfig::GetEnabledTypesString() const {
 }
 
 void PIIConfig::SetEnabledTypes(const std::string &types_csv) {
-    enabled_types_.clear();
+    std::vector<PIIType> parsed_types;
 
-    if (types_csv.empty()) {
-        return;  // Empty = all types enabled
-    }
-
-    // Parse comma-separated list
+    // Parse comma-separated list (empty = all types enabled)
     std::istringstream iss(types_csv);
     std::string token;
     while (std::getline(iss, token, ',')) {
@@ -163,15 +193,21 @@ void PIIConfig::SetEnabledTypes(const std::string &types_csv) {
         if (pii_type == PIIType::UNKNOWN) {
             throw InvalidInputException("Unknown PII type: " + token);
         }
-        enabled_types_.push_back(pii_type);
+        parsed_types.push_back(pii_type);
     }
+
+    std::lock_guard<std::mutex> guard(mutex_);
+    enabled_types_ = std::move(parsed_types);
 }
 
-bool PIIConfig::IsTypeEnabled(PIIType type) const {
-    if (enabled_types_.empty()) {
-        return true;  // All types enabled when empty
-    }
-    return std::find(enabled_types_.begin(), enabled_types_.end(), type) != enabled_types_.end();
+bool PIIConfig::IsDeepValidationEnabled() const {
+    std::lock_guard<std::mutex> guard(mutex_);
+    return deep_validation_;
+}
+
+void PIIConfig::SetDeepValidation(bool enabled) {
+    std::lock_guard<std::mutex> guard(mutex_);
+    deep_validation_ = enabled;
 }
 
 // ============================================================================
@@ -310,7 +346,7 @@ bool CreditCardRecognizer::LuhnCheck(const std::string &digits) {
     // Extract only digits
     std::string clean;
     for (char c : digits) {
-        if (std::isdigit(c)) {
+        if (std::isdigit(static_cast<unsigned char>(c))) {
             clean += c;
         }
     }
@@ -340,7 +376,7 @@ std::string CreditCardRecognizer::GetPartialMask(const std::string &text) const 
     // Extract digits only
     std::string clean;
     for (char c : text) {
-        if (std::isdigit(c)) {
+        if (std::isdigit(static_cast<unsigned char>(c))) {
             clean += c;
         }
     }
@@ -373,7 +409,7 @@ bool USSSNRecognizer::Validate(const std::string &text) const {
     // Extract digits
     std::string digits;
     for (char c : text) {
-        if (std::isdigit(c)) {
+        if (std::isdigit(static_cast<unsigned char>(c))) {
             digits += c;
         }
     }
@@ -407,7 +443,7 @@ std::string USSSNRecognizer::GetPartialMask(const std::string &text) const {
     // Show as ***-**-XXXX (last 4 digits)
     std::string digits;
     for (char c : text) {
-        if (std::isdigit(c)) {
+        if (std::isdigit(static_cast<unsigned char>(c))) {
             digits += c;
         }
     }
@@ -456,9 +492,9 @@ bool IBANRecognizer::Mod97Check(const std::string &iban) {
     // Convert letters to numbers (A=10, B=11, ..., Z=35)
     std::string numeric;
     for (char c : rearranged) {
-        if (std::isdigit(c)) {
+        if (std::isdigit(static_cast<unsigned char>(c))) {
             numeric += c;
-        } else if (std::isalpha(c)) {
+        } else if (std::isalpha(static_cast<unsigned char>(c))) {
             int value = c - 'A' + 10;
             numeric += std::to_string(value);
         }
@@ -513,7 +549,7 @@ bool DETaxIDRecognizer::ChecksumValidate(const std::string &digits) {
     // Extract only digits
     std::string clean;
     for (char c : digits) {
-        if (std::isdigit(c)) {
+        if (std::isdigit(static_cast<unsigned char>(c))) {
             clean += c;
         }
     }
@@ -559,7 +595,7 @@ std::string DETaxIDRecognizer::GetPartialMask(const std::string &text) const {
     // Show as **-***-***-XXX (last 3 digits)
     std::string digits;
     for (char c : text) {
-        if (std::isdigit(c)) {
+        if (std::isdigit(static_cast<unsigned char>(c))) {
             digits += c;
         }
     }
@@ -991,16 +1027,18 @@ bool CryptoAddressRecognizer::ValidateBitcoinAddress(const std::string &address)
 }
 
 std::vector<uint8_t> CryptoAddressRecognizer::DecodeBase58(const std::string &input) {
-    static const char* BASE58_ALPHABET =
-        "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
-
-    // Build reverse lookup (lazy init)
-    static std::unordered_map<char, int> base58_map;
-    if (base58_map.empty()) {
+    // Immutable reverse lookup table. Initialization of the function-local
+    // static is thread-safe (C++11 magic statics) and the table is never
+    // mutated afterwards, so concurrent lookups are race-free.
+    static const std::array<int, 256> BASE58_LOOKUP = [] {
+        std::array<int, 256> table{};
+        table.fill(-1);
+        const char *alphabet = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
         for (int i = 0; i < 58; ++i) {
-            base58_map[BASE58_ALPHABET[i]] = i;
+            table[static_cast<unsigned char>(alphabet[i])] = i;
         }
-    }
+        return table;
+    }();
 
     // Count leading '1's (represent leading zeros in output)
     size_t leading_zeros = 0;
@@ -1014,12 +1052,10 @@ std::vector<uint8_t> CryptoAddressRecognizer::DecodeBase58(const std::string &in
     result.reserve(input.size() * 733 / 1000 + 1);  // log(58) / log(256)
 
     for (char c : input) {
-        auto it = base58_map.find(c);
-        if (it == base58_map.end()) {
+        int carry = BASE58_LOOKUP[static_cast<unsigned char>(c)];
+        if (carry < 0) {
             throw std::invalid_argument("Invalid Base58 character");
         }
-
-        int carry = it->second;
         for (size_t i = 0; i < result.size(); ++i) {
             carry += 58 * result[i];
             result[i] = carry % 256;
@@ -1192,8 +1228,11 @@ std::vector<PIIMatch> NameRecognizer::FindMatches(const std::string &text) const
         try {
             auto entities = ner.ExtractEntities(text);
             for (const auto &entity : entities) {
-                // Only include PER (person) entities with sufficient confidence
-                if (entity.label == "PER" && entity.confidence >= 0.7) {
+                // Only include PER (person) entities above the intrinsic
+                // NER noise floor. The user-configured threshold
+                // (anofox_pii_min_confidence) is applied centrally in
+                // PIIEngine::Detect() on top of this floor.
+                if (entity.label == "PER" && entity.confidence >= NER_MIN_ENTITY_CONFIDENCE) {
                     matches.emplace_back(
                         PIIType::NAME,
                         entity.text,
@@ -1341,8 +1380,10 @@ std::vector<PIIMatch> OrganizationRecognizer::FindMatches(const std::string &tex
         try {
             auto entities = ner.ExtractEntities(text);
             for (const auto &entity : entities) {
-                // Only include ORG entities with sufficient confidence
-                if (entity.label == "ORG" && entity.confidence >= 0.7) {
+                // Only include ORG entities above the intrinsic NER noise
+                // floor; the user-configured threshold is applied centrally
+                // in PIIEngine::Detect() on top of this floor.
+                if (entity.label == "ORG" && entity.confidence >= NER_MIN_ENTITY_CONFIDENCE) {
                     matches.emplace_back(
                         PIIType::ORGANIZATION,
                         entity.text,
@@ -1417,8 +1458,10 @@ std::vector<PIIMatch> LocationRecognizer::FindMatches(const std::string &text) c
         try {
             auto entities = ner.ExtractEntities(text);
             for (const auto &entity : entities) {
-                // Only include LOC entities with sufficient confidence
-                if (entity.label == "LOC" && entity.confidence >= 0.7) {
+                // Only include LOC entities above the intrinsic NER noise
+                // floor; the user-configured threshold is applied centrally
+                // in PIIEngine::Detect() on top of this floor.
+                if (entity.label == "LOC" && entity.confidence >= NER_MIN_ENTITY_CONFIDENCE) {
                     matches.emplace_back(
                         PIIType::LOCATION,
                         entity.text,
@@ -1495,8 +1538,10 @@ std::vector<PIIMatch> MiscRecognizer::FindMatches(const std::string &text) const
         try {
             auto entities = ner.ExtractEntities(text);
             for (const auto &entity : entities) {
-                // Only include MISC entities with sufficient confidence
-                if (entity.label == "MISC" && entity.confidence >= 0.7) {
+                // Only include MISC entities above the intrinsic NER noise
+                // floor; the user-configured threshold is applied centrally
+                // in PIIEngine::Detect() on top of this floor.
+                if (entity.label == "MISC" && entity.confidence >= NER_MIN_ENTITY_CONFIDENCE) {
                     matches.emplace_back(
                         PIIType::MISC,
                         entity.text,
@@ -1629,37 +1674,86 @@ std::vector<PIIMatch> PIIEngine::Detect(
     const std::string &text,
     const std::vector<PIIType> &types
 ) const {
+    return Detect(text, types, PIIConfig::Get().Snapshot());
+}
+
+std::vector<PIIMatch> PIIEngine::Detect(
+    const std::string &text,
+    const std::vector<PIIType> &types,
+    const PIIConfigSnapshot &config
+) const {
+    // An explicit non-empty types argument overrides the configured filter
+    const std::vector<PIIType> &effective_types = !types.empty() ? types : config.enabled_types;
+
     std::vector<PIIMatch> all_matches;
 
     for (const auto &recognizer : recognizers_) {
         // Filter by types if specified
-        if (!types.empty()) {
-            bool found = false;
-            for (const auto &t : types) {
-                if (t == recognizer->GetType()) {
-                    found = true;
-                    break;
-                }
-            }
-            if (!found) continue;
+        if (!effective_types.empty() &&
+            std::find(effective_types.begin(), effective_types.end(),
+                      recognizer->GetType()) == effective_types.end()) {
+            continue;
         }
 
         auto matches = recognizer->FindMatches(text);
-        all_matches.insert(all_matches.end(), matches.begin(), matches.end());
+        for (auto &match : matches) {
+            // Apply the configured minimum confidence threshold centrally
+            if (match.confidence < config.min_confidence) {
+                continue;
+            }
+            all_matches.push_back(std::move(match));
+        }
     }
 
-    // Sort by position
-    std::sort(all_matches.begin(), all_matches.end(),
+    return ResolveOverlaps(std::move(all_matches));
+}
+
+std::vector<PIIMatch> PIIEngine::ResolveOverlaps(std::vector<PIIMatch> matches) {
+    // Deterministic priority: earlier start wins; on ties prefer the longer
+    // match, then the higher confidence, then the lower PIIType enumeration
+    // value (more specific, checksum-validated types come first).
+    std::sort(matches.begin(), matches.end(),
               [](const PIIMatch &a, const PIIMatch &b) {
-                  return a.start_pos < b.start_pos;
+                  if (a.start_pos != b.start_pos) {
+                      return a.start_pos < b.start_pos;
+                  }
+                  auto a_len = a.end_pos - a.start_pos;
+                  auto b_len = b.end_pos - b.start_pos;
+                  if (a_len != b_len) {
+                      return a_len > b_len;
+                  }
+                  if (a.confidence != b.confidence) {
+                      return a.confidence > b.confidence;
+                  }
+                  return static_cast<int>(a.type) < static_cast<int>(b.type);
               });
 
-    return all_matches;
+    // Greedily keep non-overlapping matches so Mask() replaces each region
+    // of the input exactly once.
+    std::vector<PIIMatch> resolved;
+    resolved.reserve(matches.size());
+    size_t last_end = 0;
+    for (auto &match : matches) {
+        if (!resolved.empty() && match.start_pos < last_end) {
+            continue;  // Overlaps a higher-priority match
+        }
+        last_end = match.end_pos;
+        resolved.push_back(std::move(match));
+    }
+    return resolved;
 }
 
 std::vector<std::vector<PIIMatch>> PIIEngine::DetectBatch(
     const std::vector<std::string> &texts,
     const std::vector<PIIType> &types
+) const {
+    return DetectBatch(texts, types, PIIConfig::Get().Snapshot());
+}
+
+std::vector<std::vector<PIIMatch>> PIIEngine::DetectBatch(
+    const std::vector<std::string> &texts,
+    const std::vector<PIIType> &types,
+    const PIIConfigSnapshot &config
 ) const {
     std::vector<std::vector<PIIMatch>> all_results;
     all_results.reserve(texts.size());
@@ -1679,7 +1773,7 @@ std::vector<std::vector<PIIMatch>> PIIEngine::DetectBatch(
 
     // Now run individual detection for each text (NER calls will hit cache)
     for (const auto &text : texts) {
-        all_results.push_back(Detect(text, types));
+        all_results.push_back(Detect(text, types, config));
     }
 
     return all_results;
@@ -1724,7 +1818,18 @@ std::string PIIEngine::Mask(
     MaskStrategy strategy,
     const std::vector<PIIType> &types
 ) const {
-    auto matches = Detect(text, types);
+    return Mask(text, strategy, types, PIIConfig::Get().Snapshot());
+}
+
+std::string PIIEngine::Mask(
+    const std::string &text,
+    MaskStrategy strategy,
+    const std::vector<PIIType> &types,
+    const PIIConfigSnapshot &config
+) const {
+    // Detect() returns non-overlapping matches sorted by position, so each
+    // region of the input is replaced exactly once.
+    auto matches = Detect(text, types, config);
 
     if (matches.empty()) {
         return text;
@@ -1751,6 +1856,8 @@ namespace {
 struct PIIDetectFunction {
     static void Execute(DataChunk &args, ExpressionState &state, Vector &result) {
         auto &engine = PIIEngine::Instance();
+        // Snapshot the configuration once per chunk; all reads go through it
+        const auto config = PIIConfig::Get().Snapshot();
         result.SetVectorType(VectorType::FLAT_VECTOR);
 
         // Get list entries data and child struct vector
@@ -1777,7 +1884,7 @@ struct PIIDetectFunction {
             FlatVector::SetNull(result, row, false);
 
             std::string text = input_value.ToString();
-            auto matches = engine.Detect(text);
+            auto matches = engine.Detect(text, {}, config);
 
             // Set list entry for this row
             list_entries[row].offset = ListVector::GetListSize(result);
@@ -1824,6 +1931,7 @@ struct PIIDetectFunction {
 struct PIIMaskFunction {
     static void Execute(DataChunk &args, ExpressionState &state, Vector &result) {
         auto &engine = PIIEngine::Instance();
+        const auto config = PIIConfig::Get().Snapshot();
 
         BinaryExecutor::Execute<string_t, string_t, string_t>(
             args.data[0], args.data[1], result, args.size(),
@@ -1831,7 +1939,7 @@ struct PIIMaskFunction {
                 std::string text = input.GetString();
                 MaskStrategy strategy = StringToMaskStrategy(strategy_str.GetString());
 
-                std::string masked = engine.Mask(text, strategy);
+                std::string masked = engine.Mask(text, strategy, {}, config);
                 return StringVector::AddString(result, masked);
             }
         );
@@ -1847,12 +1955,13 @@ struct PIIMaskFunction {
 struct PIIMaskDefaultFunction {
     static void Execute(DataChunk &args, ExpressionState &state, Vector &result) {
         auto &engine = PIIEngine::Instance();
+        const auto config = PIIConfig::Get().Snapshot();
 
         UnaryExecutor::Execute<string_t, string_t>(
             args.data[0], result, args.size(),
             [&](string_t input) {
                 std::string text = input.GetString();
-                std::string masked = engine.Mask(text, MaskStrategy::REDACT);
+                std::string masked = engine.Mask(text, MaskStrategy::REDACT, {}, config);
                 return StringVector::AddString(result, masked);
             }
         );
@@ -1868,12 +1977,13 @@ struct PIIMaskDefaultFunction {
 struct PIIContainsFunction {
     static void Execute(DataChunk &args, ExpressionState &state, Vector &result) {
         auto &engine = PIIEngine::Instance();
+        const auto config = PIIConfig::Get().Snapshot();
 
         UnaryExecutor::Execute<string_t, bool>(
             args.data[0], result, args.size(),
             [&](string_t input) {
                 std::string text = input.GetString();
-                auto matches = engine.Detect(text);
+                auto matches = engine.Detect(text, {}, config);
                 return !matches.empty();
             }
         );
@@ -1889,12 +1999,13 @@ struct PIIContainsFunction {
 struct PIICountFunction {
     static void Execute(DataChunk &args, ExpressionState &state, Vector &result) {
         auto &engine = PIIEngine::Instance();
+        const auto config = PIIConfig::Get().Snapshot();
 
         UnaryExecutor::Execute<string_t, int64_t>(
             args.data[0], result, args.size(),
             [&](string_t input) {
                 std::string text = input.GetString();
-                auto matches = engine.Detect(text);
+                auto matches = engine.Detect(text, {}, config);
                 return static_cast<int64_t>(matches.size());
             }
         );
@@ -2022,6 +2133,7 @@ template<PIIType Type>
 struct PIIDetectTypeFunction {
     static void Execute(DataChunk &args, ExpressionState &state, Vector &result) {
         auto &engine = PIIEngine::Instance();
+        const auto config = PIIConfig::Get().Snapshot();
 
         UnaryExecutor::ExecuteWithNulls<string_t, list_entry_t>(
             args.data[0], result, args.size(),
@@ -2030,7 +2142,7 @@ struct PIIDetectTypeFunction {
 
                 // Detect with type filter
                 std::vector<PIIType> filter = {Type};
-                auto matches = engine.Detect(text, filter);
+                auto matches = engine.Detect(text, filter, config);
 
                 auto list_value = CreatePIIMatchListValue(matches);
                 result.SetValue(idx, list_value);
@@ -2045,6 +2157,7 @@ struct PIIDetectTypeFunction {
 struct PIIDetectEmailsFunction {
     static void Execute(DataChunk &args, ExpressionState &state, Vector &result) {
         auto &engine = PIIEngine::Instance();
+        const auto config = PIIConfig::Get().Snapshot();
         std::vector<PIIType> filter = {PIIType::EMAIL};
 
         for (idx_t i = 0; i < args.size(); i++) {
@@ -2052,7 +2165,7 @@ struct PIIDetectEmailsFunction {
             if (val.IsNull()) {
                 result.SetValue(i, Value(LogicalType::SQLNULL));
             } else {
-                auto matches = engine.Detect(val.GetValue<std::string>(), filter);
+                auto matches = engine.Detect(val.GetValue<std::string>(), filter, config);
                 result.SetValue(i, CreatePIIMatchListValue(matches));
             }
         }
@@ -2068,6 +2181,7 @@ struct PIIDetectEmailsFunction {
 struct PIIDetectPhonesFunction {
     static void Execute(DataChunk &args, ExpressionState &state, Vector &result) {
         auto &engine = PIIEngine::Instance();
+        const auto config = PIIConfig::Get().Snapshot();
         std::vector<PIIType> filter = {PIIType::PHONE};
 
         for (idx_t i = 0; i < args.size(); i++) {
@@ -2075,7 +2189,7 @@ struct PIIDetectPhonesFunction {
             if (val.IsNull()) {
                 result.SetValue(i, Value(LogicalType::SQLNULL));
             } else {
-                auto matches = engine.Detect(val.GetValue<std::string>(), filter);
+                auto matches = engine.Detect(val.GetValue<std::string>(), filter, config);
                 result.SetValue(i, CreatePIIMatchListValue(matches));
             }
         }
@@ -2091,6 +2205,7 @@ struct PIIDetectPhonesFunction {
 struct PIIDetectCreditCardsFunction {
     static void Execute(DataChunk &args, ExpressionState &state, Vector &result) {
         auto &engine = PIIEngine::Instance();
+        const auto config = PIIConfig::Get().Snapshot();
         std::vector<PIIType> filter = {PIIType::CREDIT_CARD};
 
         for (idx_t i = 0; i < args.size(); i++) {
@@ -2098,7 +2213,7 @@ struct PIIDetectCreditCardsFunction {
             if (val.IsNull()) {
                 result.SetValue(i, Value(LogicalType::SQLNULL));
             } else {
-                auto matches = engine.Detect(val.GetValue<std::string>(), filter);
+                auto matches = engine.Detect(val.GetValue<std::string>(), filter, config);
                 result.SetValue(i, CreatePIIMatchListValue(matches));
             }
         }
@@ -2114,6 +2229,7 @@ struct PIIDetectCreditCardsFunction {
 struct PIIDetectSSNsFunction {
     static void Execute(DataChunk &args, ExpressionState &state, Vector &result) {
         auto &engine = PIIEngine::Instance();
+        const auto config = PIIConfig::Get().Snapshot();
         std::vector<PIIType> filter = {PIIType::US_SSN};
 
         for (idx_t i = 0; i < args.size(); i++) {
@@ -2121,7 +2237,7 @@ struct PIIDetectSSNsFunction {
             if (val.IsNull()) {
                 result.SetValue(i, Value(LogicalType::SQLNULL));
             } else {
-                auto matches = engine.Detect(val.GetValue<std::string>(), filter);
+                auto matches = engine.Detect(val.GetValue<std::string>(), filter, config);
                 result.SetValue(i, CreatePIIMatchListValue(matches));
             }
         }
@@ -2137,6 +2253,7 @@ struct PIIDetectSSNsFunction {
 struct PIIDetectNamesFunction {
     static void Execute(DataChunk &args, ExpressionState &state, Vector &result) {
         auto &engine = PIIEngine::Instance();
+        const auto config = PIIConfig::Get().Snapshot();
         std::vector<PIIType> filter = {PIIType::NAME};
 
         for (idx_t i = 0; i < args.size(); i++) {
@@ -2144,7 +2261,7 @@ struct PIIDetectNamesFunction {
             if (val.IsNull()) {
                 result.SetValue(i, Value(LogicalType::SQLNULL));
             } else {
-                auto matches = engine.Detect(val.GetValue<std::string>(), filter);
+                auto matches = engine.Detect(val.GetValue<std::string>(), filter, config);
                 result.SetValue(i, CreatePIIMatchListValue(matches));
             }
         }
@@ -2160,6 +2277,7 @@ struct PIIDetectNamesFunction {
 struct PIIDetectIBANsFunction {
     static void Execute(DataChunk &args, ExpressionState &state, Vector &result) {
         auto &engine = PIIEngine::Instance();
+        const auto config = PIIConfig::Get().Snapshot();
         std::vector<PIIType> filter = {PIIType::IBAN};
 
         for (idx_t i = 0; i < args.size(); i++) {
@@ -2167,7 +2285,7 @@ struct PIIDetectIBANsFunction {
             if (val.IsNull()) {
                 result.SetValue(i, Value(LogicalType::SQLNULL));
             } else {
-                auto matches = engine.Detect(val.GetValue<std::string>(), filter);
+                auto matches = engine.Detect(val.GetValue<std::string>(), filter, config);
                 result.SetValue(i, CreatePIIMatchListValue(matches));
             }
         }
@@ -2188,6 +2306,7 @@ struct PIIDetectIBANsFunction {
 struct PIIDetectBatchFunction {
     static void Execute(DataChunk &args, ExpressionState &state, Vector &result) {
         auto &engine = PIIEngine::Instance();
+        const auto config = PIIConfig::Get().Snapshot();
 
         // Process each row (which contains an array)
         for (idx_t i = 0; i < args.size(); i++) {
@@ -2213,7 +2332,7 @@ struct PIIDetectBatchFunction {
             }
 
             // Run batch detection (pre-warms NER cache)
-            auto batch_results = engine.DetectBatch(texts);
+            auto batch_results = engine.DetectBatch(texts, {}, config);
 
             // Convert to LIST(LIST(STRUCT(...)))
             std::vector<Value> outer_list;
@@ -2253,6 +2372,7 @@ struct PIIDetectBatchFunction {
 struct PIIMaskColumnFunction {
     static void Execute(DataChunk &args, ExpressionState &state, Vector &result) {
         auto &engine = PIIEngine::Instance();
+        const auto config = PIIConfig::Get().Snapshot();
 
         // Get the type and strategy arguments (they should be the same for all rows)
         auto type_arg = args.data[1].GetValue(0);
@@ -2281,12 +2401,12 @@ struct PIIMaskColumnFunction {
             } else {
                 auto text = val.GetValue<std::string>();
                 // Detect only the specified type, then mask
-                auto matches = engine.Detect(text, filter);
+                auto matches = engine.Detect(text, filter, config);
                 if (matches.empty()) {
                     // No PII of that type found - return original
                     result.SetValue(i, Value(text));
                 } else {
-                    result.SetValue(i, Value(engine.Mask(text, strategy, filter)));
+                    result.SetValue(i, Value(engine.Mask(text, strategy, filter, config)));
                 }
             }
         }
@@ -2304,6 +2424,7 @@ struct PIIMaskColumnFunction {
 struct PIIRedactColumnFunction {
     static void Execute(DataChunk &args, ExpressionState &state, Vector &result) {
         auto &engine = PIIEngine::Instance();
+        const auto config = PIIConfig::Get().Snapshot();
 
         // Get strategy argument
         auto strategy_arg = args.data[1].GetValue(0);
@@ -2319,7 +2440,7 @@ struct PIIRedactColumnFunction {
                 result.SetValue(i, Value(LogicalType::SQLNULL));
             } else {
                 auto text = val.GetValue<std::string>();
-                result.SetValue(i, Value(engine.Mask(text, strategy)));
+                result.SetValue(i, Value(engine.Mask(text, strategy, {}, config)));
             }
         }
     }
@@ -2335,8 +2456,8 @@ struct PIIRedactColumnFunction {
 struct PIIRedactColumnDefaultFunction {
     static void Execute(DataChunk &args, ExpressionState &state, Vector &result) {
         auto &engine = PIIEngine::Instance();
-        auto &config = PIIConfig::Get();
-        auto strategy = config.GetDefaultMaskStrategy();
+        const auto config = PIIConfig::Get().Snapshot();
+        auto strategy = config.default_mask_strategy;
 
         for (idx_t i = 0; i < args.size(); i++) {
             auto val = args.data[0].GetValue(i);
@@ -2344,7 +2465,7 @@ struct PIIRedactColumnDefaultFunction {
                 result.SetValue(i, Value(LogicalType::SQLNULL));
             } else {
                 auto text = val.GetValue<std::string>();
-                result.SetValue(i, Value(engine.Mask(text, strategy)));
+                result.SetValue(i, Value(engine.Mask(text, strategy, {}, config)));
             }
         }
     }
@@ -2685,10 +2806,12 @@ void PIIAuditTableFunction(ClientContext &context, TableFunctionInput &input, Da
                 }
             }
 
-            // Get PII engine and config
+            // Get PII engine and a snapshot of the configuration (taken once
+            // for the whole scan; enabled_types and min_confidence are
+            // applied centrally by PIIEngine::Detect)
             auto &engine = PIIEngine::Instance();
-            auto &config = PIIConfig::Get();
-            auto mask_strategy = config.GetDefaultMaskStrategy();
+            const auto config = PIIConfig::Get().Snapshot();
+            auto mask_strategy = config.default_mask_strategy;
 
             // For each column, query values and detect PII (row-level)
             for (const auto &col_name : columns_to_scan) {
@@ -2719,23 +2842,18 @@ void PIIAuditTableFunction(ClientContext &context, TableFunctionInput &input, Da
                         int64_t row_id = row_id_val.GetValue<int64_t>();
                         std::string text = text_val.GetValue<std::string>();
 
-                        // Detect PII in this value
-                        auto matches = engine.Detect(text);
+                        // Detect PII in this value (the snapshot's
+                        // enabled_types and min_confidence are applied)
+                        auto matches = engine.Detect(text, {}, config);
 
                         // Add each match as a result row
                         for (const auto &match : matches) {
-                            // Check if type is enabled in config
-                            if (!config.IsTypeEnabled(match.type)) continue;
-
-                            // Check minimum confidence threshold
-                            if (match.confidence < config.GetMinConfidence()) continue;
-
                             PIIAuditTableResult res;
                             res.row_id = row_id;
                             res.column_name = col_name;
                             res.pii_type = match.type;
                             res.original_value = text;
-                            res.masked_value = engine.Mask(text, mask_strategy);
+                            res.masked_value = engine.Mask(text, mask_strategy, {}, config);
                             res.start_pos = static_cast<int64_t>(match.start_pos);
                             res.end_pos = static_cast<int64_t>(match.end_pos);
                             res.confidence = match.confidence;
@@ -2922,8 +3040,10 @@ void PIIScanTableFunction(ClientContext &context, TableFunctionInput &input, Dat
                 }
             }
 
-            // For each column, query values and detect PII
+            // For each column, query values and detect PII. The
+            // configuration snapshot is taken once for the whole scan.
             auto &engine = PIIEngine::Instance();
+            const auto config = PIIConfig::Get().Snapshot();
 
             for (const auto &col_name : columns_to_scan) {
                 // Build query to get column values
@@ -2961,7 +3081,7 @@ void PIIScanTableFunction(ClientContext &context, TableFunctionInput &input, Dat
                     }
 
                     // Run batch detection (pre-warms NER cache)
-                    auto batch_matches = engine.DetectBatch(batch_texts);
+                    auto batch_matches = engine.DetectBatch(batch_texts, {}, config);
 
                     // Process results
                     for (size_t i = 0; i < batch_matches.size(); i++) {
@@ -3227,20 +3347,22 @@ void PIIConfigFunction(ClientContext &, TableFunctionInput &input, DataChunk &ou
         const char* description;
     };
 
-    auto &config = PIIConfig::Get();
+    // Single consistent snapshot of the configuration
+    const auto config = PIIConfig::Get().Snapshot();
+    const auto enabled_types_str = PIIConfig::Get().GetEnabledTypesString();
 
     std::vector<ConfigOption> options = {
         {"anofox_pii_min_confidence",
-         std::to_string(config.GetMinConfidence()),
+         std::to_string(config.min_confidence),
          "Minimum confidence threshold for NER-based detection (0.0 - 1.0)"},
         {"anofox_pii_default_mask_strategy",
-         config.GetDefaultMaskStrategyString(),
+         MaskStrategyToString(config.default_mask_strategy),
          "Default masking strategy (REDACT, HASH, PARTIAL, ASTERISK, NONE)"},
         {"anofox_pii_enabled_types",
-         config.GetEnabledTypesString().empty() ? "(all types)" : config.GetEnabledTypesString(),
+         enabled_types_str.empty() ? "(all types)" : enabled_types_str,
          "Comma-separated list of PII types to detect (empty = all)"},
         {"anofox_pii_deep_validation",
-         config.IsDeepValidationEnabled() ? "true" : "false",
+         config.deep_validation ? "true" : "false",
          "Enable deep validation using libphonenumber for phone numbers"}
     };
 
