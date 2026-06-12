@@ -4,40 +4,40 @@ require anofox_tabular
 query T
 SELECT anofox_tab_money(100.50, 'USD');
 ----
-{'amount': 100.5, 'currency': USD}
+{'amount': 100.500, 'currency': USD}
 
 # Test anofox_tab_money with different currencies
 query T
 SELECT anofox_tab_money(50.00, 'EUR');
 ----
-{'amount': 50.0, 'currency': EUR}
+{'amount': 50.000, 'currency': EUR}
 
 query T
 SELECT anofox_tab_money(1000.0, 'JPY');
 ----
-{'amount': 1000.0, 'currency': JPY}
+{'amount': 1000.000, 'currency': JPY}
 
 # Test anofox_tab_money_from_cents (divides by the currency's subunit_to_unit)
 query T
 SELECT anofox_tab_money_from_cents(10050, 'USD');
 ----
-{'amount': 100.5, 'currency': USD}
+{'amount': 100.500, 'currency': USD}
 
 query T
 SELECT anofox_tab_money_from_cents(5000, 'EUR');
 ----
-{'amount': 50.0, 'currency': EUR}
+{'amount': 50.000, 'currency': EUR}
 
 # Test anofox_tab_money_amount extraction
-query I
+query R
 SELECT anofox_tab_money_amount(anofox_tab_money(100.50, 'USD'));
 ----
-100
+100.5
 
-query I
+query R
 SELECT anofox_tab_money_amount(anofox_tab_money(75.25, 'EUR'));
 ----
-75
+75.25
 
 # Test anofox_tab_money_currency extraction
 query T
@@ -218,9 +218,9 @@ SELECT anofox_tab_money(amount, code) FROM (
     SELECT 1000.0 as amount, 'JPY' as code
 ) ORDER BY amount DESC;
 ----
-{'amount': 1000.0, 'currency': JPY}
-{'amount': 100.5, 'currency': USD}
-{'amount': 75.0, 'currency': EUR}
+{'amount': 1000.000, 'currency': JPY}
+{'amount': 100.500, 'currency': USD}
+{'amount': 75.000, 'currency': EUR}
 
 # Test currency validation on vectors
 query I
@@ -243,12 +243,12 @@ SELECT COUNT(*) FROM (
 # SELECT anofox_tab_money(100.50, 'INVALID');
 
 # Test money field access via column reference
-query TI
-SELECT anofox_tab_money_currency(m), CAST(anofox_tab_money_amount(m) AS INTEGER) FROM (
+query TR
+SELECT anofox_tab_money_currency(m), anofox_tab_money_amount(m) FROM (
     SELECT anofox_tab_money(100.50, 'USD') as m
 );
 ----
-USD	100
+USD	100.5
 
 # Test chaining operations
 query T
@@ -260,7 +260,7 @@ SELECT anofox_tab_currency_symbol(anofox_tab_money_currency(anofox_tab_money(50.
 query T
 SELECT anofox_tab_money(100.0, 'usd');
 ----
-{'amount': 100.0, 'currency': USD}
+{'amount': 100.000, 'currency': USD}
 
 # Test anofox_tab_money_format with 'symbol' style
 query T
@@ -276,7 +276,7 @@ SELECT anofox_tab_money_format(anofox_tab_money(75.25, 'EUR'), 'symbol');
 query T
 SELECT anofox_tab_money_format(anofox_tab_money(1000.00, 'JPY'), 'symbol');
 ----
-¥1000.00
+¥1,000
 
 # Test anofox_tab_money_format with 'code' style
 query T
@@ -298,12 +298,12 @@ SELECT anofox_tab_money_format(anofox_tab_money(100.50, 'USD'), 'long');
 query T
 SELECT anofox_tab_money_format(anofox_tab_money(75.25, 'EUR'), 'long');
 ----
-75.25 Euro
+75,25 Euro
 
 query T
 SELECT anofox_tab_money_format(anofox_tab_money(1000.00, 'JPY'), 'long');
 ----
-1000.00 Japanese Yen
+1,000 Japanese Yen
 
 # Test anofox_tab_money_format with default/unknown style (defaults to code)
 query T
@@ -345,12 +345,12 @@ $0.01
 query T
 SELECT anofox_tab_money_format(anofox_tab_money(999999.99, 'USD'), 'symbol');
 ----
-$999999.99
+$999,999.99
 
 query T
 SELECT anofox_tab_money_format(anofox_tab_money(1000.00, 'USD'), 'symbol');
 ----
-$1000.00
+$1,000.00
 
 # Test anofox_tab_money_is_positive
 query I
@@ -424,17 +424,17 @@ NULL
 query T
 SELECT anofox_tab_money_abs(anofox_tab_money(-100.0, 'USD'));
 ----
-{'amount': 100.0, 'currency': USD}
+{'amount': 100.000, 'currency': USD}
 
 query T
 SELECT anofox_tab_money_abs(anofox_tab_money(100.0, 'USD'));
 ----
-{'amount': 100.0, 'currency': USD}
+{'amount': 100.000, 'currency': USD}
 
 query T
 SELECT anofox_tab_money_abs(anofox_tab_money(0.0, 'EUR'));
 ----
-{'amount': 0.0, 'currency': EUR}
+{'amount': 0.000, 'currency': EUR}
 
 query T
 SELECT anofox_tab_money_abs(NULL);
@@ -486,17 +486,17 @@ SELECT anofox_tab_money_format(anofox_tab_money_abs(anofox_tab_money(-123.45, 'E
 query T
 SELECT anofox_tab_money_add(anofox_tab_money(100.0, 'USD'), anofox_tab_money(50.0, 'USD'));
 ----
-{'amount': 150.0, 'currency': USD}
+{'amount': 150.000, 'currency': USD}
 
 query T
 SELECT anofox_tab_money_add(anofox_tab_money(25.50, 'EUR'), anofox_tab_money(75.50, 'EUR'));
 ----
-{'amount': 101.0, 'currency': EUR}
+{'amount': 101.000, 'currency': EUR}
 
 query T
 SELECT anofox_tab_money_add(anofox_tab_money(-10.0, 'USD'), anofox_tab_money(10.0, 'USD'));
 ----
-{'amount': 0.0, 'currency': USD}
+{'amount': 0.000, 'currency': USD}
 
 # Test anofox_tab_money_add with NULL values
 query T
@@ -513,17 +513,17 @@ NULL
 query T
 SELECT anofox_tab_money_subtract(anofox_tab_money(100.0, 'USD'), anofox_tab_money(30.0, 'USD'));
 ----
-{'amount': 70.0, 'currency': USD}
+{'amount': 70.000, 'currency': USD}
 
 query T
 SELECT anofox_tab_money_subtract(anofox_tab_money(50.0, 'EUR'), anofox_tab_money(75.0, 'EUR'));
 ----
-{'amount': -25.0, 'currency': EUR}
+{'amount': -25.000, 'currency': EUR}
 
 query T
 SELECT anofox_tab_money_subtract(anofox_tab_money(100.0, 'USD'), anofox_tab_money(100.0, 'USD'));
 ----
-{'amount': 0.0, 'currency': USD}
+{'amount': 0.000, 'currency': USD}
 
 # Test anofox_tab_money_subtract with NULL values
 query T
@@ -540,27 +540,27 @@ NULL
 query T
 SELECT anofox_tab_money_multiply(anofox_tab_money(25.0, 'USD'), 2.0);
 ----
-{'amount': 50.0, 'currency': USD}
+{'amount': 50.000, 'currency': USD}
 
 query T
 SELECT anofox_tab_money_multiply(anofox_tab_money(100.0, 'EUR'), 0.5);
 ----
-{'amount': 50.0, 'currency': EUR}
+{'amount': 50.000, 'currency': EUR}
 
 query T
 SELECT anofox_tab_money_multiply(anofox_tab_money(50.0, 'USD'), 1.0);
 ----
-{'amount': 50.0, 'currency': USD}
+{'amount': 50.000, 'currency': USD}
 
 query T
 SELECT anofox_tab_money_multiply(anofox_tab_money(50.0, 'USD'), 0.0);
 ----
-{'amount': 0.0, 'currency': USD}
+{'amount': 0.000, 'currency': USD}
 
 query T
 SELECT anofox_tab_money_multiply(anofox_tab_money(10.0, 'USD'), 1.5);
 ----
-{'amount': 15.0, 'currency': USD}
+{'amount': 15.000, 'currency': USD}
 
 # Test anofox_tab_money_multiply with NULL values
 query T
@@ -581,8 +581,8 @@ SELECT anofox_tab_money_add(anofox_tab_money(amount1, 'USD'), anofox_tab_money(a
     SELECT 200.0 as amount1, 75.0 as amount2
 ) ORDER BY amount1;
 ----
-{'amount': 150.0, 'currency': USD}
-{'amount': 275.0, 'currency': USD}
+{'amount': 150.000, 'currency': USD}
+{'amount': 275.000, 'currency': USD}
 
 # Test chaining arithmetic operations
 query T

@@ -39,7 +39,7 @@ All functions have aliases without the `anofox_tab_` prefix. For example:
 - `address`: Street address - `VARCHAR`
 - `number`: Phone number - `VARCHAR`
 - `region`: ISO region code - `VARCHAR`
-- `money`: Money struct - `STRUCT(amount DOUBLE, currency VARCHAR)`
+- `money`: Money struct - `STRUCT(amount DECIMAL(18,3), currency VARCHAR)` (exact decimal amounts; NaN/Inf unrepresentable, overflow raises)
 - `vat_string`: VAT number - `VARCHAR`
 - `table_name`: Source table - `VARCHAR`
 - `column_name`: Column name - `VARCHAR`
@@ -428,6 +428,8 @@ anofox_tab_phonenumber_status() → TABLE
 
 International monetary value handling with currency-aware arithmetic and formatting.
 
+Money amounts are exact `DECIMAL(18,3)` values: arithmetic never drifts, NaN/Inf are unrepresentable, and results outside the DECIMAL(18,3) range raise an out-of-range error instead of overflowing to Inf. `money()` takes a DOUBLE amount (must be finite, rounded half away from zero to 3 decimals); `money_from_cents()` constructs exactly from integer subunits.
+
 ### Supported Currencies
 
 10 major currencies: USD, EUR, GBP, JPY, CAD, AUD, CHF, CNY, INR, BRL
@@ -440,7 +442,7 @@ Create a money value from amount and currency code.
 
 **Signature:**
 ```sql
-anofox_tab_money (alias: money(amount DOUBLE, currency_code VARCHAR) → STRUCT(amount DOUBLE, currency VARCHAR)
+anofox_tab_money (alias: money(amount DOUBLE, currency_code VARCHAR) → STRUCT(amount DECIMAL(18,3), currency VARCHAR)
 ```
 
 **Example:**
@@ -457,7 +459,7 @@ Create a money value from an integer amount in the currency's smallest unit (e.g
 
 **Signature:**
 ```sql
-anofox_tab_money (alias: money_from_cents(cents BIGINT, currency_code VARCHAR) → STRUCT(amount DOUBLE, currency VARCHAR)
+anofox_tab_money (alias: money_from_cents(cents BIGINT, currency_code VARCHAR) → STRUCT(amount DECIMAL(18,3), currency VARCHAR)
 ```
 
 **Example:**
@@ -474,7 +476,7 @@ Extract amount from money struct.
 
 **Signature:**
 ```sql
-anofox_tab_money (alias: money_amount(money STRUCT) → DOUBLE
+anofox_tab_money (alias: money_amount(money STRUCT) → DECIMAL(18,3)
 ```
 
 **Example:**
@@ -559,7 +561,7 @@ SELECT anofox_tab_currency_ (alias: currency_name('USD');
 
 #### `anofox_tab_money (alias: money_format`
 
-Format money for display.
+Format money for display. The number of decimals is derived from the currency's `subunit_to_unit` (JPY has none, USD/EUR have two). The `'symbol'` and `'long'` styles localize the amount with the currency's thousands separator and decimal mark; the `'code'` style stays canonical (dot decimal mark, no grouping).
 
 **Signature:**
 ```sql
@@ -567,7 +569,7 @@ anofox_tab_money (alias: money_format(money STRUCT, style VARCHAR) → VARCHAR
 ```
 
 **Parameters:**
-- `style`: Format style - `'symbol'`, `'code'`, or `'long'`
+- `style`: Format style - `'symbol'` (e.g. `$1,234,567.89`, `1.234.567,89 €`, `¥1,235`), `'code'` (e.g. `1234567.89 USD`), or `'long'` (e.g. `1.234,50 Euro`)
 
 **Example:**
 ```sql
@@ -618,7 +620,7 @@ Get absolute value (sign removed).
 
 **Signature:**
 ```sql
-anofox_tab_money (alias: money_abs(money STRUCT) → STRUCT(amount DOUBLE, currency VARCHAR)
+anofox_tab_money (alias: money_abs(money STRUCT) → STRUCT(amount DECIMAL(18,3), currency VARCHAR)
 ```
 
 ---
@@ -631,7 +633,7 @@ Add two money values (same currency required).
 
 **Signature:**
 ```sql
-anofox_tab_money (alias: money_add(money1 STRUCT, money2 STRUCT) → STRUCT(amount DOUBLE, currency VARCHAR)
+anofox_tab_money (alias: money_add(money1 STRUCT, money2 STRUCT) → STRUCT(amount DECIMAL(18,3), currency VARCHAR)
 ```
 
 **Example:**
@@ -651,7 +653,7 @@ Subtract money2 from money1 (same currency required).
 
 **Signature:**
 ```sql
-anofox_tab_money (alias: money_subtract(money1 STRUCT, money2 STRUCT) → STRUCT(amount DOUBLE, currency VARCHAR)
+anofox_tab_money (alias: money_subtract(money1 STRUCT, money2 STRUCT) → STRUCT(amount DECIMAL(18,3), currency VARCHAR)
 ```
 
 ---
@@ -662,7 +664,7 @@ Multiply money by a scalar factor.
 
 **Signature:**
 ```sql
-anofox_tab_money (alias: money_multiply(money STRUCT, factor DOUBLE) → STRUCT(amount DOUBLE, currency VARCHAR)
+anofox_tab_money (alias: money_multiply(money STRUCT, factor DOUBLE) → STRUCT(amount DECIMAL(18,3), currency VARCHAR)
 ```
 
 ---
@@ -2092,7 +2094,7 @@ SET anofox_telemetry_key = 'your_custom_key';
    - **OpenSSL**: Optional for SMTP email validation
    - **libphonenumber**: Embedded implementation, no external dependencies
 
-6. **Money struct format**: All money functions use `STRUCT(amount DOUBLE, currency VARCHAR)` format. Currency codes must match supported currencies (USD, EUR, GBP, JPY, CAD, AUD, CHF, CNY, INR, BRL).
+6. **Money struct format**: All money functions use `STRUCT(amount DECIMAL(18,3), currency VARCHAR)` format. Currency codes must match supported currencies (USD, EUR, GBP, JPY, CAD, AUD, CHF, CNY, INR, BRL).
 
 7. **VAT country codes**: Use ISO 3166-1 alpha-2 country codes (e.g., 'DE', 'FR', 'GB'). The extension supports 29 countries (28 EU + UK).
 

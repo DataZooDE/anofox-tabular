@@ -336,8 +336,8 @@ International monetary value handling with currency-aware arithmetic and formatt
 **Key Features:**
 - 17 SQL functions for financial operations
 - 10 major currencies (USD, EUR, GBP, JPY, CAD, AUD, CHF, CNY, INR, BRL)
-- Currency-safe arithmetic (prevents mixing currencies)
-- Locale-aware formatting (symbol placement, decimal marks)
+- Exact DECIMAL(18,3) amounts with overflow-checked, currency-safe arithmetic
+- Locale-aware formatting (symbol placement, per-currency scale, decimal marks, thousands separators)
 - Quality validation (range checks, currency consistency)
 
 ```sql
@@ -856,12 +856,14 @@ WHERE money_in_range(amount, 0.01, 99999.99)
 
 ### Money & Currency Functions
 
+Money values are `STRUCT(amount DECIMAL(18,3), currency VARCHAR)`: amounts are exact decimals (no binary floating point drift), NaN/Inf are unrepresentable, and arithmetic raises a clear error on overflow instead of producing Inf. `money()` accepts a DOUBLE amount, which must be finite and is rounded half away from zero to 3 decimals; use `money_from_cents()` for fully exact construction from integer subunits.
+
 #### Basic Operations
 | Function | Signature | Returns | Description |
 |----------|-----------|---------|-------------|
-| `anofox_tab_money` | `(amount, currency_code)` | STRUCT | Create a money value from amount and currency code |
-| `anofox_tab_money_from_cents` | `(cents, currency_code)` | STRUCT | Create a money value from an integer amount in the smallest currency unit (e.g. 10050 cents → 100.50 USD) |
-| `anofox_tab_money_amount` | `(money)` | DOUBLE | Extract amount from money struct |
+| `anofox_tab_money` | `(amount, currency_code)` | STRUCT | Create a money value from amount and currency code (amount must be finite and within the DECIMAL(18,3) range) |
+| `anofox_tab_money_from_cents` | `(cents, currency_code)` | STRUCT | Create a money value from an integer amount in the smallest currency unit, exactly (e.g. 10050 cents → 100.50 USD) |
+| `anofox_tab_money_amount` | `(money)` | DECIMAL(18,3) | Extract the exact amount from money struct |
 | `anofox_tab_money_currency` | `(money)` | VARCHAR | Extract currency code from money struct |
 
 #### Currency Information
@@ -874,7 +876,7 @@ WHERE money_in_range(amount, 0.01, 99999.99)
 #### Formatting
 | Function | Signature | Returns | Description |
 |----------|-----------|---------|-------------|
-| `anofox_tab_money_format` | `(money, style)` | VARCHAR | Format money for display (3 styles: 'symbol', 'code', 'long') |
+| `anofox_tab_money_format` | `(money, style)` | VARCHAR | Format money for display (3 styles: 'symbol', 'code', 'long'). The scale comes from the currency's `subunit_to_unit` (JPY has no decimals); 'symbol' and 'long' localize with the currency's thousands separator and decimal mark (`$1,234,567.89`, `1.234.567,89 €`, `¥1,235`), 'code' stays canonical (dot decimal mark, no grouping: `1234567.89 USD`) |
 
 #### Validation & Properties
 | Function | Signature | Returns | Description |
