@@ -1,0 +1,730 @@
+# name: test/sql/anofox_vectorization_pins.test
+# description: Behavior pins for the scalar vectorization sweep (issue #58).
+#   Every scalar function refactored in #58 is exercised here with:
+#   - constant-vector inputs (literal arguments)
+#   - dictionary-style inputs (repeated values selected from a table)
+#   - NULL patterns (leading / trailing / all-NULL / mixed)
+#   - empty strings
+#   - large batches (range(5000)) checked via aggregate counts
+#   These tests were green BEFORE the refactor and must stay green after it.
+# group: [anofox_tabular]
+
+require anofox_tabular
+
+statement ok
+LOAD anofox_tabular;
+
+# ============================================================================
+# EMAIL: anofox_tab_email_is_valid / anofox_tab_email_validate (regex mode only,
+# so no network access is required)
+# ============================================================================
+
+# The email configuration is a process-global singleton shared across test
+# files; restore the defaults so earlier tests (e.g. anofox_email_basic.test
+# overriding the regex pattern) cannot leak into these pins.
+statement ok
+SET anofox_tab_email_default_validation = 'regex';
+
+statement ok
+SET anofox_tab_email_regex_pattern = '^[A-Za-z0-9.!#$%&''*+/=?^_`{|}~-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*$';
+
+# Constant input, implicit default mode (regex)
+query T
+SELECT anofox_tab_email_is_valid('user@example.com');
+----
+true
+
+# Constant input, explicit constant mode
+query T
+SELECT anofox_tab_email_is_valid('user@example.com', 'regex');
+----
+true
+
+# Mode normalization: case and surrounding whitespace must not matter
+query T
+SELECT anofox_tab_email_is_valid('user@example.com', '  REGEX  ');
+----
+true
+
+# Invalid constant input
+query T
+SELECT anofox_tab_email_is_valid('not-an-email');
+----
+false
+
+# Empty string input
+query T
+SELECT anofox_tab_email_is_valid('');
+----
+false
+
+# NULL email yields NULL
+query T
+SELECT anofox_tab_email_is_valid(NULL);
+----
+NULL
+
+# NULL mode falls back to the configured default (regex)
+query T
+SELECT anofox_tab_email_is_valid('user@example.com', NULL);
+----
+true
+
+# Unsupported mode: regex passes first, then stage becomes 'unsupported'
+query TTT
+SELECT (r).valid, (r).stage, (r).reason
+FROM (SELECT anofox_tab_email_validate('user@example.com', 'bogus-mode') AS r);
+----
+false	unsupported	validation_not_implemented
+
+# Unsupported mode with a regex failure reports the regex stage
+query TTT
+SELECT (r).valid, (r).stage, (r).reason
+FROM (SELECT anofox_tab_email_validate('not-an-email', 'bogus-mode') AS r);
+----
+false	regex	invalid_format
+
+# Struct shape pins for regex mode: empty mx_hosts and transcript lists
+query TTII
+SELECT (r).valid, (r).stage, len((r).mx_hosts), len((r).smtp_debug.transcript)
+FROM (SELECT anofox_tab_email_validate('user@example.com', 'regex') AS r);
+----
+true	regex	0	0
+
+# NULL email yields a NULL struct
+query T
+SELECT anofox_tab_email_validate(NULL) IS NULL;
+----
+true
+
+# Table-driven inputs with repeated values and mixed NULL pattern
+statement ok
+CREATE TABLE email_pin_inputs(email VARCHAR, mode VARCHAR);
+
+statement ok
+INSERT INTO email_pin_inputs VALUES
+    (NULL, 'regex'),
+    ('user@example.com', 'regex'),
+    ('user@example.com', 'regex'),
+    ('not-an-email', 'regex'),
+    ('', 'regex'),
+    ('other@example.com', NULL),
+    (NULL, NULL),
+    ('user@example.com', '  Regex ');
+
+query T
+SELECT anofox_tab_email_is_valid(email, mode) FROM email_pin_inputs;
+----
+NULL
+true
+true
+false
+false
+true
+NULL
+true
+
+# Mode passed as a column reference together with a constant email
+query T
+SELECT anofox_tab_email_is_valid('user@example.com', mode) FROM email_pin_inputs WHERE mode IS NOT NULL ORDER BY ALL;
+----
+true
+true
+true
+true
+true
+true
+
+statement ok
+DROP TABLE email_pin_inputs;
+
+# Large batch: 5000 generated addresses, alternating valid/invalid
+query II
+SELECT count(*) FILTER (WHERE ok), count(*) FILTER (WHERE NOT ok)
+FROM (
+    SELECT anofox_tab_email_is_valid(CASE WHEN i % 2 = 0 THEN 'user' || i || '@example.com' ELSE 'invalid-' || i END) AS ok
+    FROM range(5000) t(i)
+);
+----
+2500	2500
+
+# Large batch through email_validate (struct path)
+query I
+SELECT count(*) FILTER (WHERE (r).valid AND (r).stage = 'regex')
+FROM (SELECT anofox_tab_email_validate('user' || i || '@example.com', 'regex') AS r FROM range(5000) t(i));
+----
+5000
+
+# ============================================================================
+# VAT scalar functions
+# ============================================================================
+
+# Constant inputs across all VAT functions
+query T
+SELECT anofox_tab_vat('DE123456789');
+----
+{'country': DE, 'digits': 123456789}
+
+query T
+SELECT anofox_tab_vat_split('de 123-456-789');
+----
+{'country': DE, 'digits': 123456789}
+
+query T
+SELECT anofox_tab_vat_exists('DE123456789');
+----
+true
+
+query T
+SELECT anofox_tab_vat_exists('XX123456789');
+----
+false
+
+query T
+SELECT anofox_tab_vat_normalize('de 123.456-789');
+----
+DE123456789
+
+query T
+SELECT anofox_tab_is_valid_vat_country('DE');
+----
+true
+
+query T
+SELECT anofox_tab_is_valid_vat_country('XX');
+----
+false
+
+query T
+SELECT anofox_tab_vat_is_valid_syntax('DE123456789');
+----
+true
+
+query T
+SELECT anofox_tab_vat_is_valid_syntax('DE12345');
+----
+false
+
+query T
+SELECT anofox_tab_vat_is_valid('DE111111125');
+----
+true
+
+query T
+SELECT anofox_tab_vat_is_valid('DE111111124');
+----
+false
+
+# is_eu_member / country_name take 2-letter country codes; full VAT strings miss
+query TT
+SELECT anofox_tab_vat_is_eu_member('DE'), anofox_tab_vat_is_eu_member('DE123456789');
+----
+true	false
+
+query TT
+SELECT anofox_tab_vat_country_name('DE'), anofox_tab_vat_country_name('DE123456789') IS NULL;
+----
+Germany	true
+
+query T
+SELECT anofox_tab_vat_format('DE123456789', 'plain');
+----
+123456789
+
+query T
+SELECT anofox_tab_vat_format('GR123456789', 'iso');
+----
+EL123456789
+
+# Empty string handling
+query TTTT
+SELECT anofox_tab_vat(''), anofox_tab_vat_exists(''), anofox_tab_vat_normalize(''), anofox_tab_vat_is_valid('');
+----
+NULL	false	(empty)	false
+
+# NULL handling
+query TTTTT
+SELECT anofox_tab_vat(NULL), anofox_tab_vat_exists(NULL), anofox_tab_vat_normalize(NULL),
+       anofox_tab_vat_is_valid(NULL), anofox_tab_vat_country_name(NULL);
+----
+NULL	NULL	NULL	NULL	NULL
+
+query T
+SELECT anofox_tab_vat_format(NULL, 'plain');
+----
+NULL
+
+query T
+SELECT anofox_tab_vat_format('DE123456789', NULL);
+----
+NULL
+
+# Table-driven repeated values with leading/trailing NULLs
+statement ok
+CREATE TABLE vat_pin_inputs(v VARCHAR);
+
+statement ok
+INSERT INTO vat_pin_inputs VALUES
+    (NULL),
+    ('DE111111125'),
+    ('DE111111125'),
+    ('ATU13585627'),
+    (''),
+    ('XX123'),
+    ('DE111111124'),
+    (NULL);
+
+query T
+SELECT anofox_tab_vat_is_valid(v) FROM vat_pin_inputs;
+----
+NULL
+true
+true
+true
+false
+false
+false
+NULL
+
+statement ok
+DROP TABLE vat_pin_inputs;
+
+# Table-driven country codes with leading/trailing NULLs (country_name path)
+statement ok
+CREATE TABLE vat_country_inputs(c VARCHAR);
+
+statement ok
+INSERT INTO vat_country_inputs VALUES (NULL), ('DE'), ('DE'), ('at'), (''), ('XX'), (NULL);
+
+query T
+SELECT anofox_tab_vat_country_name(c) FROM vat_country_inputs;
+----
+NULL
+Germany
+Germany
+Austria
+NULL
+NULL
+NULL
+
+query T
+SELECT anofox_tab_vat_is_eu_member(c) FROM vat_country_inputs;
+----
+NULL
+true
+true
+true
+false
+false
+NULL
+
+statement ok
+DROP TABLE vat_country_inputs;
+
+# All-NULL column
+query I
+SELECT count(anofox_tab_vat_is_valid(v)) FROM (SELECT NULL::VARCHAR AS v FROM range(100)) t;
+----
+0
+
+# Large batch: syntax validation over generated VATs (9-digit numbers are valid DE syntax)
+query II
+SELECT count(*) FILTER (WHERE ok), count(*) FILTER (WHERE NOT ok)
+FROM (
+    SELECT anofox_tab_vat_is_valid_syntax(CASE WHEN i % 2 = 0 THEN 'DE' || (100000000 + i) ELSE 'DE12' END) AS ok
+    FROM range(5000) t(i)
+);
+----
+2500	2500
+
+# Large batch through the struct-returning path
+query I
+SELECT count(*) FROM (
+    SELECT anofox_tab_vat('DE' || (100000000 + i)) AS s FROM range(5000) t(i)
+) WHERE (s).country = 'DE';
+----
+5000
+
+# ============================================================================
+# MONEY scalar functions
+# ============================================================================
+
+# Constructors with constant inputs
+query T
+SELECT anofox_tab_money(19.99, 'USD');
+----
+{'amount': 19.990, 'currency': USD}
+
+# Lowercase currency codes are canonicalized
+query T
+SELECT anofox_tab_money(1.5, 'usd');
+----
+{'amount': 1.500, 'currency': USD}
+
+query T
+SELECT anofox_tab_money_from_cents(10050, 'USD');
+----
+{'amount': 100.500, 'currency': USD}
+
+query T
+SELECT anofox_tab_money_from_cents(1999, 'JPY');
+----
+{'amount': 1999.000, 'currency': JPY}
+
+# Accessors
+query II
+SELECT anofox_tab_money_amount(anofox_tab_money(19.99, 'USD')) = 19.99,
+       anofox_tab_money_currency(anofox_tab_money(19.99, 'USD')) = 'USD';
+----
+true	true
+
+# Arithmetic and comparisons
+query T
+SELECT anofox_tab_money_add(anofox_tab_money(10.00, 'USD'), anofox_tab_money(5.25, 'USD'));
+----
+{'amount': 15.250, 'currency': USD}
+
+query T
+SELECT anofox_tab_money_subtract(anofox_tab_money(10.00, 'USD'), anofox_tab_money(3.75, 'USD'));
+----
+{'amount': 6.250, 'currency': USD}
+
+query T
+SELECT anofox_tab_money_multiply(anofox_tab_money(10.00, 'USD'), 1.5);
+----
+{'amount': 15.000, 'currency': USD}
+
+query T
+SELECT anofox_tab_money_abs(anofox_tab_money(-19.99, 'USD'));
+----
+{'amount': 19.990, 'currency': USD}
+
+query TTT
+SELECT anofox_tab_money_is_positive(anofox_tab_money(1.0, 'USD')),
+       anofox_tab_money_is_negative(anofox_tab_money(-1.0, 'USD')),
+       anofox_tab_money_is_zero(anofox_tab_money(0.0, 'USD'));
+----
+true	true	true
+
+query TT
+SELECT anofox_tab_money_in_range(anofox_tab_money(15.00, 'USD'), 10.0, 20.0),
+       anofox_tab_money_in_range(anofox_tab_money(25.00, 'USD'), 10.0, 20.0);
+----
+true	false
+
+query TT
+SELECT anofox_tab_money_same_currency(anofox_tab_money(1.0, 'USD'), anofox_tab_money(2.0, 'USD')),
+       anofox_tab_money_same_currency(anofox_tab_money(1.0, 'USD'), anofox_tab_money(2.0, 'EUR'));
+----
+true	false
+
+# Mismatched currency arithmetic must raise
+statement error
+SELECT anofox_tab_money_add(anofox_tab_money(1.0, 'USD'), anofox_tab_money(1.0, 'EUR'));
+----
+different currencies
+
+# Currency utilities
+query TT
+SELECT anofox_tab_is_valid_currency('USD'), anofox_tab_is_valid_currency('XXX-NOT');
+----
+true	false
+
+query TT
+SELECT anofox_tab_currency_symbol('USD'), anofox_tab_currency_name('EUR');
+----
+$	Euro
+
+# Formatting styles
+query T
+SELECT anofox_tab_money_format(anofox_tab_money(1234.56, 'USD'), 'code');
+----
+1234.56 USD
+
+query T
+SELECT anofox_tab_money_format(anofox_tab_money(1234.56, 'USD'), 'symbol');
+----
+$1,234.56
+
+# NULL propagation
+query TTTT
+SELECT anofox_tab_money(NULL, 'USD') IS NULL,
+       anofox_tab_money(1.0, NULL) IS NULL,
+       anofox_tab_money_amount(NULL) IS NULL,
+       anofox_tab_money_currency(NULL) IS NULL;
+----
+true	true	true	true
+
+query TT
+SELECT anofox_tab_money_add(NULL, anofox_tab_money(1.0, 'USD')) IS NULL,
+       anofox_tab_money_format(anofox_tab_money(1.0, 'USD'), NULL) IS NULL;
+----
+true	true
+
+query TT
+SELECT anofox_tab_is_valid_currency(NULL), anofox_tab_currency_symbol(NULL);
+----
+NULL	NULL
+
+# Empty-string currency is rejected (not a silent fallback)
+statement error
+SELECT anofox_tab_money(1.0, '');
+----
+Invalid currency code
+
+# Table-driven repeated values with NULL pattern (dictionary-style inputs)
+statement ok
+CREATE TABLE money_pin_inputs(amount DOUBLE, code VARCHAR);
+
+statement ok
+INSERT INTO money_pin_inputs VALUES
+    (NULL, NULL),
+    (1.25, 'USD'),
+    (1.25, 'USD'),
+    (-3.50, 'EUR'),
+    (0.0, 'JPY'),
+    (NULL, 'USD'),
+    (2.00, NULL);
+
+query T
+SELECT anofox_tab_money(amount, code) FROM money_pin_inputs;
+----
+NULL
+{'amount': 1.250, 'currency': USD}
+{'amount': 1.250, 'currency': USD}
+{'amount': -3.500, 'currency': EUR}
+{'amount': 0.000, 'currency': JPY}
+NULL
+NULL
+
+query T
+SELECT anofox_tab_money_currency(anofox_tab_money(amount, code)) FROM money_pin_inputs;
+----
+NULL
+USD
+USD
+EUR
+JPY
+NULL
+NULL
+
+statement ok
+DROP TABLE money_pin_inputs;
+
+# Large batch: exact aggregate over 5000 constructed money values
+query I
+SELECT SUM(anofox_tab_money_amount(anofox_tab_money(0.10, 'USD'))) = 500.00 FROM range(5000);
+----
+true
+
+query I
+SELECT count(*) FROM (
+    SELECT anofox_tab_money_add(anofox_tab_money(i * 0.01, 'USD'), anofox_tab_money(1.0, 'USD')) AS m
+    FROM range(5000) t(i)
+) WHERE anofox_tab_money_currency(m) = 'USD';
+----
+5000
+
+query I
+SELECT count(*) FILTER (WHERE f LIKE '%USD')
+FROM (SELECT anofox_tab_money_format(anofox_tab_money(i * 1.0, 'USD'), 'code') AS f FROM range(5000) t(i));
+----
+5000
+
+# ============================================================================
+# PII scalar functions (detect family, mask/redact column)
+# ============================================================================
+
+# Constant input detection: full detect and typed variants
+query I
+SELECT (unnest(pii_detect('Contact: test@example.com'))).type;
+----
+EMAIL
+
+query II
+SELECT len(anofox_tab_pii_detect_emails('Contact: a@b.com')), len(anofox_tab_pii_detect_emails('no pii at all'));
+----
+1	0
+
+query I
+SELECT (unnest(anofox_tab_pii_detect_emails('Contact: a@b.com'))).type;
+----
+EMAIL
+
+# Struct field fidelity for the typed detect path
+query IIII
+SELECT m.type, m.text, m.start_pos, m.end_pos
+FROM (SELECT unnest(anofox_tab_pii_detect_emails('Contact: john.doe@example.com')) AS m);
+----
+EMAIL	john.doe@example.com	9	29
+
+query I
+SELECT len(anofox_tab_pii_detect_phones('Call +14155551234 now'));
+----
+1
+
+query I
+SELECT len(anofox_tab_pii_detect_credit_cards('Card: 4111111111111111'));
+----
+1
+
+query I
+SELECT m.type FROM (SELECT unnest(anofox_tab_pii_detect_ssns('SSN: 123-45-6789')) AS m) WHERE m.type = 'US_SSN';
+----
+US_SSN
+
+query I
+SELECT len(anofox_tab_pii_detect_ibans('IBAN: DE89370400440532013000'));
+----
+1
+
+# Empty string inputs return empty lists (not NULL)
+query IIII
+SELECT len(anofox_tab_pii_detect_emails('')), len(anofox_tab_pii_detect_phones('')),
+       len(anofox_tab_pii_detect_ssns('')), len(pii_detect(''));
+----
+0	0	0	0
+
+# NULL inputs return NULL
+query TTT
+SELECT anofox_tab_pii_detect_emails(NULL) IS NULL,
+       anofox_tab_pii_detect_names(NULL) IS NULL,
+       pii_detect(NULL) IS NULL;
+----
+true	true	true
+
+# Table-driven mixed NULL/repeated inputs through the typed detect path
+statement ok
+CREATE TABLE pii_pin_inputs(t VARCHAR);
+
+statement ok
+INSERT INTO pii_pin_inputs VALUES
+    (NULL),
+    ('mail me: x@y.com'),
+    ('mail me: x@y.com'),
+    (''),
+    ('nothing here'),
+    (NULL);
+
+query I
+SELECT len(anofox_tab_pii_detect_emails(t)) FROM pii_pin_inputs;
+----
+NULL
+1
+1
+0
+0
+NULL
+
+query T
+SELECT pii_detect(t) IS NULL FROM pii_pin_inputs;
+----
+true
+false
+false
+false
+false
+true
+
+statement ok
+DROP TABLE pii_pin_inputs;
+
+# Mask column functions: constant type/strategy arguments
+query I
+SELECT anofox_tab_pii_mask_column('SSN: 123-45-6789', 'US_SSN', 'redact') LIKE '%[US_SSN]%';
+----
+true
+
+# No match of the requested type: original text is returned unchanged
+query T
+SELECT anofox_tab_pii_mask_column('Email: test@example.com', 'US_SSN', 'redact');
+----
+Email: test@example.com
+
+query I
+SELECT anofox_tab_pii_redact_column('Email: test@example.com', 'redact') LIKE '%[EMAIL]%';
+----
+true
+
+query I
+SELECT anofox_tab_pii_redact_column('Email: test@example.com') LIKE '%[EMAIL]%';
+----
+true
+
+# NULL text propagates through mask/redact
+query TTT
+SELECT anofox_tab_pii_mask_column(NULL, 'US_SSN', 'redact') IS NULL,
+       anofox_tab_pii_redact_column(NULL, 'redact') IS NULL,
+       anofox_tab_pii_redact_column(NULL) IS NULL;
+----
+true	true	true
+
+# Empty string stays empty
+query TT
+SELECT anofox_tab_pii_mask_column('', 'US_SSN', 'redact') = '',
+       anofox_tab_pii_redact_column('', 'redact') = '';
+----
+true	true
+
+# Unknown PII type raises
+statement error
+SELECT anofox_tab_pii_mask_column('text', 'NOT_A_TYPE', 'redact');
+----
+Unknown PII type
+
+# Table-driven mask inputs with NULL pattern
+statement ok
+CREATE TABLE pii_mask_inputs(t VARCHAR);
+
+statement ok
+INSERT INTO pii_mask_inputs VALUES
+    (NULL),
+    ('SSN: 123-45-6789'),
+    ('no pii'),
+    (''),
+    ('SSN: 123-45-6789'),
+    (NULL);
+
+query T
+SELECT anofox_tab_pii_mask_column(t, 'US_SSN', 'redact') FROM pii_mask_inputs;
+----
+NULL
+SSN: [US_SSN]
+no pii
+(empty)
+SSN: [US_SSN]
+NULL
+
+# redact_column masks all PII types (NER may add more matches than the SSN),
+# so pin the SSN replacement and NULL/empty propagation rather than exact text.
+query TT
+SELECT anofox_tab_pii_redact_column(t, 'redact') IS NULL,
+       coalesce(anofox_tab_pii_redact_column(t, 'redact') LIKE '%[US_SSN]%', false)
+FROM pii_mask_inputs;
+----
+true	false
+false	true
+false	false
+false	false
+false	true
+true	false
+
+statement ok
+DROP TABLE pii_mask_inputs;
+
+# Large batch through the typed detect path: alternating hit/miss over 5000 rows
+query II
+SELECT count(*) FILTER (WHERE n = 1), count(*) FILTER (WHERE n = 0)
+FROM (
+    SELECT len(anofox_tab_pii_detect_emails(CASE WHEN i % 2 = 0 THEN 'user' || i || '@example.com' ELSE 'row ' || i END)) AS n
+    FROM range(5000) t(i)
+);
+----
+2500	2500
+
+# Large batch through mask_column
+query I
+SELECT count(*) FILTER (WHERE m LIKE '%[US_SSN]%')
+FROM (SELECT anofox_tab_pii_mask_column('SSN: 123-45-6789 row ' || i, 'US_SSN', 'redact') AS m FROM range(5000) t(i));
+----
+5000
