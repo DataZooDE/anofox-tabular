@@ -404,6 +404,9 @@ Detect and mask Personally Identifiable Information (PII) in text data with 17 s
   - Available on: Linux x64 (glibc), macOS (x64 & ARM64)
   - Not available on: Windows x64, Linux ARM64, Linux musl (Alpine)
   - On unsupported platforms: NAME uses dictionary fallback, other NER types unavailable
+  - Inputs are truncated at the model's 512-token limit; entities beyond that are not detected
+  - The built-in tokenizer is ASCII-focused (English model); non-ASCII punctuation is not treated as a word boundary
+  - Model selection via `SET anofox_ner_model` (currently `distilbert-en` only) must happen before the model is first loaded
 
 **Masking Strategies:**
 - `REDACT` - Replace with [TYPE] label

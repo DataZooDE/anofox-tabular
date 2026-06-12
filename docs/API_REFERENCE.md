@@ -1102,9 +1102,25 @@ anofox_ner_status() → TABLE(onnx_available, model_status, model_path, model_si
 **Example:**
 ```sql
 SELECT * FROM anofox_ner_status();
--- onnx_available | model_status  | model_path                                          | model_size_mb | status_message
--- true           | LOADED        | /home/user/.duckdb/extensions/anofox/ner/model.onnx | 66.5          | Model loaded successfully
+-- onnx_available | model_status  | model_path                                                                 | model_size_mb | status_message
+-- true           | LOADED        | /home/user/.duckdb/extensions/anofox/ner/distilbert-en/model_quantized.onnx | 66.5        | Model loaded successfully
 ```
+
+**NER configuration options:**
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `anofox_ner_model` | `distilbert-en` | NER model to use. Only models with downloadable assets are accepted; the value cannot be changed after the model has been loaded (restart required). |
+| `anofox_ner_device` | `AUTO` | OpenVINO inference device (`AUTO`, `CPU`, `GPU`, `GPU.0`, ...). Takes effect on next model load. |
+| `anofox_ner_cache_size` | `10000` | LRU cache size for NER results (0 disables caching). |
+
+**NER input limits:**
+
+- Inputs are truncated at the model's maximum sequence length (512 tokens for
+  DistilBERT). Entities beyond the first ~512 tokens are not detected.
+- The built-in WordPiece tokenizer is ASCII-focused: UTF-8 multibyte text is
+  kept intact inside words, but non-ASCII punctuation/whitespace is not
+  recognized as a word boundary. The bundled DistilBERT model is English-only.
 
 ---
 

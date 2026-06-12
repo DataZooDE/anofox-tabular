@@ -1,0 +1,48 @@
+# name: test/sql/anofox_ner_truncation.test
+# description: NER long-input truncation tests (requires OpenVINO + model assets)
+# group: [anofox_tabular]
+
+# Inputs longer than the model's maximum sequence length (512 tokens for
+# DistilBERT) must be truncated at a token boundary instead of failing inside
+# OpenVINO (issue #56). Entities within the first ~512 tokens are still
+# detected; text beyond the limit is ignored (documented truncation).
+require-env OPENVINO_AVAILABLE
+
+require anofox_tabular
+
+statement ok
+LOAD anofox_tabular
+
+# Short input baseline: NER detects the organization
+query I
+SELECT list_contains(
+    list_transform(pii_detect('John Smith works at Microsoft in Seattle.'), x -> x.type),
+    'ORGANIZATION');
+----
+true
+
+# Long input (~1200 tokens): entity in the leading text must still be found.
+# Without truncation this threw inside OpenVINO and returned no NER entities.
+query I
+SELECT list_contains(
+    list_transform(
+        pii_detect('John Smith works at Microsoft in Seattle. ' ||
+                   repeat('Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore. ', 60)),
+        x -> x.type),
+    'ORGANIZATION');
+----
+true
+
+# Long input must not break subsequent short inputs (no corrupted state)
+query I
+SELECT list_contains(
+    list_transform(pii_detect('Maria Garcia visited the Eiffel Tower in Paris.'), x -> x.type),
+    'LOCATION');
+----
+true
+
+# Re-setting the currently loaded model name after load stays a no-op success
+# (switching to a different model after load is rejected; only one supported
+# model exists today, see issue #56)
+statement ok
+SET anofox_ner_model = 'distilbert-en';
