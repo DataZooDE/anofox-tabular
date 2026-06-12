@@ -120,9 +120,10 @@ CREATE TABLE alias_fidelity_points(v DOUBLE);
 statement ok
 INSERT INTO alias_fidelity_points VALUES (1.0), (1.1), (1.2), (10.0);
 
+# output_mode 'clusters': dbscan only accepts 'summary'/'clusters' since #52
 query I
-SELECT (SELECT count(*) FROM anofox_tab_dbscan('alias_fidelity_points', 'v', 0.5, 2, 'all'))
-     = (SELECT count(*) FROM dbscan('alias_fidelity_points', 'v', 0.5, 2, 'all'));
+SELECT (SELECT count(*) FROM anofox_tab_dbscan('alias_fidelity_points', 'v', 0.5, 2, 'clusters'))
+     = (SELECT count(*) FROM dbscan('alias_fidelity_points', 'v', 0.5, 2, 'clusters'));
 ----
 true
 
