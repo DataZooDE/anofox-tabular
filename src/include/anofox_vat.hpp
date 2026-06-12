@@ -4,9 +4,11 @@
 #include "duckdb/common/types/string_type.hpp"
 #include "duckdb/common/vector_operations/vector_operations.hpp"
 #include "duckdb/execution/expression_executor.hpp"
-#include <string>
 #include <memory>
 #include <optional>
+#include <regex>
+#include <string>
+#include <unordered_map>
 
 namespace duckdb {
 
@@ -124,7 +126,12 @@ class VATRegistry {
   bool IsEUMember(const std::string& code) const;
   std::string GetCountryName(const std::string& code) const;
   bool IsValidSyntax(const std::string& country, const std::string& digits) const;
+  // Validates the country-specific check digits. Returns true for countries
+  // without an implemented checksum (syntax-only validation).
+  bool IsValidChecksum(const std::string& country, const std::string& digits) const;
   std::string NormalizeVAT(const std::string& input) const;
+  // Uppercases the code and resolves VAT prefixes (EL -> GR, XI -> GB) to ISO.
+  std::string NormalizeCountryCode(const std::string& code) const;
   std::optional<std::pair<std::string, std::string>> SplitVAT(
       const std::string& input) const;
   std::string ConvertVATToISO(const std::string& vat_country) const;
@@ -140,7 +147,8 @@ class VATRegistry {
     std::string country_name;
     std::string pattern;  // Regex pattern without country prefix
     bool is_eu_member;
-    bool has_checksum;  // Whether checksum validation is supported
+    bool has_checksum;  // Whether a check-digit algorithm is implemented
+    std::regex compiled_pattern;  // Anchored pattern, compiled at registry init
   };
 
   std::unordered_map<std::string, CountryInfo> countries_;
