@@ -31,6 +31,7 @@ std::vector<OutlierExplanation> OutlierTree::FitPredict(
     std::vector<OutlierExplanation> outliers;
     clusters_evaluated_ = 0;
     max_depth_reached_ = 0;
+    outlier_slots_.clear();
 
     if (data.empty() || column_info.empty()) {
         return outliers;
@@ -156,8 +157,9 @@ void OutlierTree::BuildTreeForColumn(
     if (right_condition.column_type == FeatureType::NUMERIC) {
         right_condition.is_less_than = false;  // Invert for right branch
     } else {
-        // For categorical, right branch gets complement of left categories
-        // (handled implicitly by not being in left_categories)
+        // For categorical, the right branch is the complement of the left
+        // categories — mark the condition as negated (NOT IN left_categories)
+        right_condition.is_negated = true;
     }
     std::vector<SplitCondition> right_conditions = current_conditions;
     right_conditions.push_back(right_condition);
@@ -236,11 +238,6 @@ void OutlierTree::FindOutliersInNumericCluster(
 
         double score = NumericClusterStats::ChebyshevBound(z_score);
 
-        // Check if we should skip (better outlier already exists)
-        if (ShouldSkipDuplicateOutlier(outliers, row_idx, target_col, score)) {
-            continue;
-        }
-
         OutlierExplanation outlier;
         outlier.row_idx = row_idx;
         outlier.target_column_idx = target_col;
@@ -257,8 +254,9 @@ void OutlierTree::FindOutliersInNumericCluster(
         outlier.outlier_score = score;
 
         GenerateExplanation(outlier, column_info);
-        outliers.push_back(std::move(outlier));
-        outlier_count++;
+        if (AddOrReplaceOutlier(outliers, std::move(outlier))) {
+            outlier_count++;
+        }
     }
 }
 
@@ -312,10 +310,6 @@ void OutlierTree::FindOutliersInCategoricalCluster(
             if (data[target_col].category_indices[idx] == cat_idx) {
                 double score = prop;  // Lower proportion = rarer = lower score
 
-                if (ShouldSkipDuplicateOutlier(outliers, idx, target_col, score)) {
-                    continue;
-                }
-
                 OutlierExplanation outlier;
                 outlier.row_idx = idx;
                 outlier.target_column_idx = target_col;
@@ -329,8 +323,9 @@ void OutlierTree::FindOutliersInCategoricalCluster(
                 outlier.z_score = 1.0 / std::sqrt(prop);
 
                 GenerateExplanation(outlier, column_info);
-                outliers.push_back(std::move(outlier));
-                outlier_count++;
+                if (AddOrReplaceOutlier(outliers, std::move(outlier))) {
+                    outlier_count++;
+                }
             }
         }
     }
@@ -724,6 +719,9 @@ void OutlierTree::PartitionRows(
                 continue;  // Skip invalid categories
             }
             goes_left = split.left_categories.count(cat) > 0;
+            if (split.is_negated) {
+                goes_left = !goes_left;
+            }
         }
 
         if (goes_left) {
@@ -734,19 +732,23 @@ void OutlierTree::PartitionRows(
     }
 }
 
-bool OutlierTree::ShouldSkipDuplicateOutlier(
-    const std::vector<OutlierExplanation>& outliers,
-    size_t row_idx,
-    size_t col_idx,
-    double new_score
+bool OutlierTree::AddOrReplaceOutlier(
+    std::vector<OutlierExplanation>& outliers,
+    OutlierExplanation&& outlier
 ) {
-    for (const auto& existing : outliers) {
-        if (existing.row_idx == row_idx && existing.target_column_idx == col_idx) {
-            // Keep the one with lower (more extreme) score
-            return existing.outlier_score <= new_score;
-        }
+    auto key = std::make_pair(outlier.row_idx, outlier.target_column_idx);
+    auto it = outlier_slots_.find(key);
+    if (it == outlier_slots_.end()) {
+        outlier_slots_.emplace(key, outliers.size());
+        outliers.push_back(std::move(outlier));
+        return true;
     }
-    return false;
+    // Keep the finding with the lower (more extreme) score
+    if (outliers[it->second].outlier_score <= outlier.outlier_score) {
+        return false;
+    }
+    outliers[it->second] = std::move(outlier);
+    return true;
 }
 
 //===--------------------------------------------------------------------===//
@@ -773,6 +775,9 @@ struct OutlierTreeGlobalState : public GlobalTableFunctionState {
 
     // Results
     std::vector<OutlierExplanation> outliers;
+    // Maps a compacted (NULL-filtered) row index back to its 1-based
+    // position in the source table, so reported row ids match the source.
+    std::vector<int64_t> source_row_ids;
     int64_t total_rows = 0;
     int64_t columns_analyzed = 0;
     int64_t clusters_evaluated = 0;
@@ -819,18 +824,26 @@ static unique_ptr<FunctionData> OutlierTreeBind(ClientContext &context, TableFun
         throw BinderException("columns parameter must contain at least one column name");
     }
 
-    // Parse optional parameters
+    // Parse optional parameters (read integral values as signed so that
+    // negative inputs can be rejected before any cast to size_t)
     std::string output_mode = input.inputs.size() > 2 ? input.inputs[2].ToString() : "summary";
-    size_t max_depth = input.inputs.size() > 3 ? input.inputs[3].GetValue<int64_t>() : 4;
+    int64_t max_depth_raw = input.inputs.size() > 3 ? input.inputs[3].GetValue<int64_t>() : 4;
     double max_perc_outliers = input.inputs.size() > 4 ? input.inputs[4].GetValue<double>() : 0.01;
-    size_t min_size_numeric = input.inputs.size() > 5 ? input.inputs[5].GetValue<int64_t>() : 25;
-    size_t min_size_categ = input.inputs.size() > 6 ? input.inputs[6].GetValue<int64_t>() : 75;
+    int64_t min_size_numeric_raw = input.inputs.size() > 5 ? input.inputs[5].GetValue<int64_t>() : 25;
+    int64_t min_size_categ_raw = input.inputs.size() > 6 ? input.inputs[6].GetValue<int64_t>() : 75;
     double z_norm = input.inputs.size() > 7 ? input.inputs[7].GetValue<double>() : 2.67;
     double z_outlier = input.inputs.size() > 8 ? input.inputs[8].GetValue<double>() : 8.0;
 
-    // Validate parameters
-    if (max_depth < 1) {
-        throw BinderException("max_depth must be >= 1");
+    // Validate parameters while still signed
+    static constexpr int64_t MAX_TREE_DEPTH = 1024;
+    if (max_depth_raw < 1 || max_depth_raw > MAX_TREE_DEPTH) {
+        throw BinderException("max_depth must be >= 1 and <= %lld", MAX_TREE_DEPTH);
+    }
+    if (min_size_numeric_raw < 1) {
+        throw BinderException("min_size_numeric must be >= 1");
+    }
+    if (min_size_categ_raw < 1) {
+        throw BinderException("min_size_categ must be >= 1");
     }
     if (max_perc_outliers <= 0 || max_perc_outliers > 1) {
         throw BinderException("max_perc_outliers must be between 0 and 1");
@@ -842,8 +855,9 @@ static unique_ptr<FunctionData> OutlierTreeBind(ClientContext &context, TableFun
         throw BinderException("z_norm must be positive");
     }
 
-    OutlierTreeParams params(max_depth, max_perc_outliers, min_size_numeric,
-                             min_size_categ, z_norm, z_outlier);
+    OutlierTreeParams params(static_cast<size_t>(max_depth_raw), max_perc_outliers,
+                             static_cast<size_t>(min_size_numeric_raw),
+                             static_cast<size_t>(min_size_categ_raw), z_norm, z_outlier);
 
     // Define output schema based on mode
     if (output_mode == "outliers") {
@@ -933,12 +947,15 @@ static void OutlierTreeExecute(ClientContext &context, TableFunctionInput &data_
             column_info[i].name = bind_data.column_names[i];
         }
 
-        // Read data
+        // Read data; rows containing NULL in any selected column are skipped,
+        // but their source positions are preserved for row id reporting.
+        int64_t source_row = 0;
         while (true) {
             auto chunk = result->Fetch();
             if (!chunk || chunk->size() == 0) break;
 
             for (idx_t row = 0; row < chunk->size(); ++row) {
+                source_row++;
                 bool valid_row = true;
 
                 // Check for NULLs
@@ -951,6 +968,8 @@ static void OutlierTreeExecute(ClientContext &context, TableFunctionInput &data_
                 }
 
                 if (!valid_row) continue;
+
+                state.source_row_ids.push_back(source_row);
 
                 // Add values to data structures
                 for (idx_t col = 0; col < chunk->ColumnCount(); ++col) {
@@ -967,6 +986,8 @@ static void OutlierTreeExecute(ClientContext &context, TableFunctionInput &data_
             }
         }
 
+        // total_rows counts the analyzed rows, i.e. rows that are non-NULL in
+        // every selected column (NULL-containing rows are excluded above)
         state.total_rows = data.empty() ? 0 : static_cast<int64_t>(data[0].size());
         state.columns_analyzed = static_cast<int64_t>(data.size());
 
@@ -987,7 +1008,9 @@ static void OutlierTreeExecute(ClientContext &context, TableFunctionInput &data_
         while (state.current_row < state.outliers.size() && count < max_count) {
             auto &outlier = state.outliers[state.current_row];
 
-            output.SetValue(0, count, Value::BIGINT(static_cast<int64_t>(outlier.row_idx + 1)));  // 1-indexed
+            // Report the 1-based source table position, not the index in the
+            // NULL-compacted working dataset
+            output.SetValue(0, count, Value::BIGINT(state.source_row_ids[outlier.row_idx]));
             output.SetValue(1, count, Value(outlier.target_column_name));
             output.SetValue(2, count, Value(outlier.GetOutlierValueString()));
             output.SetValue(3, count, Value::DOUBLE(outlier.cluster_mean));
