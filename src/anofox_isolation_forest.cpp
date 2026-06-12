@@ -6,6 +6,32 @@
 namespace duckdb {
 namespace anofox {
 
+/**
+ * Reusable scratch buffers for one mixed-type tree build (issue #60).
+ * The feature partition is computed once per tree; the value/projection
+ * buffers are reused across every split candidate of every node so candidate
+ * generation does not reallocate per candidate.
+ */
+struct TreeBuildScratch {
+    // Per-tree constants
+    std::vector<size_t> numeric_features;
+
+    // Numeric axis-aligned candidate buffers
+    std::vector<double> left_values;
+    std::vector<double> right_values;
+    std::vector<double> all_values;
+
+    // Hyperplane candidate buffers
+    std::vector<size_t> shuffled_numeric;
+    std::vector<double> min_vals;
+    std::vector<double> max_vals;
+    std::vector<double> coefficients;
+    std::vector<double> projections;
+    std::vector<double> left_projs;
+    std::vector<double> right_projs;
+    std::vector<double> all_projs;
+};
+
 // ============================================================================
 // SCiForest Helper Functions
 // ============================================================================
@@ -81,7 +107,8 @@ static bool GenerateNumericSplitCandidate(
     const std::vector<size_t>& sample_indices,
     size_t feature_idx,
     std::mt19937& rng,
-    SplitCandidate& candidate
+    SplitCandidate& candidate,
+    TreeBuildScratch& scratch
 ) {
     const ColumnData& col = data[feature_idx];
 
@@ -105,11 +132,14 @@ static bool GenerateNumericSplitCandidate(
     std::uniform_real_distribution<double> split_dist(min_val, max_val);
     double split_value = split_dist(rng);
 
-    // Partition samples
+    // Partition samples (value buffers reused across candidates, issue #60)
     candidate.left_indices.clear();
     candidate.right_indices.clear();
 
-    std::vector<double> left_values, right_values;
+    auto& left_values = scratch.left_values;
+    auto& right_values = scratch.right_values;
+    left_values.clear();
+    right_values.clear();
 
     for (size_t idx : sample_indices) {
         double val = col.numeric_values[idx];
@@ -136,7 +166,8 @@ static bool GenerateNumericSplitCandidate(
     candidate.split_value = split_value;
 
     // Compute gain
-    std::vector<double> all_values;
+    auto& all_values = scratch.all_values;
+    all_values.clear();
     for (size_t idx : sample_indices) {
         double val = col.numeric_values[idx];
         if (!std::isnan(val)) {
@@ -234,20 +265,23 @@ static bool GenerateHyperplaneSplitCandidate(
     const std::vector<ColumnData>& data,
     const std::vector<ColumnInfo>& column_info,
     const std::vector<size_t>& sample_indices,
-    const std::vector<size_t>& numeric_features,
     size_t effective_ndim,
     CoefType coef_type,
     std::mt19937& rng,
-    SplitCandidate& candidate
+    SplitCandidate& candidate,
+    TreeBuildScratch& scratch
 ) {
-    // Select ndim features for the hyperplane
-    std::vector<size_t> shuffled_numeric = numeric_features;
+    // Select ndim features for the hyperplane (buffer reused, issue #60)
+    auto& shuffled_numeric = scratch.shuffled_numeric;
+    shuffled_numeric.assign(scratch.numeric_features.begin(), scratch.numeric_features.end());
     std::shuffle(shuffled_numeric.begin(), shuffled_numeric.end(), rng);
     shuffled_numeric.resize(effective_ndim);
 
     // Compute min/max for each selected feature
-    std::vector<double> min_vals(effective_ndim);
-    std::vector<double> max_vals(effective_ndim);
+    auto& min_vals = scratch.min_vals;
+    auto& max_vals = scratch.max_vals;
+    min_vals.assign(effective_ndim, 0.0);
+    max_vals.assign(effective_ndim, 0.0);
     bool all_constant = true;
 
     for (size_t i = 0; i < effective_ndim; i++) {
@@ -274,7 +308,8 @@ static bool GenerateHyperplaneSplitCandidate(
     }
 
     // Generate coefficients
-    std::vector<double> coefficients(effective_ndim);
+    auto& coefficients = scratch.coefficients;
+    coefficients.assign(effective_ndim, 0.0);
     std::normal_distribution<double> normal_dist(0.0, 1.0);
 
     for (size_t i = 0; i < effective_ndim; i++) {
@@ -294,7 +329,8 @@ static bool GenerateHyperplaneSplitCandidate(
     // Compute projections
     double min_proj = std::numeric_limits<double>::max();
     double max_proj = std::numeric_limits<double>::lowest();
-    std::vector<double> projections(sample_indices.size());
+    auto& projections = scratch.projections;
+    projections.resize(sample_indices.size());
 
     for (size_t s = 0; s < sample_indices.size(); s++) {
         size_t idx = sample_indices[s];
@@ -328,10 +364,13 @@ static bool GenerateHyperplaneSplitCandidate(
     std::uniform_real_distribution<double> intercept_dist(min_proj, max_proj);
     double intercept = intercept_dist(rng);
 
-    // Partition samples
+    // Partition samples (projection buffers reused, issue #60)
     candidate.left_indices.clear();
     candidate.right_indices.clear();
-    std::vector<double> left_projs, right_projs;
+    auto& left_projs = scratch.left_projs;
+    auto& right_projs = scratch.right_projs;
+    left_projs.clear();
+    right_projs.clear();
 
     for (size_t s = 0; s < sample_indices.size(); s++) {
         if (std::isnan(projections[s]) || projections[s] < intercept) {
@@ -357,11 +396,12 @@ static bool GenerateHyperplaneSplitCandidate(
     for (size_t i = 0; i < effective_ndim; i++) {
         candidate.hyperplane_features[i] = static_cast<uint16_t>(shuffled_numeric[i]);
     }
-    candidate.hyperplane_coefficients = std::move(coefficients);
+    candidate.hyperplane_coefficients = coefficients;
     candidate.hyperplane_intercept = intercept;
 
     // Compute gain based on projection variance reduction
-    std::vector<double> all_projs;
+    auto& all_projs = scratch.all_projs;
+    all_projs.clear();
     for (size_t s = 0; s < projections.size(); s++) {
         if (!std::isnan(projections[s])) {
             all_projs.push_back(projections[s]);
@@ -538,6 +578,33 @@ void IsolationTree::BuildTreeMixed(
         root_idx_ = 0;
     }
 
+    // The numeric-feature partition depends only on column_info, so it is
+    // computed once per tree; the scratch value buffers are reused across all
+    // split candidates of all nodes (issue #60).
+    TreeBuildScratch scratch;
+    for (size_t i = 0; i < data.size(); i++) {
+        if (column_info[i].type == FeatureType::NUMERIC) {
+            scratch.numeric_features.push_back(i);
+        }
+    }
+
+    BuildTreeMixedNode(data, column_info, sample_indices, current_depth, max_depth, rng,
+                       ndim, coef_type, ntry, prob_pick_avg_gain, scratch);
+}
+
+void IsolationTree::BuildTreeMixedNode(
+    const std::vector<ColumnData>& data,
+    const std::vector<ColumnInfo>& column_info,
+    const std::vector<size_t>& sample_indices,
+    size_t current_depth,
+    size_t max_depth,
+    std::mt19937& rng,
+    size_t ndim,
+    CoefType coef_type,
+    size_t ntry,
+    double prob_pick_avg_gain,
+    TreeBuildScratch& scratch
+) {
     size_t n_samples = sample_indices.size();
     size_t n_features = data.size();
 
@@ -551,20 +618,9 @@ void IsolationTree::BuildTreeMixed(
         return;
     }
 
-    // Count numeric and categorical features
-    std::vector<size_t> numeric_features;
-    std::vector<size_t> categorical_features;
-    for (size_t i = 0; i < n_features; i++) {
-        if (column_info[i].type == FeatureType::NUMERIC) {
-            numeric_features.push_back(i);
-        } else {
-            categorical_features.push_back(i);
-        }
-    }
-
     // Extended IF (ndim > 1): use hyperplane splits for numeric features only
-    size_t effective_ndim = std::min(ndim, numeric_features.size());
-    bool use_hyperplane = (effective_ndim > 1 && numeric_features.size() >= 2);
+    size_t effective_ndim = std::min(ndim, scratch.numeric_features.size());
+    bool use_hyperplane = (effective_ndim > 1 && scratch.numeric_features.size() >= 2);
 
     // Generate ntry split candidates
     std::vector<SplitCandidate> candidates;
@@ -577,8 +633,8 @@ void IsolationTree::BuildTreeMixed(
         if (use_hyperplane) {
             // Extended IF: hyperplane split
             success = GenerateHyperplaneSplitCandidate(
-                data, column_info, sample_indices, numeric_features,
-                effective_ndim, coef_type, rng, candidate);
+                data, column_info, sample_indices,
+                effective_ndim, coef_type, rng, candidate, scratch);
         } else {
             // Standard axis-aligned split: randomly select feature
             std::uniform_int_distribution<size_t> feat_dist(0, n_features - 1);
@@ -586,7 +642,7 @@ void IsolationTree::BuildTreeMixed(
 
             if (column_info[split_feature].type == FeatureType::NUMERIC) {
                 success = GenerateNumericSplitCandidate(
-                    data, sample_indices, split_feature, rng, candidate);
+                    data, sample_indices, split_feature, rng, candidate, scratch);
             } else {
                 success = GenerateCategoricalSplitCandidate(
                     data, sample_indices, split_feature, rng, candidate);
@@ -665,12 +721,12 @@ void IsolationTree::BuildTreeMixed(
 
     // Recursively build subtrees
     nodes_[node_idx].left_child = static_cast<int32_t>(nodes_.size());
-    BuildTreeMixed(data, column_info, selected.left_indices, current_depth + 1,
-                   max_depth, rng, ndim, coef_type, ntry, prob_pick_avg_gain);
+    BuildTreeMixedNode(data, column_info, selected.left_indices, current_depth + 1,
+                       max_depth, rng, ndim, coef_type, ntry, prob_pick_avg_gain, scratch);
 
     nodes_[node_idx].right_child = static_cast<int32_t>(nodes_.size());
-    BuildTreeMixed(data, column_info, selected.right_indices, current_depth + 1,
-                   max_depth, rng, ndim, coef_type, ntry, prob_pick_avg_gain);
+    BuildTreeMixedNode(data, column_info, selected.right_indices, current_depth + 1,
+                       max_depth, rng, ndim, coef_type, ntry, prob_pick_avg_gain, scratch);
 }
 
 double IsolationTree::ComputePathLengthMixed(
