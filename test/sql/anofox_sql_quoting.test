@@ -1,0 +1,207 @@
+# name: test/sql/anofox_sql_quoting.test
+# description: Hostile identifier and literal quoting tests for generated SQL (issue #42)
+# group: [anofox_tabular]
+
+require anofox_tabular
+
+statement ok
+LOAD anofox_tabular
+
+statement ok
+SET anofox_tab_trace_enabled = false
+
+# ===----------------------------------------------------------------------===
+# Setup: tables and columns containing quotes, spaces, unicode and reserved
+# keywords. Real (non-TEMP) tables are required: several functions read the
+# data through a nested Connection that cannot see TEMP tables.
+# ===----------------------------------------------------------------------===
+
+statement ok
+CREATE TABLE "quoting it's tbl" (
+    "va""l" DOUBLE,
+    "select" DOUBLE,
+    "my col" VARCHAR,
+    "päi'vä""ys" TIMESTAMP
+)
+
+statement ok
+INSERT INTO "quoting it's tbl" VALUES
+    (100.0, 1.0, 'a', TIMESTAMP '2026-01-01 10:00:00'),
+    (101.0, 2.0, 'b', TIMESTAMP '2026-01-02 10:00:00'),
+    (102.0, 3.0, NULL, TIMESTAMP '2026-01-03 10:00:00'),
+    (103.0, 4.0, 'c', TIMESTAMP '2026-01-04 10:00:00'),
+    (250.0, 5.0, 'd', TIMESTAMP '2026-01-05 10:00:00'),
+    (99.0, 6.0, 'e', TIMESTAMP '2026-01-06 10:00:00'),
+    (98.5, 7.0, 'f', TIMESTAMP '2026-01-07 10:00:00'),
+    (101.5, 8.0, 'g', TIMESTAMP '2026-01-08 10:00:00')
+
+# ===----------------------------------------------------------------------===
+# Metric functions already routed through the shared helpers (regression)
+# ===----------------------------------------------------------------------===
+
+query I
+SELECT status FROM anofox_tab_volume('quoting it''s tbl', 1, 100);
+----
+pass
+
+query I
+SELECT status FROM anofox_tab_null_rate('quoting it''s tbl', 'my col', 0.5);
+----
+pass
+
+query I
+SELECT status FROM anofox_tab_distinct_count('quoting it''s tbl', 'select', 1, 10);
+----
+pass
+
+statement ok
+SELECT * FROM anofox_tab_zscore('quoting it''s tbl', 'va"l', 3.0);
+
+statement ok
+SELECT * FROM anofox_tab_iqr('quoting it''s tbl', 'va"l', 1.5);
+
+query I
+SELECT status FROM anofox_tab_schema_check('quoting it''s tbl', ['va"l', 'select', 'my col']);
+----
+pass
+
+query I
+SELECT status FROM anofox_tab_schema_check('quoting it''s tbl', ['no''such "col']);
+----
+fail
+
+query I
+SELECT status FROM anofox_tab_freshness('quoting it''s tbl', 'päi''vä"ys', INTERVAL '1 day', TIMESTAMP '2026-01-08 12:00:00');
+----
+pass
+
+# ===----------------------------------------------------------------------===
+# outlier_tree: already routed through the shared helpers (regression)
+# ===----------------------------------------------------------------------===
+
+statement ok
+SELECT * FROM anofox_tab_outlier_tree('quoting it''s tbl', 'va"l,select', 'summary');
+
+# ===----------------------------------------------------------------------===
+# isolation_forest: executes generated SQL on a nested Connection
+# ===----------------------------------------------------------------------===
+
+query I
+SELECT status IS NOT NULL FROM anofox_tab_isolation_forest('quoting it''s tbl', 'va"l', 10, 8, 0.1, 'summary');
+----
+true
+
+# ===----------------------------------------------------------------------===
+# dbscan / dbscan_mv: generated SQL via bind_replace
+# ===----------------------------------------------------------------------===
+
+query I
+SELECT status FROM anofox_tab_dbscan('quoting it''s tbl', 'va"l', 0.5, 2, 'summary');
+----
+pass
+
+query I
+SELECT count(*) >= 0 FROM anofox_tab_dbscan_mv('quoting it''s tbl', 'va"l,select', 0.5, 2, 'clusters');
+----
+true
+
+# ===----------------------------------------------------------------------===
+# pii_scan_table / pii_audit_table: SQL rebuilt from raw table name.
+# NOTE: SQL errors in the per-column queries are swallowed (the column is
+# skipped), so a broken table reference silently yields zero rows.
+# ===----------------------------------------------------------------------===
+
+statement ok
+CREATE TABLE "pii sc'an tbl" ("e""mail" VARCHAR, "from" VARCHAR)
+
+statement ok
+INSERT INTO "pii sc'an tbl" VALUES
+    ('john.doe@example.com', 'clean text'),
+    ('reach jane@test.org today', 'nothing here')
+
+query I
+SELECT count(*) > 0 FROM anofox_tab_pii_scan_table('pii sc''an tbl');
+----
+true
+
+query III
+SELECT column_name, pii_type, match_count
+FROM anofox_tab_pii_scan_table('pii sc''an tbl', 'e"mail')
+WHERE pii_type = 'EMAIL';
+----
+e"mail	EMAIL	2
+
+query I
+SELECT count(*) > 0 FROM anofox_tab_pii_audit_table('pii sc''an tbl');
+----
+true
+
+query I
+SELECT count(DISTINCT column_name) FROM anofox_tab_pii_audit_table('pii sc''an tbl', 'e"mail');
+----
+1
+
+# ===----------------------------------------------------------------------===
+# diff_joindiff / diff_hashdiff: PK and compare column identifiers
+# ===----------------------------------------------------------------------===
+
+statement ok
+CREATE TABLE "diff s'rc" ("or der" INTEGER, "va""l" VARCHAR, "select" VARCHAR)
+
+statement ok
+CREATE TABLE "diff t'gt" ("or der" INTEGER, "va""l" VARCHAR, "select" VARCHAR)
+
+statement ok
+INSERT INTO "diff s'rc" VALUES (1, 'a', 'x'), (2, 'b', 'y')
+
+statement ok
+INSERT INTO "diff t'gt" VALUES (1, 'a', 'x'), (2, 'B', 'y'), (3, 'c', 'z')
+
+# single hostile primary key (space in identifier)
+query I
+SELECT count(*) FROM anofox_tab_diff_joindiff('diff s''rc', 'diff t''gt', 'or der');
+----
+2
+
+# hostile compare column (embedded double quote)
+query I
+SELECT count(*) FROM anofox_tab_diff_joindiff('diff s''rc', 'diff t''gt', 'or der', ['va"l']);
+----
+2
+
+# multiple primary keys including a reserved keyword
+query I
+SELECT count(*) FROM anofox_tab_diff_joindiff('diff s''rc', 'diff t''gt', ['or der', 'select']);
+----
+2
+
+# hashdiff shares the joindiff SQL generator
+query I
+SELECT count(*) FROM anofox_tab_diff_hashdiff('diff s''rc', 'diff t''gt', 'or der');
+----
+2
+
+# diff_type classification stays correct with hostile identifiers
+query II
+SELECT diff_type, count(*)
+FROM anofox_tab_diff_joindiff('diff s''rc', 'diff t''gt', 'or der')
+GROUP BY diff_type ORDER BY diff_type;
+----
+added	1
+changed	1
+
+# ===----------------------------------------------------------------------===
+# Cleanup
+# ===----------------------------------------------------------------------===
+
+statement ok
+DROP TABLE "quoting it's tbl"
+
+statement ok
+DROP TABLE "pii sc'an tbl"
+
+statement ok
+DROP TABLE "diff s'rc"
+
+statement ok
+DROP TABLE "diff t'gt"

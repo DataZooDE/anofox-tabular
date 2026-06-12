@@ -42,10 +42,18 @@ SELECT phonenumber_parse('not a number', NULL).valid;
 ----
 false
 
-query T
+# Issue #54: unknown format strings must raise an error instead of silently
+# falling back to NATIONAL and echoing the input.
+statement error
 SELECT phonenumber_format('123', 'US', 'foobar');
 ----
-123
+foobar
+
+# Issue #54: invalid numbers with a valid format option return NULL instead of echoing the input.
+query T
+SELECT phonenumber_format('123', 'US', 'E164');
+----
+NULL
 
 statement ok
 SET anofox_tab_phonenumber_default_region='GB';
@@ -215,3 +223,123 @@ query T
 SELECT phonenumber_example('us');
 ----
 +12015550123
+
+# ----------------------------------------------------------------------
+# Issue #54: region-hint and national-number parsing correctness
+# ----------------------------------------------------------------------
+
+# Region hints must be honored for shared country codes (NANPA).
+# 506 is a Canadian (New Brunswick) area code, so a CA hint must resolve to CA.
+query T
+SELECT phonenumber_is_valid_for_region('+1 5062345678', 'CA');
+----
+true
+
+query T
+SELECT phonenumber_region('+1 5062345678', 'CA');
+----
+CA
+
+# Parse roundtrip with a CA region hint on a +1 number.
+query TTTT
+SELECT (p).valid, (p).country_code, (p).national_number, (p).region
+FROM (SELECT phonenumber_parse('+1 506-234-5678', 'CA') AS p);
+----
+true	1	5062345678	CA
+
+# A national number with a region hint must keep the hinted region,
+# not the main region of the shared country code.
+query T
+SELECT (phonenumber_parse('5062345678', 'CA')).region;
+----
+CA
+
+# US numbers without a hint still resolve to US (main NANPA region).
+query T
+SELECT phonenumber_region('+1 6502530000', NULL);
+----
+US
+
+# An explicit international prefix wins over a conflicting region hint
+# when the hint does not belong to the country code.
+query T
+SELECT phonenumber_region('+44 20 8366 1177', 'US');
+----
+GB
+
+# National numbers must not be misparsed as international: 442 is a US
+# area code (Apple Valley, CA), not country code 44 (GB).
+query TT
+SELECT (p).valid, (p).region
+FROM (SELECT phonenumber_parse('4423456789', 'US') AS p);
+----
+true	US
+
+query T
+SELECT phonenumber_is_valid('4423456789', 'US');
+----
+true
+
+query T
+SELECT phonenumber_is_valid_for_region('4423456789', 'US');
+----
+true
+
+# Unknown region codes must be rejected by the SET callback.
+statement error
+SET anofox_tab_phonenumber_default_region='ZZ';
+----
+ZZ
+
+# NULL region must be rejected as before.
+statement error
+SET anofox_tab_phonenumber_default_region=NULL;
+----
+anofox_phonenumber_default_region cannot be NULL
+
+# Lowercase region codes are normalized and accepted.
+statement ok
+SET anofox_tab_phonenumber_default_region='ca';
+
+query TT
+SELECT * FROM phonenumber_status();
+----
+true	CA
+
+statement ok
+SET anofox_tab_phonenumber_default_region='US';
+
+# The default region is session-scoped: a SET in one connection must not
+# leak into other sessions through process-wide mutable state.
+statement ok con1
+SET anofox_tab_phonenumber_default_region='GB';
+
+query T con2
+SELECT (phonenumber_parse('2025550179', NULL)).region;
+----
+US
+
+statement ok con1
+SET anofox_tab_phonenumber_default_region='US';
+
+# Misspelled format options must raise an error.
+statement error
+SELECT phonenumber_format('6502530000', 'US', 'INTERNATIONL');
+----
+INTERNATIONL
+
+# All documented format options keep working.
+query T
+SELECT phonenumber_format('6502530000', 'US', 'NATIONAL');
+----
+(650) 253-0000
+
+query T
+SELECT phonenumber_format('6502530000', 'US', 'INTERNATIONAL');
+----
++1 650 253 0000
+
+query T
+SELECT phonenumber_format('6502530000', 'US', 'RFC3966');
+----
+tel:+1-650-253-0000

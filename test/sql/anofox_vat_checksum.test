@@ -1,0 +1,386 @@
+# VAT formatting, checksum validation and country-code normalization tests
+# Issue #53: vat_format, per-country check digits, country alias handling
+
+require anofox_tabular
+
+# ============================================================================
+# anofox_tab_vat_format
+# ============================================================================
+
+# plain style: digits only, input normalized first
+query T
+SELECT anofox_tab_vat_format('de 123-456-789', 'plain')
+----
+123456789
+
+# iso style: country prefix + digits
+query T
+SELECT anofox_tab_vat_format('DE123456789', 'iso')
+----
+DE123456789
+
+# iso style uses the VAT prefix (EL) for Greece, regardless of input alias
+query T
+SELECT anofox_tab_vat_format('GR123456783', 'iso')
+----
+EL123456783
+
+query T
+SELECT anofox_tab_vat_format('el 123456783', 'iso')
+----
+EL123456783
+
+query T
+SELECT anofox_tab_vat_format('EL123456783', 'plain')
+----
+123456783
+
+# style is case-insensitive
+query T
+SELECT anofox_tab_vat_format('DE123456789', 'ISO')
+----
+DE123456789
+
+# unparseable VAT yields NULL
+query T
+SELECT anofox_tab_vat_format('XX123', 'plain')
+----
+NULL
+
+# NULL handling
+query T
+SELECT anofox_tab_vat_format(NULL, 'plain')
+----
+NULL
+
+query T
+SELECT anofox_tab_vat_format('DE123456789', NULL)
+----
+NULL
+
+# unknown style is rejected
+statement error
+SELECT anofox_tab_vat_format('DE123456789', 'bogus')
+----
+Unsupported VAT format style
+
+# ============================================================================
+# Checksum validation: anofox_tab_vat_is_valid
+# Each implemented country has one known-valid vector and one vector with an
+# altered check digit.
+# ============================================================================
+
+# Austria (ATU + 8): official-style example
+query I
+SELECT anofox_tab_vat_is_valid('ATU13585627')
+----
+true
+
+query I
+SELECT anofox_tab_vat_is_valid('ATU13585626')
+----
+false
+
+# Belgium (mod 97)
+query I
+SELECT anofox_tab_vat_is_valid('BE0776091951')
+----
+true
+
+query I
+SELECT anofox_tab_vat_is_valid('BE0776091950')
+----
+false
+
+# Germany (ISO 7064 MOD 11,10) - official example DE111111125
+query I
+SELECT anofox_tab_vat_is_valid('DE111111125')
+----
+true
+
+query I
+SELECT anofox_tab_vat_is_valid('DE111111124')
+----
+false
+
+# Denmark (weighted mod 11)
+query I
+SELECT anofox_tab_vat_is_valid('DK13585628')
+----
+true
+
+query I
+SELECT anofox_tab_vat_is_valid('DK13585627')
+----
+false
+
+# Spain - NIF (personal, mod 23 letter)
+query I
+SELECT anofox_tab_vat_is_valid('ES54362315K')
+----
+true
+
+query I
+SELECT anofox_tab_vat_is_valid('ES54362315Z')
+----
+false
+
+# Spain - NIE (X/Y/Z prefix)
+query I
+SELECT anofox_tab_vat_is_valid('ESX2482300W')
+----
+true
+
+query I
+SELECT anofox_tab_vat_is_valid('ESX2482300A')
+----
+false
+
+# Spain - CIF (companies, digit or letter check)
+query I
+SELECT anofox_tab_vat_is_valid('ESA13585625')
+----
+true
+
+query I
+SELECT anofox_tab_vat_is_valid('ESA1358562E')
+----
+true
+
+query I
+SELECT anofox_tab_vat_is_valid('ESA13585624')
+----
+false
+
+# Finland (weighted mod 11)
+query I
+SELECT anofox_tab_vat_is_valid('FI13669598')
+----
+true
+
+query I
+SELECT anofox_tab_vat_is_valid('FI13669597')
+----
+false
+
+# France (numeric key: (12 + 3 * (SIREN mod 97)) mod 97)
+query I
+SELECT anofox_tab_vat_is_valid('FR40303265045')
+----
+true
+
+query I
+SELECT anofox_tab_vat_is_valid('FR41303265045')
+----
+false
+
+# Greece (weights 256..2, mod 11 mod 10) - EL alias and GR both accepted
+query I
+SELECT anofox_tab_vat_is_valid('EL123456783')
+----
+true
+
+query I
+SELECT anofox_tab_vat_is_valid('GR123456783')
+----
+true
+
+query I
+SELECT anofox_tab_vat_is_valid('EL123456784')
+----
+false
+
+# Ireland - new style (7 digits + check letter)
+query I
+SELECT anofox_tab_vat_is_valid('IE6433435F')
+----
+true
+
+query I
+SELECT anofox_tab_vat_is_valid('IE6433435E')
+----
+false
+
+# Ireland - new style with trailing letter
+query I
+SELECT anofox_tab_vat_is_valid('IE6433435OA')
+----
+true
+
+# Ireland - old style (second character is a letter)
+query I
+SELECT anofox_tab_vat_is_valid('IE8D79739I')
+----
+true
+
+query I
+SELECT anofox_tab_vat_is_valid('IE8D79739J')
+----
+false
+
+# Italy (Luhn) - official-style example
+query I
+SELECT anofox_tab_vat_is_valid('IT00743110157')
+----
+true
+
+query I
+SELECT anofox_tab_vat_is_valid('IT00743110158')
+----
+false
+
+# Luxembourg (first 6 mod 89 == last 2)
+query I
+SELECT anofox_tab_vat_is_valid('LU10000356')
+----
+true
+
+query I
+SELECT anofox_tab_vat_is_valid('LU10000355')
+----
+false
+
+# Netherlands - legacy BSN mod-11 path
+query I
+SELECT anofox_tab_vat_is_valid('NL004495445B01')
+----
+true
+
+query I
+SELECT anofox_tab_vat_is_valid('NL004495444B01')
+----
+false
+
+# Netherlands - post-2020 mod-97 path (fails mod-11, passes mod 97-10 on 'NL'+number)
+query I
+SELECT anofox_tab_vat_is_valid('NL111111111B40')
+----
+true
+
+query I
+SELECT anofox_tab_vat_is_valid('NL111111111B41')
+----
+false
+
+# Poland (weighted mod 11)
+query I
+SELECT anofox_tab_vat_is_valid('PL8567346215')
+----
+true
+
+query I
+SELECT anofox_tab_vat_is_valid('PL8567346216')
+----
+false
+
+# Portugal (weighted mod 11)
+query I
+SELECT anofox_tab_vat_is_valid('PT501964843')
+----
+true
+
+query I
+SELECT anofox_tab_vat_is_valid('PT501964844')
+----
+false
+
+# Sweden (Luhn over first 10 digits)
+query I
+SELECT anofox_tab_vat_is_valid('SE123456789701')
+----
+true
+
+query I
+SELECT anofox_tab_vat_is_valid('SE123456789601')
+----
+false
+
+# Slovenia (weighted mod 11)
+query I
+SELECT anofox_tab_vat_is_valid('SI50223054')
+----
+true
+
+query I
+SELECT anofox_tab_vat_is_valid('SI50223055')
+----
+false
+
+# ============================================================================
+# Countries without an implemented checksum stay syntax-only
+# ============================================================================
+
+query I
+SELECT anofox_tab_vat_is_valid('CZ12345678')
+----
+true
+
+query I
+SELECT anofox_tab_vat_is_valid('HU12345678')
+----
+true
+
+# ============================================================================
+# vat_is_valid_syntax stays syntax-only; vat_is_valid adds the checksum
+# ============================================================================
+
+# DE123456789 has valid syntax but an invalid check digit
+query I
+SELECT anofox_tab_vat_is_valid_syntax('DE123456789')
+----
+true
+
+query I
+SELECT anofox_tab_vat_is_valid('DE123456789')
+----
+false
+
+# ============================================================================
+# Country-code normalization (lowercase + EL/XI aliases)
+# ============================================================================
+
+query I
+SELECT anofox_tab_is_valid_vat_country('de')
+----
+true
+
+query I
+SELECT anofox_tab_is_valid_vat_country('EL')
+----
+true
+
+query I
+SELECT anofox_tab_is_valid_vat_country('xi')
+----
+true
+
+query I
+SELECT anofox_tab_is_valid_vat_country('XX')
+----
+false
+
+query I
+SELECT anofox_tab_vat_is_eu_member('EL')
+----
+true
+
+query I
+SELECT anofox_tab_vat_is_eu_member('el')
+----
+true
+
+# XI maps to GB, which is not an EU member
+query I
+SELECT anofox_tab_vat_is_eu_member('XI')
+----
+false
+
+query T
+SELECT anofox_tab_vat_country_name('el')
+----
+Greece
+
+query T
+SELECT anofox_tab_vat_country_name('de')
+----
+Germany

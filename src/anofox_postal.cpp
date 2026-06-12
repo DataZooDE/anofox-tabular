@@ -18,13 +18,20 @@
 #include "anofox_trace.hpp"
 #include "duckdb/common/string_util.hpp"
 
+#include <cerrno>
 #include <chrono>
+#include <cstring>
 #include <curl/curl.h>
 #include <fstream>
 #include <libpostal/libpostal.h>
+#include <memory>
 #include <mutex>
+#include <spawn.h>
 #include <string>
+#include <sys/wait.h>
 #include <thread>
+
+extern char **environ;
 
 namespace duckdb {
 namespace anofox {
@@ -40,6 +47,84 @@ constexpr const char *DEFAULT_POSTAL_DIR = ".duckdb/extensions/libpostal";
 static size_t WriteDataToFile(void *ptr, size_t size, size_t nmemb, FILE *stream) {
 	return fwrite(ptr, size, nmemb, stream);
 }
+
+// RAII deleters so FILE* / CURL* are released on every exit path.
+struct FileCloser {
+	void operator()(FILE *file) const {
+		if (file) {
+			fclose(file);
+		}
+	}
+};
+struct CurlEasyCleanup {
+	void operator()(CURL *curl) const {
+		if (curl) {
+			curl_easy_cleanup(curl);
+		}
+	}
+};
+
+//! Initializes libcurl's global state exactly once for the process lifetime.
+//! curl_global_init/curl_global_cleanup are not reference counted in a way
+//! that is safe to pair per call when other libraries use curl, so the state
+//! lives until process exit.
+static void EnsureCurlGlobalInit() {
+	struct CurlGlobalState {
+		CurlGlobalState() {
+			curl_global_init(CURL_GLOBAL_DEFAULT);
+		}
+		~CurlGlobalState() {
+			curl_global_cleanup();
+		}
+	};
+	static CurlGlobalState curl_global_state;
+	(void)curl_global_state;
+}
+
+//! Defense in depth: paths are passed as discrete argv entries (no shell),
+//! but reject control characters and quotes anyway so a hostile setting can
+//! never smuggle anything resembling shell metacharacters into a child process.
+static void ValidateExtractionPath(const std::string &path) {
+	for (const unsigned char character : path) {
+		if (character < 0x20 || character == 0x7f || character == '"' || character == '\'' || character == '`') {
+			throw InvalidInputException(
+			    "Postal data path contains forbidden control or quote characters: '%s'", path);
+		}
+	}
+}
+
+//! Extracts a gzipped tarball by spawning `tar` directly with an argv vector.
+//! No shell is involved, so the paths are never re-interpreted.
+static void ExtractTarball(const std::string &archive_path, const std::string &target_dir) {
+	ValidateExtractionPath(archive_path);
+	ValidateExtractionPath(target_dir);
+
+	std::vector<std::string> arguments = {"tar", "-xzf", archive_path, "-C", target_dir};
+	std::vector<char *> argv;
+	argv.reserve(arguments.size() + 1);
+	for (auto &argument : arguments) {
+		argv.push_back(const_cast<char *>(argument.c_str()));
+	}
+	argv.push_back(nullptr);
+
+	pid_t pid = -1;
+	const int spawn_result = posix_spawnp(&pid, "tar", nullptr, nullptr, argv.data(), environ);
+	if (spawn_result != 0) {
+		throw IOException("Failed to launch tar for '" + archive_path + "': " + std::strerror(spawn_result));
+	}
+
+	int status = 0;
+	pid_t waited;
+	do {
+		waited = waitpid(pid, &status, 0);
+	} while (waited == -1 && errno == EINTR);
+	if (waited == -1) {
+		throw IOException("Failed to wait for tar extracting '" + archive_path + "': " + std::strerror(errno));
+	}
+	if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+		throw IOException("tar failed to extract '" + archive_path + "' into '" + target_dir + "'");
+	}
+}
 } // namespace
 
 PostalManager &PostalManager::Instance() {
@@ -51,9 +136,23 @@ PostalManager::PostalManager() : data_directory(DEFAULT_POSTAL_DIR) {
 }
 
 PostalManager::~PostalManager() {
-	libpostal_teardown_language_classifier();
-	libpostal_teardown_parser();
-	libpostal_teardown();
+	TeardownInitializedStages();
+}
+
+void PostalManager::TeardownInitializedStages() {
+	if (classifier_ready) {
+		libpostal_teardown_language_classifier();
+		classifier_ready = false;
+	}
+	if (parser_ready) {
+		libpostal_teardown_parser();
+		parser_ready = false;
+	}
+	if (core_ready) {
+		libpostal_teardown();
+		core_ready = false;
+	}
+	initialized = false;
 }
 
 void PostalManager::EnsureInitialized(ClientContext &context) {
@@ -66,9 +165,9 @@ void PostalManager::EnsureInitialized(ClientContext &context) {
 	}
 	if (!initialized.load()) {
 		AnofoxTrace(AnofoxLogLevel::Error, "Postal initialization failed");
-		throw IOException("Failed to initialize libpostal. Use anofox_postal_load_data() to download assets.");
+		throw IOException("Failed to initialize libpostal. Use anofox_tab_postal_load_data() to download assets.");
 	}
-AnofoxTrace(AnofoxLogLevel::Debug, "Postal already initialized");
+	AnofoxTrace(AnofoxLogLevel::Debug, "Postal already initialized");
 }
 
 void PostalManager::SetDataDirectory(const std::string &path) {
@@ -82,6 +181,7 @@ void PostalManager::SetDataDirectory(const std::string &path) {
 }
 
 std::string PostalManager::GetDataDirectory() const {
+	std::lock_guard<std::mutex> lock(init_lock);
 	return data_directory;
 }
 
@@ -125,17 +225,24 @@ std::vector<std::string> PostalManager::ExpandAddress(const std::string &input) 
 }
 
 void PostalManager::LoadData(ClientContext &context) {
+	// Serialize with initialization and concurrent load calls so parallel
+	// downloads cannot clobber each other's files.
+	std::lock_guard<std::mutex> lock(init_lock);
+	LoadDataInternal(context);
+}
+
+void PostalManager::LoadDataInternal(ClientContext &context) {
 	auto &fs = FileSystem::GetFileSystem(context);
 	auto data_dir = fs.ExpandPath(data_directory);
 	if (!fs.DirectoryExists(data_dir)) {
 		fs.CreateDirectory(data_dir);
 	}
-	if (GetStatus(context).data_present) {
+	if (GetStatusInternal(context).data_present) {
 		return;
 	}
 
-	// Initialize libcurl globally (thread-safe after first call)
-	curl_global_init(CURL_GLOBAL_DEFAULT);
+	// Initialize libcurl global state once per process (RAII, process lifetime)
+	EnsureCurlGlobalInit();
 
 	for (const auto &asset : POSTAL_ASSETS) {
 		auto url = std::string(POSTAL_BASE_URL) + asset;
@@ -153,40 +260,39 @@ void PostalManager::LoadData(ClientContext &context) {
 				AnofoxTrace(AnofoxLogLevel::Info, "Postal downloading " + asset + " from " + url);
 			}
 
-			// Open file for writing
-			FILE *file = fopen(destination.c_str(), "wb");
+			// Open file for writing (RAII-managed)
+			std::unique_ptr<FILE, FileCloser> file(fopen(destination.c_str(), "wb"));
 			if (!file) {
 				AnofoxTrace(AnofoxLogLevel::Error, "Postal failed to open file for writing: " + destination);
 				throw IOException("Failed to open file for writing: " + destination);
 			}
 
-			// Initialize curl handle
-			CURL *curl = curl_easy_init();
+			// Initialize curl handle (RAII-managed)
+			std::unique_ptr<CURL, CurlEasyCleanup> curl(curl_easy_init());
 			if (!curl) {
-				fclose(file);
 				AnofoxTrace(AnofoxLogLevel::Error, "Postal failed to initialize curl");
 				throw IOException("Failed to initialize libcurl");
 			}
 
 			// Configure curl options
-			curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
-			curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteDataToFile);
-			curl_easy_setopt(curl, CURLOPT_WRITEDATA, file);
-			curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);  // Follow redirects
-			curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 10L);  // 10s connection timeout
-			curl_easy_setopt(curl, CURLOPT_TIMEOUT, 300L);  // 5 minute total timeout
-			curl_easy_setopt(curl, CURLOPT_FAILONERROR, 1L);  // Fail on HTTP error codes
-			curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 1L);  // Verify SSL certificates
-			curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 2L);  // Verify hostname matches cert
+			curl_easy_setopt(curl.get(), CURLOPT_URL, url.c_str());
+			curl_easy_setopt(curl.get(), CURLOPT_WRITEFUNCTION, WriteDataToFile);
+			curl_easy_setopt(curl.get(), CURLOPT_WRITEDATA, file.get());
+			curl_easy_setopt(curl.get(), CURLOPT_FOLLOWLOCATION, 1L);  // Follow redirects
+			curl_easy_setopt(curl.get(), CURLOPT_CONNECTTIMEOUT, 10L);  // 10s connection timeout
+			curl_easy_setopt(curl.get(), CURLOPT_TIMEOUT, 300L);  // 5 minute total timeout
+			curl_easy_setopt(curl.get(), CURLOPT_FAILONERROR, 1L);  // Fail on HTTP error codes
+			curl_easy_setopt(curl.get(), CURLOPT_SSL_VERIFYPEER, 1L);  // Verify SSL certificates
+			curl_easy_setopt(curl.get(), CURLOPT_SSL_VERIFYHOST, 2L);  // Verify hostname matches cert
 
 			// Perform the download
-			CURLcode res = curl_easy_perform(curl);
+			CURLcode res = curl_easy_perform(curl.get());
 			long http_code = 0;
-			curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
+			curl_easy_getinfo(curl.get(), CURLINFO_RESPONSE_CODE, &http_code);
 
-			// Cleanup
-			curl_easy_cleanup(curl);
-			fclose(file);
+			// Release handles before inspecting the result so the file is flushed
+			curl.reset();
+			file.reset();
 
 			if (res == CURLE_OK) {
 				download_success = true;
@@ -214,21 +320,26 @@ void PostalManager::LoadData(ClientContext &context) {
 			throw IOException("Failed to download '" + asset + "' from " + url + " after " + std::to_string(max_retries) + " attempts");
 		}
 
-		// Extract the tarball
+		// Extract the tarball without involving a shell
 		AnofoxTrace(AnofoxLogLevel::Debug, "Postal extracting " + asset);
-		std::string extract_command = "tar -xzf \"" + destination + "\" -C \"" + data_dir + "\"";
-		if (std::system(extract_command.c_str()) != 0) {
+		try {
+			ExtractTarball(destination, data_dir);
+		} catch (const std::exception &) {
 			AnofoxTrace(AnofoxLogLevel::Error, "Postal extract failed for " + destination);
-			throw IOException("Failed to extract '" + destination + "'");
+			throw;
 		}
 		fs.RemoveFile(destination);
 	}
 
-	curl_global_cleanup();
 	AnofoxTrace(AnofoxLogLevel::Info, "Postal data download complete");
 }
 
 PostalStatus PostalManager::GetStatus(ClientContext &context) {
+	std::lock_guard<std::mutex> lock(init_lock);
+	return GetStatusInternal(context);
+}
+
+PostalStatus PostalManager::GetStatusInternal(ClientContext &context) const {
 	PostalStatus status;
 	status.initialized = initialized.load();
 	auto &fs = FileSystem::GetFileSystem(context);
@@ -246,12 +357,13 @@ PostalStatus PostalManager::GetStatus(ClientContext &context) {
 }
 
 void PostalManager::Initialize(ClientContext &context) {
-	auto status = GetStatus(context);
+	// Caller holds init_lock.
+	auto status = GetStatusInternal(context);
 	if (!status.data_present) {
 		AnofoxTrace(AnofoxLogLevel::Info,
 		           "Libpostal data not found in '" + status.data_dir + "', downloading automatically...");
-		LoadData(context);
-		status = GetStatus(context);  // Refresh status after download
+		LoadDataInternal(context);
+		status = GetStatusInternal(context); // Refresh status after download
 		if (!status.data_present) {
 			AnofoxTrace(AnofoxLogLevel::Error, "Postal data download failed");
 			throw IOException("Failed to download libpostal data to '" + status.data_dir + "'");
@@ -260,18 +372,40 @@ void PostalManager::Initialize(ClientContext &context) {
 
 	auto data_dir = status.data_dir;
 	auto data_dir_c = const_cast<char *>(data_dir.c_str());
-	if (!libpostal_setup_datadir(data_dir_c) || !libpostal_setup()) {
-		AnofoxTrace(AnofoxLogLevel::Error, "Postal setup core failed path=" + data_dir + " ");
-		throw IOException("Failed to initialize libpostal core data in '" + data_dir + "'");
-	}
-	if (!libpostal_setup_parser_datadir(data_dir_c) || !libpostal_setup_parser()) {
-		AnofoxTrace(AnofoxLogLevel::Error, "Postal setup parser failed path=" + data_dir);
-		throw IOException("Failed to initialize libpostal parser data in '" + data_dir + "'");
-	}
-	if (!libpostal_setup_language_classifier_datadir(data_dir_c) || !libpostal_setup_language_classifier()) {
-		AnofoxTrace(AnofoxLogLevel::Error,
-		           "Postal setup language classifier failed path=" + data_dir);
-		throw IOException("Failed to initialize libpostal language classifier data in '" + data_dir + "'");
+	try {
+		// Each stage flag is set as soon as the first setup call of that stage
+		// succeeds, so a failure mid-stage still rolls the stage back.
+		if (!libpostal_setup_datadir(data_dir_c)) {
+			AnofoxTrace(AnofoxLogLevel::Error, "Postal setup core failed path=" + data_dir);
+			throw IOException("Failed to initialize libpostal core data in '" + data_dir + "'");
+		}
+		core_ready = true;
+		if (!libpostal_setup()) {
+			AnofoxTrace(AnofoxLogLevel::Error, "Postal setup core failed path=" + data_dir);
+			throw IOException("Failed to initialize libpostal core data in '" + data_dir + "'");
+		}
+		if (!libpostal_setup_parser_datadir(data_dir_c)) {
+			AnofoxTrace(AnofoxLogLevel::Error, "Postal setup parser failed path=" + data_dir);
+			throw IOException("Failed to initialize libpostal parser data in '" + data_dir + "'");
+		}
+		parser_ready = true;
+		if (!libpostal_setup_parser()) {
+			AnofoxTrace(AnofoxLogLevel::Error, "Postal setup parser failed path=" + data_dir);
+			throw IOException("Failed to initialize libpostal parser data in '" + data_dir + "'");
+		}
+		if (!libpostal_setup_language_classifier_datadir(data_dir_c)) {
+			AnofoxTrace(AnofoxLogLevel::Error, "Postal setup language classifier failed path=" + data_dir);
+			throw IOException("Failed to initialize libpostal language classifier data in '" + data_dir + "'");
+		}
+		classifier_ready = true;
+		if (!libpostal_setup_language_classifier()) {
+			AnofoxTrace(AnofoxLogLevel::Error, "Postal setup language classifier failed path=" + data_dir);
+			throw IOException("Failed to initialize libpostal language classifier data in '" + data_dir + "'");
+		}
+	} catch (...) {
+		// Roll back exactly the stages that completed so a later retry starts clean.
+		TeardownInitializedStages();
+		throw;
 	}
 	initialized = true;
 	AnofoxTrace(AnofoxLogLevel::Info, "Postal initialization complete");
@@ -292,7 +426,7 @@ namespace {
 
 static void SetPostalDataPathOption(ClientContext &, SetScope, Value &parameter) {
     if (parameter.IsNull()) {
-        throw InvalidInputException("anofox_postal_data_path cannot be NULL");
+        throw InvalidInputException("anofox_tab_postal_data_path cannot be NULL");
     }
     PostalManager::Instance().SetDataDirectory(parameter.ToString());
 }
@@ -300,7 +434,6 @@ static void SetPostalDataPathOption(ClientContext &, SetScope, Value &parameter)
 void PostalParseAddressFunction(DataChunk &args, ExpressionState &state, Vector &result) {
 	auto &context = state.GetContext();
 	auto &manager = PostalManager::Instance();
-	manager.EnsureInitialized(context);
 
 	auto &input = args.data[0];
 	UnifiedVectorFormat input_data;
@@ -317,14 +450,22 @@ void PostalParseAddressFunction(DataChunk &args, ExpressionState &state, Vector 
 	auto &postcode_vec = *children[4];
 	auto &country_vec = *children[5];
 
+	// Initialize libpostal lazily on the first non-NULL row so NULL-only
+	// queries never require the data bundle.
+	bool initialization_checked = false;
+
 	for (idx_t i = 0; i < args.size(); i++) {
 		auto idx = input_data.sel->get_index(i);
 
 		if (!input_data.validity.RowIsValid(idx)) {
-			for (auto &child : children) {
-				FlatVector::SetNull(*child, i, true);
-			}
+			// NULL input yields a NULL struct (parent validity; children follow).
+			FlatVector::SetNull(result, i, true);
 			continue;
+		}
+
+		if (!initialization_checked) {
+			manager.EnsureInitialized(context);
+			initialization_checked = true;
 		}
 
 		auto input_str = inputs[idx].GetString();
@@ -359,7 +500,6 @@ void PostalParseAddressFunction(DataChunk &args, ExpressionState &state, Vector 
 void PostalExpandAddressFunction(DataChunk &args, ExpressionState &state, Vector &result) {
 	auto &context = state.GetContext();
 	auto &manager = PostalManager::Instance();
-	manager.EnsureInitialized(context);
 
 	auto &input = args.data[0];
 	UnifiedVectorFormat input_data;
@@ -369,12 +509,21 @@ void PostalExpandAddressFunction(DataChunk &args, ExpressionState &state, Vector
 	result.SetVectorType(VectorType::FLAT_VECTOR);
 	auto list_entries = FlatVector::GetData<list_entry_t>(result);
 
+	// Initialize libpostal lazily on the first non-NULL row so NULL-only
+	// queries never require the data bundle.
+	bool initialization_checked = false;
+
 	for (idx_t i = 0; i < args.size(); i++) {
 		auto idx = input_data.sel->get_index(i);
 
 		if (!input_data.validity.RowIsValid(idx)) {
 			FlatVector::SetNull(result, i, true);
 			continue;
+		}
+
+		if (!initialization_checked) {
+			manager.EnsureInitialized(context);
+			initialization_checked = true;
 		}
 
 		auto input_str = inputs[idx].GetString();
@@ -495,7 +644,8 @@ void RegisterPostalOptions(ExtensionLoader &loader) {
 }
 
 void RegisterPostalFunctions(ExtensionLoader &loader) {
-	RegisterPostalOptions(loader);
+	// Note: RegisterPostalOptions is called separately by the extension entry
+	// point (LoadInternal); do not register options twice here.
 
 	// Register postal_parse_address
 	{

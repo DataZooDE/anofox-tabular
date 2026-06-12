@@ -1,5 +1,6 @@
 #include "anofox_pii.hpp"
 #include "anofox_ner.hpp"
+#include "anofox_sql_utils.hpp"
 #include "anofox_trace.hpp"
 #include "anofox_function_alias.hpp"
 #include "anofox_phonenumber.hpp"
@@ -1208,7 +1209,7 @@ std::vector<PIIMatch> NameRecognizer::FindMatches(const std::string &text) const
             }
         } catch (const std::exception &e) {
             AnofoxTrace(AnofoxLogLevel::Warn,
-                "[anofox] pii: NER extraction failed, falling back to dictionary: " + std::string(e.what()));
+                "pii: NER extraction failed, falling back to dictionary: " + std::string(e.what()));
         }
     }
 #endif
@@ -1350,13 +1351,13 @@ std::vector<PIIMatch> OrganizationRecognizer::FindMatches(const std::string &tex
                         entity.confidence
                     );
                     AnofoxTrace(AnofoxLogLevel::Debug,
-                        "[anofox] pii: Detected ORGANIZATION '" + entity.text +
+                        "pii: Detected ORGANIZATION '" + entity.text +
                         "' (confidence=" + std::to_string(entity.confidence) + ")");
                 }
             }
         } catch (const std::exception &e) {
             AnofoxTrace(AnofoxLogLevel::Warn,
-                "[anofox] pii: NER extraction failed for organizations: " + std::string(e.what()));
+                "pii: NER extraction failed for organizations: " + std::string(e.what()));
         }
     }
 #endif
@@ -1426,13 +1427,13 @@ std::vector<PIIMatch> LocationRecognizer::FindMatches(const std::string &text) c
                         entity.confidence
                     );
                     AnofoxTrace(AnofoxLogLevel::Debug,
-                        "[anofox] pii: Detected LOCATION '" + entity.text +
+                        "pii: Detected LOCATION '" + entity.text +
                         "' (confidence=" + std::to_string(entity.confidence) + ")");
                 }
             }
         } catch (const std::exception &e) {
             AnofoxTrace(AnofoxLogLevel::Warn,
-                "[anofox] pii: NER extraction failed for locations: " + std::string(e.what()));
+                "pii: NER extraction failed for locations: " + std::string(e.what()));
         }
     }
 #endif
@@ -1504,13 +1505,13 @@ std::vector<PIIMatch> MiscRecognizer::FindMatches(const std::string &text) const
                         entity.confidence
                     );
                     AnofoxTrace(AnofoxLogLevel::Debug,
-                        "[anofox] pii: Detected MISC entity '" + entity.text +
+                        "pii: Detected MISC entity '" + entity.text +
                         "' (confidence=" + std::to_string(entity.confidence) + ")");
                 }
             }
         } catch (const std::exception &e) {
             AnofoxTrace(AnofoxLogLevel::Warn,
-                "[anofox] pii: NER extraction failed for misc entities: " + std::string(e.what()));
+                "pii: NER extraction failed for misc entities: " + std::string(e.what()));
         }
     }
 #endif
@@ -1672,7 +1673,7 @@ std::vector<std::vector<PIIMatch>> PIIEngine::DetectBatch(
     auto &ner = NERModelManager::Instance();
     if (ner.IsAvailable()) {
         AnofoxTrace(AnofoxLogLevel::Debug,
-                    "[anofox] pii: Pre-warming NER cache for " + std::to_string(texts.size()) + " texts");
+                    "pii: Pre-warming NER cache for " + std::to_string(texts.size()) + " texts");
         ner.ExtractEntitiesBatch(texts);
     }
 
@@ -2692,8 +2693,8 @@ void PIIAuditTableFunction(ClientContext &context, TableFunctionInput &input, Da
             // For each column, query values and detect PII (row-level)
             for (const auto &col_name : columns_to_scan) {
                 // Build query to get column values with row numbers
-                std::string query = "SELECT row_number() OVER () as _row_id, \"" + col_name + "\" FROM " +
-                                   bind_data.table_name;
+                std::string query = "SELECT row_number() OVER () as _row_id, " + QuoteSqlIdentifier(col_name) +
+                                    " FROM " + BuildQueryTableRef(bind_data.table_name);
 
                 // Execute query using a new connection
                 Connection con(*context.db);
@@ -2926,8 +2927,9 @@ void PIIScanTableFunction(ClientContext &context, TableFunctionInput &input, Dat
 
             for (const auto &col_name : columns_to_scan) {
                 // Build query to get column values
-                std::string query = "SELECT \"" + col_name + "\" FROM " + bind_data.table_name +
-                                   " WHERE \"" + col_name + "\" IS NOT NULL";
+                std::string query = "SELECT " + QuoteSqlIdentifier(col_name) + " FROM " +
+                                   BuildQueryTableRef(bind_data.table_name) +
+                                   " WHERE " + QuoteSqlIdentifier(col_name) + " IS NOT NULL";
 
                 // Execute query using a new connection
                 Connection con(*context.db);
@@ -3298,7 +3300,7 @@ void RegisterPIIOptions(ExtensionLoader &loader) {
                               Value::BOOLEAN(false),
                               SetPIIDeepValidationOption);
 
-    AnofoxTrace(AnofoxLogLevel::Info, "[anofox] PII configuration options registered");
+    AnofoxTrace(AnofoxLogLevel::Info, "PII configuration options registered");
 }
 
 void RegisterPIIFunctions(ExtensionLoader &loader) {
@@ -3578,7 +3580,7 @@ void RegisterPIIFunctions(ExtensionLoader &loader) {
         RegisterTableFunctionWithAlias(loader, pii_config_func, "pii_config", {std::move(desc)});
     }
 
-    AnofoxTrace(AnofoxLogLevel::Info, "[anofox] PII detection functions registered");
+    AnofoxTrace(AnofoxLogLevel::Info, "PII detection functions registered");
 }
 
 } // namespace anofox
