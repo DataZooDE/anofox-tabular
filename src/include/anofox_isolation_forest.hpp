@@ -163,6 +163,14 @@ struct SplitCandidate {
 };
 
 /**
+ * Reusable scratch buffers for one mixed-type tree build (issue #60).
+ * Holds the per-tree feature partition and the per-candidate value/projection
+ * buffers so split-candidate generation does not reallocate per candidate.
+ * Defined in the implementation file.
+ */
+struct TreeBuildScratch;
+
+/**
  * Single isolation tree
  * Builds recursively with random splits to isolate anomalies
  */
@@ -280,6 +288,24 @@ public:
     const IsoNode& GetRootNode() const { return nodes_[root_idx_]; }
 
 private:
+    /**
+     * Recursive node builder behind BuildTreeMixed; threads the per-tree
+     * scratch buffers through the recursion (issue #60).
+     */
+    void BuildTreeMixedNode(
+        const std::vector<ColumnData>& data,
+        const std::vector<ColumnInfo>& column_info,
+        const std::vector<size_t>& sample_indices,
+        size_t current_depth,
+        size_t max_depth,
+        std::mt19937& rng,
+        size_t ndim,
+        CoefType coef_type,
+        size_t ntry,
+        double prob_pick_avg_gain,
+        TreeBuildScratch& scratch
+    );
+
     /**
      * Recursive path traversal helper (numeric only)
      */

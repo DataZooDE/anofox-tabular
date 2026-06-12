@@ -15,6 +15,7 @@
 #include "duckdb/main/config.hpp"
 #include "duckdb/parser/parsed_data/create_scalar_function_info.hpp"
 
+#include "anofox_raii.hpp"
 #include "anofox_trace.hpp"
 #include "duckdb/common/string_util.hpp"
 
@@ -187,40 +188,60 @@ std::string PostalManager::GetDataDirectory() const {
 
 std::vector<PostalComponent> PostalManager::ParseAddress(const std::string &input) {
 	libpostal_address_parser_options_t options = libpostal_get_address_parser_default_options();
-	libpostal_address_parser_response_t *parsed = libpostal_parse_address(const_cast<char *>(input.c_str()), options);
+	// RAII (issue #60): the response is destroyed even if building the result
+	// strings throws.
+	struct ParserResponseDestroy {
+		void operator()(libpostal_address_parser_response_t *response) const {
+			libpostal_address_parser_response_destroy(response);
+		}
+	};
+	UniqueHandle<libpostal_address_parser_response_t *, ParserResponseDestroy, nullptr> parsed(
+	    libpostal_parse_address(const_cast<char *>(input.c_str()), options));
 	if (!parsed) {
 		AnofoxTrace(AnofoxLogLevel::Warn, "Postal parse failed");
 		throw IOException("libpostal_parse_address failed");
 	}
 	AnofoxTrace(AnofoxLogLevel::Debug,
-	           "Postal parsed address components=" + std::to_string(parsed->num_components) + " ");
+	           "Postal parsed address components=" + std::to_string(parsed.Get()->num_components) + " ");
 
 	std::vector<PostalComponent> components;
-	components.reserve(parsed->num_components);
-	for (size_t i = 0; i < parsed->num_components; i++) {
-		components.push_back({parsed->labels[i], parsed->components[i]});
+	components.reserve(parsed.Get()->num_components);
+	for (size_t i = 0; i < parsed.Get()->num_components; i++) {
+		components.push_back({parsed.Get()->labels[i], parsed.Get()->components[i]});
 	}
-	libpostal_address_parser_response_destroy(parsed);
 	return components;
 }
 
 std::vector<std::string> PostalManager::ExpandAddress(const std::string &input) {
 	libpostal_normalize_options_t options = libpostal_get_default_options();
-	size_t num_expansions = 0;
-	char **expansions = libpostal_expand_address(const_cast<char *>(input.c_str()), options, &num_expansions);
-	if (!expansions) {
+	// RAII (issue #60): the expansion array destroy call needs the element
+	// count, so a small dedicated guard owns both.
+	struct ExpansionArrayGuard {
+		char **expansions = nullptr;
+		size_t count = 0;
+		~ExpansionArrayGuard() {
+			if (expansions) {
+				libpostal_expansion_array_destroy(expansions, count);
+			}
+		}
+		ExpansionArrayGuard() = default;
+		ExpansionArrayGuard(const ExpansionArrayGuard &) = delete;
+		ExpansionArrayGuard &operator=(const ExpansionArrayGuard &) = delete;
+	};
+	ExpansionArrayGuard guard;
+	guard.expansions = libpostal_expand_address(const_cast<char *>(input.c_str()), options, &guard.count);
+	if (!guard.expansions) {
 		AnofoxTrace(AnofoxLogLevel::Warn, "Postal expand failed");
 		throw IOException("libpostal_expand_address failed");
 	}
 	AnofoxTrace(AnofoxLogLevel::Debug,
-	           "Postal expand generated " + std::to_string(num_expansions) + " variants");
+	           "Postal expand generated " + std::to_string(guard.count) + " variants");
 
 	std::vector<std::string> result;
-	result.reserve(num_expansions);
-	for (size_t i = 0; i < num_expansions; i++) {
-		result.emplace_back(expansions[i]);
+	result.reserve(guard.count);
+	for (size_t i = 0; i < guard.count; i++) {
+		result.emplace_back(guard.expansions[i]);
 	}
-	libpostal_expansion_array_destroy(expansions, num_expansions);
 	return result;
 }
 
