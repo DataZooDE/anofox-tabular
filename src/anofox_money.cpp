@@ -6,8 +6,13 @@
 #include "duckdb/common/types/value.hpp"
 #include "duckdb/common/types/vector.hpp"
 #include "duckdb/common/types/decimal.hpp"
+#include "duckdb/common/operator/add.hpp"
+#include "duckdb/common/operator/multiply.hpp"
+#include "duckdb/common/operator/subtract.hpp"
 #include "duckdb/function/scalar_function.hpp"
 #include "duckdb/common/string_util.hpp"
+
+#include <cmath>
 
 namespace duckdb {
 namespace anofox {
@@ -18,9 +23,98 @@ namespace anofox {
 
 static LogicalType GetMoneyType() {
     child_list_t<LogicalType> children;
-    children.push_back(make_pair("amount", LogicalTypeId::DOUBLE));
+    children.push_back(make_pair("amount", LogicalType::DECIMAL(MONEY_WIDTH, MONEY_SCALE)));
     children.push_back(make_pair("currency", LogicalTypeId::VARCHAR));
     return LogicalType::STRUCT(children);
+}
+
+static LogicalType GetMoneyAmountType() {
+    return LogicalType::DECIMAL(MONEY_WIDTH, MONEY_SCALE);
+}
+
+//----------------------------------------------------------------------------------------------------------------------
+// Exact Amount Helpers (scaled DECIMAL(18,3) arithmetic, issue #57)
+//----------------------------------------------------------------------------------------------------------------------
+
+//! Converts a DOUBLE amount in major units to the scaled DECIMAL(18,3) representation.
+//! Rejects NaN/Inf and rounds half away from zero to MONEY_SCALE fractional digits.
+static int64_t ScaledFromDouble(double amount) {
+    if (!std::isfinite(amount)) {
+        throw InvalidInputException("Money amount must be finite, got: %s", std::to_string(amount));
+    }
+    double scaled = std::round(amount * static_cast<double>(MONEY_SCALE_FACTOR));
+    if (!(scaled >= -static_cast<double>(MONEY_MAX_SCALED) && scaled <= static_cast<double>(MONEY_MAX_SCALED))) {
+        throw OutOfRangeException("Money amount %s is out of range for DECIMAL(%d,%d)", std::to_string(amount),
+                                  MONEY_WIDTH, MONEY_SCALE);
+    }
+    return static_cast<int64_t>(scaled);
+}
+
+//! Verifies that a scaled value fits the DECIMAL(18,3) width.
+static int64_t CheckScaledRange(int64_t scaled, bool in_range, const char *operation) {
+    if (!in_range || scaled > MONEY_MAX_SCALED || scaled < -MONEY_MAX_SCALED) {
+        throw OutOfRangeException("Money %s result is out of range for DECIMAL(%d,%d)", operation, MONEY_WIDTH,
+                                  MONEY_SCALE);
+    }
+    return scaled;
+}
+
+static int64_t CheckedAddScaled(int64_t left, int64_t right) {
+    int64_t result = 0;
+    bool ok = TryAddOperator::Operation<int64_t, int64_t, int64_t>(left, right, result);
+    return CheckScaledRange(result, ok, "addition");
+}
+
+static int64_t CheckedSubtractScaled(int64_t left, int64_t right) {
+    int64_t result = 0;
+    bool ok = TrySubtractOperator::Operation<int64_t, int64_t, int64_t>(left, right, result);
+    return CheckScaledRange(result, ok, "subtraction");
+}
+
+//! Converts an amount in the smallest currency unit (e.g. cents) to the scaled
+//! representation exactly: scaled = cents * (MONEY_SCALE_FACTOR / subunit_to_unit).
+static int64_t ScaledFromCents(int64_t cents, const CurrencyInfo &currency) {
+    const auto divisor = currency.subunit_to_unit;
+    if (divisor <= 0) {
+        throw InternalException("Invalid subunit_to_unit %d for currency: %s", divisor, currency.iso_code.c_str());
+    }
+    if (MONEY_SCALE_FACTOR % divisor != 0) {
+        // No registered currency has such a subunit; reject instead of losing precision.
+        throw NotImplementedException("Currency %s with subunit_to_unit %d is not representable in DECIMAL(%d,%d)",
+                                      currency.iso_code.c_str(), divisor, MONEY_WIDTH, MONEY_SCALE);
+    }
+    const int64_t factor = MONEY_SCALE_FACTOR / divisor;
+    int64_t result = 0;
+    bool ok = TryMultiplyOperator::Operation<int64_t, int64_t, int64_t>(cents, factor, result);
+    if (!ok || result > MONEY_MAX_SCALED || result < -MONEY_MAX_SCALED) {
+        throw OutOfRangeException("Money amount of %s %s subunits is out of range for DECIMAL(%d,%d)",
+                                  std::to_string(cents), currency.iso_code.c_str(), MONEY_WIDTH, MONEY_SCALE);
+    }
+    return result;
+}
+
+//! Multiplies a scaled amount by a DOUBLE factor with explicit overflow checks,
+//! rounding half away from zero to MONEY_SCALE fractional digits.
+static int64_t CheckedMultiplyFactor(int64_t scaled, double factor) {
+    if (!std::isfinite(factor)) {
+        throw InvalidInputException("Money multiply factor must be finite, got: %s", std::to_string(factor));
+    }
+    long double product = static_cast<long double>(scaled) * static_cast<long double>(factor);
+    if (!(product >= -static_cast<long double>(MONEY_MAX_SCALED) &&
+          product <= static_cast<long double>(MONEY_MAX_SCALED))) {
+        throw OutOfRangeException("Money multiplication result is out of range for DECIMAL(%d,%d)", MONEY_WIDTH,
+                                  MONEY_SCALE);
+    }
+    return static_cast<int64_t>(llroundl(product));
+}
+
+//! Looks up a currency in the registry (case-insensitive) and throws for unknown codes.
+static const CurrencyInfo &LookupCurrencyOrThrow(const CurrencyRegistry &registry, const std::string &currency_code) {
+    auto currency = registry.GetCurrency(currency_code);
+    if (!currency) {
+        throw InvalidInputException("Invalid currency code: %s", currency_code);
+    }
+    return *currency;
 }
 
 //----------------------------------------------------------------------------------------------------------------------
@@ -48,17 +142,13 @@ static void AnofoxMoneyFunction(DataChunk &args, ExpressionState &state, Vector 
         auto currency_idx = currency_data.sel->get_index(i);
 
         if (!amount_data.validity.RowIsValid(amount_idx) || !currency_data.validity.RowIsValid(currency_idx)) {
-            builder.amount_validity.SetInvalid(i);
-            builder.currency_validity.SetInvalid(i);
+            SetMoneyResultNull(result, i);
         } else {
             auto currency_code = currency_values[currency_idx].GetString();
-
-            // Validate currency code
-            if (!registry.CurrencyExists(currency_code)) {
-                throw InvalidInputException("Invalid currency code: %s", currency_code);
-            }
-
-            SetMoneyResult(builder, i, amount_values[amount_idx], currency_code, result);
+            auto &currency = LookupCurrencyOrThrow(registry, currency_code);
+            // Store the canonical ISO code so that downstream comparisons work regardless of input case.
+            // The DOUBLE input is validated (finite) and rounded to the exact DECIMAL(18,3) representation.
+            SetMoneyResult(builder, i, ScaledFromDouble(amount_values[amount_idx]), currency.iso_code, result);
         }
     }
 }
@@ -88,43 +178,35 @@ static void AnofoxMoneyFromCentsFunction(DataChunk &args, ExpressionState &state
         auto currency_idx = currency_data.sel->get_index(i);
 
         if (!cents_data.validity.RowIsValid(cents_idx) || !currency_data.validity.RowIsValid(currency_idx)) {
-            builder.amount_validity.SetInvalid(i);
-            builder.currency_validity.SetInvalid(i);
+            SetMoneyResultNull(result, i);
         } else {
             auto currency_code = currency_values[currency_idx].GetString();
+            auto &currency = LookupCurrencyOrThrow(registry, currency_code);
 
-            // Validate currency code
-            if (!registry.CurrencyExists(currency_code)) {
-                throw InvalidInputException("Invalid currency code: %s", currency_code);
-            }
-
-            auto currency = registry.GetCurrency(currency_code);
-            if (!currency) {
-                throw InvalidInputException("Currency not found: %s", currency_code);
-            }
-
-            // Store amount as cents converted to decimal representation
-            // For now, just store the cents value as double
-            double amount = static_cast<double>(cents_values[cents_idx]);
-            SetMoneyResult(builder, i, amount, currency_code, result);
+            // Convert the smallest-unit amount to major units exactly (e.g. 10050 cents -> 100.500 USD)
+            SetMoneyResult(builder, i, ScaledFromCents(cents_values[cents_idx], currency), currency.iso_code, result);
         }
     }
 }
 
 //----------------------------------------------------------------------------------------------------------------------
-// Scalar Function: anofox_money_amount(money) -> DECIMAL
+// Scalar Function: anofox_money_amount(money) -> DECIMAL(18,3)
 //----------------------------------------------------------------------------------------------------------------------
 
 static void AnofoxMoneyAmountFunction(DataChunk &args, ExpressionState &state, Vector &result) {
     auto &money_vec = args.data[0];
-    auto &children = StructVector::GetEntries(money_vec);
+    idx_t count = args.size();
 
-    // Extract amount field (first child)
-    if (children.size() < 2) {
-        throw InvalidInputException("Money struct must have amount and currency fields");
+    auto data = ExtractMoneyStruct(money_vec, count);
+    auto result_data = FlatVector::GetData<int64_t>(result);
+
+    for (idx_t i = 0; i < count; i++) {
+        if (!data.RowIsValid(i)) {
+            FlatVector::SetNull(result, i, true);
+        } else {
+            result_data[i] = data.Amount(i);
+        }
     }
-
-    result.Reference(*children[0]);
 }
 
 //----------------------------------------------------------------------------------------------------------------------
@@ -133,14 +215,18 @@ static void AnofoxMoneyAmountFunction(DataChunk &args, ExpressionState &state, V
 
 static void AnofoxMoneyCurrencyFunction(DataChunk &args, ExpressionState &state, Vector &result) {
     auto &money_vec = args.data[0];
-    auto &children = StructVector::GetEntries(money_vec);
+    idx_t count = args.size();
 
-    // Extract currency field (second child)
-    if (children.size() < 2) {
-        throw InvalidInputException("Money struct must have amount and currency fields");
+    auto data = ExtractMoneyStruct(money_vec, count);
+    auto result_data = FlatVector::GetData<string_t>(result);
+
+    for (idx_t i = 0; i < count; i++) {
+        if (!data.RowIsValid(i)) {
+            FlatVector::SetNull(result, i, true);
+        } else {
+            result_data[i] = StringVector::AddString(result, data.Currency(i));
+        }
     }
-
-    result.Reference(*children[1]);
 }
 
 //----------------------------------------------------------------------------------------------------------------------
@@ -162,18 +248,77 @@ static void AnofoxIsValidCurrencyFunction(DataChunk &args, ExpressionState &stat
 static void AnofoxCurrencySymbolFunction(DataChunk &args, ExpressionState &state, Vector &result) {
     auto &registry = CurrencyRegistry::GetInstance();
     IterateCurrencyCode(args, result, [&](const std::string& code, idx_t i) {
-        auto currency = registry.GetCurrency(code);
-        if (!currency) {
-            throw InvalidInputException("Currency not found: %s", code.c_str());
-        }
+        auto &currency = LookupCurrencyOrThrow(registry, code);
         auto result_data = FlatVector::GetData<string_t>(result);
-        result_data[i] = StringVector::AddString(result, currency->symbol);
+        result_data[i] = StringVector::AddString(result, currency.symbol);
     });
 }
 
 //----------------------------------------------------------------------------------------------------------------------
 // Scalar Function: anofox_money_format(money, format_style) -> VARCHAR
 //----------------------------------------------------------------------------------------------------------------------
+
+//! Number of fractional digits implied by a currency's subunit_to_unit
+//! (100 -> 2, 1 -> 0, 1000 -> 3, 5 -> 1), capped at the storage scale.
+static int CurrencyDecimalDigits(const CurrencyInfo &currency) {
+    int digits = 0;
+    int64_t power = 1;
+    while (power < currency.subunit_to_unit && digits < MONEY_SCALE) {
+        power *= 10;
+        digits++;
+    }
+    return digits;
+}
+
+//! Renders a scaled amount with the currency's scale. When `localized` is set,
+//! the currency's decimal_mark and thousands_separator are applied; otherwise
+//! the output is canonical (dot decimal mark, no grouping). Shared across the
+//! 'symbol', 'long' and 'code' styles so validation and rounding are uniform.
+static std::string FormatMoneyAmount(int64_t scaled, const CurrencyInfo &currency, bool localized) {
+    const int decimals = CurrencyDecimalDigits(currency);
+
+    // Round half away from zero to the currency scale
+    int64_t drop = 1;
+    for (int d = decimals; d < MONEY_SCALE; d++) {
+        drop *= 10;
+    }
+    const int64_t half = drop / 2;
+    int64_t rounded = scaled >= 0 ? (scaled + half) / drop : -((-scaled + half) / drop);
+
+    int64_t frac_divisor = 1;
+    for (int d = 0; d < decimals; d++) {
+        frac_divisor *= 10;
+    }
+
+    const bool negative = rounded < 0;
+    const uint64_t abs_value = negative ? static_cast<uint64_t>(-rounded) : static_cast<uint64_t>(rounded);
+    const uint64_t int_part = abs_value / static_cast<uint64_t>(frac_divisor);
+    const uint64_t frac_part = abs_value % static_cast<uint64_t>(frac_divisor);
+
+    // Integer digits with optional grouping
+    std::string digits = std::to_string(int_part);
+    const std::string &separator = currency.thousands_separator;
+    if (localized && !separator.empty()) {
+        std::string grouped;
+        const idx_t length = digits.size();
+        for (idx_t pos = 0; pos < length; pos++) {
+            if (pos > 0 && (length - pos) % 3 == 0) {
+                grouped += separator;
+            }
+            grouped += digits[pos];
+        }
+        digits = std::move(grouped);
+    }
+
+    std::string formatted = negative ? "-" : "";
+    formatted += digits;
+    if (decimals > 0) {
+        const std::string &mark = (localized && !currency.decimal_mark.empty()) ? currency.decimal_mark : ".";
+        std::string frac_digits = std::to_string(frac_part);
+        formatted += mark + std::string(static_cast<idx_t>(decimals) - frac_digits.size(), '0') + frac_digits;
+    }
+    return formatted;
+}
 
 static void AnofoxMoneyFormatFunction(DataChunk &args, ExpressionState &state, Vector &result) {
     auto &money_vec = args.data[0];
@@ -184,80 +329,40 @@ static void AnofoxMoneyFormatFunction(DataChunk &args, ExpressionState &state, V
     style_vec.ToUnifiedFormat(count, style_data);
     auto style_values = reinterpret_cast<string_t *>(style_data.data);
 
-    // Get money struct entries
-    auto &children = StructVector::GetEntries(money_vec);
-    if (children.size() != 2) {
-        throw InvalidInputException("Money struct must have exactly 2 fields");
-    }
-
-    auto &amount_vec = *children[0];
-    auto &currency_vec = *children[1];
-
-    UnifiedVectorFormat amount_data;
-    UnifiedVectorFormat currency_data;
-    amount_vec.ToUnifiedFormat(count, amount_data);
-    currency_vec.ToUnifiedFormat(count, currency_data);
-
-    auto amount_values = reinterpret_cast<double *>(amount_data.data);
-    auto currency_values = reinterpret_cast<string_t *>(currency_data.data);
+    auto data = ExtractMoneyStruct(money_vec, count);
 
     auto &registry = CurrencyRegistry::GetInstance();
     auto result_data = FlatVector::GetData<string_t>(result);
 
     for (idx_t i = 0; i < count; i++) {
-        auto amount_idx = amount_data.sel->get_index(i);
-        auto currency_idx = currency_data.sel->get_index(i);
         auto style_idx = style_data.sel->get_index(i);
 
-        if (!amount_data.validity.RowIsValid(amount_idx) || !currency_data.validity.RowIsValid(currency_idx) ||
-            !style_data.validity.RowIsValid(style_idx)) {
+        if (!data.RowIsValid(i) || !style_data.validity.RowIsValid(style_idx)) {
             FlatVector::SetNull(result, i, true);
         } else {
-            double amount = amount_values[amount_idx];
-            auto currency_code = currency_values[currency_idx].GetString();
+            auto scaled = data.Amount(i);
+            auto currency_code = data.Currency(i);
             auto format_style = style_values[style_idx].GetString();
 
-            auto currency = registry.GetCurrency(currency_code);
-            if (!currency) {
-                throw InvalidInputException("Currency not found: %s", currency_code);
-            }
+            auto &currency = LookupCurrencyOrThrow(registry, currency_code);
 
-            // Format based on style
+            // Format based on style; the amount rendering is shared (scale and
+            // rounding from currency metadata, issue #57)
             std::string formatted;
             if (format_style == "symbol") {
-                // Format: $100.50 or 100,50 € depending on symbol_first
-                char buffer[256];
-                snprintf(buffer, sizeof(buffer), "%.2f", amount);
-                std::string amount_str(buffer);
-
-                // Replace decimal mark if needed
-                if (currency->decimal_mark != ".") {
-                    size_t dot_pos = amount_str.find('.');
-                    if (dot_pos != std::string::npos) {
-                        amount_str[dot_pos] = currency->decimal_mark[0];
-                    }
-                }
-
-                if (currency->symbol_first) {
-                    formatted = currency->symbol + amount_str;
+                // Localized: $1,234.56 or 1.234,56 € depending on symbol_first
+                auto amount_str = FormatMoneyAmount(scaled, currency, true);
+                if (currency.symbol_first) {
+                    formatted = currency.symbol + amount_str;
                 } else {
-                    formatted = amount_str + " " + currency->symbol;
+                    formatted = amount_str + " " + currency.symbol;
                 }
-            } else if (format_style == "code") {
-                // Format: 100.50 USD
-                char buffer[256];
-                snprintf(buffer, sizeof(buffer), "%.2f %s", amount, currency_code.c_str());
-                formatted = buffer;
             } else if (format_style == "long") {
-                // Format: 100.50 United States Dollar
-                char buffer[512];
-                snprintf(buffer, sizeof(buffer), "%.2f %s", amount, currency->name.c_str());
-                formatted = buffer;
+                // Localized amount with the full currency name: 1.234,56 Euro
+                formatted = FormatMoneyAmount(scaled, currency, true) + " " + currency.name;
             } else {
-                // Default: ISO format with code
-                char buffer[256];
-                snprintf(buffer, sizeof(buffer), "%.2f %s", amount, currency_code.c_str());
-                formatted = buffer;
+                // 'code' and default: canonical machine-readable amount with the ISO code
+                formatted = FormatMoneyAmount(scaled, currency, false) + " " + currency.iso_code;
             }
 
             result_data[i] = StringVector::AddString(result, formatted);
@@ -270,8 +375,8 @@ static void AnofoxMoneyFormatFunction(DataChunk &args, ExpressionState &state, V
 //----------------------------------------------------------------------------------------------------------------------
 
 static void AnofoxMoneyIsPositiveFunction(DataChunk &args, ExpressionState &state, Vector &result) {
-    IterateMoneyComparison(args, result, [](double amount) {
-        return amount > 0.0;
+    IterateMoneyComparison(args, result, [](int64_t scaled) {
+        return scaled > 0;
     });
 }
 
@@ -280,8 +385,8 @@ static void AnofoxMoneyIsPositiveFunction(DataChunk &args, ExpressionState &stat
 //----------------------------------------------------------------------------------------------------------------------
 
 static void AnofoxMoneyIsNegativeFunction(DataChunk &args, ExpressionState &state, Vector &result) {
-    IterateMoneyComparison(args, result, [](double amount) {
-        return amount < 0.0;
+    IterateMoneyComparison(args, result, [](int64_t scaled) {
+        return scaled < 0;
     });
 }
 
@@ -290,8 +395,8 @@ static void AnofoxMoneyIsNegativeFunction(DataChunk &args, ExpressionState &stat
 //----------------------------------------------------------------------------------------------------------------------
 
 static void AnofoxMoneyIsZeroFunction(DataChunk &args, ExpressionState &state, Vector &result) {
-    IterateMoneyComparison(args, result, [](double amount) {
-        return amount == 0.0;
+    IterateMoneyComparison(args, result, [](int64_t scaled) {
+        return scaled == 0;
     });
 }
 
@@ -301,54 +406,18 @@ static void AnofoxMoneyIsZeroFunction(DataChunk &args, ExpressionState &state, V
 
 static void AnofoxMoneyAbsFunction(DataChunk &args, ExpressionState &state, Vector &result) {
     auto &money_vec = args.data[0];
-    auto &children = StructVector::GetEntries(money_vec);
-
-    if (children.size() != 2) {
-        throw InvalidInputException("Money struct must have exactly 2 fields");
-    }
-
     idx_t count = args.size();
-    auto &amount_vec = *children[0];
-    auto &currency_vec = *children[1];
 
-    UnifiedVectorFormat amount_data;
-    UnifiedVectorFormat currency_data;
-    amount_vec.ToUnifiedFormat(count, amount_data);
-    currency_vec.ToUnifiedFormat(count, currency_data);
-
-    auto amount_values = reinterpret_cast<double *>(amount_data.data);
-    auto currency_values = reinterpret_cast<string_t *>(currency_data.data);
-
-    // Get result struct entries
-    auto &result_children = StructVector::GetEntries(result);
-    if (result_children.size() != 2) {
-        throw InvalidInputException("Money struct must have exactly 2 fields");
-    }
-
-    auto &result_amount = *result_children[0];
-    auto &result_currency = *result_children[1];
-
-    result_amount.SetVectorType(VectorType::FLAT_VECTOR);
-    result_currency.SetVectorType(VectorType::FLAT_VECTOR);
-
-    auto result_amount_ptr = FlatVector::GetData<double>(result_amount);
-    auto result_currency_ptr = FlatVector::GetData<string_t>(result_currency);
-    auto &result_amount_validity = FlatVector::Validity(result_amount);
-    auto &result_currency_validity = FlatVector::Validity(result_currency);
+    auto data = ExtractMoneyStruct(money_vec, count);
+    auto builder = PrepareMoneyResult(result);
 
     for (idx_t i = 0; i < count; i++) {
-        auto amount_idx = amount_data.sel->get_index(i);
-        auto currency_idx = currency_data.sel->get_index(i);
-
-        if (!amount_data.validity.RowIsValid(amount_idx) || !currency_data.validity.RowIsValid(currency_idx)) {
-            result_amount_validity.SetInvalid(i);
-            result_currency_validity.SetInvalid(i);
+        if (!data.RowIsValid(i)) {
+            SetMoneyResultNull(result, i);
         } else {
-            double amount = amount_values[amount_idx];
-            auto currency_code = currency_values[currency_idx].GetString();
-
-            result_amount_ptr[i] = std::fabs(amount);
-            result_currency_ptr[i] = StringVector::AddString(result_currency, currency_code);
+            // The scaled amount is range-checked at construction, so negation cannot overflow
+            auto scaled = data.Amount(i);
+            SetMoneyResult(builder, i, scaled < 0 ? -scaled : scaled, data.Currency(i), result);
         }
     }
 }
@@ -359,11 +428,9 @@ static void AnofoxMoneyAbsFunction(DataChunk &args, ExpressionState &state, Vect
 
 static void AnofoxMoneyAddFunction(DataChunk &args, ExpressionState &state, Vector &result) {
     IterateBinaryMoneyOp(args, result, true, [](MoneyResultBuilder& builder, idx_t i,
-                                                double amount1, double amount2,
+                                                int64_t scaled1, int64_t scaled2,
                                                 const std::string& currency, Vector& result) {
-        builder.amount_ptr[i] = amount1 + amount2;
-        builder.currency_ptr[i] = StringVector::AddString(
-            *StructVector::GetEntries(result)[1], currency);
+        SetMoneyResult(builder, i, CheckedAddScaled(scaled1, scaled2), currency, result);
     });
 }
 
@@ -373,11 +440,9 @@ static void AnofoxMoneyAddFunction(DataChunk &args, ExpressionState &state, Vect
 
 static void AnofoxMoneySubtractFunction(DataChunk &args, ExpressionState &state, Vector &result) {
     IterateBinaryMoneyOp(args, result, true, [](MoneyResultBuilder& builder, idx_t i,
-                                                double amount1, double amount2,
+                                                int64_t scaled1, int64_t scaled2,
                                                 const std::string& currency, Vector& result) {
-        builder.amount_ptr[i] = amount1 - amount2;
-        builder.currency_ptr[i] = StringVector::AddString(
-            *StructVector::GetEntries(result)[1], currency);
+        SetMoneyResult(builder, i, CheckedSubtractScaled(scaled1, scaled2), currency, result);
     });
 }
 
@@ -398,23 +463,13 @@ static void AnofoxMoneyMultiplyFunction(DataChunk &args, ExpressionState &state,
     auto factor_values = reinterpret_cast<double *>(factor_data.data);
 
     for (idx_t i = 0; i < count; i++) {
-        auto amount_idx = data.amount_data.sel->get_index(i);
-        auto currency_idx = data.currency_data.sel->get_index(i);
         auto factor_idx = factor_data.sel->get_index(i);
 
-        if (!data.amount_data.validity.RowIsValid(amount_idx) ||
-            !data.currency_data.validity.RowIsValid(currency_idx) ||
-            !factor_data.validity.RowIsValid(factor_idx)) {
-            builder.amount_validity.SetInvalid(i);
-            builder.currency_validity.SetInvalid(i);
+        if (!data.RowIsValid(i) || !factor_data.validity.RowIsValid(factor_idx)) {
+            SetMoneyResultNull(result, i);
         } else {
-            double amount = data.amount_values[amount_idx];
-            auto currency = data.currency_values[currency_idx].GetString();
-            double factor = factor_values[factor_idx];
-
-            builder.amount_ptr[i] = amount * factor;
-            auto& currency_vec = *StructVector::GetEntries(result)[1];
-            builder.currency_ptr[i] = StringVector::AddString(currency_vec, currency);
+            SetMoneyResult(builder, i, CheckedMultiplyFactor(data.Amount(i), factor_values[factor_idx]),
+                           data.Currency(i), result);
         }
     }
 }
@@ -429,33 +484,25 @@ static void AnofoxMoneyInRangeFunction(DataChunk &args, ExpressionState &state, 
     auto &max_vec = args.data[2];
     idx_t count = args.size();
 
-    auto &children = StructVector::GetEntries(money_vec);
-    if (children.size() != 2) {
-        throw InvalidInputException("Money struct must have exactly 2 fields");
-    }
+    auto data = ExtractMoneyStruct(money_vec, count);
 
-    auto &amount_vec = *children[0];
-
-    UnifiedVectorFormat amount_data, min_data, max_data;
-    amount_vec.ToUnifiedFormat(count, amount_data);
+    UnifiedVectorFormat min_data, max_data;
     min_vec.ToUnifiedFormat(count, min_data);
     max_vec.ToUnifiedFormat(count, max_data);
 
-    auto amount_values = reinterpret_cast<double *>(amount_data.data);
     auto min_values = reinterpret_cast<double *>(min_data.data);
     auto max_values = reinterpret_cast<double *>(max_data.data);
     auto result_data = FlatVector::GetData<bool>(result);
 
     for (idx_t i = 0; i < count; i++) {
-        auto amount_idx = amount_data.sel->get_index(i);
         auto min_idx = min_data.sel->get_index(i);
         auto max_idx = max_data.sel->get_index(i);
 
-        if (!amount_data.validity.RowIsValid(amount_idx) || !min_data.validity.RowIsValid(min_idx) ||
+        if (!data.RowIsValid(i) || !min_data.validity.RowIsValid(min_idx) ||
             !max_data.validity.RowIsValid(max_idx)) {
             FlatVector::SetNull(result, i, true);
         } else {
-            double amount = amount_values[amount_idx];
+            double amount = static_cast<double>(data.Amount(i)) / static_cast<double>(MONEY_SCALE_FACTOR);
             double min_val = min_values[min_idx];
             double max_val = max_values[max_idx];
             result_data[i] = (amount >= min_val && amount <= max_val);
@@ -472,34 +519,17 @@ static void AnofoxMoneySameCurrencyFunction(DataChunk &args, ExpressionState &st
     auto &money2_vec = args.data[1];
     idx_t count = args.size();
 
-    auto &children1 = StructVector::GetEntries(money1_vec);
-    auto &children2 = StructVector::GetEntries(money2_vec);
-
-    if (children1.size() != 2 || children2.size() != 2) {
-        throw InvalidInputException("Money struct must have exactly 2 fields");
-    }
-
-    auto &currency1_vec = *children1[1];
-    auto &currency2_vec = *children2[1];
-
-    UnifiedVectorFormat currency1_data, currency2_data;
-    currency1_vec.ToUnifiedFormat(count, currency1_data);
-    currency2_vec.ToUnifiedFormat(count, currency2_data);
-
-    auto currency1_values = reinterpret_cast<string_t *>(currency1_data.data);
-    auto currency2_values = reinterpret_cast<string_t *>(currency2_data.data);
+    auto data1 = ExtractMoneyStruct(money1_vec, count);
+    auto data2 = ExtractMoneyStruct(money2_vec, count);
     auto result_data = FlatVector::GetData<bool>(result);
 
     for (idx_t i = 0; i < count; i++) {
-        auto currency1_idx = currency1_data.sel->get_index(i);
-        auto currency2_idx = currency2_data.sel->get_index(i);
-
-        if (!currency1_data.validity.RowIsValid(currency1_idx) || !currency2_data.validity.RowIsValid(currency2_idx)) {
+        if (!data1.RowIsValid(i) || !data2.RowIsValid(i)) {
             FlatVector::SetNull(result, i, true);
         } else {
-            auto c1 = currency1_values[currency1_idx].GetString();
-            auto c2 = currency2_values[currency2_idx].GetString();
-            result_data[i] = (c1 == c2);
+            // Canonical codes are stored at construction; compare case-insensitively so that
+            // manually constructed structs with mixed-case codes behave consistently
+            result_data[i] = StringUtil::CIEquals(data1.Currency(i), data2.Currency(i));
         }
     }
 }
@@ -511,12 +541,9 @@ static void AnofoxMoneySameCurrencyFunction(DataChunk &args, ExpressionState &st
 static void AnofoxCurrencyNameFunction(DataChunk &args, ExpressionState &state, Vector &result) {
     auto &registry = CurrencyRegistry::GetInstance();
     IterateCurrencyCode(args, result, [&](const std::string& code, idx_t i) {
-        auto currency = registry.GetCurrency(code);
-        if (!currency) {
-            throw InvalidInputException("Currency not found: %s", code.c_str());
-        }
+        auto &currency = LookupCurrencyOrThrow(registry, code);
         auto result_data = FlatVector::GetData<string_t>(result);
-        result_data[i] = StringVector::AddString(result, currency->name);
+        result_data[i] = StringVector::AddString(result, currency.name);
     });
 }
 
@@ -624,28 +651,31 @@ void RegisterMoneyFunctions(ExtensionLoader &loader) {
         desc.categories = {"money"};
         ScalarFunction money_func("anofox_tab_money", {LogicalTypeId::DOUBLE, LogicalTypeId::VARCHAR}, GetMoneyType(), AnofoxMoneyFunction);
         money_func.bind = MoneyBind;
+        money_func.SetFallible();
         RegisterScalarFunctionWithAlias(loader, money_func, "money", {std::move(desc)});
     }
     {
         FunctionDescription desc;
-        desc.description = "Creates a money value from an integer amount in cents and ISO 4217 currency code.";
+        desc.description = "Creates a money value from an integer amount in the smallest currency unit (e.g. cents) and ISO 4217 currency code.";
         desc.parameter_names = {"cents", "currency_code"};
         desc.parameter_types = {LogicalType::BIGINT, LogicalType::VARCHAR};
         desc.examples = {"SELECT money_from_cents(1999, 'USD');"};
         desc.categories = {"money"};
         ScalarFunction money_from_cents_func("anofox_tab_money_from_cents", {LogicalTypeId::BIGINT, LogicalTypeId::VARCHAR}, GetMoneyType(), AnofoxMoneyFromCentsFunction);
         money_from_cents_func.bind = MoneyFromCentsBind;
+        money_from_cents_func.SetFallible();
         RegisterScalarFunctionWithAlias(loader, money_from_cents_func, "money_from_cents", {std::move(desc)});
     }
     {
         FunctionDescription desc;
-        desc.description = "Extracts the numeric amount from a money value.";
+        desc.description = "Extracts the exact numeric amount (DECIMAL(18,3)) from a money value.";
         desc.parameter_names = {"money"};
         desc.parameter_types = {GetMoneyType()};
         desc.examples = {"SELECT money_amount(money(19.99, 'USD'));"};
         desc.categories = {"money"};
-        ScalarFunction money_amount_func("anofox_tab_money_amount", {GetMoneyType()}, LogicalTypeId::DOUBLE, AnofoxMoneyAmountFunction);
+        ScalarFunction money_amount_func("anofox_tab_money_amount", {GetMoneyType()}, GetMoneyAmountType(), AnofoxMoneyAmountFunction);
         money_amount_func.bind = MoneyAmountBind;
+        money_amount_func.SetFallible();
         RegisterScalarFunctionWithAlias(loader, money_amount_func, "money_amount", {std::move(desc)});
     }
     {
@@ -657,6 +687,7 @@ void RegisterMoneyFunctions(ExtensionLoader &loader) {
         desc.categories = {"money"};
         ScalarFunction money_currency_func("anofox_tab_money_currency", {GetMoneyType()}, LogicalTypeId::VARCHAR, AnofoxMoneyCurrencyFunction);
         money_currency_func.bind = MoneyCurrencyBind;
+        money_currency_func.SetFallible();
         RegisterScalarFunctionWithAlias(loader, money_currency_func, "money_currency", {std::move(desc)});
     }
     {
@@ -679,6 +710,7 @@ void RegisterMoneyFunctions(ExtensionLoader &loader) {
         desc.categories = {"money"};
         ScalarFunction currency_symbol_func("anofox_tab_currency_symbol", {LogicalTypeId::VARCHAR}, LogicalTypeId::VARCHAR, AnofoxCurrencySymbolFunction);
         currency_symbol_func.bind = CurrencySymbolBind;
+        currency_symbol_func.SetFallible();
         RegisterScalarFunctionWithAlias(loader, currency_symbol_func, "currency_symbol", {std::move(desc)});
     }
     {
@@ -690,6 +722,7 @@ void RegisterMoneyFunctions(ExtensionLoader &loader) {
         desc.categories = {"money"};
         ScalarFunction currency_name_func("anofox_tab_currency_name", {LogicalTypeId::VARCHAR}, LogicalTypeId::VARCHAR, AnofoxCurrencyNameFunction);
         currency_name_func.bind = CurrencyNameBind;
+        currency_name_func.SetFallible();
         RegisterScalarFunctionWithAlias(loader, currency_name_func, "currency_name", {std::move(desc)});
     }
     {
@@ -701,6 +734,7 @@ void RegisterMoneyFunctions(ExtensionLoader &loader) {
         desc.categories = {"money", "formatting"};
         ScalarFunction money_format_func("anofox_tab_money_format", {GetMoneyType(), LogicalTypeId::VARCHAR}, LogicalTypeId::VARCHAR, AnofoxMoneyFormatFunction);
         money_format_func.bind = MoneyFormatBind;
+        money_format_func.SetFallible();
         RegisterScalarFunctionWithAlias(loader, money_format_func, "money_format", {std::move(desc)});
     }
     {
@@ -712,6 +746,7 @@ void RegisterMoneyFunctions(ExtensionLoader &loader) {
         desc.categories = {"money", "validation"};
         ScalarFunction money_is_positive_func("anofox_tab_money_is_positive", {GetMoneyType()}, LogicalTypeId::BOOLEAN, AnofoxMoneyIsPositiveFunction);
         money_is_positive_func.bind = MoneyIsPositiveBind;
+        money_is_positive_func.SetFallible();
         RegisterScalarFunctionWithAlias(loader, money_is_positive_func, "money_is_positive", {std::move(desc)});
     }
     {
@@ -723,6 +758,7 @@ void RegisterMoneyFunctions(ExtensionLoader &loader) {
         desc.categories = {"money", "validation"};
         ScalarFunction money_is_negative_func("anofox_tab_money_is_negative", {GetMoneyType()}, LogicalTypeId::BOOLEAN, AnofoxMoneyIsNegativeFunction);
         money_is_negative_func.bind = MoneyIsNegativeBind;
+        money_is_negative_func.SetFallible();
         RegisterScalarFunctionWithAlias(loader, money_is_negative_func, "money_is_negative", {std::move(desc)});
     }
     {
@@ -734,6 +770,7 @@ void RegisterMoneyFunctions(ExtensionLoader &loader) {
         desc.categories = {"money", "validation"};
         ScalarFunction money_is_zero_func("anofox_tab_money_is_zero", {GetMoneyType()}, LogicalTypeId::BOOLEAN, AnofoxMoneyIsZeroFunction);
         money_is_zero_func.bind = MoneyIsZeroBind;
+        money_is_zero_func.SetFallible();
         RegisterScalarFunctionWithAlias(loader, money_is_zero_func, "money_is_zero", {std::move(desc)});
     }
     {
@@ -745,6 +782,7 @@ void RegisterMoneyFunctions(ExtensionLoader &loader) {
         desc.categories = {"money"};
         ScalarFunction money_abs_func("anofox_tab_money_abs", {GetMoneyType()}, GetMoneyType(), AnofoxMoneyAbsFunction);
         money_abs_func.bind = MoneyAbsBind;
+        money_abs_func.SetFallible();
         RegisterScalarFunctionWithAlias(loader, money_abs_func, "money_abs", {std::move(desc)});
     }
     {
@@ -756,6 +794,7 @@ void RegisterMoneyFunctions(ExtensionLoader &loader) {
         desc.categories = {"money", "arithmetic"};
         ScalarFunction money_add_func("anofox_tab_money_add", {GetMoneyType(), GetMoneyType()}, GetMoneyType(), AnofoxMoneyAddFunction);
         money_add_func.bind = MoneyAddBind;
+        money_add_func.SetFallible();
         RegisterScalarFunctionWithAlias(loader, money_add_func, "money_add", {std::move(desc)});
     }
     {
@@ -767,6 +806,7 @@ void RegisterMoneyFunctions(ExtensionLoader &loader) {
         desc.categories = {"money", "arithmetic"};
         ScalarFunction money_subtract_func("anofox_tab_money_subtract", {GetMoneyType(), GetMoneyType()}, GetMoneyType(), AnofoxMoneySubtractFunction);
         money_subtract_func.bind = MoneySubtractBind;
+        money_subtract_func.SetFallible();
         RegisterScalarFunctionWithAlias(loader, money_subtract_func, "money_subtract", {std::move(desc)});
     }
     {
@@ -778,6 +818,7 @@ void RegisterMoneyFunctions(ExtensionLoader &loader) {
         desc.categories = {"money", "arithmetic"};
         ScalarFunction money_multiply_func("anofox_tab_money_multiply", {GetMoneyType(), LogicalTypeId::DOUBLE}, GetMoneyType(), AnofoxMoneyMultiplyFunction);
         money_multiply_func.bind = MoneyMultiplyBind;
+        money_multiply_func.SetFallible();
         RegisterScalarFunctionWithAlias(loader, money_multiply_func, "money_multiply", {std::move(desc)});
     }
     {
@@ -789,6 +830,7 @@ void RegisterMoneyFunctions(ExtensionLoader &loader) {
         desc.categories = {"money", "validation"};
         ScalarFunction money_in_range_func("anofox_tab_money_in_range", {GetMoneyType(), LogicalTypeId::DOUBLE, LogicalTypeId::DOUBLE}, LogicalTypeId::BOOLEAN, AnofoxMoneyInRangeFunction);
         money_in_range_func.bind = MoneyInRangeBind;
+        money_in_range_func.SetFallible();
         RegisterScalarFunctionWithAlias(loader, money_in_range_func, "money_in_range", {std::move(desc)});
     }
     {
@@ -800,6 +842,7 @@ void RegisterMoneyFunctions(ExtensionLoader &loader) {
         desc.categories = {"money", "comparison"};
         ScalarFunction money_same_currency_func("anofox_tab_money_same_currency", {GetMoneyType(), GetMoneyType()}, LogicalTypeId::BOOLEAN, AnofoxMoneySameCurrencyFunction);
         money_same_currency_func.bind = MoneySameCurrencyBind;
+        money_same_currency_func.SetFallible();
         RegisterScalarFunctionWithAlias(loader, money_same_currency_func, "money_same_currency", {std::move(desc)});
     }
 

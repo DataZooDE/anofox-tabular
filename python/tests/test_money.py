@@ -1,8 +1,12 @@
 """
-Tests for money.py — assert return types and basic arithmetic correctness.
+Tests for money.py — assert return types and exact arithmetic correctness.
+
+Money amounts are DECIMAL(18,3) in the extension and surface as
+``decimal.Decimal`` in Python (issue #57).
 """
 
 import sys
+from decimal import Decimal
 from pathlib import Path
 
 import pytest
@@ -20,7 +24,8 @@ class TestMakeMoney:
         from anofox import money
         result = money.make_money(conn, 42.5, "EUR")
         assert "amount" in result
-        assert abs(result["amount"] - 42.5) < 0.001
+        assert isinstance(result["amount"], Decimal)
+        assert result["amount"] == Decimal("42.500")
 
     def test_currency_field(self, conn):
         from anofox import money
@@ -38,8 +43,14 @@ class TestMoneyFromCents:
     def test_converts_cents_to_dollars(self, conn):
         from anofox import money
         result = money.money_from_cents(conn, 1000, "USD")
-        # Extension stores the raw cents value as-is (no /100 conversion)
-        assert abs(result["amount"] - 1000.0) < 0.001
+        # 1000 cents = 10.00 USD (divided by the currency's subunit_to_unit)
+        assert result["amount"] == Decimal("10.000")
+
+    def test_zero_decimal_currency_unchanged(self, conn):
+        from anofox import money
+        result = money.money_from_cents(conn, 1000, "JPY")
+        # JPY has no subunit (subunit_to_unit = 1), value is unchanged
+        assert result["amount"] == Decimal("1000.000")
 
 
 class TestIsValidCurrency:
@@ -98,7 +109,7 @@ class TestMoneyArithmetic:
         m1 = {"amount": 10.0, "currency": "USD"}
         m2 = {"amount": 5.0, "currency": "USD"}
         result = money.money_add(conn, m1, m2)
-        assert abs(result["amount"] - 15.0) < 0.001
+        assert result["amount"] == Decimal("15.000")
 
     def test_subtract_returns_dict(self, conn):
         from anofox import money
@@ -106,14 +117,14 @@ class TestMoneyArithmetic:
         m2 = {"amount": 3.0, "currency": "EUR"}
         result = money.money_subtract(conn, m1, m2)
         assert isinstance(result, dict)
-        assert abs(result["amount"] - 7.0) < 0.001
+        assert result["amount"] == Decimal("7.000")
 
     def test_multiply_returns_dict(self, conn):
         from anofox import money
         m = {"amount": 10.0, "currency": "USD"}
         result = money.money_multiply(conn, m, 2.5)
         assert isinstance(result, dict)
-        assert abs(result["amount"] - 25.0) < 0.001
+        assert result["amount"] == Decimal("25.000")
 
 
 class TestMoneyPredicates:
@@ -158,3 +169,54 @@ class TestMoneyPredicates:
         m1 = {"amount": 10.0, "currency": "USD"}
         m2 = {"amount": 20.0, "currency": "EUR"}
         assert money.money_same_currency(conn, m1, m2) is False
+
+
+class TestMoneyExactness:
+    """Amounts are exact DECIMAL(18,3): no binary floating point drift (issue #57)."""
+
+    def test_amount_is_decimal(self, conn):
+        from anofox import money
+        result = money.make_money(conn, 10.0, "USD")
+        assert isinstance(result["amount"], Decimal)
+
+    def test_point_one_plus_point_two_is_exactly_point_three(self, conn):
+        from anofox import money
+        m1 = {"amount": 0.1, "currency": "USD"}
+        m2 = {"amount": 0.2, "currency": "USD"}
+        result = money.money_add(conn, m1, m2)
+        assert result["amount"] == Decimal("0.300")
+
+    def test_money_amount_returns_exact_decimal(self, conn):
+        from anofox import money
+        amount = money.money_amount(conn, {"amount": 19.99, "currency": "USD"})
+        assert isinstance(amount, Decimal)
+        assert amount == Decimal("19.990")
+
+    def test_cents_round_trip_is_exact(self, conn):
+        from anofox import money
+        result = money.money_from_cents(conn, 123456789, "USD")
+        assert result["amount"] == Decimal("1234567.890")
+
+    def test_nan_amount_raises(self, conn):
+        import duckdb
+        with pytest.raises(duckdb.Error):
+            conn.execute("SELECT anofox_tab_money('NaN'::DOUBLE, 'USD')").fetchone()
+
+    def test_overflow_raises(self, conn):
+        import duckdb
+        with pytest.raises(duckdb.Error):
+            conn.execute("SELECT anofox_tab_money(1e16, 'USD')").fetchone()
+
+
+class TestMoneyFormatting:
+    """money_format derives scale and separators from currency metadata (issue #57)."""
+
+    def test_jpy_has_no_decimals(self, conn):
+        from anofox import money
+        result = money.money_format(conn, {"amount": 1000, "currency": "JPY"}, "symbol")
+        assert result == "\u00a51,000"
+
+    def test_usd_thousands_separator(self, conn):
+        from anofox import money
+        result = money.money_format(conn, {"amount": 1234567.89, "currency": "USD"}, "symbol")
+        assert result == "$1,234,567.89"

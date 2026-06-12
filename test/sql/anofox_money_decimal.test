@@ -1,0 +1,170 @@
+# name: test/sql/anofox_money_decimal.test
+# description: Exact money representation and metadata-driven formatting (issue #57):
+#   - money amounts are DECIMAL(18,3): arithmetic is exact, no binary-float drift
+#   - NaN/Inf are unrepresentable; out-of-range amounts raise clear errors (no Inf/wraparound)
+#   - money_format derives the scale from subunit_to_unit (JPY -> 0 decimals) and
+#     inserts thousands_separator / decimal_mark from the currency metadata
+# group: [anofox_tabular]
+
+require anofox_tabular
+
+#----------------------------------------------------------------------------------------------------------------------
+# Representation: the money struct carries an exact DECIMAL(18,3) amount
+#----------------------------------------------------------------------------------------------------------------------
+
+query T
+SELECT typeof(anofox_tab_money(1.0, 'USD'));
+----
+STRUCT(amount DECIMAL(18,3), currency VARCHAR)
+
+query T
+SELECT typeof(anofox_tab_money_amount(anofox_tab_money(1.0, 'USD')));
+----
+DECIMAL(18,3)
+
+#----------------------------------------------------------------------------------------------------------------------
+# Exact arithmetic: no binary floating point drift
+#----------------------------------------------------------------------------------------------------------------------
+
+# 0.1 + 0.2 must be exactly 0.3
+query I
+SELECT anofox_tab_money_amount(anofox_tab_money_add(anofox_tab_money(0.1, 'USD'), anofox_tab_money(0.2, 'USD'))) = 0.3;
+----
+true
+
+# Summing 0.10 a thousand times via money_add must be exactly 100.00
+# (under DOUBLE this drifts to 99.9999999999986)
+query I
+WITH RECURSIVE acc(i, m) AS (
+    SELECT 1, anofox_tab_money(0.10, 'USD')
+    UNION ALL
+    SELECT i + 1, anofox_tab_money_add(m, anofox_tab_money(0.10, 'USD')) FROM acc WHERE i < 1000
+)
+SELECT anofox_tab_money_amount(m) = 100.00 FROM acc WHERE i = 1000;
+----
+true
+
+# Aggregating extracted amounts must also be exact (DECIMAL SUM, not DOUBLE SUM)
+query I
+SELECT SUM(anofox_tab_money_amount(anofox_tab_money(0.10, 'USD'))) = 100.00 FROM range(1000);
+----
+true
+
+# money_subtract is exact as well
+query I
+SELECT anofox_tab_money_amount(anofox_tab_money_subtract(anofox_tab_money(0.3, 'USD'), anofox_tab_money(0.1, 'USD'))) = 0.2;
+----
+true
+
+# Cents round-trip exactly (no precision loss above 2^53 raw cents)
+query I
+SELECT anofox_tab_money_amount(anofox_tab_money_from_cents(123456789, 'USD')) = 1234567.89;
+----
+true
+
+query T
+SELECT anofox_tab_money_amount(anofox_tab_money_from_cents(99999999999999999, 'USD'))::VARCHAR;
+----
+999999999999999.990
+
+#----------------------------------------------------------------------------------------------------------------------
+# NaN / Inf are unrepresentable
+#----------------------------------------------------------------------------------------------------------------------
+
+statement error
+SELECT anofox_tab_money('NaN'::DOUBLE, 'USD');
+----
+finite
+
+statement error
+SELECT anofox_tab_money('Infinity'::DOUBLE, 'USD');
+----
+finite
+
+statement error
+SELECT anofox_tab_money_multiply(anofox_tab_money(1.0, 'USD'), 'NaN'::DOUBLE);
+----
+finite
+
+#----------------------------------------------------------------------------------------------------------------------
+# Overflow raises a clear error (no Inf, no wraparound)
+#----------------------------------------------------------------------------------------------------------------------
+
+statement error
+SELECT anofox_tab_money(1e16, 'USD');
+----
+out of range
+
+statement error
+SELECT anofox_tab_money_add(anofox_tab_money(900000000000000.0, 'USD'), anofox_tab_money(900000000000000.0, 'USD'));
+----
+out of range
+
+statement error
+SELECT anofox_tab_money_multiply(anofox_tab_money(900000000000000.0, 'USD'), 10000000000.0);
+----
+out of range
+
+statement error
+SELECT anofox_tab_money_from_cents(200000000000000000, 'USD');
+----
+out of range
+
+#----------------------------------------------------------------------------------------------------------------------
+# Metadata-driven formatting: scale from subunit_to_unit
+#----------------------------------------------------------------------------------------------------------------------
+
+# JPY is a zero-decimal currency: no decimals in any style
+query T
+SELECT anofox_tab_money_format(anofox_tab_money(1000, 'JPY'), 'symbol');
+----
+¥1,000
+
+query T
+SELECT anofox_tab_money_format(anofox_tab_money(1000, 'JPY'), 'code');
+----
+1000 JPY
+
+# Amounts with more precision than the currency scale are rounded half away from zero
+query T
+SELECT anofox_tab_money_format(anofox_tab_money(1234.5, 'JPY'), 'symbol');
+----
+¥1,235
+
+#----------------------------------------------------------------------------------------------------------------------
+# Metadata-driven formatting: thousands_separator and decimal_mark per currency
+#----------------------------------------------------------------------------------------------------------------------
+
+query T
+SELECT anofox_tab_money_format(anofox_tab_money(1234567.89, 'USD'), 'symbol');
+----
+$1,234,567.89
+
+query T
+SELECT anofox_tab_money_format(anofox_tab_money(1234567.89, 'EUR'), 'symbol');
+----
+1.234.567,89 €
+
+query T
+SELECT anofox_tab_money_format(anofox_tab_money(1234.56, 'CHF'), 'symbol');
+----
+1'234.56 CHF
+
+# Grouping applies to the integer digits only, the sign stays with the amount
+query T
+SELECT anofox_tab_money_format(anofox_tab_money(-1234.56, 'USD'), 'symbol');
+----
+$-1,234.56
+
+# 'long' style localizes the amount the same way as 'symbol'
+query T
+SELECT anofox_tab_money_format(anofox_tab_money(1234.5, 'EUR'), 'long');
+----
+1.234,50 Euro
+
+# 'code' style stays canonical/machine-readable: dot decimal mark, no grouping,
+# but still uses the currency scale
+query T
+SELECT anofox_tab_money_format(anofox_tab_money(1234567.89, 'USD'), 'code');
+----
+1234567.89 USD
