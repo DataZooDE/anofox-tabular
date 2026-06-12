@@ -1,0 +1,130 @@
+# name: test/sql/anofox_alias_fidelity.test
+# description: Aliases must be behaviorally and metadata-wise identical to their primary functions (#51)
+# group: [anofox_tabular]
+
+require anofox_tabular
+
+statement ok
+LOAD anofox_tabular
+
+# ============================================================================
+# Metadata fidelity
+# ============================================================================
+
+# Scalar alias is linked to its primary
+query I
+SELECT DISTINCT alias_of FROM duckdb_functions() WHERE function_name = 'vat';
+----
+anofox_tab_vat
+
+# Table function alias is linked to its primary
+query I
+SELECT DISTINCT alias_of FROM duckdb_functions() WHERE function_name = 'dbscan';
+----
+anofox_tab_dbscan
+
+# Primary scalar carries a description
+query I
+SELECT any_value(description) IS NOT NULL FROM duckdb_functions() WHERE function_name = 'anofox_tab_vat';
+----
+true
+
+# Scalar alias carries the same description as its primary
+# (RED on #51: the alias helpers drop the FunctionDescription metadata)
+query I
+SELECT (SELECT any_value(description) FROM duckdb_functions() WHERE function_name = 'vat')
+       IS NOT DISTINCT FROM
+       (SELECT any_value(description) FROM duckdb_functions() WHERE function_name = 'anofox_tab_vat');
+----
+true
+
+# Scalar function set alias carries the same description as its primary
+# (RED on #51)
+query I
+SELECT (SELECT any_value(description) FROM duckdb_functions() WHERE function_name = 'email_is_valid')
+       IS NOT DISTINCT FROM
+       (SELECT any_value(description) FROM duckdb_functions() WHERE function_name = 'anofox_tab_email_is_valid');
+----
+true
+
+# Table function alias carries the same description as its primary
+# (RED on #51)
+query I
+SELECT (SELECT any_value(description) FROM duckdb_functions() WHERE function_name = 'dbscan')
+       IS NOT DISTINCT FROM
+       (SELECT any_value(description) FROM duckdb_functions() WHERE function_name = 'anofox_tab_dbscan');
+----
+true
+
+# Table function set alias carries the same description as its primary
+# (RED on #51)
+query I
+SELECT (SELECT any_value(description) FROM duckdb_functions() WHERE function_name = 'pii_scan_table')
+       IS NOT DISTINCT FROM
+       (SELECT any_value(description) FROM duckdb_functions() WHERE function_name = 'anofox_tab_pii_scan_table');
+----
+true
+
+# A scalar set alias keeps all overloads of the primary set
+query I
+SELECT (SELECT count(*) FROM duckdb_functions() WHERE function_name = 'email_is_valid')
+     = (SELECT count(*) FROM duckdb_functions() WHERE function_name = 'anofox_tab_email_is_valid');
+----
+true
+
+# ============================================================================
+# Behavior fidelity: scalar functions (regression guard for copy-then-rename)
+# ============================================================================
+
+# Identical results through primary and alias
+query II
+SELECT anofox_tab_vat_is_valid_syntax('DE123456789'), vat_is_valid_syntax('DE123456789');
+----
+true	true
+
+query II
+SELECT anofox_tab_vat_is_valid_syntax('DE1'), vat_is_valid_syntax('DE1');
+----
+false	false
+
+# Identical NULL handling through primary and alias
+query II
+SELECT anofox_tab_vat_is_valid_syntax(NULL), vat_is_valid_syntax(NULL);
+----
+NULL	NULL
+
+# SPECIAL_HANDLING null behavior must survive aliasing (email_is_valid set)
+query II
+SELECT anofox_tab_email_is_valid(NULL, 'regex'), email_is_valid(NULL, 'regex');
+----
+NULL	NULL
+
+# Identical runtime error messages through primary and alias
+statement error
+SELECT anofox_tab_money(10.50, 'ZZZ');
+----
+Invalid currency code: ZZZ
+
+statement error
+SELECT money(10.50, 'ZZZ');
+----
+Invalid currency code: ZZZ
+
+# ============================================================================
+# Behavior fidelity: table functions (bind_replace must survive aliasing)
+# ============================================================================
+
+statement ok
+CREATE TABLE alias_fidelity_points(v DOUBLE);
+
+statement ok
+INSERT INTO alias_fidelity_points VALUES (1.0), (1.1), (1.2), (10.0);
+
+query I
+SELECT (SELECT count(*) FROM anofox_tab_dbscan('alias_fidelity_points', 'v', 0.5, 2, 'all'))
+     = (SELECT count(*) FROM dbscan('alias_fidelity_points', 'v', 0.5, 2, 'all'));
+----
+true
+
+statement ok
+DROP TABLE alias_fidelity_points;
