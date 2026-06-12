@@ -3,6 +3,7 @@
 #include "anofox_sql_utils.hpp"
 #include "telemetry.hpp"
 #include "anofox_trace.hpp"
+#include "duckdb/common/types/vector.hpp"
 #include "duckdb/function/table_function.hpp"
 #include "duckdb/main/connection.hpp"
 #include "duckdb/main/client_context.hpp"
@@ -932,73 +933,97 @@ static void OutlierTreeExecute(ClientContext &context, TableFunctionInput &data_
 
         Connection con(*context.db);
 
-        // Build query to fetch data
-        std::string column_list;
-        for (size_t i = 0; i < bind_data.column_names.size(); ++i) {
-            if (i > 0) column_list += ", ";
-            column_list += QuoteSqlIdentifier(bind_data.column_names[i]);
+        // Detect column types first (LIMIT 0 only binds the query), so the
+        // data query below can cast every column to a known type
+        const idx_t n_cols = bind_data.column_names.size();
+        std::vector<ColumnInfo> column_info(n_cols);
+        std::vector<ColumnData> data(n_cols);
+
+        {
+            std::string raw_column_list;
+            for (size_t i = 0; i < n_cols; ++i) {
+                if (i > 0) raw_column_list += ", ";
+                raw_column_list += QuoteSqlIdentifier(bind_data.column_names[i]);
+            }
+            std::string type_query = "SELECT " + raw_column_list + " FROM " +
+                                     BuildQueryTableRef(bind_data.table_name) + " LIMIT 0";
+            auto type_result = con.Query(type_query);
+            if (type_result->HasError()) {
+                throw InvalidInputException("Failed to query source table: %s", type_result->GetError());
+            }
+            for (size_t i = 0; i < n_cols; ++i) {
+                auto col_type = type_result->types[i].id();
+                if (col_type == LogicalTypeId::VARCHAR || col_type == LogicalTypeId::ENUM) {
+                    column_info[i].type = FeatureType::CATEGORICAL;
+                    data[i].type = FeatureType::CATEGORICAL;
+                } else {
+                    column_info[i].type = FeatureType::NUMERIC;
+                    data[i].type = FeatureType::NUMERIC;
+                }
+                column_info[i].name = bind_data.column_names[i];
+            }
         }
 
+        // Build the data query: categorical columns as VARCHAR, numeric
+        // columns as DOUBLE, so chunks can be read through typed accessors
+        std::string column_list;
+        for (size_t i = 0; i < n_cols; ++i) {
+            if (i > 0) column_list += ", ";
+            column_list += "CAST(" + QuoteSqlIdentifier(bind_data.column_names[i]) +
+                           (column_info[i].type == FeatureType::CATEGORICAL ? " AS VARCHAR)" : " AS DOUBLE)");
+        }
         std::string query = "SELECT " + column_list + " FROM " + BuildQueryTableRef(bind_data.table_name);
 
-        auto result = con.Query(query);
+        // Stream the input instead of materializing the full result; the
+        // algorithm itself requires the complete dataset for tree fitting,
+        // so this is the only full copy that is kept.
+        auto result = con.SendQuery(query);
         if (result->HasError()) {
             throw InvalidInputException("Failed to query source table: %s", result->GetError());
-        }
-
-        // Detect column types and build column info
-        std::vector<ColumnInfo> column_info(bind_data.column_names.size());
-        std::vector<ColumnData> data(bind_data.column_names.size());
-
-        for (size_t i = 0; i < bind_data.column_names.size(); ++i) {
-            auto col_type = result->types[i].id();
-            if (col_type == LogicalTypeId::VARCHAR || col_type == LogicalTypeId::ENUM) {
-                column_info[i].type = FeatureType::CATEGORICAL;
-                data[i].type = FeatureType::CATEGORICAL;
-            } else {
-                column_info[i].type = FeatureType::NUMERIC;
-                data[i].type = FeatureType::NUMERIC;
-            }
-            column_info[i].name = bind_data.column_names[i];
         }
 
         // Read data; rows containing NULL in any selected column are skipped,
         // but their source positions are preserved for row id reporting.
         int64_t source_row = 0;
+        std::vector<UnifiedVectorFormat> formats(n_cols);
         while (true) {
             auto chunk = result->Fetch();
             if (!chunk || chunk->size() == 0) break;
 
+            for (idx_t col = 0; col < n_cols; ++col) {
+                chunk->data[col].ToUnifiedFormat(chunk->size(), formats[col]);
+            }
+
             for (idx_t row = 0; row < chunk->size(); ++row) {
                 source_row++;
-                bool valid_row = true;
 
                 // Check for NULLs
-                for (idx_t col = 0; col < chunk->ColumnCount(); ++col) {
-                    auto val = chunk->GetValue(col, row);
-                    if (val.IsNull()) {
+                bool valid_row = true;
+                for (idx_t col = 0; col < n_cols; ++col) {
+                    if (!formats[col].validity.RowIsValid(formats[col].sel->get_index(row))) {
                         valid_row = false;
                         break;
                     }
                 }
-
                 if (!valid_row) continue;
 
                 state.source_row_ids.push_back(source_row);
 
                 // Add values to data structures
-                for (idx_t col = 0; col < chunk->ColumnCount(); ++col) {
-                    auto val = chunk->GetValue(col, row);
+                for (idx_t col = 0; col < n_cols; ++col) {
+                    auto idx = formats[col].sel->get_index(row);
                     if (column_info[col].type == FeatureType::CATEGORICAL) {
-                        std::string cat_val = val.ToString();
+                        std::string cat_val = UnifiedVectorFormat::GetData<string_t>(formats[col])[idx].GetString();
                         int cat_idx = column_info[col].AddCategory(cat_val);
                         data[col].category_indices.push_back(cat_idx);
                     } else {
-                        double num_val = val.GetValue<double>();
-                        data[col].numeric_values.push_back(num_val);
+                        data[col].numeric_values.push_back(UnifiedVectorFormat::GetData<double>(formats[col])[idx]);
                     }
                 }
             }
+        }
+        if (result->HasError()) {
+            throw InvalidInputException("Failed to query source table: %s", result->GetError());
         }
 
         // total_rows counts the analyzed rows, i.e. rows that are non-NULL in
@@ -1015,33 +1040,43 @@ static void OutlierTreeExecute(ClientContext &context, TableFunctionInput &data_
         }
     }
 
-    // Output results
+    // Output results, streamed chunk-wise from the computed explanations
     if (bind_data.output_mode == "outliers") {
-        idx_t count = 0;
-        idx_t max_count = STANDARD_VECTOR_SIZE;
+        idx_t count = MinValue<idx_t>(state.outliers.size() - state.current_row, STANDARD_VECTOR_SIZE);
+        output.SetCardinality(count);
 
-        while (state.current_row < state.outliers.size() && count < max_count) {
-            auto &outlier = state.outliers[state.current_row];
+        auto row_ids = FlatVector::GetData<int64_t>(output.data[0]);
+        auto column_names = FlatVector::GetData<string_t>(output.data[1]);
+        auto outlier_values = FlatVector::GetData<string_t>(output.data[2]);
+        auto cluster_means = FlatVector::GetData<double>(output.data[3]);
+        auto cluster_sds = FlatVector::GetData<double>(output.data[4]);
+        auto cluster_sizes = FlatVector::GetData<int64_t>(output.data[5]);
+        auto z_scores = FlatVector::GetData<double>(output.data[6]);
+        auto lower_bounds = FlatVector::GetData<double>(output.data[7]);
+        auto upper_bounds = FlatVector::GetData<double>(output.data[8]);
+        auto conditions = FlatVector::GetData<string_t>(output.data[9]);
+        auto explanations = FlatVector::GetData<string_t>(output.data[10]);
+        auto outlier_scores = FlatVector::GetData<double>(output.data[11]);
+
+        for (idx_t i = 0; i < count; ++i) {
+            auto &outlier = state.outliers[state.current_row + i];
 
             // Report the 1-based source table position, not the index in the
             // NULL-compacted working dataset
-            output.SetValue(0, count, Value::BIGINT(state.source_row_ids[outlier.row_idx]));
-            output.SetValue(1, count, Value(outlier.target_column_name));
-            output.SetValue(2, count, Value(outlier.GetOutlierValueString()));
-            output.SetValue(3, count, Value::DOUBLE(outlier.cluster_mean));
-            output.SetValue(4, count, Value::DOUBLE(outlier.cluster_sd));
-            output.SetValue(5, count, Value::BIGINT(static_cast<int64_t>(outlier.cluster_size)));
-            output.SetValue(6, count, Value::DOUBLE(outlier.z_score));
-            output.SetValue(7, count, Value::DOUBLE(outlier.lower_bound));
-            output.SetValue(8, count, Value::DOUBLE(outlier.upper_bound));
-            output.SetValue(9, count, Value(outlier.GetConditionsJSON()));
-            output.SetValue(10, count, Value(outlier.explanation));
-            output.SetValue(11, count, Value::DOUBLE(outlier.outlier_score));
-
-            state.current_row++;
-            count++;
+            row_ids[i] = state.source_row_ids[outlier.row_idx];
+            column_names[i] = StringVector::AddString(output.data[1], outlier.target_column_name);
+            outlier_values[i] = StringVector::AddString(output.data[2], outlier.GetOutlierValueString());
+            cluster_means[i] = outlier.cluster_mean;
+            cluster_sds[i] = outlier.cluster_sd;
+            cluster_sizes[i] = static_cast<int64_t>(outlier.cluster_size);
+            z_scores[i] = outlier.z_score;
+            lower_bounds[i] = outlier.lower_bound;
+            upper_bounds[i] = outlier.upper_bound;
+            conditions[i] = StringVector::AddString(output.data[9], outlier.GetConditionsJSON());
+            explanations[i] = StringVector::AddString(output.data[10], outlier.explanation);
+            outlier_scores[i] = outlier.outlier_score;
         }
-        output.SetCardinality(count);
+        state.current_row += count;
     } else {
         // Summary mode - single row
         if (state.current_row == 0) {

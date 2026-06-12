@@ -10,6 +10,7 @@
 #include "duckdb/parser/tableref/subqueryref.hpp"
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/string_util.hpp"
+#include "duckdb/common/types/vector.hpp"
 #include "duckdb/main/connection.hpp"
 #include "duckdb/main/client_context.hpp"
 #include <algorithm>
@@ -443,14 +444,6 @@ static unique_ptr<TableRef> MetricFreshnessBindReplace(ClientContext &context, T
 // Isolation Forest Table Function - Actual C++ Execution
 //===--------------------------------------------------------------------===//
 
-// Result structure for isolation forest
-struct IsolationForestResult {
-	int64_t row_id;
-	double value;  // For univariate - single value; for multivariate - unused
-	double anomaly_score;
-	bool is_anomaly;
-};
-
 // Bind data for isolation forest table function (immutable after bind)
 struct IsolationForestBindData : public TableFunctionData {
 	string table_name;
@@ -490,8 +483,13 @@ struct IsolationForestGlobalState : public GlobalTableFunctionState {
 	bool executed = false;
 	idx_t current_row = 0;
 
-	// Results computed during execution (stored here because bind_data is const)
-	std::vector<IsolationForestResult> results;
+	// Model outputs computed during execution (stored here because bind_data
+	// is const). The scores from the fitted model are kept once and emitted
+	// incrementally; row ids and anomaly flags are derived during emission
+	// instead of buffering a duplicate per-row result vector.
+	std::vector<double> scores;
+	std::vector<double> first_column_values;  // univariate numeric path only ("value" output column)
+	double threshold = 0.0;
 	int64_t total_count = 0;
 	int64_t outlier_count = 0;
 	double avg_value = 0.0;
@@ -783,7 +781,10 @@ static void IsolationForestExecute(ClientContext &context, TableFunctionInput &d
 
 		string query = "SELECT " + column_list + " FROM " + BuildQueryTableRef(bind_data.table_name) + " WHERE " + null_checks;
 
-		auto result = con.Query(query);
+		// Stream the input instead of materializing the full result; model
+		// fitting requires the complete dataset, so the feature columns built
+		// below are the only full copy that is kept.
+		auto result = con.SendQuery(query);
 		if (result->HasError()) {
 			throw InvalidInputException("Failed to query source table: %s", result->GetError());
 		}
@@ -825,17 +826,24 @@ static void IsolationForestExecute(ClientContext &context, TableFunctionInput &d
 			double sum_first_col = 0.0;
 			std::vector<double> sample_weights;  // Collected during data fetch if weight column provided
 
-			// Read data and build category mappings
-			// Weight column (if present) is the last column in the result
+			// Read data and build category mappings, reading chunks through
+			// UnifiedVectorFormat typed accessors. The weight column (if
+			// present) is the last column in the result.
+			std::vector<UnifiedVectorFormat> formats;
 			while (true) {
 				auto chunk = result->Fetch();
 				if (!chunk || chunk->size() == 0) break;
 
+				const idx_t chunk_cols = chunk->ColumnCount();
+				formats.resize(chunk_cols);
+				for (idx_t col = 0; col < chunk_cols; ++col) {
+					chunk->data[col].ToUnifiedFormat(chunk->size(), formats[col]);
+				}
+
 				for (idx_t row = 0; row < chunk->size(); ++row) {
 					bool valid_row = true;
-					for (idx_t col = 0; col < chunk->ColumnCount(); ++col) {
-						auto val = chunk->GetValue(col, row);
-						if (val.IsNull()) {
+					for (idx_t col = 0; col < chunk_cols; ++col) {
+						if (!formats[col].validity.RowIsValid(formats[col].sel->get_index(row))) {
 							valid_row = false;
 							break;
 						}
@@ -844,13 +852,13 @@ static void IsolationForestExecute(ClientContext &context, TableFunctionInput &d
 
 					// Process feature columns (not including weight column)
 					for (idx_t col = 0; col < bind_data.column_names.size(); ++col) {
-						auto val = chunk->GetValue(col, row);
+						auto idx = formats[col].sel->get_index(row);
 						if (is_categorical[col]) {
-							string cat_val = val.ToString();
+							string cat_val = UnifiedVectorFormat::GetData<string_t>(formats[col])[idx].GetString();
 							int cat_idx = column_info[col].AddCategory(cat_val);
 							data[col].category_indices.push_back(cat_idx);
 						} else {
-							double num_val = val.GetValue<double>();
+							double num_val = UnifiedVectorFormat::GetData<double>(formats[col])[idx];
 							data[col].numeric_values.push_back(num_val);
 							if (col == 0 && !bind_data.is_multivariate) {
 								sum_first_col += num_val;
@@ -860,10 +868,13 @@ static void IsolationForestExecute(ClientContext &context, TableFunctionInput &d
 
 					// Extract weight value if weight column is present (last column in result)
 					if (bind_data.has_weight_column) {
-						auto weight_val = chunk->GetValue(weight_col_idx, row);
-						sample_weights.push_back(weight_val.GetValue<double>());
+						auto idx = formats[weight_col_idx].sel->get_index(row);
+						sample_weights.push_back(UnifiedVectorFormat::GetData<double>(formats[weight_col_idx])[idx]);
 					}
 				}
+			}
+			if (result->HasError()) {
+				throw InvalidInputException("Failed to query source table: %s", result->GetError());
 			}
 
 			size_t n_rows = data.empty() ? 0 : data[0].size();
@@ -883,54 +894,53 @@ static void IsolationForestExecute(ClientContext &context, TableFunctionInput &d
 				// sample_weights was already collected during data fetch (guarantees correct row alignment)
 				forest.FitMixed(data, column_info, sample_weights);
 
-				// Score all points
-				std::vector<double> scores = forest.ScoreBatchMixed(data);
-
-				// Compute threshold based on contamination
-				double threshold = forest.ComputeThreshold(scores);
-
-				// Build results
-				state.results.reserve(n_rows);
-				state.outlier_count = 0;
-
-				for (size_t i = 0; i < n_rows; ++i) {
-					IsolationForestResult res;
-					res.row_id = static_cast<int64_t>(i + 1);  // 1-indexed
-					res.value = 0.0;  // Not applicable for mixed-type
-					res.anomaly_score = scores[i];
-					res.is_anomaly = scores[i] > threshold;
-					if (res.is_anomaly) {
-						state.outlier_count++;
-					}
-					state.results.push_back(res);
-				}
+				// Score all points directly into the state; row ids and
+				// anomaly flags are derived during emission
+				state.scores = forest.ScoreBatchMixed(data);
+				state.threshold = forest.ComputeThreshold(state.scores);
+				state.outlier_count = static_cast<int64_t>(std::count_if(
+				    state.scores.begin(), state.scores.end(), [&](double s) { return s > state.threshold; }));
 			}
 		} else {
 			// Numeric-only path: use original vector<vector<double>> format
 			std::vector<std::vector<double>> data;
 			double sum_first_col = 0.0;
 
+			std::vector<UnifiedVectorFormat> formats;
 			while (true) {
 				auto chunk = result->Fetch();
 				if (!chunk || chunk->size() == 0) break;
 
+				const idx_t chunk_cols = chunk->ColumnCount();
+				formats.resize(chunk_cols);
+				for (idx_t col = 0; col < chunk_cols; ++col) {
+					chunk->data[col].ToUnifiedFormat(chunk->size(), formats[col]);
+				}
+
 				for (idx_t row = 0; row < chunk->size(); ++row) {
-					std::vector<double> point;
-					for (idx_t col = 0; col < chunk->ColumnCount(); ++col) {
-						auto val = chunk->GetValue(col, row);
-						if (val.IsNull()) {
-							point.clear();
+					bool valid_row = true;
+					for (idx_t col = 0; col < chunk_cols; ++col) {
+						if (!formats[col].validity.RowIsValid(formats[col].sel->get_index(row))) {
+							valid_row = false;
 							break;
 						}
-						point.push_back(val.GetValue<double>());
 					}
-					if (!point.empty()) {
-						if (!bind_data.is_multivariate) {
-							sum_first_col += point[0];
-						}
-						data.push_back(std::move(point));
+					if (!valid_row) continue;
+
+					std::vector<double> point(chunk_cols);
+					for (idx_t col = 0; col < chunk_cols; ++col) {
+						point[col] = UnifiedVectorFormat::GetData<double>(formats[col])[formats[col].sel->get_index(row)];
 					}
+					if (!bind_data.is_multivariate) {
+						sum_first_col += point[0];
+						// Retain the raw input values for the "value" output column
+						state.first_column_values.push_back(point[0]);
+					}
+					data.push_back(std::move(point));
 				}
+			}
+			if (result->HasError()) {
+				throw InvalidInputException("Failed to query source table: %s", result->GetError());
 			}
 
 			state.total_count = static_cast<int64_t>(data.size());
@@ -947,52 +957,42 @@ static void IsolationForestExecute(ClientContext &context, TableFunctionInput &d
 				                       bind_data.ntry, bind_data.prob_pick_avg_gain);
 				forest.Fit(data);
 
-				// Score all points
-				std::vector<double> scores = forest.ScoreBatch(data);
-
-				// Compute threshold based on contamination
-				double threshold = forest.ComputeThreshold(scores);
-
-				// Build results
-				state.results.reserve(data.size());
-				state.outlier_count = 0;
-
-				for (size_t i = 0; i < data.size(); ++i) {
-					IsolationForestResult res;
-					res.row_id = static_cast<int64_t>(i + 1);  // 1-indexed
-					res.value = bind_data.is_multivariate ? 0.0 : data[i][0];
-					res.anomaly_score = scores[i];
-					res.is_anomaly = scores[i] > threshold;
-					if (res.is_anomaly) {
-						state.outlier_count++;
-					}
-					state.results.push_back(res);
-				}
+				// Score all points directly into the state; row ids and
+				// anomaly flags are derived during emission
+				state.scores = forest.ScoreBatch(data);
+				state.threshold = forest.ComputeThreshold(state.scores);
+				state.outlier_count = static_cast<int64_t>(std::count_if(
+				    state.scores.begin(), state.scores.end(), [&](double s) { return s > state.threshold; }));
 			}
 		}
 	}
 
-	// Output results
+	// Output results, streamed chunk-wise from the scores held in the state
 	if (bind_data.output_mode == "scores") {
 		// Scores mode - return individual rows
-		idx_t count = 0;
-		idx_t max_count = STANDARD_VECTOR_SIZE;
-
-		while (state.current_row < state.results.size() && count < max_count) {
-			auto &res = state.results[state.current_row];
-			output.SetValue(0, count, Value::BIGINT(res.row_id));
-			if (!bind_data.is_multivariate) {
-				output.SetValue(1, count, Value::DOUBLE(res.value));
-				output.SetValue(2, count, Value::DOUBLE(res.anomaly_score));
-				output.SetValue(3, count, Value::BOOLEAN(res.is_anomaly));
-			} else {
-				output.SetValue(1, count, Value::DOUBLE(res.anomaly_score));
-				output.SetValue(2, count, Value::BOOLEAN(res.is_anomaly));
-			}
-			state.current_row++;
-			count++;
-		}
+		idx_t count = MinValue<idx_t>(state.scores.size() - state.current_row, STANDARD_VECTOR_SIZE);
 		output.SetCardinality(count);
+
+		auto row_ids = FlatVector::GetData<int64_t>(output.data[0]);
+		idx_t col = 1;
+		double *values = nullptr;
+		if (!bind_data.is_multivariate) {
+			values = FlatVector::GetData<double>(output.data[col++]);
+		}
+		auto anomaly_scores = FlatVector::GetData<double>(output.data[col++]);
+		auto is_anomaly = FlatVector::GetData<bool>(output.data[col]);
+
+		for (idx_t i = 0; i < count; ++i) {
+			idx_t r = state.current_row + i;
+			row_ids[i] = static_cast<int64_t>(r + 1);  // 1-indexed
+			if (values) {
+				// Mixed-type univariate input has no numeric first column; it reports 0.0
+				values[i] = r < state.first_column_values.size() ? state.first_column_values[r] : 0.0;
+			}
+			anomaly_scores[i] = state.scores[r];
+			is_anomaly[i] = state.scores[r] > state.threshold;
+		}
+		state.current_row += count;
 	} else {
 		// Summary mode - return single row
 		if (state.current_row == 0) {
@@ -1214,36 +1214,52 @@ static void DBSCANExecute(ClientContext &context, TableFunctionInput &data_p, Da
 		string query = "SELECT " + column_list + " FROM " + BuildQueryTableRef(bind_data.table_name) + " WHERE " +
 		               null_checks;
 
-		auto result = con.Query(query);
+		// Stream the input instead of materializing the full result; the
+		// clustering algorithm requires the complete dataset, so the feature
+		// matrix built below is the only full copy that is kept.
+		auto result = con.SendQuery(query);
 		if (result->HasError()) {
 			throw InvalidInputException("Failed to query source table: %s", result->GetError());
 		}
 
 		std::vector<std::vector<double>> data;
+		std::vector<UnifiedVectorFormat> formats;
 		while (true) {
 			auto chunk = result->Fetch();
 			if (!chunk || chunk->size() == 0) {
 				break;
 			}
+
+			const idx_t chunk_cols = chunk->ColumnCount();
+			formats.resize(chunk_cols);
+			for (idx_t col = 0; col < chunk_cols; ++col) {
+				chunk->data[col].ToUnifiedFormat(chunk->size(), formats[col]);
+			}
+
 			for (idx_t row = 0; row < chunk->size(); ++row) {
-				std::vector<double> point;
-				point.reserve(chunk->ColumnCount());
 				bool valid_row = true;
-				for (idx_t col = 0; col < chunk->ColumnCount(); ++col) {
-					auto val = chunk->GetValue(col, row);
-					if (val.IsNull()) {
+				for (idx_t col = 0; col < chunk_cols; ++col) {
+					if (!formats[col].validity.RowIsValid(formats[col].sel->get_index(row))) {
 						valid_row = false;
 						break;
 					}
-					point.push_back(val.GetValue<double>());
 				}
-				if (valid_row) {
-					if (!bind_data.is_multivariate) {
-						state.first_column_values.push_back(point[0]);
-					}
-					data.push_back(std::move(point));
+				if (!valid_row) {
+					continue;
 				}
+
+				std::vector<double> point(chunk_cols);
+				for (idx_t col = 0; col < chunk_cols; ++col) {
+					point[col] = UnifiedVectorFormat::GetData<double>(formats[col])[formats[col].sel->get_index(row)];
+				}
+				if (!bind_data.is_multivariate) {
+					state.first_column_values.push_back(point[0]);
+				}
+				data.push_back(std::move(point));
 			}
+		}
+		if (result->HasError()) {
+			throw InvalidInputException("Failed to query source table: %s", result->GetError());
 		}
 
 		state.total_count = static_cast<int64_t>(data.size());
@@ -1265,26 +1281,39 @@ static void DBSCANExecute(ClientContext &context, TableFunctionInput &data_p, Da
 		                                       " noise=" + std::to_string(state.noise_count));
 	}
 
-	// Output results
+	// Output results, streamed chunk-wise from the clustering results
 	if (bind_data.output_mode == "clusters") {
 		// Clusters mode - return one row per input point
-		idx_t count = 0;
-		while (state.current_row < state.points.size() && count < STANDARD_VECTOR_SIZE) {
-			auto &pt = state.points[state.current_row];
-			idx_t col = 0;
-			output.SetValue(col++, count, Value::BIGINT(static_cast<int64_t>(state.current_row + 1))); // 1-indexed
-			if (!bind_data.is_multivariate) {
-				output.SetValue(col++, count, Value::DOUBLE(state.first_column_values[state.current_row]));
-			}
-			output.SetValue(col++, count, Value::INTEGER(pt.cluster_id));
-			output.SetValue(col++, count, Value(DBSCANPointTypeToString(pt.point_type)));
-			output.SetValue(col++, count, Value::BIGINT(static_cast<int64_t>(pt.neighbor_count)));
-			output.SetValue(col++, count, Value::DOUBLE(state.anomaly_scores[state.current_row]));
-			output.SetValue(col++, count, Value::BOOLEAN(pt.cluster_id == -1));
-			state.current_row++;
-			count++;
-		}
+		idx_t count = MinValue<idx_t>(state.points.size() - state.current_row, STANDARD_VECTOR_SIZE);
 		output.SetCardinality(count);
+
+		idx_t col = 0;
+		auto row_ids = FlatVector::GetData<int64_t>(output.data[col++]);
+		double *values = nullptr;
+		if (!bind_data.is_multivariate) {
+			values = FlatVector::GetData<double>(output.data[col++]);
+		}
+		auto cluster_ids = FlatVector::GetData<int32_t>(output.data[col++]);
+		auto &point_type_vec = output.data[col];
+		auto point_types = FlatVector::GetData<string_t>(output.data[col++]);
+		auto neighbor_counts = FlatVector::GetData<int64_t>(output.data[col++]);
+		auto anomaly_scores = FlatVector::GetData<double>(output.data[col++]);
+		auto is_anomaly = FlatVector::GetData<bool>(output.data[col]);
+
+		for (idx_t i = 0; i < count; ++i) {
+			idx_t r = state.current_row + i;
+			auto &pt = state.points[r];
+			row_ids[i] = static_cast<int64_t>(r + 1);  // 1-indexed
+			if (values) {
+				values[i] = state.first_column_values[r];
+			}
+			cluster_ids[i] = pt.cluster_id;
+			point_types[i] = StringVector::AddString(point_type_vec, DBSCANPointTypeToString(pt.point_type));
+			neighbor_counts[i] = static_cast<int64_t>(pt.neighbor_count);
+			anomaly_scores[i] = state.anomaly_scores[r];
+			is_anomaly[i] = pt.cluster_id == -1;
+		}
+		state.current_row += count;
 	} else {
 		// Summary mode - return single row
 		if (state.current_row == 0) {
