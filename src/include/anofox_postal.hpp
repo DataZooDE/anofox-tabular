@@ -6,6 +6,7 @@
 #include "duckdb/main/client_context.hpp"
 
 #include <atomic>
+#include <functional>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -17,11 +18,6 @@ void RegisterPostalOptions(ExtensionLoader &loader);
 void RegisterPostalFunctions(ExtensionLoader &loader);
 
 namespace postal {
-
-struct PostalComponent {
-	std::string label;
-	std::string value;
-};
 
 struct PostalStatus {
 	bool initialized = false;
@@ -35,8 +31,16 @@ public:
 
 	void EnsureInitialized(ClientContext &context);
 	void LoadData(ClientContext &context);
-	std::vector<PostalComponent> ParseAddress(const std::string &input);
-	std::vector<std::string> ExpandAddress(const std::string &input);
+	//! Parses `input` and invokes `visit(labels, values, count)` on the raw
+	//! libpostal component arrays. The callback writes the values straight into
+	//! DuckDB vectors, so no intermediate std::string copies are made; the
+	//! libpostal response is released on every exit path.
+	void ParseAddress(const std::string &input,
+	                  const std::function<void(char **labels, char **values, size_t count)> &visit);
+	//! Expands `input` and invokes `visit(expansions, count)` on the raw
+	//! libpostal expansion array (same direct-write contract as ParseAddress).
+	void ExpandAddress(const std::string &input,
+	                   const std::function<void(char **expansions, size_t count)> &visit);
 	PostalStatus GetStatus(ClientContext &context);
 
 	void SetDataDirectory(const std::string &path);

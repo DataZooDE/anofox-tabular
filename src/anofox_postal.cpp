@@ -186,7 +186,8 @@ std::string PostalManager::GetDataDirectory() const {
 	return data_directory;
 }
 
-std::vector<PostalComponent> PostalManager::ParseAddress(const std::string &input) {
+void PostalManager::ParseAddress(const std::string &input,
+                                 const std::function<void(char **labels, char **values, size_t count)> &visit) {
 	libpostal_address_parser_options_t options = libpostal_get_address_parser_default_options();
 	// RAII (issue #60): the response is destroyed even if building the result
 	// strings throws.
@@ -201,18 +202,15 @@ std::vector<PostalComponent> PostalManager::ParseAddress(const std::string &inpu
 		AnofoxTrace(AnofoxLogLevel::Warn, "Postal parse failed");
 		throw IOException("libpostal_parse_address failed");
 	}
-	AnofoxTrace(AnofoxLogLevel::Debug,
-	           "Postal parsed address components=" + std::to_string(parsed.Get()->num_components) + " ");
-
-	std::vector<PostalComponent> components;
-	components.reserve(parsed.Get()->num_components);
-	for (size_t i = 0; i < parsed.Get()->num_components; i++) {
-		components.push_back({parsed.Get()->labels[i], parsed.Get()->components[i]});
+	if (AnofoxTraceConfig::Get().ShouldLog(AnofoxLogLevel::Debug)) {
+		AnofoxTrace(AnofoxLogLevel::Debug,
+		            "Postal parsed address components=" + std::to_string(parsed.Get()->num_components) + " ");
 	}
-	return components;
+	visit(parsed.Get()->labels, parsed.Get()->components, parsed.Get()->num_components);
 }
 
-std::vector<std::string> PostalManager::ExpandAddress(const std::string &input) {
+void PostalManager::ExpandAddress(const std::string &input,
+                                  const std::function<void(char **expansions, size_t count)> &visit) {
 	libpostal_normalize_options_t options = libpostal_get_default_options();
 	// RAII (issue #60): the expansion array destroy call needs the element
 	// count, so a small dedicated guard owns both.
@@ -234,15 +232,11 @@ std::vector<std::string> PostalManager::ExpandAddress(const std::string &input) 
 		AnofoxTrace(AnofoxLogLevel::Warn, "Postal expand failed");
 		throw IOException("libpostal_expand_address failed");
 	}
-	AnofoxTrace(AnofoxLogLevel::Debug,
-	           "Postal expand generated " + std::to_string(guard.count) + " variants");
-
-	std::vector<std::string> result;
-	result.reserve(guard.count);
-	for (size_t i = 0; i < guard.count; i++) {
-		result.emplace_back(guard.expansions[i]);
+	if (AnofoxTraceConfig::Get().ShouldLog(AnofoxLogLevel::Debug)) {
+		AnofoxTrace(AnofoxLogLevel::Debug,
+		            "Postal expand generated " + std::to_string(guard.count) + " variants");
 	}
-	return result;
+	visit(guard.expansions, guard.count);
 }
 
 void PostalManager::LoadData(ClientContext &context) {
@@ -439,7 +433,6 @@ void PostalManager::Initialize(ClientContext &context) {
 namespace duckdb {
 namespace anofox {
 
-using postal::PostalComponent;
 using postal::PostalManager;
 using postal::PostalStatus;
 
@@ -464,12 +457,16 @@ void PostalParseAddressFunction(DataChunk &args, ExpressionState &state, Vector 
 	result.SetVectorType(VectorType::FLAT_VECTOR);
 	auto &children = StructVector::GetEntries(result);
 
-	auto &house_number_vec = *children[0];
-	auto &road_vec = *children[1];
-	auto &city_vec = *children[2];
-	auto &state_vec = *children[3];
-	auto &postcode_vec = *children[4];
-	auto &country_vec = *children[5];
+	// The recognized component labels in struct-child order. Child data
+	// pointers are hoisted out of the row loop (struct children are pre-sized,
+	// so the pointers stay valid for the whole chunk).
+	static constexpr const char *COMPONENT_LABELS[] = {"house_number", "road",     "city",
+	                                                   "state",        "postcode", "country"};
+	constexpr idx_t COMPONENT_COUNT = 6;
+	string_t *child_data[COMPONENT_COUNT];
+	for (idx_t c = 0; c < COMPONENT_COUNT; c++) {
+		child_data[c] = FlatVector::GetData<string_t>(*children[c]);
+	}
 
 	// Initialize libpostal lazily on the first non-NULL row so NULL-only
 	// queries never require the data bundle.
@@ -489,28 +486,24 @@ void PostalParseAddressFunction(DataChunk &args, ExpressionState &state, Vector 
 			initialization_checked = true;
 		}
 
-		auto input_str = inputs[idx].GetString();
-		auto components = manager.ParseAddress(input_str);
-
 		for (auto &child : children) {
 			FlatVector::SetNull(*child, i, true);
 		}
 
-		for (const auto &component : components) {
-			if (component.label == "house_number") {
-				house_number_vec.SetValue(i, component.value);
-			} else if (component.label == "road") {
-				road_vec.SetValue(i, component.value);
-			} else if (component.label == "city") {
-				city_vec.SetValue(i, component.value);
-			} else if (component.label == "state") {
-				state_vec.SetValue(i, component.value);
-			} else if (component.label == "postcode") {
-				postcode_vec.SetValue(i, component.value);
-			} else if (component.label == "country") {
-				country_vec.SetValue(i, component.value);
+		// Write the libpostal component values straight into the child vectors
+		// (no intermediate std::string or Value copies).
+		auto input_str = inputs[idx].GetString();
+		manager.ParseAddress(input_str, [&](char **labels, char **values, size_t count) {
+			for (size_t component = 0; component < count; component++) {
+				for (idx_t c = 0; c < COMPONENT_COUNT; c++) {
+					if (std::strcmp(labels[component], COMPONENT_LABELS[c]) == 0) {
+						child_data[c][i] = StringVector::AddString(*children[c], values[component]);
+						FlatVector::SetNull(*children[c], i, false);
+						break;
+					}
+				}
 			}
-		}
+		});
 	}
 
 	if (args.AllConstant()) {
@@ -529,6 +522,7 @@ void PostalExpandAddressFunction(DataChunk &args, ExpressionState &state, Vector
 
 	result.SetVectorType(VectorType::FLAT_VECTOR);
 	auto list_entries = FlatVector::GetData<list_entry_t>(result);
+	auto &expansion_child = ListVector::GetEntry(result);
 
 	// Initialize libpostal lazily on the first non-NULL row so NULL-only
 	// queries never require the data bundle.
@@ -547,15 +541,21 @@ void PostalExpandAddressFunction(DataChunk &args, ExpressionState &state, Vector
 			initialization_checked = true;
 		}
 
+		// Write the libpostal expansions straight into the list child vector
+		// (reserve once per row, no per-element Value construction).
 		auto input_str = inputs[idx].GetString();
-		auto expansions = manager.ExpandAddress(input_str);
-
-		list_entries[i].offset = ListVector::GetListSize(result);
-		list_entries[i].length = expansions.size();
-
-		for (auto &expansion : expansions) {
-			ListVector::PushBack(result, Value(expansion));
-		}
+		manager.ExpandAddress(input_str, [&](char **expansions, size_t count) {
+			auto offset = ListVector::GetListSize(result);
+			ListVector::Reserve(result, offset + count);
+			// Re-fetch after Reserve: growing the child may reallocate its data.
+			auto child_data = FlatVector::GetData<string_t>(expansion_child);
+			for (size_t k = 0; k < count; k++) {
+				child_data[offset + k] = StringVector::AddString(expansion_child, expansions[k]);
+			}
+			ListVector::SetListSize(result, offset + count);
+			list_entries[i].offset = offset;
+			list_entries[i].length = count;
+		});
 	}
 
 	if (args.AllConstant()) {

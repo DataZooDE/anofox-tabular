@@ -1851,74 +1851,85 @@ std::string PIIEngine::Mask(
 
 namespace {
 
+// Shared implementation for all detect-style scalars: runs Detect() with the
+// given type filter and writes the matches directly into the LIST(STRUCT)
+// result vector. The input is normalized once per chunk and match rows are
+// written into the list child vectors without per-row Value materialization.
+void ExecutePIIDetectToList(DataChunk &args, Vector &result, const std::vector<PIIType> &filter) {
+    auto &engine = PIIEngine::Instance();
+    // Snapshot the configuration once per chunk; all reads go through it
+    const auto config = PIIConfig::Get().Snapshot();
+    result.SetVectorType(VectorType::FLAT_VECTOR);
+
+    // Get list entries data and child struct vector
+    auto list_entries = FlatVector::GetData<list_entry_t>(result);
+    auto &child_struct = ListVector::GetEntry(result);
+    auto &struct_children = StructVector::GetEntries(child_struct);
+
+    // References to individual struct fields
+    auto &type_vec = *struct_children[0];       // VARCHAR: type
+    auto &text_vec = *struct_children[1];       // VARCHAR: text
+    auto &start_pos_vec = *struct_children[2];  // BIGINT: start_pos
+    auto &end_pos_vec = *struct_children[3];    // BIGINT: end_pos
+    auto &confidence_vec = *struct_children[4]; // DOUBLE: confidence
+
+    // Reset list size
+    ListVector::SetListSize(result, 0);
+
+    UnifiedVectorFormat input_data;
+    args.data[0].ToUnifiedFormat(args.size(), input_data);
+    auto input_values = UnifiedVectorFormat::GetData<string_t>(input_data);
+
+    for (idx_t row = 0; row < args.size(); row++) {
+        auto input_idx = input_data.sel->get_index(row);
+        if (!input_data.validity.RowIsValid(input_idx)) {
+            FlatVector::SetNull(result, row, true);
+            continue;
+        }
+        FlatVector::SetNull(result, row, false);
+
+        std::string text = input_values[input_idx].GetString();
+        auto matches = engine.Detect(text, filter, config);
+
+        // Set list entry for this row and reserve space in the child vector
+        auto offset = ListVector::GetListSize(result);
+        list_entries[row].offset = offset;
+        list_entries[row].length = matches.size();
+        ListVector::Reserve(result, offset + matches.size());
+
+        // Re-fetch the child data pointers after Reserve: growing the list may
+        // reallocate the child vectors.
+        auto type_data = FlatVector::GetData<string_t>(type_vec);
+        auto text_data = FlatVector::GetData<string_t>(text_vec);
+        auto start_data = FlatVector::GetData<int64_t>(start_pos_vec);
+        auto end_data = FlatVector::GetData<int64_t>(end_pos_vec);
+        auto confidence_data = FlatVector::GetData<double>(confidence_vec);
+
+        for (idx_t i = 0; i < matches.size(); i++) {
+            auto &match = matches[i];
+            auto child_idx = offset + i;
+            type_data[child_idx] = StringVector::AddString(type_vec, PIITypeToString(match.type));
+            text_data[child_idx] = StringVector::AddString(text_vec, match.matched_text);
+            start_data[child_idx] = static_cast<int64_t>(match.start_pos);
+            end_data[child_idx] = static_cast<int64_t>(match.end_pos);
+            confidence_data[child_idx] = match.confidence;
+        }
+        ListVector::SetListSize(result, offset + matches.size());
+    }
+
+    // Fix for constant folding: Convert to CONSTANT_VECTOR when all inputs are constant
+    // This prevents assertion failures in DuckDB's expression evaluator which expects
+    // constant input arguments to produce constant result vectors
+    if (args.AllConstant()) {
+        result.SetVectorType(VectorType::CONSTANT_VECTOR);
+    }
+}
+
 // anofox_tab_pii_detect(text) -> LIST(STRUCT(...)) of matches (alias: pii_detect)
 // Returns idiomatic DuckDB types that can be queried with unnest, dot notation, etc.
 struct PIIDetectFunction {
     static void Execute(DataChunk &args, ExpressionState &state, Vector &result) {
-        auto &engine = PIIEngine::Instance();
-        // Snapshot the configuration once per chunk; all reads go through it
-        const auto config = PIIConfig::Get().Snapshot();
-        result.SetVectorType(VectorType::FLAT_VECTOR);
-
-        // Get list entries data and child struct vector
-        auto list_entries = FlatVector::GetData<list_entry_t>(result);
-        auto &child_struct = ListVector::GetEntry(result);
-        auto &struct_children = StructVector::GetEntries(child_struct);
-
-        // References to individual struct fields
-        auto &type_vec = *struct_children[0];       // VARCHAR: type
-        auto &text_vec = *struct_children[1];       // VARCHAR: text
-        auto &start_pos_vec = *struct_children[2];  // BIGINT: start_pos
-        auto &end_pos_vec = *struct_children[3];    // BIGINT: end_pos
-        auto &confidence_vec = *struct_children[4]; // DOUBLE: confidence
-
-        // Reset list size
-        ListVector::SetListSize(result, 0);
-
-        for (idx_t row = 0; row < args.size(); row++) {
-            auto input_value = args.GetValue(0, row);
-            if (input_value.IsNull()) {
-                FlatVector::SetNull(result, row, true);
-                continue;
-            }
-            FlatVector::SetNull(result, row, false);
-
-            std::string text = input_value.ToString();
-            auto matches = engine.Detect(text, {}, config);
-
-            // Set list entry for this row
-            list_entries[row].offset = ListVector::GetListSize(result);
-            list_entries[row].length = matches.size();
-
-            // Reserve space in child vector
-            ListVector::Reserve(result, ListVector::GetListSize(result) + matches.size());
-
-            // Add each match to the list
-            for (size_t i = 0; i < matches.size(); i++) {
-                auto &match = matches[i];
-                idx_t child_idx = ListVector::GetListSize(result);
-
-                // Set struct field values
-                FlatVector::GetData<string_t>(type_vec)[child_idx] =
-                    StringVector::AddString(type_vec, PIITypeToString(match.type));
-                FlatVector::GetData<string_t>(text_vec)[child_idx] =
-                    StringVector::AddString(text_vec, match.matched_text);
-                FlatVector::GetData<int64_t>(start_pos_vec)[child_idx] =
-                    static_cast<int64_t>(match.start_pos);
-                FlatVector::GetData<int64_t>(end_pos_vec)[child_idx] =
-                    static_cast<int64_t>(match.end_pos);
-                FlatVector::GetData<double>(confidence_vec)[child_idx] = match.confidence;
-
-                ListVector::SetListSize(result, child_idx + 1);
-            }
-        }
-
-        // Fix for constant folding: Convert to CONSTANT_VECTOR when all inputs are constant
-        // This prevents assertion failures in DuckDB's expression evaluator which expects
-        // constant input arguments to produce constant result vectors
-        if (args.AllConstant()) {
-            result.SetVectorType(VectorType::CONSTANT_VECTOR);
-        }
+        ExecutePIIDetectToList(args, result, {});
     }
 
     static ScalarFunction GetFunction() {
@@ -2128,47 +2139,10 @@ Value CreatePIIMatchListValue(const std::vector<PIIMatch> &matches) {
     return Value::LIST(GetPIIMatchStructType(), std::move(match_values));
 }
 
-// Template for type-specific detection
-template<PIIType Type>
-struct PIIDetectTypeFunction {
-    static void Execute(DataChunk &args, ExpressionState &state, Vector &result) {
-        auto &engine = PIIEngine::Instance();
-        const auto config = PIIConfig::Get().Snapshot();
-
-        UnaryExecutor::ExecuteWithNulls<string_t, list_entry_t>(
-            args.data[0], result, args.size(),
-            [&](string_t input, ValidityMask &mask, idx_t idx) {
-                std::string text = input.GetString();
-
-                // Detect with type filter
-                std::vector<PIIType> filter = {Type};
-                auto matches = engine.Detect(text, filter, config);
-
-                auto list_value = CreatePIIMatchListValue(matches);
-                result.SetValue(idx, list_value);
-
-                return list_entry_t{0, 0};  // Return value is not used when SetValue is called
-            }
-        );
-    }
-};
-
 // pii_detect_emails(text) -> LIST(STRUCT(...))
 struct PIIDetectEmailsFunction {
     static void Execute(DataChunk &args, ExpressionState &state, Vector &result) {
-        auto &engine = PIIEngine::Instance();
-        const auto config = PIIConfig::Get().Snapshot();
-        std::vector<PIIType> filter = {PIIType::EMAIL};
-
-        for (idx_t i = 0; i < args.size(); i++) {
-            auto val = args.data[0].GetValue(i);
-            if (val.IsNull()) {
-                result.SetValue(i, Value(LogicalType::SQLNULL));
-            } else {
-                auto matches = engine.Detect(val.GetValue<std::string>(), filter, config);
-                result.SetValue(i, CreatePIIMatchListValue(matches));
-            }
-        }
+        ExecutePIIDetectToList(args, result, {PIIType::EMAIL});
     }
 
     static ScalarFunction GetFunction() {
@@ -2180,19 +2154,7 @@ struct PIIDetectEmailsFunction {
 // pii_detect_phones(text) -> LIST(STRUCT(...))
 struct PIIDetectPhonesFunction {
     static void Execute(DataChunk &args, ExpressionState &state, Vector &result) {
-        auto &engine = PIIEngine::Instance();
-        const auto config = PIIConfig::Get().Snapshot();
-        std::vector<PIIType> filter = {PIIType::PHONE};
-
-        for (idx_t i = 0; i < args.size(); i++) {
-            auto val = args.data[0].GetValue(i);
-            if (val.IsNull()) {
-                result.SetValue(i, Value(LogicalType::SQLNULL));
-            } else {
-                auto matches = engine.Detect(val.GetValue<std::string>(), filter, config);
-                result.SetValue(i, CreatePIIMatchListValue(matches));
-            }
-        }
+        ExecutePIIDetectToList(args, result, {PIIType::PHONE});
     }
 
     static ScalarFunction GetFunction() {
@@ -2204,19 +2166,7 @@ struct PIIDetectPhonesFunction {
 // pii_detect_credit_cards(text) -> LIST(STRUCT(...))
 struct PIIDetectCreditCardsFunction {
     static void Execute(DataChunk &args, ExpressionState &state, Vector &result) {
-        auto &engine = PIIEngine::Instance();
-        const auto config = PIIConfig::Get().Snapshot();
-        std::vector<PIIType> filter = {PIIType::CREDIT_CARD};
-
-        for (idx_t i = 0; i < args.size(); i++) {
-            auto val = args.data[0].GetValue(i);
-            if (val.IsNull()) {
-                result.SetValue(i, Value(LogicalType::SQLNULL));
-            } else {
-                auto matches = engine.Detect(val.GetValue<std::string>(), filter, config);
-                result.SetValue(i, CreatePIIMatchListValue(matches));
-            }
-        }
+        ExecutePIIDetectToList(args, result, {PIIType::CREDIT_CARD});
     }
 
     static ScalarFunction GetFunction() {
@@ -2228,19 +2178,7 @@ struct PIIDetectCreditCardsFunction {
 // pii_detect_ssns(text) -> LIST(STRUCT(...))
 struct PIIDetectSSNsFunction {
     static void Execute(DataChunk &args, ExpressionState &state, Vector &result) {
-        auto &engine = PIIEngine::Instance();
-        const auto config = PIIConfig::Get().Snapshot();
-        std::vector<PIIType> filter = {PIIType::US_SSN};
-
-        for (idx_t i = 0; i < args.size(); i++) {
-            auto val = args.data[0].GetValue(i);
-            if (val.IsNull()) {
-                result.SetValue(i, Value(LogicalType::SQLNULL));
-            } else {
-                auto matches = engine.Detect(val.GetValue<std::string>(), filter, config);
-                result.SetValue(i, CreatePIIMatchListValue(matches));
-            }
-        }
+        ExecutePIIDetectToList(args, result, {PIIType::US_SSN});
     }
 
     static ScalarFunction GetFunction() {
@@ -2252,19 +2190,7 @@ struct PIIDetectSSNsFunction {
 // pii_detect_names(text) -> LIST(STRUCT(...))
 struct PIIDetectNamesFunction {
     static void Execute(DataChunk &args, ExpressionState &state, Vector &result) {
-        auto &engine = PIIEngine::Instance();
-        const auto config = PIIConfig::Get().Snapshot();
-        std::vector<PIIType> filter = {PIIType::NAME};
-
-        for (idx_t i = 0; i < args.size(); i++) {
-            auto val = args.data[0].GetValue(i);
-            if (val.IsNull()) {
-                result.SetValue(i, Value(LogicalType::SQLNULL));
-            } else {
-                auto matches = engine.Detect(val.GetValue<std::string>(), filter, config);
-                result.SetValue(i, CreatePIIMatchListValue(matches));
-            }
-        }
+        ExecutePIIDetectToList(args, result, {PIIType::NAME});
     }
 
     static ScalarFunction GetFunction() {
@@ -2276,19 +2202,7 @@ struct PIIDetectNamesFunction {
 // pii_detect_ibans(text) -> LIST(STRUCT(...))
 struct PIIDetectIBANsFunction {
     static void Execute(DataChunk &args, ExpressionState &state, Vector &result) {
-        auto &engine = PIIEngine::Instance();
-        const auto config = PIIConfig::Get().Snapshot();
-        std::vector<PIIType> filter = {PIIType::IBAN};
-
-        for (idx_t i = 0; i < args.size(); i++) {
-            auto val = args.data[0].GetValue(i);
-            if (val.IsNull()) {
-                result.SetValue(i, Value(LogicalType::SQLNULL));
-            } else {
-                auto matches = engine.Detect(val.GetValue<std::string>(), filter, config);
-                result.SetValue(i, CreatePIIMatchListValue(matches));
-            }
-        }
+        ExecutePIIDetectToList(args, result, {PIIType::IBAN});
     }
 
     static ScalarFunction GetFunction() {
@@ -2394,22 +2308,14 @@ struct PIIMaskColumnFunction {
         // Use type filter for detection
         std::vector<PIIType> filter = {pii_type};
 
-        for (idx_t i = 0; i < args.size(); i++) {
-            auto val = args.data[0].GetValue(i);
-            if (val.IsNull()) {
-                result.SetValue(i, Value(LogicalType::SQLNULL));
-            } else {
-                auto text = val.GetValue<std::string>();
-                // Detect only the specified type, then mask
-                auto matches = engine.Detect(text, filter, config);
-                if (matches.empty()) {
-                    // No PII of that type found - return original
-                    result.SetValue(i, Value(text));
-                } else {
-                    result.SetValue(i, Value(engine.Mask(text, strategy, filter, config)));
-                }
+        // Mask() returns the original text when nothing of the requested type is
+        // found, so a single call per row suffices (no separate Detect pass).
+        UnaryExecutor::Execute<string_t, string_t>(
+            args.data[0], result, args.size(),
+            [&](string_t input) {
+                return StringVector::AddString(result, engine.Mask(input.GetString(), strategy, filter, config));
             }
-        }
+        );
     }
 
     static ScalarFunction GetFunction() {
@@ -2434,15 +2340,12 @@ struct PIIRedactColumnFunction {
             strategy = StringToMaskStrategy(strategy_arg.GetValue<std::string>());
         }
 
-        for (idx_t i = 0; i < args.size(); i++) {
-            auto val = args.data[0].GetValue(i);
-            if (val.IsNull()) {
-                result.SetValue(i, Value(LogicalType::SQLNULL));
-            } else {
-                auto text = val.GetValue<std::string>();
-                result.SetValue(i, Value(engine.Mask(text, strategy, {}, config)));
+        UnaryExecutor::Execute<string_t, string_t>(
+            args.data[0], result, args.size(),
+            [&](string_t input) {
+                return StringVector::AddString(result, engine.Mask(input.GetString(), strategy, {}, config));
             }
-        }
+        );
     }
 
     static ScalarFunction GetFunction() {
@@ -2459,15 +2362,12 @@ struct PIIRedactColumnDefaultFunction {
         const auto config = PIIConfig::Get().Snapshot();
         auto strategy = config.default_mask_strategy;
 
-        for (idx_t i = 0; i < args.size(); i++) {
-            auto val = args.data[0].GetValue(i);
-            if (val.IsNull()) {
-                result.SetValue(i, Value(LogicalType::SQLNULL));
-            } else {
-                auto text = val.GetValue<std::string>();
-                result.SetValue(i, Value(engine.Mask(text, strategy, {}, config)));
+        UnaryExecutor::Execute<string_t, string_t>(
+            args.data[0], result, args.size(),
+            [&](string_t input) {
+                return StringVector::AddString(result, engine.Mask(input.GetString(), strategy, {}, config));
             }
-        }
+        );
     }
 
     static ScalarFunction GetFunction() {

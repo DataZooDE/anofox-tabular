@@ -15,6 +15,7 @@
 
 #include <algorithm>
 #include <string>
+#include <string_view>
 #include <limits>
 #include <mutex>
 #include <regex>
@@ -61,9 +62,9 @@ std::string NormalizeValidationMode(const std::string &value) {
 	return normalized;
 }
 
-std::string ExtractDomain(const std::string &email) {
+std::string_view ExtractDomain(std::string_view email) {
 	auto at_pos = email.rfind('@');
-	if (at_pos == std::string::npos) {
+	if (at_pos == std::string_view::npos) {
 		return {};
 	}
 	auto domain_offset = at_pos + 1;
@@ -235,10 +236,10 @@ private:
 	email::SmtpOptions smtp_options;
 };
 
-EmailValidationResult ValidateRegex(const std::string &email, const std::regex &regex) {
+EmailValidationResult ValidateRegex(std::string_view email, const std::regex &regex) {
 	EmailValidationResult result;
 	result.stage = EMAIL_STAGE_REGEX;
-	if (std::regex_match(email, regex)) {
+	if (std::regex_match(email.begin(), email.end(), regex)) {
 		result.valid = true;
 	} else {
 		result.valid = false;
@@ -247,20 +248,24 @@ EmailValidationResult ValidateRegex(const std::string &email, const std::regex &
 	return result;
 }
 
-EmailValidationResult ValidateEmailAddress(const std::string &email, const std::string &mode_input) {
-    EmailTrace(AnofoxLogLevel::Info,
-               "ValidateEmailAddress start email=" + email + " mode=" + mode_input);
-	auto normalized_mode = NormalizeValidationMode(mode_input);
-	auto regex_ptr = EmailConfig::Get().GetCompiledRegex();
-	if (!regex_ptr) {
-		throw InternalException("Email regex pattern is not initialized");
+//! Validates one email address. `normalized_mode` must already be normalized via
+//! NormalizeValidationMode and `regex` is the compiled pattern; both are hoisted
+//! out of the per-chunk row loops so the hot regex path does no per-row setup.
+EmailValidationResult ValidateEmailAddress(std::string_view email, const std::string &normalized_mode,
+                                           const std::regex &regex) {
+	// Trace message construction is guarded so disabled tracing costs nothing per row.
+	if (AnofoxTraceConfig::Get().ShouldLog(AnofoxLogLevel::Info)) {
+		EmailTrace(AnofoxLogLevel::Info,
+		           "ValidateEmailAddress start email=" + std::string(email) + " mode=" + normalized_mode);
 	}
-	auto regex_result = ValidateRegex(email, *regex_ptr);
+	auto regex_result = ValidateRegex(email, regex);
 	if (!regex_result.valid || normalized_mode == EMAIL_STAGE_REGEX) {
-        EmailTrace(AnofoxLogLevel::Info,
-                   std::string("Regex stage result valid=") + (regex_result.valid ? "true" : "false") +
-                       " reason=" +
-                       (regex_result.reason.empty() ? std::string("<none>") : regex_result.reason));
+		if (AnofoxTraceConfig::Get().ShouldLog(AnofoxLogLevel::Info)) {
+			EmailTrace(AnofoxLogLevel::Info,
+			           std::string("Regex stage result valid=") + (regex_result.valid ? "true" : "false") +
+			               " reason=" +
+			               (regex_result.reason.empty() ? std::string("<none>") : regex_result.reason));
+		}
 		return regex_result;
 	}
 
@@ -271,7 +276,7 @@ EmailValidationResult ValidateEmailAddress(const std::string &email, const std::
 		return result;
 	}
 
-	auto domain = ExtractDomain(email);
+	auto domain = std::string(ExtractDomain(email));
 	if (domain.empty()) {
 	EmailTrace(AnofoxLogLevel::Warn, "No domain extracted from email");
 		EmailValidationResult result;
@@ -318,7 +323,7 @@ EmailValidationResult ValidateEmailAddress(const std::string &email, const std::
 	EmailTrace(AnofoxLogLevel::Info,
 	           "Starting SMTP verification with " + std::to_string(smtp_hosts.size()) + " host candidates");
 	email::SmtpClient smtp_client(smtp_options);
-	auto smtp_result = smtp_client.Verify(email, smtp_hosts);
+	auto smtp_result = smtp_client.Verify(std::string(email), smtp_hosts);
 
 	EmailValidationResult smtp_stage;
 	smtp_stage.stage = EMAIL_STAGE_SMTP;
@@ -341,27 +346,47 @@ EmailValidationResult ValidateEmailAddress(const std::string &email, const std::
 	return smtp_stage;
 }
 
-std::string ExtractValidationMode(optional_ptr<Vector> vector_ptr, idx_t index, idx_t count) {
-	if (!vector_ptr) {
-		return EmailConfig::Get().GetDefaultValidation();
-	}
-	auto &vector = *vector_ptr;
-	if (vector.GetVectorType() == VectorType::CONSTANT_VECTOR) {
-		if (ConstantVector::IsNull(vector)) {
-			return EmailConfig::Get().GetDefaultValidation();
+//! Per-chunk view of the optional validation-mode argument. The mode is usually
+//! a constant vector (literal or absent), in which case it is normalized exactly
+//! once; only genuinely varying mode columns pay per-row normalization.
+struct ValidationModeArgument {
+	bool per_row = false;
+	std::string constant_mode;
+	std::string default_mode;
+	UnifiedVectorFormat data;
+
+	static ValidationModeArgument Prepare(DataChunk &args, idx_t mode_column) {
+		ValidationModeArgument arg;
+		arg.default_mode = EmailConfig::Get().GetDefaultValidation();
+		if (args.ColumnCount() <= mode_column) {
+			arg.constant_mode = arg.default_mode;
+			return arg;
 		}
-		auto value = ConstantVector::GetData<string_t>(vector)[0].GetString();
-		return NormalizeValidationMode(value);
+		auto &vector = args.data[mode_column];
+		if (vector.GetVectorType() == VectorType::CONSTANT_VECTOR) {
+			if (ConstantVector::IsNull(vector)) {
+				arg.constant_mode = arg.default_mode;
+			} else {
+				arg.constant_mode = NormalizeValidationMode(ConstantVector::GetData<string_t>(vector)[0].GetString());
+			}
+			return arg;
+		}
+		arg.per_row = true;
+		vector.ToUnifiedFormat(args.size(), arg.data);
+		return arg;
 	}
-	auto unified = UnifiedVectorFormat();
-	vector.ToUnifiedFormat(count, unified);
-	auto idx = unified.sel->get_index(index);
-	if (!unified.validity.RowIsValid(idx)) {
-		return EmailConfig::Get().GetDefaultValidation();
+
+	std::string Get(idx_t row) const {
+		if (!per_row) {
+			return constant_mode;
+		}
+		auto idx = data.sel->get_index(row);
+		if (!data.validity.RowIsValid(idx)) {
+			return default_mode;
+		}
+		return NormalizeValidationMode(UnifiedVectorFormat::GetData<string_t>(data)[idx].GetString());
 	}
-	auto value = reinterpret_cast<string_t *>(unified.data)[idx].GetString();
-	return NormalizeValidationMode(value);
-}
+};
 
 LogicalType GetEmailValidateReturnType() {
 	child_list_t<LogicalType> smtp_children;
@@ -377,6 +402,18 @@ LogicalType GetEmailValidateReturnType() {
 	return LogicalType::STRUCT(result_children);
 }
 
+//! Appends strings to a list vector without per-element Value construction.
+void AppendToListVector(Vector &list_vec, const std::vector<std::string> &values) {
+	auto offset = ListVector::GetListSize(list_vec);
+	ListVector::Reserve(list_vec, offset + values.size());
+	auto &child = ListVector::GetEntry(list_vec);
+	auto child_data = FlatVector::GetData<string_t>(child);
+	for (idx_t i = 0; i < values.size(); i++) {
+		child_data[offset + i] = StringVector::AddString(child, values[i]);
+	}
+	ListVector::SetListSize(list_vec, offset + values.size());
+}
+
 void EmailValidateFunction(DataChunk &args, ExpressionState &, Vector &result) {
 	result.SetVectorType(VectorType::FLAT_VECTOR);
 	auto &children = StructVector::GetEntries(result);
@@ -389,54 +426,56 @@ void EmailValidateFunction(DataChunk &args, ExpressionState &, Vector &result) {
 	auto &smtp_transcript_vec = *smtp_children[0];
 
 	auto valid_data = FlatVector::GetData<bool>(valid_vec);
+	auto stage_data = FlatVector::GetData<string_t>(stage_vec);
+	auto reason_data = FlatVector::GetData<string_t>(reason_vec);
 	auto mx_entries = FlatVector::GetData<list_entry_t>(mx_vec);
 	auto transcript_entries = FlatVector::GetData<list_entry_t>(smtp_transcript_vec);
 
 	ListVector::SetListSize(mx_vec, 0);
 	ListVector::SetListSize(smtp_transcript_vec, 0);
 
+	// Normalize the inputs and hoist all configuration exactly once per chunk.
+	UnifiedVectorFormat email_data;
+	args.data[0].ToUnifiedFormat(args.size(), email_data);
+	auto email_values = UnifiedVectorFormat::GetData<string_t>(email_data);
+	auto mode_arg = ValidationModeArgument::Prepare(args, 1);
+	auto regex_ptr = EmailConfig::Get().GetCompiledRegex();
+	if (!regex_ptr) {
+		throw InternalException("Email regex pattern is not initialized");
+	}
+
 	for (idx_t row = 0; row < args.size(); row++) {
-		auto email_value = args.GetValue(0, row);
-		if (email_value.IsNull()) {
+		auto email_idx = email_data.sel->get_index(row);
+		if (!email_data.validity.RowIsValid(email_idx)) {
 			FlatVector::SetNull(result, row, true);
 			continue;
 		}
 		FlatVector::SetNull(result, row, false);
 
-		optional_ptr<Vector> mode_vector;
-		if (args.ColumnCount() > 1) {
-			mode_vector = &args.data[1];
-		}
-		std::string mode = ExtractValidationMode(mode_vector, row, args.size());
-
-		auto validation = ValidateEmailAddress(email_value.ToString(), mode);
+		auto &email = email_values[email_idx];
+		auto validation =
+		    ValidateEmailAddress(std::string_view(email.GetData(), email.GetSize()), mode_arg.Get(row), *regex_ptr);
 
 		FlatVector::SetNull(valid_vec, row, false);
 		valid_data[row] = validation.valid;
 
 		FlatVector::SetNull(stage_vec, row, false);
-		FlatVector::GetData<string_t>(stage_vec)[row] =
-		    StringVector::AddString(stage_vec, validation.stage);
+		stage_data[row] = StringVector::AddString(stage_vec, validation.stage);
 
 		if (validation.reason.empty()) {
 			FlatVector::SetNull(reason_vec, row, true);
 		} else {
 			FlatVector::SetNull(reason_vec, row, false);
-			FlatVector::GetData<string_t>(reason_vec)[row] =
-			    StringVector::AddString(reason_vec, validation.reason);
+			reason_data[row] = StringVector::AddString(reason_vec, validation.reason);
 		}
 
 		mx_entries[row].offset = ListVector::GetListSize(mx_vec);
 		mx_entries[row].length = validation.mx_hosts.size();
-		for (auto &host : validation.mx_hosts) {
-			ListVector::PushBack(mx_vec, Value(host));
-		}
+		AppendToListVector(mx_vec, validation.mx_hosts);
 
 		transcript_entries[row].offset = ListVector::GetListSize(smtp_transcript_vec);
 		transcript_entries[row].length = validation.smtp_transcript.size();
-		for (auto &entry : validation.smtp_transcript) {
-			ListVector::PushBack(smtp_transcript_vec, Value(entry));
-		}
+		AppendToListVector(smtp_transcript_vec, validation.smtp_transcript);
 	}
 }
 
@@ -444,21 +483,27 @@ void EmailIsValidFunction(DataChunk &args, ExpressionState &, Vector &result) {
 	result.SetVectorType(VectorType::FLAT_VECTOR);
 	auto bool_data = FlatVector::GetData<bool>(result);
 
+	// Normalize the inputs and hoist all configuration exactly once per chunk.
+	UnifiedVectorFormat email_data;
+	args.data[0].ToUnifiedFormat(args.size(), email_data);
+	auto email_values = UnifiedVectorFormat::GetData<string_t>(email_data);
+	auto mode_arg = ValidationModeArgument::Prepare(args, 1);
+	auto regex_ptr = EmailConfig::Get().GetCompiledRegex();
+	if (!regex_ptr) {
+		throw InternalException("Email regex pattern is not initialized");
+	}
+
 	for (idx_t row = 0; row < args.size(); row++) {
-		auto email_value = args.GetValue(0, row);
-		if (email_value.IsNull()) {
+		auto email_idx = email_data.sel->get_index(row);
+		if (!email_data.validity.RowIsValid(email_idx)) {
 			FlatVector::SetNull(result, row, true);
 			continue;
 		}
 		FlatVector::SetNull(result, row, false);
 
-		optional_ptr<Vector> mode_vector;
-		if (args.ColumnCount() > 1) {
-			mode_vector = &args.data[1];
-		}
-		std::string mode = ExtractValidationMode(mode_vector, row, args.size());
-
-		auto validation = ValidateEmailAddress(email_value.ToString(), mode);
+		auto &email = email_values[email_idx];
+		auto validation =
+		    ValidateEmailAddress(std::string_view(email.GetData(), email.GetSize()), mode_arg.Get(row), *regex_ptr);
 		bool_data[row] = validation.valid;
 	}
 }

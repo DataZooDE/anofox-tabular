@@ -67,11 +67,11 @@ void VATRegistry::InitializeCountries() {
   countries_["SK"] = {"SK", "Slovakia", "[0-9]{10}", true, false};
 }
 
-bool VATRegistry::IsValidCountry(const std::string& code) const {
+bool VATRegistry::IsValidCountry(std::string_view code) const {
   return countries_.find(NormalizeCountryCode(code)) != countries_.end();
 }
 
-bool VATRegistry::IsEUMember(const std::string& code) const {
+bool VATRegistry::IsEUMember(std::string_view code) const {
   auto it = countries_.find(NormalizeCountryCode(code));
   if (it == countries_.end()) {
     return false;
@@ -79,7 +79,7 @@ bool VATRegistry::IsEUMember(const std::string& code) const {
   return it->second.is_eu_member;
 }
 
-std::string VATRegistry::GetCountryName(const std::string& code) const {
+std::string VATRegistry::GetCountryName(std::string_view code) const {
   auto it = countries_.find(NormalizeCountryCode(code));
   if (it == countries_.end()) {
     return "";
@@ -96,7 +96,7 @@ bool VATRegistry::IsValidSyntax(const std::string& country,
   return std::regex_match(digits, it->second.compiled_pattern);
 }
 
-std::string VATRegistry::NormalizeVAT(const std::string& input) const {
+std::string VATRegistry::NormalizeVAT(std::string_view input) const {
   std::string result;
   result.reserve(input.size());
   // Convert to uppercase and remove spaces, punctuation
@@ -108,12 +108,12 @@ std::string VATRegistry::NormalizeVAT(const std::string& input) const {
   return result;
 }
 
-std::string VATRegistry::NormalizeCountryCode(const std::string& code) const {
+std::string VATRegistry::NormalizeCountryCode(std::string_view code) const {
   return ConvertVATToISO(NormalizeVAT(code));
 }
 
 std::optional<std::pair<std::string, std::string>> VATRegistry::SplitVAT(
-    const std::string& input) const {
+    std::string_view input) const {
   if (input.length() < 2) {
     return std::nullopt;
   }
