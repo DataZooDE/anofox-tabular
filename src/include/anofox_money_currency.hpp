@@ -25,13 +25,11 @@ struct CurrencyInfo {
     ~CurrencyInfo() = default;
 };
 
-// Global currency registry
+// Global currency registry. Fully initialized by its constructor (thread-safe
+// via C++11 magic statics) and immutable afterwards.
 class CurrencyRegistry {
 public:
     static CurrencyRegistry &GetInstance();
-
-    // Initialize the registry from embedded JSON
-    void Initialize();
 
     // Look up currency by ISO code (case-insensitive)
     optional_ptr<const CurrencyInfo> GetCurrency(const string &iso_code) const;
@@ -46,10 +44,9 @@ public:
     idx_t GetCurrencyCount() const;
 
 private:
-    CurrencyRegistry() = default;
+    CurrencyRegistry();
 
     case_insensitive_map_t<unique_ptr<CurrencyInfo>> currencies;
-    bool initialized = false;
 
     // Load hardcoded currencies into registry
     void LoadCurrencies();

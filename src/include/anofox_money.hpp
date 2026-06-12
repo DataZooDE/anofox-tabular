@@ -3,6 +3,7 @@
 #include "duckdb/main/extension/extension_loader.hpp"
 #include "duckdb/common/types/vector.hpp"
 #include "duckdb/common/vector_operations/vector_operations.hpp"
+#include "duckdb/common/string_util.hpp"
 
 namespace duckdb {
 namespace anofox {
@@ -13,10 +14,32 @@ namespace anofox {
 struct MoneyStructData {
   Vector& amount_vec;
   Vector& currency_vec;
+  UnifiedVectorFormat struct_data;
   UnifiedVectorFormat amount_data;
   UnifiedVectorFormat currency_data;
   double* amount_values;
   string_t* currency_values;
+
+  //! A money row is only usable if the parent struct and both children are non-NULL.
+  //! A struct with NULL children is treated as a NULL money value (issue #43).
+  //! The children belong to the row space of the (possibly dictionary-wrapped)
+  //! struct vector, so they are indexed through the parent selection first.
+  bool RowIsValid(idx_t i) const {
+    auto row = struct_data.sel->get_index(i);
+    return struct_data.validity.RowIsValid(row) &&
+           amount_data.validity.RowIsValid(amount_data.sel->get_index(row)) &&
+           currency_data.validity.RowIsValid(currency_data.sel->get_index(row));
+  }
+
+  double Amount(idx_t i) const {
+    auto row = struct_data.sel->get_index(i);
+    return amount_values[amount_data.sel->get_index(row)];
+  }
+
+  std::string Currency(idx_t i) const {
+    auto row = struct_data.sel->get_index(i);
+    return currency_values[currency_data.sel->get_index(row)].GetString();
+  }
 };
 
 inline MoneyStructData ExtractMoneyStruct(Vector& money_vec, idx_t count) {
@@ -30,6 +53,7 @@ inline MoneyStructData ExtractMoneyStruct(Vector& money_vec, idx_t count) {
     *children[1],
   };
 
+  money_vec.ToUnifiedFormat(count, data.struct_data);
   data.amount_vec.ToUnifiedFormat(count, data.amount_data);
   data.currency_vec.ToUnifiedFormat(count, data.currency_data);
   data.amount_values = reinterpret_cast<double*>(data.amount_data.data);
@@ -76,6 +100,13 @@ inline void SetMoneyResult(MoneyResultBuilder& builder, idx_t i,
   builder.currency_ptr[i] = StringVector::AddString(*children[1], currency);
 }
 
+//! Marks a money result row as SQL NULL. FlatVector::SetNull on a STRUCT vector
+//! sets the parent validity and recursively invalidates the children, so the
+//! row satisfies the invariant `f(NULL) IS NULL`.
+inline void SetMoneyResultNull(Vector& result, idx_t i) {
+  FlatVector::SetNull(result, i, true);
+}
+
 // ============================================================================
 // Currency Input Iterator Template
 // ============================================================================
@@ -112,11 +143,10 @@ inline void IterateMoneyComparison(DataChunk& args, Vector& result,
   auto result_data = FlatVector::GetData<bool>(result);
 
   for (idx_t i = 0; i < count; i++) {
-    auto amount_idx = data.amount_data.sel->get_index(i);
-    if (!data.amount_data.validity.RowIsValid(amount_idx)) {
+    if (!data.RowIsValid(i)) {
       FlatVector::SetNull(result, i, true);
     } else {
-      result_data[i] = pred(data.amount_values[amount_idx]);
+      result_data[i] = pred(data.Amount(i));
     }
   }
 }
@@ -136,31 +166,21 @@ inline void IterateBinaryMoneyOp(DataChunk& args, Vector& result,
   auto builder = PrepareMoneyResult(result);
 
   for (idx_t i = 0; i < count; i++) {
-    auto amount1_idx = data1.amount_data.sel->get_index(i);
-    auto currency1_idx = data1.currency_data.sel->get_index(i);
-    auto amount2_idx = data2.amount_data.sel->get_index(i);
-    auto currency2_idx = data2.currency_data.sel->get_index(i);
-
-    if (!data1.amount_data.validity.RowIsValid(amount1_idx) ||
-        !data1.currency_data.validity.RowIsValid(currency1_idx) ||
-        !data2.amount_data.validity.RowIsValid(amount2_idx) ||
-        !data2.currency_data.validity.RowIsValid(currency2_idx)) {
-      builder.amount_validity.SetInvalid(i);
-      builder.currency_validity.SetInvalid(i);
+    if (!data1.RowIsValid(i) || !data2.RowIsValid(i)) {
+      SetMoneyResultNull(result, i);
     } else {
-      auto currency1 = data1.currency_values[currency1_idx].GetString();
-      auto currency2 = data2.currency_values[currency2_idx].GetString();
+      auto currency1 = data1.Currency(i);
+      auto currency2 = data2.Currency(i);
 
-      if (check_same_currency && currency1 != currency2) {
+      // Codes are canonicalized at construction; compare case-insensitively so
+      // manually constructed structs with mixed-case codes still work.
+      if (check_same_currency && !StringUtil::CIEquals(currency1, currency2)) {
         throw InvalidInputException(
             "Cannot operate on money with different currencies: %s and %s",
             currency1.c_str(), currency2.c_str());
       }
 
-      double amount1 = data1.amount_values[amount1_idx];
-      double amount2 = data2.amount_values[amount2_idx];
-
-      op(builder, i, amount1, amount2, currency1, result);
+      op(builder, i, data1.Amount(i), data2.Amount(i), currency1, result);
     }
   }
 }

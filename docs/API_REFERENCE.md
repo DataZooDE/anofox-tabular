@@ -453,7 +453,7 @@ SELECT anofox_tab_money (alias: money(100.50, 'USD');
 
 #### `anofox_tab_money (alias: money_from_cents`
 
-Create a money value from integer cents.
+Create a money value from an integer amount in the currency's smallest unit (e.g. cents). The amount is divided by the currency's `subunit_to_unit` (100 for USD/EUR, 1 for JPY).
 
 **Signature:**
 ```sql
@@ -463,7 +463,7 @@ anofox_tab_money (alias: money_from_cents(cents BIGINT, currency_code VARCHAR) â
 **Example:**
 ```sql
 SELECT anofox_tab_money (alias: money_from_cents(10050, 'USD');
--- Returns: {amount: 10050.0, currency: 'USD'}
+-- Returns: {amount: 100.5, currency: 'USD'}
 ```
 
 ---
