@@ -181,20 +181,25 @@ SELECT current_setting('anofox_ner_model');
 ----
 distilbert-en
 
-# 21. SET to 'xlm-roberta-multi' (valid multilingual model) - accepted
-statement ok
+# 21. SET to 'xlm-roberta-multi' - rejected: no downloadable assets exist for
+# this model, so advertising it would be a silent no-op (issue #56). The error
+# lists the supported models.
+statement error
 SET anofox_ner_model = 'xlm-roberta-multi';
+----
+Unsupported NER model
 
 query T
 SELECT current_setting('anofox_ner_model');
 ----
-xlm-roberta-multi
+distilbert-en
 
-# 22. SET to 'invalid-model' - throws (model name validated at SET time)
+# 22. SET to 'invalid-model' - throws (model name validated at SET time);
+# the error message lists the valid model names
 statement error
 SET anofox_ner_model = 'invalid-model';
 ----
-Unsupported NER model
+Valid models: distilbert-en
 
 # 23. SET to 'DISTILBERT-EN' (wrong case) - throws (case-sensitive validation)
 statement error
