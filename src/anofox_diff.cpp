@@ -3,15 +3,19 @@
 #include "anofox_sql_utils.hpp"
 #include "telemetry.hpp"
 
+#include "duckdb/catalog/catalog.hpp"
+#include "duckdb/catalog/catalog_entry/table_catalog_entry.hpp"
+#include "duckdb/catalog/catalog_entry/view_catalog_entry.hpp"
+#include "duckdb/catalog/entry_lookup_info.hpp"
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/common/types/value.hpp"
 #include "duckdb/function/table_function.hpp"
 #include "duckdb/parser/parser.hpp"
+#include "duckdb/parser/qualified_name.hpp"
 #include "duckdb/parser/tableref/subqueryref.hpp"
 #include "duckdb/parser/parsed_data/create_table_function_info.hpp"
 #include "duckdb/main/client_context.hpp"
 
-#include <algorithm>
 #include <string>
 #include <unordered_set>
 
@@ -20,45 +24,17 @@ namespace anofox {
 
 namespace {
 
-constexpr const char *DIFF_TYPE_ADDED = "added";
-constexpr const char *DIFF_TYPE_REMOVED = "removed";
-constexpr const char *DIFF_TYPE_CHANGED = "changed";
-constexpr const char *DIFF_TYPE_UNCHANGED = "unchanged";
-
-//===--------------------------------------------------------------------===//
-// Diff Function Bind Data
-//===--------------------------------------------------------------------===//
-struct DiffFunctionBindData : public TableFunctionData {
-	vector<string> primary_keys;
-	vector<string> compare_columns;
-	bool include_all;
-
-	DiffFunctionBindData(vector<string> pks, vector<string> cols, bool include_all_rows)
-	    : primary_keys(std::move(pks)), compare_columns(std::move(cols)), include_all(include_all_rows) {
-	}
-};
-
-//===--------------------------------------------------------------------===//
-// Diff Function Local State
-//===--------------------------------------------------------------------===//
-struct DiffFunctionLocalState : public LocalTableFunctionState {
-	DiffFunctionLocalState() : initialized(false), finished(false) {
-	}
-
-	bool initialized;
-	bool finished;
-	idx_t current_row;
-};
-
 //===--------------------------------------------------------------------===//
 // Helper Functions
 //===--------------------------------------------------------------------===//
-static unique_ptr<LocalTableFunctionState> DiffLocalInit(ExecutionContext &context, TableFunctionInitInput &input,
-                                                         GlobalTableFunctionState *global_state) {
-	return make_uniq<DiffFunctionLocalState>();
-}
 
-static vector<string> ParseColumnList(const Value &column_value) {
+// Marker columns used to track row presence on each side of the FULL OUTER
+// JOIN. Unlike "first primary key IS NULL" checks, the markers stay correct
+// when primary key values themselves are NULL.
+constexpr const char *SOURCE_PRESENT_MARKER = "__anofox_diff_s_present";
+constexpr const char *TARGET_PRESENT_MARKER = "__anofox_diff_t_present";
+
+vector<string> ParseColumnList(const Value &column_value) {
 	vector<string> result;
 	if (column_value.IsNull()) {
 		return result;
@@ -80,125 +56,103 @@ static vector<string> ParseColumnList(const Value &column_value) {
 	return result;
 }
 
-static void ValidatePrimaryKeys(const vector<string> &primary_keys, const vector<string> &available_columns,
-                               const string &table_name) {
-	if (primary_keys.empty()) {
-		throw InvalidInputException("Primary key(s) must be specified for data diff");
+// Resolve the column names of a table or view through the catalog so schema
+// problems surface as clear binder errors instead of confusing errors from
+// the generated SQL.
+vector<string> GetRelationColumnNames(ClientContext &context, const string &function_name, const string &table_name) {
+	auto qname = QualifiedName::Parse(table_name);
+	EntryLookupInfo lookup_info(CatalogType::TABLE_ENTRY, qname.name);
+	auto entry = Catalog::GetEntry(context, qname.catalog, qname.schema, lookup_info, OnEntryNotFound::RETURN_NULL);
+	if (!entry) {
+		throw BinderException("%s: table or view '%s' does not exist", function_name, table_name);
 	}
 
-	std::unordered_set<string> available_set(available_columns.begin(), available_columns.end());
+	vector<string> result;
+	if (entry->type == CatalogType::TABLE_ENTRY) {
+		auto &table = entry->Cast<TableCatalogEntry>();
+		for (auto &col : table.GetColumns().Logical()) {
+			result.push_back(col.Name());
+		}
+	} else if (entry->type == CatalogType::VIEW_ENTRY) {
+		auto &view = entry->Cast<ViewCatalogEntry>();
+		view.BindView(context);
+		auto column_info = view.GetColumnInfo();
+		if (!column_info) {
+			throw BinderException("%s: unable to resolve the columns of view '%s'", function_name, table_name);
+		}
+		for (idx_t i = 0; i < column_info->names.size(); i++) {
+			result.push_back(i < view.aliases.size() ? view.aliases[i] : column_info->names[i]);
+		}
+	} else {
+		throw BinderException("%s: '%s' is not a table or view", function_name, table_name);
+	}
+	return result;
+}
 
+// DuckDB matches identifiers case-insensitively, so validation does too.
+std::unordered_set<string> MakeColumnSet(const vector<string> &columns) {
+	std::unordered_set<string> result;
+	for (const auto &col : columns) {
+		result.insert(StringUtil::Lower(col));
+	}
+	return result;
+}
+
+void ValidatePrimaryKeys(const string &function_name, const vector<string> &primary_keys,
+                         const std::unordered_set<string> &available_columns, const string &side,
+                         const string &table_name) {
 	for (const auto &pk : primary_keys) {
-		if (available_set.find(pk) == available_set.end()) {
-			throw InvalidInputException("Primary key column '%s' not found in %s table", pk, table_name);
+		if (available_columns.find(StringUtil::Lower(pk)) == available_columns.end()) {
+			throw BinderException("%s: Primary key column '%s' not found in %s table '%s'", function_name, pk, side,
+			                      table_name);
 		}
 	}
 }
 
-static void ValidateCompareColumns(const vector<string> &compare_columns, const vector<string> &available_columns,
-                                  const vector<string> &primary_keys) {
-	if (compare_columns.empty()) {
-		return; // Will use all columns
-	}
-
-	std::unordered_set<string> available_set(available_columns.begin(), available_columns.end());
-
+void ValidateCompareColumns(const string &function_name, const vector<string> &compare_columns,
+                            const std::unordered_set<string> &available_columns, const string &side,
+                            const string &table_name) {
 	for (const auto &col : compare_columns) {
-		if (available_set.find(col) == available_set.end()) {
-			throw InvalidInputException("Compare column '%s' not found in table", col);
+		if (available_columns.find(StringUtil::Lower(col)) == available_columns.end()) {
+			throw BinderException("%s: Compare column '%s' not found in %s table '%s'", function_name, col, side,
+			                      table_name);
 		}
 	}
 }
 
-//===--------------------------------------------------------------------===//
-// JoinDiff Bind Function
-//===--------------------------------------------------------------------===//
-static unique_ptr<FunctionData> JoinDiffBind(ClientContext &context, TableFunctionBindInput &input,
-                                             vector<LogicalType> &return_types, vector<string> &names) {
-	// Parameters:
-	// 0: source_table (TABLE)
-	// 1: target_table (TABLE)
-	// 2: primary_key(s) (VARCHAR or LIST<VARCHAR>)
-	// 3: compare_columns (LIST<VARCHAR>, optional, default NULL)
-	// 4: include_all (BOOLEAN, optional, default false)
+// Validate the requested key/compare columns against both table schemas and
+// resolve the effective compare set (defaults to the shared non-key columns).
+vector<string> ResolveCompareColumns(ClientContext &context, const string &function_name, const string &source_table,
+                                     const string &target_table, const vector<string> &primary_keys,
+                                     const vector<string> &compare_columns) {
+	auto source_columns = GetRelationColumnNames(context, function_name, source_table);
+	auto target_columns = GetRelationColumnNames(context, function_name, target_table);
+	auto source_set = MakeColumnSet(source_columns);
+	auto target_set = MakeColumnSet(target_columns);
 
-	if (input.inputs.size() < 3) {
-		throw InvalidInputException("anofox_diff_joindiff requires at least 3 arguments: source_table, target_table, primary_key(s)");
+	ValidatePrimaryKeys(function_name, primary_keys, source_set, "source", source_table);
+	ValidatePrimaryKeys(function_name, primary_keys, target_set, "target", target_table);
+
+	if (!compare_columns.empty()) {
+		ValidateCompareColumns(function_name, compare_columns, source_set, "source", source_table);
+		ValidateCompareColumns(function_name, compare_columns, target_set, "target", target_table);
+		return compare_columns;
 	}
 
-	// Parse primary keys
-	vector<string> primary_keys = ParseColumnList(input.inputs[2]);
-	if (primary_keys.empty()) {
-		throw InvalidInputException("Primary key(s) cannot be empty");
+	// Default: compare every non-key column the two tables share, in target
+	// column order (the output projects the target side)
+	auto pk_set = MakeColumnSet(primary_keys);
+	vector<string> shared_columns;
+	for (const auto &col : target_columns) {
+		auto lower = StringUtil::Lower(col);
+		if (pk_set.find(lower) != pk_set.end()) {
+			continue;
+		}
+		if (source_set.find(lower) != source_set.end()) {
+			shared_columns.push_back(col);
+		}
 	}
-
-	// Parse compare columns (optional)
-	vector<string> compare_columns;
-	if (input.inputs.size() > 3 && !input.inputs[3].IsNull()) {
-		compare_columns = ParseColumnList(input.inputs[3]);
-	}
-
-	// Parse include_all (optional, default false)
-	bool include_all = false;
-	if (input.inputs.size() > 4 && !input.inputs[4].IsNull()) {
-		include_all = input.inputs[4].GetValue<bool>();
-	}
-
-	// Output schema: diff_type + primary keys + compared columns
-	return_types.emplace_back(LogicalType(LogicalTypeId::VARCHAR));
-	names.emplace_back("diff_type");
-
-	// For now, we'll determine the actual schema dynamically during execution
-	// This is a simplified bind - in practice, we need access to the input table schemas
-
-	// LogMessage(context, "diff", "Binding JoinDiff with %zu primary key(s), %zu compare column(s), include_all=%d",
-	//           primary_keys.size(), compare_columns.size(), include_all);
-
-	return make_uniq<DiffFunctionBindData>(std::move(primary_keys), std::move(compare_columns), include_all);
-}
-
-//===--------------------------------------------------------------------===//
-// JoinDiff In-Out Function
-//===--------------------------------------------------------------------===//
-static OperatorResultType JoinDiffFunction(ExecutionContext &context, TableFunctionInput &data_p, DataChunk &input,
-                                          DataChunk &output) {
-	auto &bind_data = data_p.bind_data->Cast<DiffFunctionBindData>();
-	auto &local_state = data_p.local_state->Cast<DiffFunctionLocalState>();
-
-	if (local_state.finished) {
-		output.SetCardinality(0);
-		return OperatorResultType::FINISHED;
-	}
-
-	if (!local_state.initialized) {
-		// LogMessage(context.client, "diff", "Initializing JoinDiff function");
-		local_state.initialized = true;
-		local_state.current_row = 0;
-	}
-
-	// TODO: Implement actual FULL OUTER JOIN logic
-	// For now, return empty result set
-	output.SetCardinality(0);
-	local_state.finished = true;
-
-	return OperatorResultType::FINISHED;
-}
-
-//===--------------------------------------------------------------------===//
-// JoinDiff Finalize Function
-//===--------------------------------------------------------------------===//
-static OperatorFinalizeResultType JoinDiffFinalize(ExecutionContext &context, TableFunctionInput &data_p,
-                                                   DataChunk &output) {
-	auto &local_state = data_p.local_state->Cast<DiffFunctionLocalState>();
-
-	if (local_state.finished) {
-		return OperatorFinalizeResultType::FINISHED;
-	}
-
-	output.SetCardinality(0);
-	local_state.finished = true;
-
-	return OperatorFinalizeResultType::FINISHED;
+	return shared_columns;
 }
 
 } // anonymous namespace
@@ -220,13 +174,15 @@ static unique_ptr<SubqueryRef> ParseSubquery(const string &query, const ParserOp
 static string GenerateJoinDiffSQL(const string &source_table, const string &target_table,
                                   const vector<string> &primary_keys, const vector<string> &compare_columns,
                                   bool include_all) {
-	// Build the primary key join condition
+	// NULL-safe primary key join condition: rows whose key components are
+	// NULL still match their counterpart on the other side
 	string pk_join_condition;
 	for (size_t i = 0; i < primary_keys.size(); i++) {
 		if (i > 0) {
 			pk_join_condition += " AND ";
 		}
-		pk_join_condition += "s." + QuoteSqlIdentifier(primary_keys[i]) + " = t." + QuoteSqlIdentifier(primary_keys[i]);
+		pk_join_condition += "s." + QuoteSqlIdentifier(primary_keys[i]) + " IS NOT DISTINCT FROM t." +
+		                     QuoteSqlIdentifier(primary_keys[i]);
 	}
 
 	// Build the COALESCE expressions for primary keys
@@ -239,25 +195,22 @@ static string GenerateJoinDiffSQL(const string &source_table, const string &targ
 		             ") AS " + QuoteSqlIdentifier(primary_keys[i]);
 	}
 
-	// Generate the diff query
+	// Classify rows via the side-presence markers (robust against NULL keys)
 	string sql = "SELECT ";
 	sql += "CASE ";
-	sql += "WHEN s." + QuoteSqlIdentifier(primary_keys[0]) + " IS NULL THEN 'added' ";
-	sql += "WHEN t." + QuoteSqlIdentifier(primary_keys[0]) + " IS NULL THEN 'removed' ";
+	sql += "WHEN s." + string(SOURCE_PRESENT_MARKER) + " IS NULL THEN 'added' ";
+	sql += "WHEN t." + string(TARGET_PRESENT_MARKER) + " IS NULL THEN 'removed' ";
 
-	// For comparison, we need to check if any non-PK columns differ
-	// Simplified: use a hash-based comparison
-	if (compare_columns.empty()) {
-		// Compare all columns (approximation using struct comparison)
-		sql += "WHEN s IS DISTINCT FROM t THEN 'changed' ";
-	} else {
-		// Compare specific columns
+	// Compare the resolved columns one by one; the compare set was validated
+	// against both schemas at bind time
+	if (!compare_columns.empty()) {
 		sql += "WHEN (";
 		for (size_t i = 0; i < compare_columns.size(); i++) {
 			if (i > 0) {
 				sql += " OR ";
 			}
-			sql += "s." + QuoteSqlIdentifier(compare_columns[i]) + " IS DISTINCT FROM t." + QuoteSqlIdentifier(compare_columns[i]);
+			sql += "s." + QuoteSqlIdentifier(compare_columns[i]) + " IS DISTINCT FROM t." +
+			       QuoteSqlIdentifier(compare_columns[i]);
 		}
 		sql += ") THEN 'changed' ";
 	}
@@ -265,20 +218,22 @@ static string GenerateJoinDiffSQL(const string &source_table, const string &targ
 	sql += "ELSE 'unchanged' END AS diff_type, ";
 	sql += pk_select;
 
-	// Add all columns from target except primary keys (showing target values for changed rows)
+	// Add all columns from target except primary keys and the presence marker
+	// (showing target values for changed rows)
 	sql += ", t.* EXCLUDE (";
+	sql += string(TARGET_PRESENT_MARKER);
 	for (size_t i = 0; i < primary_keys.size(); i++) {
-		if (i > 0) {
-			sql += ", ";
-		}
-		sql += QuoteSqlIdentifier(primary_keys[i]);
+		sql += ", " + QuoteSqlIdentifier(primary_keys[i]);
 	}
 	sql += ")";
 
-	// Reference both tables via query_table() so hostile and schema-qualified
-	// names are handled by the shared quoting helpers
-	sql += " FROM " + BuildQueryTableRef(source_table) + " s ";
-	sql += "FULL OUTER JOIN " + BuildQueryTableRef(target_table) + " t ";
+	// Wrap each side with a constant presence marker; table references go
+	// through query_table() so hostile and schema-qualified names are handled
+	// by the shared quoting helpers
+	sql += " FROM (SELECT true AS " + string(SOURCE_PRESENT_MARKER) + ", * FROM " + BuildQueryTableRef(source_table) +
+	       ") s ";
+	sql += "FULL OUTER JOIN (SELECT true AS " + string(TARGET_PRESENT_MARKER) + ", * FROM " +
+	       BuildQueryTableRef(target_table) + ") t ";
 	sql += "ON " + pk_join_condition;
 
 	if (!include_all) {
@@ -298,7 +253,7 @@ static unique_ptr<TableRef> JoinDiffBindReplace(ClientContext &context, TableFun
 	// 4: include_all (BOOLEAN, optional)
 
 	if (input.inputs.size() < 3) {
-		throw BinderException("anofox_diff_joindiff requires at least 3 arguments: source_table, target_table, primary_key(s)");
+		throw BinderException("diff_joindiff requires at least 3 arguments: source_table, target_table, primary_key(s)");
 	}
 
 	// Parse source and target table names
@@ -316,24 +271,20 @@ static unique_ptr<TableRef> JoinDiffBindReplace(ClientContext &context, TableFun
 	}
 
 	// Parse compare columns (optional)
-	// Note: param 3 could also be bisection_threshold (BIGINT) for HashDiff compat
 	vector<string> compare_columns;
 	if (input.inputs.size() > 3 && !input.inputs[3].IsNull()) {
-		// Check type - LIST means compare_columns, BIGINT means bisection_threshold (ignore)
-		if (input.inputs[3].type().id() == LogicalTypeId::LIST) {
-			compare_columns = ParseColumnList(input.inputs[3]);
-		}
+		compare_columns = ParseColumnList(input.inputs[3]);
 	}
 
 	// Parse include_all (optional, default false)
-	// Note: param 4 could also be bisection_factor (BIGINT) for HashDiff compat
 	bool include_all = false;
 	if (input.inputs.size() > 4 && !input.inputs[4].IsNull()) {
-		// Check type - BOOLEAN means include_all, BIGINT means bisection_factor (ignore)
-		if (input.inputs[4].type().id() == LogicalTypeId::BOOLEAN) {
-			include_all = input.inputs[4].GetValue<bool>();
-		}
+		include_all = input.inputs[4].GetValue<bool>();
 	}
+
+	// Validate both schemas and resolve the effective compare set
+	compare_columns = ResolveCompareColumns(context, "diff_joindiff", source_table, target_table, primary_keys,
+	                                        compare_columns);
 
 	// Generate SQL query
 	string sql = GenerateJoinDiffSQL(source_table, target_table, primary_keys, compare_columns, include_all);
@@ -347,11 +298,18 @@ static unique_ptr<TableRef> JoinDiffBindReplace(ClientContext &context, TableFun
 // HashDiff bind_replace - wraps JoinDiff with separate telemetry tracking
 static unique_ptr<TableRef> HashDiffBindReplace(ClientContext &context, TableFunctionBindInput &input) {
 	PostHogTelemetry::Instance().CaptureFunctionExecution("diff_hashdiff");
-	// Currently, HashDiff uses the same logic as JoinDiff
-	// But we track it separately for telemetry purposes
+	// HashDiff currently executes the same NULL-safe full outer join plan as
+	// JoinDiff; it is tracked separately for telemetry purposes.
 
 	if (input.inputs.size() < 3) {
-		throw BinderException("anofox_diff_hashdiff requires at least 3 arguments: source_table, target_table, primary_key(s)");
+		throw BinderException("diff_hashdiff requires at least 3 arguments: source_table, target_table, primary_key(s)");
+	}
+
+	// The hash/bisection algorithm behind bisection_threshold/bisection_factor
+	// is not implemented; reject the parameters instead of silently ignoring them
+	if (input.inputs.size() > 3) {
+		throw BinderException("diff_hashdiff: the bisection_threshold/bisection_factor parameters are not implemented "
+		                      "yet; remove them (diff_hashdiff currently computes the same full diff as diff_joindiff)");
 	}
 
 	// Parse source and target table names
@@ -368,13 +326,11 @@ static unique_ptr<TableRef> HashDiffBindReplace(ClientContext &context, TableFun
 		throw BinderException("Primary key(s) cannot be empty");
 	}
 
-	// HashDiff specific parameters (bisection_threshold, bisection_factor) are ignored for now
-	// as we fall back to JoinDiff logic
-	vector<string> compare_columns;
-	bool include_all = false;
+	// Validate both schemas and resolve the compare set (all shared non-key columns)
+	auto compare_columns = ResolveCompareColumns(context, "diff_hashdiff", source_table, target_table, primary_keys, {});
 
 	// Generate SQL query using same logic as JoinDiff
-	string sql = GenerateJoinDiffSQL(source_table, target_table, primary_keys, compare_columns, include_all);
+	string sql = GenerateJoinDiffSQL(source_table, target_table, primary_keys, compare_columns, false);
 
 	// Parse and return as SubqueryRef
 	auto subquery_ref = ParseSubquery(sql, context.GetParserOptions(),
@@ -383,12 +339,13 @@ static unique_ptr<TableRef> HashDiffBindReplace(ClientContext &context, TableFun
 }
 
 void RegisterDiffFunctions(ExtensionLoader &loader) {
-	// Register anofox_tab_diff_joindiff using bind_replace for SQL generation
-	// This accepts table NAMES (VARCHAR) and generates the diff SQL query
+	// The diff functions are implemented purely as bind_replace SQL rewrites:
+	// they accept table NAMES (VARCHAR) and expand into a FULL OUTER JOIN query
+	// that DuckDB optimizes and executes natively.
 
 	// Register anofox_tab_diff_joindiff with all overloads (alias: diff_joindiff)
 	TableFunctionSet joindiff_set("anofox_tab_diff_joindiff");
-	
+
 	// Single primary key overload (VARCHAR primary_key)
 	TableFunction joindiff_single("anofox_tab_diff_joindiff",
 	                             {LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::VARCHAR),
@@ -466,47 +423,29 @@ void RegisterDiffFunctions(ExtensionLoader &loader) {
 	joindiff_compound_full.named_parameters["compare_columns"] = LogicalType::LIST(LogicalType(LogicalTypeId::VARCHAR));
 	joindiff_compound_full.named_parameters["include_all"] = LogicalType(LogicalTypeId::BOOLEAN);
 	joindiff_set.AddFunction(joindiff_compound_full);
-	
+
 	{
 		FunctionDescription desc;
-		desc.description = "Computes a row-level diff between two tables using a primary key (VARCHAR or VARCHAR[]), returning rows that were added, removed, or changed.";
+		desc.description = "Computes a row-level diff between two tables using a primary key (VARCHAR or VARCHAR[]), returning rows that were added, removed, or changed. Primary keys are matched NULL-safely (IS NOT DISTINCT FROM).";
 		desc.parameter_names = {"source_table", "target_table", "primary_key"};
 		desc.examples = {"SELECT * FROM diff_joindiff('orders_v1', 'orders_v2', 'order_id');",
 		                 "SELECT * FROM diff_joindiff('orders_v1', 'orders_v2', ['order_id', 'line_id']);"};
 		desc.categories = {"diff", "data-quality"};
 
-		CreateTableFunctionInfo joindiff_info(joindiff_set);
-		joindiff_info.descriptions = {std::move(desc)};
-		loader.RegisterFunction(joindiff_info);
+		RegisterTableFunctionSetWithAlias(loader, joindiff_set, "diff_joindiff", {std::move(desc)});
 	}
-
-	// Register alias
-	TableFunctionSet alias_joindiff_set("diff_joindiff");
-	for (const auto &func : joindiff_set.functions) {
-		TableFunction alias_func("diff_joindiff", func.arguments, func.function, func.bind, func.init_global, func.init_local);
-		alias_func.init_global = func.init_global;
-		alias_func.init_local = func.init_local;
-		alias_func.bind_replace = func.bind_replace;
-		alias_func.named_parameters = func.named_parameters;
-		alias_joindiff_set.AddFunction(alias_func);
-	}
-	CreateTableFunctionInfo alias_joindiff_info(alias_joindiff_set);
-	alias_joindiff_info.alias_of = "anofox_tab_diff_joindiff";
-	loader.RegisterFunction(alias_joindiff_info);
 
 	//===--------------------------------------------------------------------===//
 	// HashDiff Function Registration
-	// Note: Currently uses bind_replace like JoinDiff
-	// Full bisection with iterative checksum comparison would require
-	// a different architecture (e.g., external process or UDF)
+	// Note: Currently uses the same bind_replace rewrite as JoinDiff. The
+	// bisection_threshold/bisection_factor overloads remain registered so that
+	// callers get a clear "not implemented" binder error instead of a generic
+	// overload-resolution failure or silently ignored parameters.
 	//===--------------------------------------------------------------------===//
-
-	// For now, HashDiff is an alias to JoinDiff
-	// Future: Implement SQL-based bisection using recursive CTEs
 
 	// Register anofox_tab_diff_hashdiff with all overloads (alias: diff_hashdiff)
 	TableFunctionSet hashdiff_set("anofox_tab_diff_hashdiff");
-	
+
 	// Single PK, basic
 	TableFunction hashdiff_single("anofox_tab_diff_hashdiff",
 	                             {LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::VARCHAR),
@@ -518,7 +457,7 @@ void RegisterDiffFunctions(ExtensionLoader &loader) {
 	hashdiff_single.named_parameters["primary_key"] = LogicalType(LogicalTypeId::VARCHAR);
 	hashdiff_set.AddFunction(hashdiff_single);
 
-	// Single PK with bisection_threshold (ignored for now)
+	// Single PK with bisection_threshold (rejected as not implemented)
 	TableFunction hashdiff_single_threshold("anofox_tab_diff_hashdiff",
 	                                       {LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::VARCHAR),
 	                                        LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::BIGINT)},
@@ -530,7 +469,7 @@ void RegisterDiffFunctions(ExtensionLoader &loader) {
 	hashdiff_single_threshold.named_parameters["bisection_threshold"] = LogicalType(LogicalTypeId::BIGINT);
 	hashdiff_set.AddFunction(hashdiff_single_threshold);
 
-	// Single PK with all parameters (ignored for now)
+	// Single PK with bisection_threshold and bisection_factor (rejected as not implemented)
 	TableFunction hashdiff_single_full("anofox_tab_diff_hashdiff",
 	                                  {LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::VARCHAR),
 	                                   LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::BIGINT),
@@ -554,33 +493,17 @@ void RegisterDiffFunctions(ExtensionLoader &loader) {
 	hashdiff_compound.named_parameters["target_table"] = LogicalType(LogicalTypeId::VARCHAR);
 	hashdiff_compound.named_parameters["primary_keys"] = LogicalType::LIST(LogicalType(LogicalTypeId::VARCHAR));
 	hashdiff_set.AddFunction(hashdiff_compound);
-	
+
 	{
 		FunctionDescription desc;
-		desc.description = "Computes a hash-based diff between two tables using a primary key (VARCHAR or VARCHAR[]), returning rows that differ by row hash.";
+		desc.description = "Computes a row-level diff between two tables using a primary key (VARCHAR or VARCHAR[]). Currently identical to diff_joindiff; the bisection_threshold/bisection_factor parameters are not implemented and rejected.";
 		desc.parameter_names = {"source_table", "target_table", "primary_key"};
 		desc.examples = {"SELECT * FROM diff_hashdiff('products_v1', 'products_v2', 'product_id');",
 		                 "SELECT * FROM diff_hashdiff('products_v1', 'products_v2', ['product_id', 'sku']);"};
 		desc.categories = {"diff", "data-quality"};
 
-		CreateTableFunctionInfo hashdiff_info(hashdiff_set);
-		hashdiff_info.descriptions = {std::move(desc)};
-		loader.RegisterFunction(hashdiff_info);
+		RegisterTableFunctionSetWithAlias(loader, hashdiff_set, "diff_hashdiff", {std::move(desc)});
 	}
-
-	// Register alias
-	TableFunctionSet alias_hashdiff_set("diff_hashdiff");
-	for (const auto &func : hashdiff_set.functions) {
-		TableFunction alias_func("diff_hashdiff", func.arguments, func.function, func.bind, func.init_global, func.init_local);
-		alias_func.init_global = func.init_global;
-		alias_func.init_local = func.init_local;
-		alias_func.bind_replace = func.bind_replace;
-		alias_func.named_parameters = func.named_parameters;
-		alias_hashdiff_set.AddFunction(alias_func);
-	}
-	CreateTableFunctionInfo alias_hashdiff_info(alias_hashdiff_set);
-	alias_hashdiff_info.alias_of = "anofox_tab_diff_hashdiff";
-	loader.RegisterFunction(alias_hashdiff_info);
 }
 
 } // namespace anofox

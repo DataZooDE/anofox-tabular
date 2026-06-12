@@ -583,14 +583,15 @@ FROM outlier_tree('employees', 'job_title,salary,years_exp', 'outliers');
 Compare tables and identify changes:
 
 ```sql
--- Hash-based diff (fast, summary statistics)
-SELECT * FROM diff_hashdiff('source_tbl', 'target_tbl', ['id']);
--- Returns: {added: 150, removed: 25, changed: 300, unchanged: 10000}
-
--- Join-based diff (detailed, row-level changes)
+-- Join-based diff (row-level changes)
 SELECT * FROM diff_joindiff('source_tbl', 'target_tbl', ['user_id', 'date'])
 WHERE diff_type IN ('added', 'changed')
 LIMIT 100;
+
+-- diff_hashdiff currently computes the same row-level diff as diff_joindiff.
+-- Its bisection_threshold/bisection_factor parameters are not implemented and
+-- are rejected with a binder error.
+SELECT * FROM diff_hashdiff('source_tbl', 'target_tbl', ['id']);
 ```
 
 **Use Cases:**
@@ -601,7 +602,10 @@ LIMIT 100;
 
 **Features:**
 - Single and compound primary keys
-- Column-specific comparison
+- NULL-safe primary key matching (`IS NOT DISTINCT FROM`): rows with NULL key
+  values are matched across sides instead of being misreported as added/removed
+- Column-specific comparison (default: all non-key columns shared by both tables)
+- Primary key and compare columns are validated against both schemas at bind time
 - Efficient SQL-based implementation
 - Detailed change tracking
 
@@ -1019,8 +1023,8 @@ metric_isolation_forest(
 
 | Function | Signature | Description |
 |----------|-----------|-------------|
-| `anofox_tab_diff_hashdiff` | `(source VARCHAR, target VARCHAR, pk_cols LIST<VARCHAR> [, compare_cols LIST<VARCHAR>]) → TABLE` | Fast hash-based summary diff |
-| `anofox_tab_diff_joindiff` | `(source VARCHAR, target VARCHAR, pk_cols LIST<VARCHAR> [, compare_cols LIST<VARCHAR>]) → TABLE` | Detailed row-level diff with source/target data |
+| `anofox_tab_diff_hashdiff` | `(source VARCHAR, target VARCHAR, pk VARCHAR\|LIST<VARCHAR>) → TABLE` | Row-level diff (currently identical to joindiff; `bisection_threshold`/`bisection_factor` are not implemented and rejected) |
+| `anofox_tab_diff_joindiff` | `(source VARCHAR, target VARCHAR, pk VARCHAR\|LIST<VARCHAR> [, compare_cols LIST<VARCHAR> [, include_all BOOLEAN]]) → TABLE` | Detailed row-level diff with target data |
 
 ### Data Profiling Functions
 
