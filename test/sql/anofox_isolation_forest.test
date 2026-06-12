@@ -1471,12 +1471,12 @@ SELECT outlier_count FROM isolation_forest_mv('eif_2d',
 ----
 1
 
-# Test 133: Invalid ntry (0 or negative) defaults to 1
-query I
+# Test 133: Invalid ntry (0 or negative) is rejected at bind (#55)
+statement error
 SELECT COUNT(*) FROM isolation_forest_mv('eif_2d',
     'x,y', 100, 256, 0.1, 'scores', 42, 1, 'uniform', 'depth', NULL, 0)
 ----
-6
+ntry must be >= 1
 
 # Test 134: Invalid prob_pick_avg_gain (>1) throws error
 statement error
