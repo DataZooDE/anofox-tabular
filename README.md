@@ -975,6 +975,22 @@ All other countries are validated by syntax only. French VAT keys containing let
 | `anofox_tab_metric_zscore` | `(table VARCHAR, column VARCHAR [, threshold DOUBLE]) → TABLE` | Detect outliers via z-score (default: 3.0) |
 | `anofox_tab_metric_iqr` | `(table VARCHAR, column VARCHAR [, multiplier DOUBLE]) → TABLE` | Detect outliers via IQR (default: 1.5) |
 
+**Parameter validation:** numeric parameters are validated at bind time. Negative or out-of-range
+integer parameters and non-finite (`NaN`/`Infinity`) double parameters (`max_null_rate`, `threshold`,
+`multiplier`, `eps`, `contamination`, `prob_pick_avg_gain`, ...) are rejected with a binder error.
+
+**Empty and degenerate input semantics:** every metric returns exactly one summary row, even for
+an empty table or an all-NULL column:
+
+| Metric | Empty table / all-NULL column | Constant column (stddev = 0) |
+|--------|-------------------------------|------------------------------|
+| `volume` | `row_count = 0`, status from thresholds | n/a |
+| `null_rate` | `null_count = 0`, `total_count = 0`, `null_rate = 0.0`, status `pass` ("passed trivially") | n/a |
+| `distinct_count` | `distinct_count = 0`, status from thresholds | n/a |
+| `zscore` | `total_count = 0`, `outlier_count = 0`, `outlier_rate = 0.0`, NULL `mean`/`stddev`, status `pass` | `outlier_count = 0`, status `pass` (z-scores are defined as 0) |
+| `iqr` | `total_count = 0`, `outlier_count = 0`, NULL quantiles/bounds, status `pass` | `outlier_count = 0`, status `pass` |
+| `freshness` | NULL `metric_value`/`age_seconds`, status `fail` ("No timestamp values found") | n/a |
+
 ### Anomaly Detection Functions
 
 | Function | Description |

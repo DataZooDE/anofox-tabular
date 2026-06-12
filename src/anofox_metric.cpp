@@ -14,6 +14,7 @@
 #include "duckdb/main/client_context.hpp"
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 
 namespace duckdb {
 namespace anofox {
@@ -28,6 +29,18 @@ static unique_ptr<SubqueryRef> ParseSubquery(const string &query, const ParserOp
 	}
 	auto select_stmt = unique_ptr_cast<SQLStatement, SelectStatement>(std::move(parser.statements[0]));
 	return make_uniq<SubqueryRef>(std::move(select_stmt));
+}
+
+// Helper: reject NaN/Inf double parameters at bind time with a clear error.
+// NULL values are left alone (callers substitute their documented defaults).
+static void ValidateFiniteDouble(const Value &value, const string &function_name, const string &parameter_name) {
+	if (value.IsNull()) {
+		return;
+	}
+	double val = value.GetValue<double>();
+	if (!std::isfinite(val)) {
+		throw BinderException(function_name + ": " + parameter_name + " must be a finite number");
+	}
 }
 
 // Helper: parse a comma-separated column list, trimming whitespace and surrounding quotes
@@ -77,7 +90,9 @@ static string GenerateVolumeSQL(const string &table_ref, const Value &min_rows, 
 		"FROM (SELECT COUNT(*) AS row_count FROM (SELECT * FROM " + table_ref + "))";
 }
 
-// Helper: Generate SQL for null rate metrics
+// Helper: Generate SQL for null rate metrics.
+// Empty-input semantics: an empty table yields null_count = 0, total_count = 0, null_rate = 0.0
+// and passes trivially with an explicit message (instead of NULL rate and message).
 static string GenerateNullRateSQL(const string &table_ref, const string &column_name, const Value &max_null_rate) {
 	string max_rate_val = max_null_rate.IsNull() ? "1.0" : max_null_rate.ToString();
 	string col_id = QuoteSqlIdentifier(column_name);
@@ -88,15 +103,19 @@ static string GenerateNullRateSQL(const string &table_ref, const string &column_
 		"total_count, "
 		"null_rate, "
 		+ max_rate_val + " AS threshold, "
-		"'Null rate ' || CAST(null_rate AS VARCHAR) || ' (' || CAST(null_count AS VARCHAR) || '/' || "
-		"CAST(total_count AS VARCHAR) || ')' || CASE "
-		"  WHEN null_rate <= " + max_rate_val + " THEN ' is acceptable' "
-		"  ELSE ' exceeds maximum ' || CAST(" + max_rate_val + " AS VARCHAR) "
+		"CASE "
+		"  WHEN total_count = 0 THEN 'Table is empty (0 rows); null rate check passed trivially' "
+		"  WHEN null_rate <= " + max_rate_val + " THEN "
+		"    'Null rate ' || CAST(null_rate AS VARCHAR) || ' (' || CAST(null_count AS VARCHAR) || '/' || "
+		"    CAST(total_count AS VARCHAR) || ') is acceptable' "
+		"  ELSE "
+		"    'Null rate ' || CAST(null_rate AS VARCHAR) || ' (' || CAST(null_count AS VARCHAR) || '/' || "
+		"    CAST(total_count AS VARCHAR) || ') exceeds maximum ' || CAST(" + max_rate_val + " AS VARCHAR) "
 		"END AS message "
 		"FROM (SELECT "
-		"  CAST(SUM(CASE WHEN " + col_id + " IS NULL THEN 1 ELSE 0 END) AS BIGINT) AS null_count, "
+		"  COALESCE(CAST(SUM(CASE WHEN " + col_id + " IS NULL THEN 1 ELSE 0 END) AS BIGINT), 0) AS null_count, "
 		"  COUNT(*) AS total_count, "
-		"  CAST(SUM(CASE WHEN " + col_id + " IS NULL THEN 1 ELSE 0 END) AS DOUBLE) / COUNT(*) AS null_rate "
+		"  COALESCE(CAST(SUM(CASE WHEN " + col_id + " IS NULL THEN 1 ELSE 0 END) AS DOUBLE) / NULLIF(COUNT(*), 0), 0.0) AS null_rate "
 		"FROM " + table_ref + ")";
 }
 
@@ -131,23 +150,29 @@ static string GenerateZscoreSQL(const string &table_ref, const string &column_na
 	string col_id = QuoteSqlIdentifier(column_name);
 
 	// Use CTEs to avoid nested aggregate error:
-	// 1. stats: compute mean and stddev
-	// 2. with_zscore: compute z-score for each row
-	// 3. summary: count outliers
-	return "WITH stats AS ("
-		"SELECT AVG(val) AS mean, STDDEV(val) AS stddev, COUNT(*) AS total_count "
-		"FROM (SELECT CAST(" + col_id + " AS DOUBLE) AS val FROM " + table_ref + " WHERE " + col_id + " IS NOT NULL)"
+	// 1. vals: the non-NULL values cast to DOUBLE
+	// 2. stats: compute mean and stddev (always exactly one row)
+	// 3. with_zscore: compute z-score for each row; a constant column (stddev = 0)
+	//    or a single row (stddev NULL) yields z-score 0 instead of NaN/NULL
+	// 4. summary: driven by stats so exactly one row is returned even for empty input
+	// Empty-input semantics: empty/all-NULL input yields one row with total_count = 0,
+	// outlier_count = 0, outlier_rate = 0.0, NULL mean/stddev, status 'pass'.
+	return "WITH vals AS ("
+		"SELECT CAST(" + col_id + " AS DOUBLE) AS val FROM " + table_ref + " WHERE " + col_id + " IS NOT NULL"
+		"), "
+		"stats AS ("
+		"SELECT AVG(val) AS mean, STDDEV(val) AS stddev, COUNT(*) AS total_count FROM vals"
 		"), "
 		"with_zscore AS ("
-		"SELECT ABS((val - stats.mean) / stats.stddev) AS abs_zscore "
-		"FROM (SELECT CAST(" + col_id + " AS DOUBLE) AS val FROM " + table_ref + " WHERE " + col_id + " IS NOT NULL), stats"
+		"SELECT CASE WHEN s.stddev IS NULL OR s.stddev = 0 THEN 0.0 "
+		"            ELSE ABS((v.val - s.mean) / s.stddev) END AS abs_zscore "
+		"FROM vals v, stats s"
 		"), "
 		"summary AS ("
 		"SELECT "
 		"  s.mean, s.stddev, s.total_count, "
-		"  COUNT(CASE WHEN z.abs_zscore > " + thresh_val + " THEN 1 END) AS outlier_count "
-		"FROM stats s, with_zscore z "
-		"GROUP BY s.mean, s.stddev, s.total_count"
+		"  (SELECT COUNT(*) FROM with_zscore z WHERE z.abs_zscore > " + thresh_val + ") AS outlier_count "
+		"FROM stats s"
 		") "
 		"SELECT "
 		"CASE WHEN outlier_count = 0 THEN 'pass' ELSE 'fail' END AS status, "
@@ -155,9 +180,13 @@ static string GenerateZscoreSQL(const string &table_ref, const string &column_na
 		"stddev, "
 		"outlier_count, "
 		"total_count, "
-		"CAST(outlier_count AS DOUBLE) / total_count AS outlier_rate, "
+		"COALESCE(CAST(outlier_count AS DOUBLE) / NULLIF(total_count, 0), 0.0) AS outlier_rate, "
 		+ thresh_val + " AS threshold, "
 		"CASE "
+		"  WHEN total_count = 0 THEN "
+		"    'No rows to evaluate (column is empty or all NULL)' "
+		"  WHEN stddev IS NULL OR stddev = 0 THEN "
+		"    'No outliers detected (constant column: standard deviation is 0 or undefined)' "
 		"  WHEN outlier_count = 0 THEN "
 		"    'No outliers detected (z-score threshold: ' || CAST(" + thresh_val + " AS VARCHAR) || ')' "
 		"  ELSE "
@@ -174,32 +203,36 @@ static string GenerateIQRSQL(const string &table_ref, const string &column_name,
 	string col_id = QuoteSqlIdentifier(column_name);
 
 	// Use CTEs to avoid nested aggregate error:
-	// 1. stats: compute Q1 and Q3 quantiles
-	// 2. with_bounds: compute bounds for each row
-	// 3. summary: count outliers
-	return "WITH stats AS ("
-		"SELECT QUANTILE_CONT(val, 0.25) AS q1, QUANTILE_CONT(val, 0.75) AS q3, COUNT(*) AS total_count "
-		"FROM (SELECT CAST(" + col_id + " AS DOUBLE) AS val FROM " + table_ref + " WHERE " + col_id + " IS NOT NULL)"
+	// 1. vals: the non-NULL values cast to DOUBLE
+	// 2. stats: compute Q1 and Q3 quantiles (always exactly one row)
+	// 3. bounds: derive the outlier bounds from the quantiles
+	// 4. summary: driven by bounds so exactly one row is returned even for empty input
+	// Empty-input semantics: empty/all-NULL input yields one row with total_count = 0,
+	// outlier_count = 0, NULL quantiles/bounds, status 'pass' and an explicit message.
+	return "WITH vals AS ("
+		"SELECT CAST(" + col_id + " AS DOUBLE) AS val FROM " + table_ref + " WHERE " + col_id + " IS NOT NULL"
 		"), "
-		"with_bounds AS ("
+		"stats AS ("
+		"SELECT QUANTILE_CONT(val, 0.25) AS q1, QUANTILE_CONT(val, 0.75) AS q3, COUNT(*) AS total_count FROM vals"
+		"), "
+		"bounds AS ("
 		"SELECT "
-		"  val, "
-		"  stats.q1, "
-		"  stats.q3, "
-		"  stats.total_count, "
-		"  stats.q1 - " + mult_val + " * (stats.q3 - stats.q1) AS lower_bound, "
-		"  stats.q3 + " + mult_val + " * (stats.q3 - stats.q1) AS upper_bound "
-		"FROM (SELECT CAST(" + col_id + " AS DOUBLE) AS val FROM " + table_ref + " WHERE " + col_id + " IS NOT NULL), stats"
+		"  q1, "
+		"  q3, "
+		"  total_count, "
+		"  q1 - " + mult_val + " * (q3 - q1) AS lower_bound, "
+		"  q3 + " + mult_val + " * (q3 - q1) AS upper_bound "
+		"FROM stats"
 		"), "
 		"summary AS ("
 		"SELECT "
-		"  MAX(q1) AS q1, "
-		"  MAX(q3) AS q3, "
-		"  MAX(total_count) AS total_count, "
-		"  MAX(lower_bound) AS lower_bound, "
-		"  MAX(upper_bound) AS upper_bound, "
-		"  COUNT(CASE WHEN val < lower_bound OR val > upper_bound THEN 1 END) AS outlier_count "
-		"FROM with_bounds"
+		"  b.q1, "
+		"  b.q3, "
+		"  b.total_count, "
+		"  b.lower_bound, "
+		"  b.upper_bound, "
+		"  (SELECT COUNT(*) FROM vals v, bounds b2 WHERE v.val < b2.lower_bound OR v.val > b2.upper_bound) AS outlier_count "
+		"FROM bounds b"
 		") "
 		"SELECT "
 		"CASE WHEN outlier_count = 0 THEN 'pass' ELSE 'fail' END AS status, "
@@ -212,6 +245,8 @@ static string GenerateIQRSQL(const string &table_ref, const string &column_name,
 		"total_count, "
 		+ mult_val + " AS multiplier, "
 		"CASE "
+		"  WHEN total_count = 0 THEN "
+		"    'No rows to evaluate (column is empty or all NULL)' "
 		"  WHEN outlier_count = 0 THEN "
 		"    'No outliers detected by IQR method (bounds: [' || CAST(lower_bound AS VARCHAR) || ', ' || CAST(upper_bound AS VARCHAR) || '])' "
 		"  ELSE "
@@ -266,12 +301,21 @@ static string GenerateFreshnessSQL(const string &table_ref, const string &timest
 	    reference_time.IsNull() ? "now()" : "'" + EscapeSqlStringLiteral(reference_time.ToString()) + "'::TIMESTAMP";
 	string col_id = QuoteSqlIdentifier(timestamp_column);
 
+	// Empty-input semantics: an empty table or all-NULL timestamp column yields one row with
+	// status 'fail', NULL metric_value/age_seconds and an explicit message (freshness cannot
+	// be demonstrated without data).
 	return "SELECT "
-		"CASE WHEN latest_timestamp >= threshold_timestamp THEN 'pass' ELSE 'fail' END AS status, "
+		"CASE "
+		"  WHEN latest_timestamp IS NULL THEN 'fail' "
+		"  WHEN latest_timestamp >= threshold_timestamp THEN 'pass' "
+		"  ELSE 'fail' "
+		"END AS status, "
 		"latest_timestamp AS metric_value, "
 		"threshold_timestamp AS threshold, "
 		"EXTRACT(EPOCH FROM (" + ref_time + " - latest_timestamp))::BIGINT AS age_seconds, "
 		"CASE "
+		"  WHEN latest_timestamp IS NULL THEN "
+		"    'No timestamp values found (table is empty or column is all NULL)' "
 		"  WHEN latest_timestamp >= threshold_timestamp THEN "
 		"    'Data is fresh. Latest update: ' || CAST(latest_timestamp AS VARCHAR) || ' (age: ' || CAST(EXTRACT(EPOCH FROM (" + ref_time + " - latest_timestamp))::BIGINT AS VARCHAR) || 's)' "
 		"  ELSE "
@@ -309,6 +353,7 @@ static unique_ptr<TableRef> MetricNullRateBindReplace(ClientContext &context, Ta
 
 	string table_name = input.inputs[0].ToString();
 	string column_name = input.inputs[1].ToString();
+	ValidateFiniteDouble(input.inputs[2], "null_rate", "max_null_rate");
 	string table_ref = BuildQueryTableRef(table_name);
 	string sql = GenerateNullRateSQL(table_ref, column_name, input.inputs[2]);
 	return ParseSubquery(sql, context.GetParserOptions(), "Failed to parse null rate metric query");
@@ -335,6 +380,7 @@ static unique_ptr<TableRef> MetricZscoreBindReplace(ClientContext &context, Tabl
 
 	string table_name = input.inputs[0].ToString();
 	string column_name = input.inputs[1].ToString();
+	ValidateFiniteDouble(input.inputs[2], "zscore", "threshold");
 	string table_ref = BuildQueryTableRef(table_name);
 	string sql = GenerateZscoreSQL(table_ref, column_name, input.inputs[2]);
 	return ParseSubquery(sql, context.GetParserOptions(), "Failed to parse zscore metric query");
@@ -348,6 +394,7 @@ static unique_ptr<TableRef> MetricIQRBindReplace(ClientContext &context, TableFu
 
 	string table_name = input.inputs[0].ToString();
 	string column_name = input.inputs[1].ToString();
+	ValidateFiniteDouble(input.inputs[2], "iqr", "iqr_multiplier");
 	string table_ref = BuildQueryTableRef(table_name);
 	string sql = GenerateIQRSQL(table_ref, column_name, input.inputs[2]);
 	return ParseSubquery(sql, context.GetParserOptions(), "Failed to parse IQR metric query");
@@ -455,6 +502,42 @@ static unique_ptr<GlobalTableFunctionState> IsolationForestInit(ClientContext &,
 	return make_uniq<IsolationForestGlobalState>();
 }
 
+// Shared optional-parameter handling and validation for both isolation forest bind functions.
+// Integer parameters are read as signed int64_t and range-checked BEFORE casting to size_t,
+// so negative values are rejected instead of wrapping; doubles must be finite.
+static void ParseIsolationForestCommonParameters(TableFunctionBindInput &input, const string &function_name,
+                                                 size_t &n_trees, size_t &sample_size, double &contamination,
+                                                 string &output_mode, uint64_t &seed, bool &has_seed) {
+	int64_t n_trees_val = input.inputs.size() > 2 ? input.inputs[2].GetValue<int64_t>() : 100;
+	int64_t sample_size_val = input.inputs.size() > 3 ? input.inputs[3].GetValue<int64_t>() : 256;
+	contamination = input.inputs.size() > 4 ? input.inputs[4].GetValue<double>() : 0.1;
+	output_mode = input.inputs.size() > 5 ? input.inputs[5].ToString() : "summary";
+
+	// Seed parameter (optional, index 6); any signed value is an acceptable seed
+	seed = 0;
+	has_seed = false;
+	if (input.inputs.size() > 6 && !input.inputs[6].IsNull()) {
+		seed = static_cast<uint64_t>(input.inputs[6].GetValue<int64_t>());
+		has_seed = true;
+	}
+
+	if (n_trees_val < 1 || n_trees_val > 500) {
+		throw BinderException(function_name + ": n_trees must be between 1 and 500");
+	}
+	if (sample_size_val < 1 || sample_size_val > 10000) {
+		throw BinderException(function_name + ": sample_size must be between 1 and 10000");
+	}
+	if (!std::isfinite(contamination) || contamination < 0.0 || contamination > 0.5) {
+		throw BinderException(function_name + ": contamination must be between 0.0 and 0.5 (finite)");
+	}
+	if (output_mode != "summary" && output_mode != "scores") {
+		throw BinderException(function_name + ": output_mode must be 'summary' or 'scores'");
+	}
+
+	n_trees = static_cast<size_t>(n_trees_val);
+	sample_size = static_cast<size_t>(sample_size_val);
+}
+
 // Bind function for univariate isolation forest
 static unique_ptr<FunctionData> IsolationForestBind(ClientContext &context, TableFunctionBindInput &input,
                                                     vector<LogicalType> &return_types, vector<string> &names) {
@@ -467,33 +550,14 @@ static unique_ptr<FunctionData> IsolationForestBind(ClientContext &context, Tabl
 	string column_name = input.inputs[1].ToString();
 	vector<string> column_names = {column_name};
 
-	// Optional parameters with defaults
-	size_t n_trees = input.inputs.size() > 2 ? input.inputs[2].GetValue<int64_t>() : 100;
-	size_t sample_size = input.inputs.size() > 3 ? input.inputs[3].GetValue<int64_t>() : 256;
-	double contamination = input.inputs.size() > 4 ? input.inputs[4].GetValue<double>() : 0.1;
-	string output_mode = input.inputs.size() > 5 ? input.inputs[5].ToString() : "summary";
-
-	// Seed parameter (optional, index 6)
-	uint64_t seed = 0;
-	bool has_seed = false;
-	if (input.inputs.size() > 6 && !input.inputs[6].IsNull()) {
-		seed = input.inputs[6].GetValue<int64_t>();
-		has_seed = true;
-	}
-
-	// Validate parameters
-	if (n_trees == 0 || n_trees > 500) {
-		throw BinderException("n_trees must be between 1 and 500");
-	}
-	if (sample_size == 0 || sample_size > 10000) {
-		throw BinderException("sample_size must be between 1 and 10000");
-	}
-	if (contamination < 0.0 || contamination > 0.5) {
-		throw BinderException("contamination must be between 0.0 and 0.5");
-	}
-	if (output_mode != "summary" && output_mode != "scores") {
-		throw BinderException("isolation_forest: output_mode must be 'summary' or 'scores'");
-	}
+	size_t n_trees;
+	size_t sample_size;
+	double contamination;
+	string output_mode;
+	uint64_t seed;
+	bool has_seed;
+	ParseIsolationForestCommonParameters(input, "isolation_forest", n_trees, sample_size, contamination, output_mode,
+	                                     seed, has_seed);
 
 	// Define output schema based on mode
 	if (output_mode == "scores") {
@@ -543,19 +607,14 @@ static unique_ptr<FunctionData> IsolationForestMultivariateBind(ClientContext &c
 		throw BinderException("column_names must contain at least one column");
 	}
 
-	// Optional parameters with defaults
-	size_t n_trees = input.inputs.size() > 2 ? input.inputs[2].GetValue<int64_t>() : 100;
-	size_t sample_size = input.inputs.size() > 3 ? input.inputs[3].GetValue<int64_t>() : 256;
-	double contamination = input.inputs.size() > 4 ? input.inputs[4].GetValue<double>() : 0.1;
-	string output_mode = input.inputs.size() > 5 ? input.inputs[5].ToString() : "summary";
-
-	// Seed parameter (optional, index 6)
-	uint64_t seed = 0;
-	bool has_seed = false;
-	if (input.inputs.size() > 6 && !input.inputs[6].IsNull()) {
-		seed = input.inputs[6].GetValue<int64_t>();
-		has_seed = true;
-	}
+	size_t n_trees;
+	size_t sample_size;
+	double contamination;
+	string output_mode;
+	uint64_t seed;
+	bool has_seed;
+	ParseIsolationForestCommonParameters(input, "isolation_forest_mv", n_trees, sample_size, contamination,
+	                                     output_mode, seed, has_seed);
 
 	// Extended IF: ndim parameter (optional, index 7)
 	size_t ndim = 1;  // Default: axis-aligned
@@ -607,33 +666,18 @@ static unique_ptr<FunctionData> IsolationForestMultivariateBind(ClientContext &c
 	if (input.inputs.size() > 11 && !input.inputs[11].IsNull()) {
 		int64_t ntry_val = input.inputs[11].GetValue<int64_t>();
 		if (ntry_val < 1) {
-			ntry = 1;  // Default to 1 if invalid
-		} else {
-			ntry = static_cast<size_t>(ntry_val);
+			throw BinderException("isolation_forest_mv: ntry must be >= 1");
 		}
+		ntry = static_cast<size_t>(ntry_val);
 	}
 
 	// SCiForest: prob_pick_avg_gain parameter (optional, index 12)
 	double prob_pick_avg_gain = 0.0;  // Default: always random (standard IF)
 	if (input.inputs.size() > 12 && !input.inputs[12].IsNull()) {
 		prob_pick_avg_gain = input.inputs[12].GetValue<double>();
-		if (prob_pick_avg_gain < 0.0 || prob_pick_avg_gain > 1.0) {
-			throw BinderException("prob_pick_avg_gain must be between 0.0 and 1.0");
+		if (!std::isfinite(prob_pick_avg_gain) || prob_pick_avg_gain < 0.0 || prob_pick_avg_gain > 1.0) {
+			throw BinderException("isolation_forest_mv: prob_pick_avg_gain must be between 0.0 and 1.0 (finite)");
 		}
-	}
-
-	// Validate parameters
-	if (n_trees == 0 || n_trees > 500) {
-		throw BinderException("n_trees must be between 1 and 500");
-	}
-	if (sample_size == 0 || sample_size > 10000) {
-		throw BinderException("sample_size must be between 1 and 10000");
-	}
-	if (contamination < 0.0 || contamination > 0.5) {
-		throw BinderException("contamination must be between 0.0 and 0.5");
-	}
-	if (output_mode != "summary" && output_mode != "scores") {
-		throw BinderException("isolation_forest_mv: output_mode must be 'summary' or 'scores'");
 	}
 
 	// Define output schema based on mode
@@ -1029,8 +1073,8 @@ static void ParseDBSCANParameters(TableFunctionBindInput &input, const string &f
 	min_pts = input.inputs.size() > 3 ? input.inputs[3].GetValue<int64_t>() : 5;
 	output_mode = input.inputs.size() > 4 ? input.inputs[4].ToString() : "summary";
 
-	if (eps <= 0.0) {
-		throw BinderException(function_name + ": eps must be > 0.0");
+	if (!std::isfinite(eps) || eps <= 0.0) {
+		throw BinderException(function_name + ": eps must be a finite number > 0.0");
 	}
 	if (min_pts < 1) {
 		throw BinderException(function_name + ": min_pts must be >= 1");
