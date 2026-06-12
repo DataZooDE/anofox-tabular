@@ -57,11 +57,17 @@ struct MoneyStructData {
     return amount_values[amount_data.sel->get_index(row)];
   }
 
-  std::string Currency(idx_t i) const {
+  //! Returns the currency code as a view into the input vector (no copy).
+  string_t Currency(idx_t i) const {
     auto row = struct_data.sel->get_index(i);
-    return currency_values[currency_data.sel->get_index(row)].GetString();
+    return currency_values[currency_data.sel->get_index(row)];
   }
 };
+
+//! Case-insensitive comparison of two currency codes without allocating.
+inline bool CurrencyCIEquals(string_t left, string_t right) {
+  return StringUtil::CIEquals(left.GetData(), left.GetSize(), right.GetData(), right.GetSize());
+}
 
 inline MoneyStructData ExtractMoneyStruct(Vector& money_vec, idx_t count) {
   auto& children = StructVector::GetEntries(money_vec);
@@ -86,11 +92,12 @@ inline MoneyStructData ExtractMoneyStruct(Vector& money_vec, idx_t count) {
 // ============================================================================
 // Helper: Money Result Builder
 // ============================================================================
+//! Holds the child-data pointers and the currency child vector of a money
+//! result struct, hoisted out of the row loops (no per-row GetEntries).
 struct MoneyResultBuilder {
   int64_t* amount_ptr;
   string_t* currency_ptr;
-  ValidityMask& amount_validity;
-  ValidityMask& currency_validity;
+  Vector& currency_vec;
 };
 
 inline MoneyResultBuilder PrepareMoneyResult(Vector& result) {
@@ -108,17 +115,20 @@ inline MoneyResultBuilder PrepareMoneyResult(Vector& result) {
   return MoneyResultBuilder{
     FlatVector::GetData<int64_t>(amount_vec),
     FlatVector::GetData<string_t>(currency_vec),
-    FlatVector::Validity(amount_vec),
-    FlatVector::Validity(currency_vec),
+    currency_vec,
   };
 }
 
 inline void SetMoneyResult(MoneyResultBuilder& builder, idx_t i,
-                          int64_t scaled_amount, const std::string& currency,
-                          Vector& result) {
+                          int64_t scaled_amount, const std::string& currency) {
   builder.amount_ptr[i] = scaled_amount;
-  auto& children = StructVector::GetEntries(result);
-  builder.currency_ptr[i] = StringVector::AddString(*children[1], currency);
+  builder.currency_ptr[i] = StringVector::AddString(builder.currency_vec, currency);
+}
+
+inline void SetMoneyResult(MoneyResultBuilder& builder, idx_t i,
+                          int64_t scaled_amount, string_t currency) {
+  builder.amount_ptr[i] = scaled_amount;
+  builder.currency_ptr[i] = StringVector::AddString(builder.currency_vec, currency);
 }
 
 //! Marks a money result row as SQL NULL. FlatVector::SetNull on a STRUCT vector
@@ -195,13 +205,13 @@ inline void IterateBinaryMoneyOp(DataChunk& args, Vector& result,
 
       // Codes are canonicalized at construction; compare case-insensitively so
       // manually constructed structs with mixed-case codes still work.
-      if (check_same_currency && !StringUtil::CIEquals(currency1, currency2)) {
+      if (check_same_currency && !CurrencyCIEquals(currency1, currency2)) {
         throw InvalidInputException(
             "Cannot operate on money with different currencies: %s and %s",
-            currency1.c_str(), currency2.c_str());
+            currency1.GetString(), currency2.GetString());
       }
 
-      op(builder, i, data1.Amount(i), data2.Amount(i), currency1, result);
+      op(builder, i, data1.Amount(i), data2.Amount(i), currency1);
     }
   }
 }

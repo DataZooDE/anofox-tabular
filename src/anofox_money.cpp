@@ -148,7 +148,7 @@ static void AnofoxMoneyFunction(DataChunk &args, ExpressionState &state, Vector 
             auto &currency = LookupCurrencyOrThrow(registry, currency_code);
             // Store the canonical ISO code so that downstream comparisons work regardless of input case.
             // The DOUBLE input is validated (finite) and rounded to the exact DECIMAL(18,3) representation.
-            SetMoneyResult(builder, i, ScaledFromDouble(amount_values[amount_idx]), currency.iso_code, result);
+            SetMoneyResult(builder, i, ScaledFromDouble(amount_values[amount_idx]), currency.iso_code);
         }
     }
 }
@@ -184,7 +184,7 @@ static void AnofoxMoneyFromCentsFunction(DataChunk &args, ExpressionState &state
             auto &currency = LookupCurrencyOrThrow(registry, currency_code);
 
             // Convert the smallest-unit amount to major units exactly (e.g. 10050 cents -> 100.500 USD)
-            SetMoneyResult(builder, i, ScaledFromCents(cents_values[cents_idx], currency), currency.iso_code, result);
+            SetMoneyResult(builder, i, ScaledFromCents(cents_values[cents_idx], currency), currency.iso_code);
         }
     }
 }
@@ -341,7 +341,7 @@ static void AnofoxMoneyFormatFunction(DataChunk &args, ExpressionState &state, V
             FlatVector::SetNull(result, i, true);
         } else {
             auto scaled = data.Amount(i);
-            auto currency_code = data.Currency(i);
+            auto currency_code = data.Currency(i).GetString();
             auto format_style = style_values[style_idx].GetString();
 
             auto &currency = LookupCurrencyOrThrow(registry, currency_code);
@@ -417,7 +417,7 @@ static void AnofoxMoneyAbsFunction(DataChunk &args, ExpressionState &state, Vect
         } else {
             // The scaled amount is range-checked at construction, so negation cannot overflow
             auto scaled = data.Amount(i);
-            SetMoneyResult(builder, i, scaled < 0 ? -scaled : scaled, data.Currency(i), result);
+            SetMoneyResult(builder, i, scaled < 0 ? -scaled : scaled, data.Currency(i));
         }
     }
 }
@@ -429,8 +429,8 @@ static void AnofoxMoneyAbsFunction(DataChunk &args, ExpressionState &state, Vect
 static void AnofoxMoneyAddFunction(DataChunk &args, ExpressionState &state, Vector &result) {
     IterateBinaryMoneyOp(args, result, true, [](MoneyResultBuilder& builder, idx_t i,
                                                 int64_t scaled1, int64_t scaled2,
-                                                const std::string& currency, Vector& result) {
-        SetMoneyResult(builder, i, CheckedAddScaled(scaled1, scaled2), currency, result);
+                                                string_t currency) {
+        SetMoneyResult(builder, i, CheckedAddScaled(scaled1, scaled2), currency);
     });
 }
 
@@ -441,8 +441,8 @@ static void AnofoxMoneyAddFunction(DataChunk &args, ExpressionState &state, Vect
 static void AnofoxMoneySubtractFunction(DataChunk &args, ExpressionState &state, Vector &result) {
     IterateBinaryMoneyOp(args, result, true, [](MoneyResultBuilder& builder, idx_t i,
                                                 int64_t scaled1, int64_t scaled2,
-                                                const std::string& currency, Vector& result) {
-        SetMoneyResult(builder, i, CheckedSubtractScaled(scaled1, scaled2), currency, result);
+                                                string_t currency) {
+        SetMoneyResult(builder, i, CheckedSubtractScaled(scaled1, scaled2), currency);
     });
 }
 
@@ -469,7 +469,7 @@ static void AnofoxMoneyMultiplyFunction(DataChunk &args, ExpressionState &state,
             SetMoneyResultNull(result, i);
         } else {
             SetMoneyResult(builder, i, CheckedMultiplyFactor(data.Amount(i), factor_values[factor_idx]),
-                           data.Currency(i), result);
+                           data.Currency(i));
         }
     }
 }
@@ -529,7 +529,7 @@ static void AnofoxMoneySameCurrencyFunction(DataChunk &args, ExpressionState &st
         } else {
             // Canonical codes are stored at construction; compare case-insensitively so that
             // manually constructed structs with mixed-case codes behave consistently
-            result_data[i] = StringUtil::CIEquals(data1.Currency(i), data2.Currency(i));
+            result_data[i] = CurrencyCIEquals(data1.Currency(i), data2.Currency(i));
         }
     }
 }
