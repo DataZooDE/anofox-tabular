@@ -9,6 +9,26 @@ namespace duckdb {
 namespace anofox {
 
 // ============================================================================
+// Money representation (issue #57)
+//
+// Money amounts are stored as DECIMAL(18,3): exact decimal semantics, three
+// fractional digits (covers 2-decimal currencies plus 3-decimal currencies
+// such as BHD/KWD/TND). DuckDB stores DECIMAL(18,3) physically as an int64
+// scaled by 10^3, so all C++ arithmetic below is checked integer math on the
+// scaled representation. NaN/Inf are unrepresentable by construction and
+// overflow raises a clear error instead of wrapping or producing Inf.
+// ============================================================================
+
+//! Number of fractional digits of the money DECIMAL type.
+static constexpr uint8_t MONEY_SCALE = 3;
+//! Total precision (width) of the money DECIMAL type.
+static constexpr uint8_t MONEY_WIDTH = 18;
+//! Scaling factor between major units and the stored representation (10^MONEY_SCALE).
+static constexpr int64_t MONEY_SCALE_FACTOR = 1000;
+//! Largest scaled value representable in DECIMAL(18,3): 18 nines.
+static constexpr int64_t MONEY_MAX_SCALED = 999999999999999999LL;
+
+// ============================================================================
 // Helper: Money Struct Data Accessor
 // ============================================================================
 struct MoneyStructData {
@@ -17,7 +37,7 @@ struct MoneyStructData {
   UnifiedVectorFormat struct_data;
   UnifiedVectorFormat amount_data;
   UnifiedVectorFormat currency_data;
-  double* amount_values;
+  int64_t* amount_values;
   string_t* currency_values;
 
   //! A money row is only usable if the parent struct and both children are non-NULL.
@@ -31,7 +51,8 @@ struct MoneyStructData {
            currency_data.validity.RowIsValid(currency_data.sel->get_index(row));
   }
 
-  double Amount(idx_t i) const {
+  //! Returns the amount in the scaled DECIMAL(18,3) representation (milli-units).
+  int64_t Amount(idx_t i) const {
     auto row = struct_data.sel->get_index(i);
     return amount_values[amount_data.sel->get_index(row)];
   }
@@ -56,7 +77,7 @@ inline MoneyStructData ExtractMoneyStruct(Vector& money_vec, idx_t count) {
   money_vec.ToUnifiedFormat(count, data.struct_data);
   data.amount_vec.ToUnifiedFormat(count, data.amount_data);
   data.currency_vec.ToUnifiedFormat(count, data.currency_data);
-  data.amount_values = reinterpret_cast<double*>(data.amount_data.data);
+  data.amount_values = reinterpret_cast<int64_t*>(data.amount_data.data);
   data.currency_values = reinterpret_cast<string_t*>(data.currency_data.data);
 
   return data;
@@ -66,7 +87,7 @@ inline MoneyStructData ExtractMoneyStruct(Vector& money_vec, idx_t count) {
 // Helper: Money Result Builder
 // ============================================================================
 struct MoneyResultBuilder {
-  double* amount_ptr;
+  int64_t* amount_ptr;
   string_t* currency_ptr;
   ValidityMask& amount_validity;
   ValidityMask& currency_validity;
@@ -85,7 +106,7 @@ inline MoneyResultBuilder PrepareMoneyResult(Vector& result) {
   currency_vec.SetVectorType(VectorType::FLAT_VECTOR);
 
   return MoneyResultBuilder{
-    FlatVector::GetData<double>(amount_vec),
+    FlatVector::GetData<int64_t>(amount_vec),
     FlatVector::GetData<string_t>(currency_vec),
     FlatVector::Validity(amount_vec),
     FlatVector::Validity(currency_vec),
@@ -93,9 +114,9 @@ inline MoneyResultBuilder PrepareMoneyResult(Vector& result) {
 }
 
 inline void SetMoneyResult(MoneyResultBuilder& builder, idx_t i,
-                          double amount, const std::string& currency,
+                          int64_t scaled_amount, const std::string& currency,
                           Vector& result) {
-  builder.amount_ptr[i] = amount;
+  builder.amount_ptr[i] = scaled_amount;
   auto& children = StructVector::GetEntries(result);
   builder.currency_ptr[i] = StringVector::AddString(*children[1], currency);
 }

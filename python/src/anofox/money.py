@@ -1,13 +1,16 @@
 """
 Money type wrappers.
 
-The extension represents money as a STRUCT(amount DOUBLE, currency VARCHAR).
+The extension represents money as a STRUCT(amount DECIMAL(18,3), currency VARCHAR).
+Amounts are exact decimals: DuckDB returns them as :class:`decimal.Decimal`, and
+the wrappers preserve that type so no binary floating point drift is introduced.
 Python-side results come back as dicts with ``amount`` and ``currency`` keys
 when DuckDB returns a struct, or as plain scalars for scalar-returning functions.
 """
 
 from __future__ import annotations
 
+from decimal import Decimal
 from typing import Any
 
 
@@ -20,14 +23,15 @@ def make_money(conn: Any, amount: float, currency: str) -> dict:
     conn:
         An :class:`~anofox.AnofoxConnection`.
     amount:
-        Monetary amount.
+        Monetary amount. Must be finite (NaN/Inf raise) and within the
+        DECIMAL(18,3) range; it is rounded half away from zero to 3 decimals.
     currency:
         ISO 4217 currency code, e.g. ``"USD"`` or ``"EUR"``.
 
     Returns
     -------
     dict
-        ``{"amount": float, "currency": str}``
+        ``{"amount": decimal.Decimal, "currency": str}``
     """
     result = conn.execute(
         f"SELECT anofox_tab_money({amount}, '{currency}')"
@@ -51,9 +55,10 @@ def money_from_cents(conn: Any, cents: int, currency: str) -> dict:
     Returns
     -------
     dict
-        ``{"amount": float, "currency": str}`` where ``amount`` is in major
-        units (the cents value divided by the currency's ``subunit_to_unit``,
-        e.g. ``1000`` cents -> ``10.0`` USD).
+        ``{"amount": decimal.Decimal, "currency": str}`` where ``amount`` is in
+        major units (the cents value divided by the currency's
+        ``subunit_to_unit``, e.g. ``1000`` cents -> ``Decimal("10.000")`` USD).
+        The conversion is exact for the full BIGINT cents range.
     """
     result = conn.execute(
         f"SELECT anofox_tab_money_from_cents({cents}, '{currency}')"
@@ -61,14 +66,14 @@ def money_from_cents(conn: Any, cents: int, currency: str) -> dict:
     return _struct_to_dict(result[0])
 
 
-def money_amount(conn: Any, money: dict) -> float:
-    """Extract the numeric amount from a money dict."""
+def money_amount(conn: Any, money: dict) -> Decimal:
+    """Extract the exact numeric amount (``decimal.Decimal``) from a money dict."""
     amount = money.get("amount", 0)
     currency = money.get("currency", "USD")
     result = conn.execute(
         f"SELECT anofox_tab_money_amount(anofox_tab_money({amount}, '{currency}'))"
     ).fetchone()
-    return float(result[0])
+    return Decimal(result[0]) if not isinstance(result[0], Decimal) else result[0]
 
 
 def money_currency(conn: Any, money: dict) -> str:
@@ -226,10 +231,11 @@ def money_same_currency(conn: Any, m1: dict, m2: dict) -> bool:
 # ---------------------------------------------------------------------------
 
 def _struct_to_dict(value: Any) -> dict:
-    """Convert a DuckDB struct value to a Python dict."""
+    """Convert a DuckDB struct value to a Python dict (amount stays an exact Decimal)."""
     if isinstance(value, dict):
         return value
     # DuckDB may return structs as tuples in some driver versions
     if isinstance(value, (list, tuple)) and len(value) == 2:
-        return {"amount": float(value[0]), "currency": str(value[1])}
+        amount = value[0] if isinstance(value[0], Decimal) else Decimal(str(value[0]))
+        return {"amount": amount, "currency": str(value[1])}
     return {"raw": value}
