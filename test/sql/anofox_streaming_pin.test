@@ -1,0 +1,283 @@
+# name: test/sql/anofox_streaming_pin.test
+# description: Pin table-function outputs on larger range()-generated fixtures (#59).
+#              These tests pin the exact observable behavior of the whole-table
+#              materializing table functions (pii_scan_table, pii_audit_table,
+#              outlier_tree, isolation_forest, dbscan) before/after the
+#              streaming refactor. Deterministic functions are pinned exactly;
+#              the RNG-based isolation forest is pinned via row counts,
+#              data-derived values, and cross-mode invariants (std::mt19937
+#              distributions are implementation-defined, so seeded counts are
+#              not portable across standard libraries).
+# group: [anofox_tabular]
+
+require anofox_tabular
+
+statement ok
+LOAD anofox_tabular
+
+statement ok
+SET anofox_tab_trace_enabled = false
+
+# ===--------------------------------------------------------------------===
+# Fixtures (a few thousand generated rows)
+# ===--------------------------------------------------------------------===
+
+statement ok
+CREATE TABLE pin_pii AS
+SELECT i AS id,
+  CASE WHEN i % 50 = 0 THEN 'contact user' || i || '@example.com now'
+       WHEN i % 97 = 0 THEN 'server ip is 192.168.1.42 ok'
+       ELSE 'clean text ' || i END AS notes,
+  CASE WHEN i % 200 = 0 THEN 'card 4111111111111111 on file' ELSE 'ok' END AS extra
+FROM range(1, 4001) t(i);
+
+statement ok
+CREATE TABLE pin_ot AS
+SELECT i AS id,
+  CASE WHEN i % 2 = 0 THEN 'A' ELSE 'B' END AS grp,
+  CASE WHEN i = 1500 THEN 100000.0
+       WHEN i % 2 = 0 THEN 100.0 + (i % 7)
+       ELSE 500.0 + (i % 11) END AS val
+FROM range(1, 3001) t(i);
+
+statement ok
+CREATE TABLE pin_if AS
+SELECT i AS id,
+  CASE WHEN i = 1000 THEN 10000.0 ELSE 100.0 + (i % 13) END AS val,
+  CASE WHEN i = 2000 THEN 9999.0 ELSE 50.0 + (i % 7) END AS val2,
+  CASE WHEN i % 3 = 0 THEN 'x' ELSE 'y' END AS cat,
+  1.0 + (i % 2) AS w
+FROM range(1, 3001) t(i);
+
+statement ok
+CREATE TABLE pin_db AS
+SELECT i AS id,
+  CASE WHEN i <= 1000 THEN 10.0 + (i % 5) * 0.1
+       WHEN i <= 2000 THEN 50.0 + (i % 5) * 0.1
+       ELSE 1000.0 + i * 10 END AS val,
+  CASE WHEN i <= 1000 THEN 20.0 + (i % 5) * 0.1
+       WHEN i <= 2000 THEN 80.0 + (i % 5) * 0.1
+       ELSE 5000.0 + i * 10 END AS val2
+FROM range(1, 2010) t(i);
+
+# ===--------------------------------------------------------------------===
+# pii_scan_table — exact summary per column/type
+# ===--------------------------------------------------------------------===
+
+query TTIR
+SELECT column_name, pii_type, match_count, confidence
+FROM anofox_tab_pii_scan_table('pin_pii')
+ORDER BY column_name, pii_type;
+----
+extra	CREDIT_CARD	20	1.0
+notes	EMAIL	80	1.0
+notes	IP_ADDRESS	41	1.0
+
+# Sample values keep the first five matches in scan order
+query T
+SELECT sample_values = ['user50@example.com', 'user100@example.com', 'user150@example.com',
+                        'user200@example.com', 'user250@example.com']
+FROM anofox_tab_pii_scan_table('pin_pii')
+WHERE pii_type = 'EMAIL';
+----
+true
+
+query T
+SELECT sample_values = ['4111111111111111', '4111111111111111', '4111111111111111',
+                        '4111111111111111', '4111111111111111']
+FROM anofox_tab_pii_scan_table('pin_pii')
+WHERE pii_type = 'CREDIT_CARD';
+----
+true
+
+# Column-filter overload only scans the listed columns
+query TTI
+SELECT column_name, pii_type, match_count
+FROM anofox_tab_pii_scan_table('pin_pii', 'notes')
+ORDER BY column_name, pii_type;
+----
+notes	EMAIL	80
+notes	IP_ADDRESS	41
+
+# ===--------------------------------------------------------------------===
+# pii_audit_table — exact per-match rows
+# ===--------------------------------------------------------------------===
+
+query I
+SELECT COUNT(*) FROM anofox_tab_pii_audit_table('pin_pii');
+----
+141
+
+# Aggregates over all match rows (row ids, positions, confidence)
+query TTIIIIR
+SELECT column_name, pii_type, COUNT(*),
+       SUM(row_id)::BIGINT, SUM(start_pos)::BIGINT, SUM(end_pos)::BIGINT,
+       ROUND(SUM(confidence), 2)
+FROM anofox_tab_pii_audit_table('pin_pii')
+GROUP BY column_name, pii_type
+ORDER BY column_name, pii_type;
+----
+extra	CREDIT_CARD	20	42000	100	420	20.0
+notes	EMAIL	80	162000	640	2220	80.0
+notes	IP_ADDRESS	41	83517	533	1025	41.0
+
+# Exact first match rows per type (original and masked values retained per match)
+query ITTTTIIR
+SELECT row_id, column_name, pii_type, original_value, masked_value, start_pos, end_pos, confidence
+FROM anofox_tab_pii_audit_table('pin_pii')
+WHERE (row_id = 50 AND pii_type = 'EMAIL')
+   OR (row_id = 97 AND pii_type = 'IP_ADDRESS')
+   OR (row_id = 200 AND pii_type = 'CREDIT_CARD')
+ORDER BY column_name, row_id;
+----
+200	extra	CREDIT_CARD	card 4111111111111111 on file	card [CREDIT_CARD] on file	5	21	1.0
+50	notes	EMAIL	contact user50@example.com now	contact [EMAIL] now	8	26	1.0
+97	notes	IP_ADDRESS	server ip is 192.168.1.42 ok	server ip is [IP_ADDRESS] ok	13	25	1.0
+
+# Column-filter overload
+query I
+SELECT COUNT(*) FROM anofox_tab_pii_audit_table('pin_pii', 'extra');
+----
+20
+
+# ===--------------------------------------------------------------------===
+# outlier_tree — deterministic algorithm, exact pins
+# ===--------------------------------------------------------------------===
+
+query TIIIIIT
+SELECT status, total_rows, outlier_count, columns_analyzed, clusters_evaluated, max_depth_reached, message
+FROM anofox_tab_outlier_tree('pin_ot', 'grp,val', 'summary');
+----
+fail	3000	2	2	14	3	2 outlier(s) detected
+
+query ITTRRIRRRTTR
+SELECT row_id, column_name, outlier_value, ROUND(cluster_mean, 4), ROUND(cluster_sd, 4), cluster_size,
+       ROUND(z_score, 4), ROUND(lower_bound, 4), ROUND(upper_bound, 4), conditions, explanation,
+       ROUND(outlier_score, 4)
+FROM anofox_tab_outlier_tree('pin_ot', 'grp,val', 'outliers')
+ORDER BY row_id, column_name;
+----
+1500	grp	A	0.0	0.0	1365	36.9459	0.0	0.0	[{"column":"val","type":"numeric","operator":">","value":500}]	Value A for column 'grp' is unusually rare (cluster size: 1365) when val > 500	0.0007
+1500	val	100000	169.5987	2579.3302	1500	33689.8017	-6717.213	7056.4103	[{"column":"grp","type":"categorical","operator":"in","values":["A"]}]	Value 100000 for column 'val' is unusually high (mean: 169.60, SD: 2579.33, z-score: 33689.80) when grp IN ('A')	0.0
+
+# ===--------------------------------------------------------------------===
+# isolation_forest — pinned via row counts, data-derived values, and
+# cross-mode invariants (seeded RNG is stdlib-implementation-defined)
+# ===--------------------------------------------------------------------===
+
+# Summary: data-derived columns are exact; outlier_count is sane and non-zero
+query TIRRIT
+SELECT total_count, outlier_count BETWEEN 1 AND 300, ROUND(avg_value, 4), contamination, n_trees, status
+FROM anofox_tab_isolation_forest('pin_if', 'val', 100, 256, 0.05, 'summary', 42);
+----
+3000	true	109.2943	0.05	100	fail
+
+# Scores mode: one row per non-NULL input row, 1-indexed; value column is the raw input
+query IIIR
+SELECT COUNT(*), MIN(row_id)::BIGINT, MAX(row_id)::BIGINT, ROUND(SUM(value), 2)
+FROM anofox_tab_isolation_forest('pin_if', 'val', 100, 256, 0.05, 'scores', 42);
+----
+3000	1	3000	327883.0
+
+# The planted extreme value is flagged as an anomaly; scores are in [0, 1]
+query TRTT
+SELECT value::VARCHAR, ROUND(value, 1), is_anomaly,
+       (SELECT MIN(anomaly_score) >= 0.0 AND MAX(anomaly_score) <= 1.0
+        FROM anofox_tab_isolation_forest('pin_if', 'val', 100, 256, 0.05, 'scores', 42))
+FROM anofox_tab_isolation_forest('pin_if', 'val', 100, 256, 0.05, 'scores', 42)
+WHERE row_id = 1000;
+----
+10000.0	10000.0	true	true
+
+# Cross-mode invariant: summary outlier_count equals the scores-mode anomaly count for the same seed
+query T
+SELECT (SELECT outlier_count FROM anofox_tab_isolation_forest('pin_if', 'val', 100, 256, 0.05, 'summary', 42))
+     = (SELECT SUM(CASE WHEN is_anomaly THEN 1 ELSE 0 END)
+        FROM anofox_tab_isolation_forest('pin_if', 'val', 100, 256, 0.05, 'scores', 42));
+----
+true
+
+# Multivariate (numeric-only path)
+query ITIRIT
+SELECT total_count, outlier_count BETWEEN 1 AND 300, n_columns, contamination, n_trees, status
+FROM anofox_tab_isolation_forest_mv('pin_if', 'val,val2', 100, 256, 0.05, 'summary', 42);
+----
+3000	true	2	0.05	100	fail
+
+query T
+SELECT (SELECT outlier_count
+        FROM anofox_tab_isolation_forest_mv('pin_if', 'val,val2', 100, 256, 0.05, 'summary', 42))
+     = (SELECT SUM(CASE WHEN is_anomaly THEN 1 ELSE 0 END)
+        FROM anofox_tab_isolation_forest_mv('pin_if', 'val,val2', 100, 256, 0.05, 'scores', 42));
+----
+true
+
+# Multivariate mixed path (categorical column + weight column)
+query ITIRIT
+SELECT total_count, outlier_count BETWEEN 1 AND 600, n_columns, contamination, n_trees, status
+FROM anofox_tab_isolation_forest_mv('pin_if', 'val,cat', 100, 256, 0.05, 'summary', 42, 1,
+                                    'uniform', 'depth', 'w');
+----
+3000	true	2	0.05	100	fail
+
+query T
+SELECT (SELECT outlier_count
+        FROM anofox_tab_isolation_forest_mv('pin_if', 'val,cat', 100, 256, 0.05, 'summary', 42, 1,
+                                            'uniform', 'depth', 'w'))
+     = (SELECT SUM(CASE WHEN is_anomaly THEN 1 ELSE 0 END)
+        FROM anofox_tab_isolation_forest_mv('pin_if', 'val,cat', 100, 256, 0.05, 'scores', 42, 1,
+                                            'uniform', 'depth', 'w'));
+----
+true
+
+# ===--------------------------------------------------------------------===
+# dbscan — deterministic algorithm, exact pins
+# ===--------------------------------------------------------------------===
+
+query TIIIRIRIT
+SELECT status, cluster_count, noise_count, total_count, ROUND(noise_rate, 6), largest_cluster_size,
+       eps, min_pts, message
+FROM anofox_tab_dbscan('pin_db', 'val', 0.5, 5, 'summary');
+----
+fail	2	9	2009	0.00448	1000	0.5	5	9 noise point(s) detected
+
+# Exact per-cluster aggregates over the full clusters output
+query ITIRIR
+SELECT cluster_id, point_type, COUNT(*), ROUND(SUM(value), 2), SUM(neighbor_count)::BIGINT,
+       ROUND(SUM(anomaly_score), 4)
+FROM anofox_tab_dbscan('pin_db', 'val', 0.5, 5, 'clusters')
+GROUP BY cluster_id, point_type
+ORDER BY cluster_id, point_type;
+----
+-1	NOISE	9	189450.0	0	9.0
+0	CORE	1000	10200.0	999000	100.0
+1	CORE	1000	50200.0	999000	100.0
+
+# Exact individual rows (first member of each cluster and one noise point)
+query IRITIRT
+SELECT row_id, value, cluster_id, point_type, neighbor_count, ROUND(anomaly_score, 4), is_anomaly
+FROM anofox_tab_dbscan('pin_db', 'val', 0.5, 5, 'clusters')
+WHERE row_id IN (1, 1001, 2005)
+ORDER BY row_id;
+----
+1	10.1	0	CORE	999	0.1	false
+1001	50.1	1	CORE	999	0.1	false
+2005	21050.0	-1	NOISE	0	1.0	true
+
+# Multivariate dbscan
+query TIIIRIRIIT
+SELECT status, cluster_count, noise_count, total_count, ROUND(noise_rate, 6), largest_cluster_size,
+       eps, min_pts, n_columns, message
+FROM anofox_tab_dbscan_mv('pin_db', 'val,val2', 2.0, 5, 'summary');
+----
+fail	2	9	2009	0.00448	1000	2.0	5	2	9 noise point(s) detected
+
+query ITI
+SELECT cluster_id, point_type, COUNT(*)
+FROM anofox_tab_dbscan_mv('pin_db', 'val,val2', 2.0, 5, 'clusters')
+GROUP BY cluster_id, point_type
+ORDER BY cluster_id, point_type;
+----
+-1	NOISE	9
+0	CORE	1000
+1	CORE	1000
