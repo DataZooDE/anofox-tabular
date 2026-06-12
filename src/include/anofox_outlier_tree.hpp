@@ -355,6 +355,9 @@ private:
      * @param predictor_col: Index of predictor column
      * @param target_col: Index of target column
      * @param row_indices: Indices of rows in current subset
+     * @param current_target_metric: Cached parent statistic of the target
+     *        column over row_indices (variance for numeric targets, entropy
+     *        for categorical targets)
      * @return Best split condition, or nullopt if no good split found
      */
     std::optional<SplitCondition> FindBestNumericSplit(
@@ -362,7 +365,8 @@ private:
         const std::vector<ColumnInfo>& column_info,
         size_t predictor_col,
         size_t target_col,
-        const std::vector<size_t>& row_indices
+        const std::vector<size_t>& row_indices,
+        double current_target_metric
     );
 
     /**
@@ -372,6 +376,9 @@ private:
      * @param predictor_col: Index of predictor column
      * @param target_col: Index of target column
      * @param row_indices: Indices of rows in current subset
+     * @param current_target_metric: Cached parent statistic of the target
+     *        column over row_indices (variance for numeric targets, entropy
+     *        for categorical targets)
      * @return Best split condition, or nullopt if no good split found
      */
     std::optional<SplitCondition> FindBestCategoricalSplit(
@@ -379,7 +386,8 @@ private:
         const std::vector<ColumnInfo>& column_info,
         size_t predictor_col,
         size_t target_col,
-        const std::vector<size_t>& row_indices
+        const std::vector<size_t>& row_indices,
+        double current_target_metric
     );
 
     /**
