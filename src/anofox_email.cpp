@@ -73,22 +73,6 @@ std::string ExtractDomain(const std::string &email) {
 	return email.substr(domain_offset);
 }
 
-std::vector<std::string> BuildFallbackHosts(const std::string &domain) {
-	std::vector<std::string> hosts;
-	auto add_unique = [&](const std::string &value) {
-		if (value.empty()) {
-			return;
-		}
-		if (std::find(hosts.begin(), hosts.end(), value) == hosts.end()) {
-			hosts.emplace_back(value);
-		}
-	};
-	add_unique(domain);
-	add_unique("localhost");
-	add_unique("127.0.0.1");
-	return hosts;
-}
-
 class EmailConfig {
 public:
 	static EmailConfig &Get() {
@@ -144,8 +128,10 @@ public:
 	}
 
 	void SetDnsTries(uint32_t tries) {
-		if (tries == 0) {
-			throw InvalidInputException("anofox_tab_email_dns_tries must be greater than 0");
+		if (tries < email::DnsOptions::MIN_TRIES || tries > email::DnsOptions::MAX_TRIES) {
+			throw InvalidInputException("anofox_tab_email_dns_tries must be between " +
+			                            std::to_string(email::DnsOptions::MIN_TRIES) + " and " +
+			                            std::to_string(email::DnsOptions::MAX_TRIES));
 		}
 		std::lock_guard<std::mutex> lock(config_mutex);
 		dns_options.tries = tries;
@@ -310,23 +296,21 @@ EmailValidationResult ValidateEmailAddress(const std::string &email, const std::
 	               (dns_lookup.reason.empty() ? std::string("<none>") : dns_lookup.reason) + " hosts=" +
 	               std::to_string(dns_lookup.mx_hosts.size()));
 
-	std::vector<std::string> smtp_hosts;
-	if (dns_lookup.success) {
-		dns_stage.valid = true;
-		smtp_hosts = dns_lookup.mx_hosts;
-	} else {
+	if (!dns_lookup.success) {
+		// DNS resolution failed: the address cannot be deliverable, so both DNS
+		// and SMTP modes fail here. No fallback SMTP probing of the raw domain or
+		// loopback addresses (issue #47).
 		dns_stage.valid = false;
 		dns_stage.reason = dns_lookup.reason.empty() ? EMAIL_REASON_DNS_FAIL : dns_lookup.reason;
-		smtp_hosts = BuildFallbackHosts(domain);
-		dns_stage.mx_hosts = smtp_hosts;
 		EmailTrace(AnofoxLogLevel::Warn,
-		           std::string("DNS failure, using fallback hosts count=") + std::to_string(smtp_hosts.size()));
-		if (smtp_hosts.empty()) {
-			return dns_stage;
-		}
+		           "DNS failure, validation fails without SMTP fallback reason=" + dns_stage.reason);
+		return dns_stage;
 	}
 
-	if (normalized_mode == EMAIL_STAGE_DNS) {
+	dns_stage.valid = true;
+	auto &smtp_hosts = dns_lookup.mx_hosts;
+
+	if (normalized_mode == EMAIL_STAGE_DNS || smtp_hosts.empty()) {
 		return dns_stage;
 	}
 
@@ -348,13 +332,7 @@ EmailValidationResult ValidateEmailAddress(const std::string &email, const std::
 	               std::string("SMTP verification failed reason=") +
 	                   (smtp_result.reason.empty() ? std::string("<none>") : smtp_result.reason));
 		smtp_stage.valid = false;
-		if (!smtp_result.reason.empty()) {
-			smtp_stage.reason = smtp_result.reason;
-		} else if (!dns_lookup.success && !dns_stage.reason.empty()) {
-			smtp_stage.reason = dns_stage.reason;
-		} else {
-			smtp_stage.reason = EMAIL_REASON_SMTP_FAIL;
-		}
+		smtp_stage.reason = smtp_result.reason.empty() ? EMAIL_REASON_SMTP_FAIL : smtp_result.reason;
 		return smtp_stage;
 	}
 
@@ -565,9 +543,11 @@ void SetDnsTriesOption(ClientContext &, SetScope, Value &parameter) {
 		throw InvalidInputException("anofox_tab_email_dns_tries cannot be NULL");
 	}
 	auto value = parameter.GetValue<int64_t>();
-	if (value <= 0 || value > std::numeric_limits<uint32_t>::max()) {
-		throw InvalidInputException("anofox_tab_email_dns_tries must be between 1 and " +
-		                            std::to_string(std::numeric_limits<uint32_t>::max()));
+	if (value < static_cast<int64_t>(email::DnsOptions::MIN_TRIES) ||
+	    value > static_cast<int64_t>(email::DnsOptions::MAX_TRIES)) {
+		throw InvalidInputException("anofox_tab_email_dns_tries must be between " +
+		                            std::to_string(email::DnsOptions::MIN_TRIES) + " and " +
+		                            std::to_string(email::DnsOptions::MAX_TRIES));
 	}
 	EmailConfig::Get().SetDnsTries(static_cast<uint32_t>(value));
 	parameter = Value::INTEGER(static_cast<int32_t>(EmailConfig::Get().GetDnsOptions().tries));
@@ -686,7 +666,7 @@ void RegisterEmailOptions(ExtensionLoader &loader) {
 	                          LogicalTypeId::BIGINT,
 	                          Value::BIGINT(static_cast<int64_t>(dns_options.timeout_ms)), SetDnsTimeoutOption);
 	config.AddExtensionOption("anofox_tab_email_dns_tries",
-	                          "Number of DNS queries to attempt before failing",
+	                          "Number of DNS queries to attempt before failing (1-10)",
 	                          LogicalTypeId::INTEGER,
 	                          Value::INTEGER(static_cast<int32_t>(dns_options.tries)), SetDnsTriesOption);
 	config.AddExtensionOption("anofox_tab_email_smtp_port",

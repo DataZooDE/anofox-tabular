@@ -1,0 +1,66 @@
+# name: test/sql/anofox_email_network_safety.test
+# description: Email network safety (issue #47) — no loopback fallback after
+#              DNS failure, bounded DNS tries. Uses the reserved .invalid TLD
+#              (RFC 2606) so DNS resolution fails deterministically without
+#              requiring a working network.
+# group: [anofox_tabular]
+
+require anofox_tabular
+
+statement ok
+LOAD anofox_tabular;
+
+# Keep the DNS/SMTP stages fast even when no network is available.
+statement ok
+SET anofox_tab_email_dns_timeout_ms=500;
+
+statement ok
+SET anofox_tab_email_smtp_connect_timeout_ms=100;
+
+statement ok
+SET anofox_tab_email_smtp_read_timeout_ms=100;
+
+# SMTP-mode validation of an unresolvable domain must fail at the DNS stage:
+# no fallback SMTP probing of the raw domain, localhost, or 127.0.0.1.
+query TTTT
+SELECT (result).valid, (result).stage, COALESCE((result).reason, '') <> '',
+       list_has_any((result).mx_hosts, ['localhost', '127.0.0.1'])
+FROM (SELECT anofox_tab_email_validate('user@nonexistent-domain-zzz.invalid', 'smtp') AS result);
+----
+false	dns	true	false
+
+# DNS-mode validation must not report loopback hosts as MX candidates either.
+query TTT
+SELECT (result).valid, (result).stage,
+       list_has_any((result).mx_hosts, ['localhost', '127.0.0.1'])
+FROM (SELECT anofox_tab_email_validate('user@nonexistent-domain-zzz.invalid', 'dns') AS result);
+----
+false	dns	false
+
+# The DNS tries option is bounded to a documented small range (1..10).
+statement ok
+SET anofox_tab_email_dns_tries=10;
+
+statement error
+SET anofox_tab_email_dns_tries=11;
+----
+anofox_tab_email_dns_tries must be between 1 and 10
+
+statement error
+SET anofox_tab_email_dns_tries=0;
+----
+anofox_tab_email_dns_tries must be between 1 and 10
+
+# Restore defaults; the email configuration singleton is process-wide and
+# would otherwise leak into other test files.
+statement ok
+SET anofox_tab_email_dns_tries=1;
+
+statement ok
+SET anofox_tab_email_dns_timeout_ms=1000;
+
+statement ok
+SET anofox_tab_email_smtp_connect_timeout_ms=5000;
+
+statement ok
+SET anofox_tab_email_smtp_read_timeout_ms=5000;
