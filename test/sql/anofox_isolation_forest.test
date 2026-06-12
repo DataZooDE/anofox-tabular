@@ -1484,3 +1484,71 @@ SELECT * FROM isolation_forest_mv('eif_2d',
     'x,y', 100, 256, 0.1, 'scores', 42, 1, 'uniform', 'depth', NULL, 10, 1.5)
 ----
 prob_pick_avg_gain must be
+
+# ===--------------------------------------------------------------------===
+# Arity / Default Parameter Tests (#52)
+# ===--------------------------------------------------------------------===
+
+# Test 135: isolation_forest(table, column) binds with documented defaults
+query I
+SELECT COUNT(*) FROM isolation_forest('iso_normal_data', 'value')
+----
+1
+
+# Test 136: isolation_forest(table, column, n_trees) binds
+query I
+SELECT n_trees FROM isolation_forest('iso_normal_data', 'value', 50)
+----
+50
+
+# Test 137: isolation_forest(table, column, n_trees, sample_size) binds
+query I
+SELECT COUNT(*) FROM isolation_forest('iso_normal_data', 'value', 50, 64)
+----
+1
+
+# Test 138: isolation_forest(table, column, n_trees, sample_size, contamination) binds
+query I
+SELECT COUNT(*) FROM isolation_forest('iso_normal_data', 'value', 50, 64, 0.1)
+----
+1
+
+# Test 139: short-arity default output mode is 'summary' (single row)
+query T
+SELECT status IS NOT NULL FROM isolation_forest('iso_normal_data', 'value')
+----
+true
+
+# Test 140: isolation_forest_mv(table, columns) binds with documented defaults
+query I
+SELECT COUNT(*) FROM isolation_forest_mv('iso_with_nulls', 'id,value')
+----
+1
+
+# Test 141: isolation_forest_mv with 5 arguments binds
+query I
+SELECT COUNT(*) FROM isolation_forest_mv('iso_with_nulls', 'id,value', 50, 64, 0.1)
+----
+1
+
+# ===--------------------------------------------------------------------===
+# output_mode Validation (#52)
+# ===--------------------------------------------------------------------===
+
+# Test 142: invalid output_mode for isolation_forest errors at bind time
+statement error
+SELECT * FROM isolation_forest('iso_normal_data', 'value', 100, 256, 0.1, 'bogus')
+----
+output_mode must be
+
+# Test 143: 'all' is not a valid isolation_forest output mode
+statement error
+SELECT * FROM isolation_forest('iso_normal_data', 'value', 100, 256, 0.1, 'all')
+----
+output_mode must be
+
+# Test 144: invalid output_mode for isolation_forest_mv errors at bind time
+statement error
+SELECT * FROM isolation_forest_mv('iso_with_nulls', 'id,value', 100, 256, 0.1, 'bogus')
+----
+output_mode must be

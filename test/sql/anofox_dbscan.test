@@ -103,15 +103,197 @@ INSERT INTO dbscan_clustered_data VALUES
     (8, 100.0),
     (9, 200.0)
 
+# Fixture with a known clustering structure:
+# two tight groups {1.0, 1.1, 1.2} and {10.0, 10.1, 10.2} plus one isolated
+# point 100.0. With eps=0.5 and min_pts=2 this must yield exactly 2 clusters
+# and 1 noise point.
+statement ok
+CREATE TEMP TABLE dbscan_known_clusters (
+    id INTEGER,
+    value DOUBLE
+)
+
+statement ok
+INSERT INTO dbscan_known_clusters VALUES
+    (1, 1.0),
+    (2, 1.1),
+    (3, 1.2),
+    (4, 10.0),
+    (5, 10.1),
+    (6, 10.2),
+    (7, 100.0)
+
+# ===--------------------------------------------------------------------===
+# Real Clustering Results (known fixture)
+# ===--------------------------------------------------------------------===
+
+# Test K1: Summary mode returns the true cluster/noise/total counts
+query IIII
+SELECT cluster_count, noise_count, total_count, largest_cluster_size
+FROM dbscan('dbscan_known_clusters', 'value', 0.5, 2, 'summary')
+----
+2	1	7	3
+
+# Test K2: Summary mode echoes parameters and reports noise via status
+query TRI
+SELECT status, eps, min_pts
+FROM dbscan('dbscan_known_clusters', 'value', 0.5, 2, 'summary')
+----
+fail	0.5	2
+
+# Test K3: Summary mode noise rate is noise_count / total_count
+query R
+SELECT round(noise_rate, 3) FROM dbscan('dbscan_known_clusters', 'value', 0.5, 2, 'summary')
+----
+0.143
+
+# Test K4: Clusters mode returns the true per-row cluster assignment
+query IIT
+SELECT row_id, cluster_id, point_type
+FROM dbscan('dbscan_known_clusters', 'value', 0.5, 2, 'clusters')
+ORDER BY row_id
+----
+1	0	CORE
+2	0	CORE
+3	0	CORE
+4	1	CORE
+5	1	CORE
+6	1	CORE
+7	-1	NOISE
+
+# Test K5: Noise point is flagged as anomaly with maximum score
+query IRT
+SELECT cluster_id, anomaly_score, is_anomaly
+FROM dbscan('dbscan_known_clusters', 'value', 0.5, 2, 'clusters')
+WHERE row_id = 7
+----
+-1	1.0	true
+
+# Test K6: Cluster members are not anomalies and score below noise
+query I
+SELECT COUNT(*)
+FROM dbscan('dbscan_known_clusters', 'value', 0.5, 2, 'clusters')
+WHERE NOT is_anomaly AND anomaly_score < 0.5 AND neighbor_count >= 2
+----
+6
+
+# Test K7: Clusters mode reports the original values
+query R
+SELECT value FROM dbscan('dbscan_known_clusters', 'value', 0.5, 2, 'clusters')
+WHERE row_id = 4
+----
+10.0
+
+# Test K8: When no noise exists the summary passes
+query TII
+SELECT status, cluster_count, noise_count
+FROM dbscan('dbscan_identical_values', 'value', 0.5, 2, 'summary')
+----
+pass	1	0
+
+# Test K9: Multivariate summary returns the true counts (same structure in 2D)
+statement ok
+CREATE TEMP TABLE dbscan_mv_known (
+    id INTEGER,
+    x DOUBLE,
+    y DOUBLE
+)
+
+statement ok
+INSERT INTO dbscan_mv_known VALUES
+    (1, 1.0, 1.0),
+    (2, 1.1, 1.1),
+    (3, 1.2, 1.2),
+    (4, 10.0, 10.0),
+    (5, 10.1, 10.1),
+    (6, 10.2, 10.2),
+    (7, 100.0, 100.0)
+
+query IIIII
+SELECT cluster_count, noise_count, total_count, largest_cluster_size, n_columns
+FROM dbscan_mv('dbscan_mv_known', 'x,y', 0.5, 2, 'summary')
+----
+2	1	7	3	2
+
+# Test K10: Multivariate clusters mode returns the true per-row assignment
+query IIT
+SELECT row_id, cluster_id, point_type
+FROM dbscan_mv('dbscan_mv_known', 'x,y', 0.5, 2, 'clusters')
+ORDER BY row_id
+----
+1	0	CORE
+2	0	CORE
+3	0	CORE
+4	1	CORE
+5	1	CORE
+6	1	CORE
+7	-1	NOISE
+
+# ===--------------------------------------------------------------------===
+# Arity / Default Parameter Tests
+# ===--------------------------------------------------------------------===
+
+# Test A1: dbscan(table, column) binds with defaults (eps=0.5, min_pts=5, summary)
+query II
+SELECT cluster_count, noise_count FROM dbscan('dbscan_known_clusters', 'value')
+----
+0	7
+
+# Test A2: dbscan(table, column, eps) binds with min_pts=5 default
+query II
+SELECT cluster_count, noise_count FROM dbscan('dbscan_known_clusters', 'value', 0.5)
+----
+0	7
+
+# Test A3: dbscan(table, column, eps, min_pts) defaults to summary mode
+query II
+SELECT cluster_count, noise_count FROM dbscan('dbscan_known_clusters', 'value', 0.5, 2)
+----
+2	1
+
+# Test A4: dbscan_mv(table, columns) binds with defaults
+query II
+SELECT cluster_count, noise_count FROM dbscan_mv('dbscan_mv_known', 'x,y')
+----
+0	7
+
+# Test A5: dbscan_mv(table, columns, eps, min_pts) defaults to summary mode
+query II
+SELECT cluster_count, noise_count FROM dbscan_mv('dbscan_mv_known', 'x,y', 0.5, 2)
+----
+2	1
+
+# ===--------------------------------------------------------------------===
+# output_mode Validation
+# ===--------------------------------------------------------------------===
+
+# Test V1: Invalid output_mode for dbscan errors at bind time
+statement error
+SELECT * FROM dbscan('dbscan_known_clusters', 'value', 0.5, 2, 'bogus')
+----
+output_mode must be
+
+# Test V2: 'scores' is not a valid dbscan output mode
+statement error
+SELECT * FROM dbscan('dbscan_known_clusters', 'value', 0.5, 2, 'all')
+----
+output_mode must be
+
+# Test V3: Invalid output_mode for dbscan_mv errors at bind time
+statement error
+SELECT * FROM dbscan_mv('dbscan_mv_known', 'x,y', 0.5, 2, 'bogus')
+----
+output_mode must be
+
 # ===--------------------------------------------------------------------===
 # Univariate Summary Mode Tests
 # ===--------------------------------------------------------------------===
 
-# Test 1: Basic summary mode with default parameters
+# Test 1: With eps=0.5/min_pts=5 every point of dbscan_normal_data is noise
 query T
 SELECT status FROM dbscan('dbscan_normal_data', 'value', 0.5, 5, 'summary')
 ----
-pass
+fail
 
 # Test 2: Summary mode with different eps parameter
 query I
@@ -125,17 +307,17 @@ SELECT COUNT(*) FROM dbscan('dbscan_normal_data', 'value', 0.5, 2, 'summary')
 ----
 1
 
-# Test 4: Check message field in summary mode
+# Test 4: Check message field in summary mode (all 6 points are noise)
 query T
 SELECT message FROM dbscan('dbscan_normal_data', 'value', 0.5, 5, 'summary')
 ----
-DBSCAN clustering complete
+6 noise point(s) detected
 
-# Test 5: Summary on data with clear clusters
+# Test 5: Summary on data with clear clusters (100.0 and 200.0 are noise)
 query T
 SELECT status FROM dbscan('dbscan_clustered_data', 'value', 2.0, 2, 'summary')
 ----
-pass
+fail
 
 # Test 6: Summary on small dataset
 query T
@@ -191,11 +373,11 @@ SELECT COUNT(*) FROM dbscan('dbscan_empty', 'value', 0.5, 5, 'clusters')
 ----
 0
 
-# Test 13: Single row - summary mode
-query T
-SELECT status FROM dbscan('dbscan_single_row', 'value', 0.5, 5, 'summary')
+# Test 13: Single row - the single point has no neighbours, so it is noise
+query TII
+SELECT status, cluster_count, noise_count FROM dbscan('dbscan_single_row', 'value', 0.5, 5, 'summary')
 ----
-pass
+fail	0	1
 
 # Test 14: Single row - clusters mode
 query I
@@ -213,7 +395,7 @@ SELECT status FROM dbscan('dbscan_identical_values', 'value', 0.5, 2, 'summary')
 ----
 pass
 
-# Test 16: Identical values - clusters mode
+# Test 16: Identical values - clusters mode (all points are CORE)
 query I
 SELECT COUNT(DISTINCT point_type) FROM dbscan('dbscan_identical_values', 'value', 0.5, 2, 'clusters')
 ----
@@ -267,63 +449,63 @@ min_pts must be
 # Different Epsilon Values
 # ===--------------------------------------------------------------------===
 
-# Test 23: Very small epsilon (0.1)
+# Test 23: Very small epsilon (0.1) - all points isolated -> noise
 query T
 SELECT status FROM dbscan('dbscan_normal_data', 'value', 0.1, 5, 'summary')
 ----
-pass
+fail
 
-# Test 24: Small epsilon (1.0)
+# Test 24: Small epsilon (1.0) - still no dense region of min_pts points
 query T
 SELECT status FROM dbscan('dbscan_normal_data', 'value', 1.0, 5, 'summary')
 ----
-pass
+fail
 
-# Test 25: Medium epsilon (5.0)
+# Test 25: Medium epsilon (5.0) - 500.0 remains noise
 query T
 SELECT status FROM dbscan('dbscan_normal_data', 'value', 5.0, 5, 'summary')
 ----
-pass
+fail
 
-# Test 26: Large epsilon (100.0)
+# Test 26: Large epsilon (100.0) - 500.0 still out of reach
 query T
 SELECT status FROM dbscan('dbscan_normal_data', 'value', 100.0, 5, 'summary')
 ----
-pass
+fail
 
 # ===--------------------------------------------------------------------===
 # Different min_pts Values
 # ===--------------------------------------------------------------------===
 
-# Test 27: Minimal min_pts (1)
+# Test 27: Minimal min_pts (1) on dense identical values clusters everything
 query T
-SELECT status FROM dbscan('dbscan_normal_data', 'value', 0.5, 1, 'summary')
+SELECT status FROM dbscan('dbscan_identical_values', 'value', 0.5, 1, 'summary')
 ----
 pass
 
-# Test 28: Small min_pts (2)
+# Test 28: Small min_pts (2) - dbscan_normal_data points are all isolated at eps=0.5
 query T
 SELECT status FROM dbscan('dbscan_normal_data', 'value', 0.5, 2, 'summary')
 ----
-pass
+fail
 
 # Test 29: Medium min_pts (5)
 query T
 SELECT status FROM dbscan('dbscan_normal_data', 'value', 0.5, 5, 'summary')
 ----
-pass
+fail
 
 # Test 30: Large min_pts (10)
 query T
 SELECT status FROM dbscan('dbscan_normal_data', 'value', 0.5, 10, 'summary')
 ----
-pass
+fail
 
 # ===--------------------------------------------------------------------===
 # Output Mode Tests
 # ===--------------------------------------------------------------------===
 
-# Test 31: Default output mode is 'summary' when specified
+# Test 31: Summary mode returns a single row
 query I
 SELECT COUNT(*) FROM dbscan('dbscan_normal_data', 'value', 0.5, 5, 'summary')
 ----
@@ -356,7 +538,7 @@ SELECT s1.status FROM
   (SELECT status FROM dbscan('dbscan_normal_data', 'value', 0.5, 5, 'summary')) s2
 WHERE s1.status = s2.status
 ----
-pass
+fail
 
 # Test 35: Clusters mode is reproducible with same parameters
 query I
@@ -383,11 +565,11 @@ INSERT INTO dbscan_large_values VALUES
     (5, 1.01e10),
     (6, 1e15)
 
-# Test 36: Large values - summary mode
+# Test 36: Large values - 1.05e10 and 1e15 are isolated at eps=1e8
 query T
 SELECT status FROM dbscan('dbscan_large_values', 'value', 1e8, 2, 'summary')
 ----
-pass
+fail
 
 # Test 37: Large values - clusters mode should include all rows
 query I
@@ -414,11 +596,11 @@ INSERT INTO dbscan_small_values VALUES
     (5, 1.01e-10),
     (6, 1e-5)
 
-# Test 38: Small values - summary mode
+# Test 38: Small values - the 1e-5 point is noise
 query T
 SELECT status FROM dbscan('dbscan_small_values', 'value', 1e-11, 2, 'summary')
 ----
-pass
+fail
 
 # Test 39: Small values - clusters mode
 query I
@@ -445,11 +627,11 @@ INSERT INTO dbscan_negative_values VALUES
     (5, -103.0),
     (6, -500.0)
 
-# Test 40: Negative values - summary mode
+# Test 40: Negative values - no point has 5 neighbours within eps=2.0
 query T
 SELECT status FROM dbscan('dbscan_negative_values', 'value', 2.0, 5, 'summary')
 ----
-pass
+fail
 
 # Test 41: Negative values - clusters mode
 query I
@@ -476,11 +658,11 @@ INSERT INTO dbscan_mixed_sign_values VALUES
     (5, -48.0),
     (6, 200.0)
 
-# Test 42: Mixed sign values - summary mode
+# Test 42: Mixed sign values - 200.0 is noise
 query T
 SELECT status FROM dbscan('dbscan_mixed_sign_values', 'value', 10.0, 2, 'summary')
 ----
-pass
+fail
 
 # Test 43: Mixed sign values - clusters mode
 query I
@@ -492,29 +674,29 @@ SELECT COUNT(*) FROM dbscan('dbscan_mixed_sign_values', 'value', 10.0, 2, 'clust
 # Boundary Tests
 # ===--------------------------------------------------------------------===
 
-# Test 44: Boundary - eps very small (0.001)
+# Test 44: Boundary - eps very small (0.001) -> all noise
 query T
 SELECT status FROM dbscan('dbscan_normal_data', 'value', 0.001, 5, 'summary')
 ----
-pass
+fail
 
-# Test 45: Boundary - eps very large (10000.0)
+# Test 45: Boundary - eps very large (10000.0) -> one big cluster, no noise
 query T
 SELECT status FROM dbscan('dbscan_normal_data', 'value', 10000.0, 5, 'summary')
 ----
 pass
 
-# Test 46: Boundary - min_pts = 1 (minimum viable)
+# Test 46: Boundary - min_pts = 1 on dense data clusters everything
 query T
-SELECT status FROM dbscan('dbscan_normal_data', 'value', 0.5, 1, 'summary')
+SELECT status FROM dbscan('dbscan_identical_values', 'value', 0.5, 1, 'summary')
 ----
 pass
 
-# Test 47: Boundary - min_pts = dataset size
+# Test 47: Boundary - min_pts = dataset size with isolated points -> all noise
 query T
 SELECT status FROM dbscan('dbscan_normal_data', 'value', 0.5, 6, 'summary')
 ----
-pass
+fail
 
 # ===--------------------------------------------------------------------===
 # Return Value Type Tests
@@ -526,19 +708,19 @@ SELECT typeof(status) FROM dbscan('dbscan_normal_data', 'value', 0.5, 5, 'summar
 ----
 VARCHAR
 
-# Test 49: Summary mode - noise_count is INTEGER
+# Test 49: Summary mode - noise_count is BIGINT
 query T
 SELECT typeof(noise_count) FROM dbscan('dbscan_normal_data', 'value', 0.5, 5, 'summary')
 ----
 BIGINT
 
-# Test 50: Summary mode - total_count is INTEGER
+# Test 50: Summary mode - total_count is BIGINT
 query T
 SELECT typeof(total_count) FROM dbscan('dbscan_normal_data', 'value', 0.5, 5, 'summary')
 ----
 BIGINT
 
-# Test 51: Clusters mode - row_id is INTEGER
+# Test 51: Clusters mode - row_id is BIGINT
 query T
 SELECT typeof(row_id) FROM (
   SELECT * FROM dbscan('dbscan_normal_data', 'value', 0.5, 5, 'clusters')
@@ -547,14 +729,14 @@ SELECT typeof(row_id) FROM (
 ----
 BIGINT
 
-# Test 52: Clusters mode - anomaly_score is numeric
+# Test 52: Clusters mode - anomaly_score is DOUBLE
 query T
 SELECT typeof(anomaly_score) FROM (
   SELECT * FROM dbscan('dbscan_normal_data', 'value', 0.5, 5, 'clusters')
   LIMIT 1
 )
 ----
-DECIMAL(2,1)
+DOUBLE
 
 # Test 53: Clusters mode - point_type is VARCHAR
 query T
@@ -601,11 +783,11 @@ INSERT INTO dbscan_multivar_3col VALUES
     (4, 800.0, 400.0, 200.0),
     (5, 13.0, 23.0, 33.0)
 
-# Test 54: Multivariate summary mode - basic test
+# Test 54: Multivariate summary mode - (600,300) is noise
 query T
 SELECT status FROM dbscan_mv('dbscan_multivar_data', 'x,y', 5.0, 2, 'summary')
 ----
-pass
+fail
 
 # Test 55: Multivariate summary mode - two columns
 query I
@@ -638,7 +820,7 @@ SELECT COUNT(*) FROM (
 query T
 SELECT status FROM dbscan_mv('dbscan_multivar_data', '"x","y"', 5.0, 2, 'summary')
 ----
-pass
+fail
 
 # Test 60: Multivariate parameter validation - eps
 statement error
@@ -662,13 +844,13 @@ column_names must contain
 query T
 SELECT status FROM dbscan_mv('dbscan_multivar_data', 'x', 5.0, 2, 'summary')
 ----
-pass
+fail
 
-# Test 64: Multivariate three columns summary
+# Test 64: Multivariate three columns summary - (800,400,200) is noise
 query T
 SELECT status FROM dbscan_mv('dbscan_multivar_3col', 'a,b,c', 50.0, 2, 'summary')
 ----
-pass
+fail
 
 # Test 65: Multivariate three columns clusters count
 query I
@@ -680,38 +862,38 @@ SELECT COUNT(*) FROM dbscan_mv('dbscan_multivar_3col', 'a,b,c', 50.0, 2, 'cluste
 query T
 SELECT status FROM dbscan_mv('dbscan_multivar_data', ' x , y ', 5.0, 2, 'summary')
 ----
-pass
+fail
 
-# Test 67: Multivariate clusters mode - return types
+# Test 67: Multivariate clusters mode - CORE cluster plus NOISE point
 query I
 SELECT COUNT(DISTINCT point_type) FROM dbscan_mv('dbscan_multivar_data', 'x,y', 5.0, 2, 'clusters')
 ----
-1
+2
 
 # ===--------------------------------------------------------------------===
 # Clustering Quality Tests
 # ===--------------------------------------------------------------------===
 
-# Test 68: Verify points within cluster have low anomaly scores
+# Test 68: Points inside the cluster have low anomaly scores; 500.0 is noise
 query I
 SELECT COUNT(*) FROM dbscan('dbscan_normal_data', 'value', 5.0, 2, 'clusters')
 WHERE anomaly_score <= 0.5
 ----
-6
+5
 
-# Test 69: Verify outliers have higher anomaly scores
+# Test 69: All anomaly scores are non-negative
 query I
 SELECT COUNT(*) FROM dbscan('dbscan_normal_data', 'value', 2.0, 5, 'clusters')
 WHERE anomaly_score >= 0.0
 ----
 6
 
-# Test 70: Multi-cluster detection with clear separation
+# Test 70: Multi-cluster detection with clear separation finds both clusters
 query I
 SELECT COUNT(DISTINCT cluster_id) FROM dbscan('dbscan_clustered_data', 'value', 2.0, 2, 'clusters')
 WHERE cluster_id >= 0
 ----
-1
+2
 
 # ===--------------------------------------------------------------------===
 # Special Cases: Dense vs Sparse Regions
@@ -765,11 +947,11 @@ INSERT INTO dbscan_uniform_data VALUES
     (4, 4.0),
     (5, 5.0)
 
-# Test 73: Uniform distribution with small eps - no large clusters
+# Test 73: Uniform distribution with small eps - every point is noise
 query T
 SELECT status FROM dbscan('dbscan_uniform_data', 'value', 0.5, 2, 'summary')
 ----
-pass
+fail
 
 # Test 74: Uniform distribution with large eps - single cluster
 query I
@@ -788,8 +970,10 @@ SELECT COUNT(*) FROM (
   SELECT 1
   FROM dbscan('dbscan_normal_data', 'value', 0.5, 5, 'summary')
   WHERE status IS NOT NULL
+    AND cluster_count IS NOT NULL
     AND noise_count IS NOT NULL
     AND total_count IS NOT NULL
+    AND largest_cluster_size IS NOT NULL
     AND message IS NOT NULL
 )
 ----
@@ -811,17 +995,15 @@ SELECT COUNT(*) FROM (
 
 # Test 77: Verify noise_count matches cluster_id = -1
 query I
-SELECT COUNT(*) FROM (
-  SELECT COUNT(DISTINCT cluster_id) FROM dbscan('dbscan_normal_data', 'value', 0.5, 5, 'clusters')
-  WHERE cluster_id = -1
-)
+SELECT COUNT(*) FROM dbscan('dbscan_normal_data', 'value', 0.5, 5, 'clusters')
+WHERE cluster_id = -1
 ----
-1
+6
 
 # Test 78: Verify point_type matches expected values
 query I
 SELECT COUNT(DISTINCT point_type) FROM dbscan('dbscan_normal_data', 'value', 0.5, 5, 'clusters')
-WHERE point_type IN ('CORE', 'BORDER', 'NOISE', 'UNVISITED')
+WHERE point_type IN ('CORE', 'BORDER', 'NOISE')
 ----
 1
 
@@ -839,7 +1021,7 @@ SELECT COUNT(*) FROM (
 ----
 6
 
-# Test 80: Different eps produces different results
+# Test 80: Status is deterministic across eps values that both produce noise
 query I
 SELECT COUNT(DISTINCT status) FROM (
   SELECT s1.status FROM
@@ -848,4 +1030,3 @@ SELECT COUNT(DISTINCT status) FROM (
 )
 ----
 1
-
