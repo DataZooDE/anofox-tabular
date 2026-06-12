@@ -1,0 +1,69 @@
+# name: test/sql/anofox_postal_null.test
+# description: Postal NULL semantics and option safety that must work without the libpostal data bundle
+# group: [anofox_tabular]
+
+require anofox_tabular
+
+statement ok
+LOAD anofox_tabular;
+
+# Point the data path at a location that can never be created so that any
+# accidental initialization attempt fails fast instead of downloading ~500 MB.
+statement ok
+SET anofox_tab_postal_data_path = '/nonexistent-anofox-postal/no-data';
+
+# postal_status works without data and reports not initialized / no data present.
+query II
+SELECT initialized, data_present FROM postal_status();
+----
+false	false
+
+# Setting the option to NULL must fail referencing the *registered* option name.
+statement error
+SET anofox_tab_postal_data_path = NULL;
+----
+anofox_tab_postal_data_path cannot be NULL
+
+# NULL input must yield a NULL struct without requiring libpostal data.
+query T
+SELECT postal_parse_address(NULL) IS NULL;
+----
+true
+
+# The prefixed function name behaves identically.
+query T
+SELECT anofox_tab_postal_parse_address(NULL) IS NULL;
+----
+true
+
+# Same for expansion: NULL in, NULL out, no initialization required.
+query T
+SELECT postal_expand_address(NULL) IS NULL;
+----
+true
+
+query T
+SELECT anofox_tab_postal_expand_address(NULL) IS NULL;
+----
+true
+
+# NULL rows coming from a table (flat vector path) must also yield NULL structs.
+statement ok
+CREATE TABLE postal_null_inputs(addr VARCHAR);
+
+statement ok
+INSERT INTO postal_null_inputs VALUES (NULL), (NULL), (NULL);
+
+query T
+SELECT postal_parse_address(addr) IS NULL FROM postal_null_inputs;
+----
+true
+true
+true
+
+query T
+SELECT postal_expand_address(addr) IS NULL FROM postal_null_inputs;
+----
+true
+true
+true
