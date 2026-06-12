@@ -1,5 +1,6 @@
 #pragma once
 
+#include <optional>
 #include <string>
 #include <vector>
 #include <unordered_map>
@@ -52,10 +53,22 @@ struct CountryMetadata {
 	}
 };
 
+// Precompiled regex patterns for a region. Compiled once on first use and
+// shared across all rows/threads (read-only after construction).
+struct CompiledRegionPatterns {
+	std::optional<std::regex> fixed_line;
+	std::optional<std::regex> mobile;
+	std::optional<std::regex> toll_free;
+};
+
 // Global metadata maps (defined in anofox_phonenumber_metadata.cpp)
 extern const std::unordered_map<int, std::vector<std::string>> COUNTRY_CODE_TO_REGIONS;
 extern const std::unordered_map<std::string, CountryMetadata> REGION_METADATA;
 extern const std::unordered_set<int> NANPA_CODES;
+
+// Returns the precompiled patterns for a region, or nullptr if the region is
+// unknown. The underlying map is built once (thread-safe magic static).
+const CompiledRegionPatterns *GetCompiledPatternsForRegion(const std::string &region_code);
 
 // Helper functions
 inline const CountryMetadata* GetMetadataForRegion(const std::string& region_code) {

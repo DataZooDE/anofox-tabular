@@ -10,12 +10,41 @@
 #include <optional>
 #include <unordered_set>
 #include <algorithm>
+#include <iomanip>
+#include <map>
 #include <numeric>
 #include <limits>
 #include <sstream>
 
 namespace duckdb {
 namespace anofox {
+
+/**
+ * Escape a string for safe embedding inside a JSON string literal.
+ * Handles quotes, backslashes, and control characters.
+ */
+inline std::string EscapeJSONString(const std::string& input) {
+    std::ostringstream oss;
+    for (char c : input) {
+        switch (c) {
+        case '"':  oss << "\\\""; break;
+        case '\\': oss << "\\\\"; break;
+        case '\b': oss << "\\b"; break;
+        case '\f': oss << "\\f"; break;
+        case '\n': oss << "\\n"; break;
+        case '\r': oss << "\\r"; break;
+        case '\t': oss << "\\t"; break;
+        default:
+            if (static_cast<unsigned char>(c) < 0x20) {
+                oss << "\\u" << std::hex << std::setw(4) << std::setfill('0')
+                    << static_cast<int>(static_cast<unsigned char>(c)) << std::dec;
+            } else {
+                oss << c;
+            }
+        }
+    }
+    return oss.str();
+}
 
 /**
  * Split condition for tree nodes
@@ -33,6 +62,7 @@ struct SplitCondition {
     // For categorical splits
     std::unordered_set<int> left_categories;
     std::vector<std::string> left_category_names;  // Human-readable names
+    bool is_negated = false;  // true = right branch: column NOT IN (left_categories)
 
     SplitCondition() : column_idx(0), column_type(FeatureType::NUMERIC) {}
 
@@ -42,7 +72,7 @@ struct SplitCondition {
         if (column_type == FeatureType::NUMERIC) {
             oss << column_name << (is_less_than ? " <= " : " > ") << split_value;
         } else {
-            oss << column_name << " IN (";
+            oss << column_name << (is_negated ? " NOT IN (" : " IN (");
             for (size_t i = 0; i < left_category_names.size(); ++i) {
                 if (i > 0) oss << ", ";
                 oss << "'" << left_category_names[i] << "'";
@@ -55,15 +85,16 @@ struct SplitCondition {
     // Convert to JSON representation
     std::string ToJSON() const {
         std::ostringstream oss;
-        oss << "{\"column\":\"" << column_name << "\",";
+        oss << "{\"column\":\"" << EscapeJSONString(column_name) << "\",";
         if (column_type == FeatureType::NUMERIC) {
             oss << "\"type\":\"numeric\",\"operator\":\""
                 << (is_less_than ? "<=" : ">") << "\",\"value\":" << split_value;
         } else {
-            oss << "\"type\":\"categorical\",\"values\":[";
+            oss << "\"type\":\"categorical\",\"operator\":\""
+                << (is_negated ? "not_in" : "in") << "\",\"values\":[";
             for (size_t i = 0; i < left_category_names.size(); ++i) {
                 if (i > 0) oss << ",";
-                oss << "\"" << left_category_names[i] << "\"";
+                oss << "\"" << EscapeJSONString(left_category_names[i]) << "\"";
             }
             oss << "]";
         }
@@ -77,7 +108,8 @@ struct SplitCondition {
  * Contains all information about a detected outlier
  */
 struct OutlierExplanation {
-    size_t row_idx;                          // Original row index (0-indexed)
+    size_t row_idx;                          // Index into the NULL-filtered working dataset
+                                             // (0-indexed; mapped to source row ids at output)
     size_t target_column_idx;                // Column where outlier was detected
     std::string target_column_name;          // Name of the column
 
@@ -256,6 +288,9 @@ private:
     OutlierTreeParams params_;
     size_t clusters_evaluated_ = 0;
     size_t max_depth_reached_ = 0;
+    // Maps (row_idx, target_column_idx) to the slot of the current best
+    // finding in the outliers vector, so duplicates replace the worse entry.
+    std::map<std::pair<size_t, size_t>, size_t> outlier_slots_;
 
     /**
      * Build tree for predicting target_col using other columns
@@ -446,18 +481,15 @@ private:
     );
 
     /**
-     * Check if an outlier with same row and column already exists
+     * Insert an outlier, replacing any existing finding for the same
+     * (row, column) pair when the new score is more extreme (lower).
      * @param outliers: Existing outliers
-     * @param row_idx: Row index
-     * @param col_idx: Column index
-     * @param new_score: Score of potential new outlier
-     * @return true if should skip (better outlier already exists)
+     * @param outlier: New outlier candidate
+     * @return true if the outlier was inserted or replaced an existing one
      */
-    bool ShouldSkipDuplicateOutlier(
-        const std::vector<OutlierExplanation>& outliers,
-        size_t row_idx,
-        size_t col_idx,
-        double new_score
+    bool AddOrReplaceOutlier(
+        std::vector<OutlierExplanation>& outliers,
+        OutlierExplanation&& outlier
     );
 };
 

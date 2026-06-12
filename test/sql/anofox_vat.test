@@ -3,8 +3,6 @@
 
 require anofox_tabular
 
-mode skip
-
 statement ok
 LOAD anofox_tabular
 
@@ -60,7 +58,7 @@ SELECT anofox_tab_is_valid_vat_country('XX')
 ----
 false
 
-# Test anofox_tab_is_valid_vat_country - All EU countries
+# Test anofox_tab_is_valid_vat_country - all 28 registry codes (27 EU + UK)
 query I
 SELECT COUNT(*) FROM (
   SELECT 'AT' AS c UNION ALL
@@ -73,7 +71,7 @@ SELECT COUNT(*) FROM (
   SELECT 'SE' UNION ALL SELECT 'SI' UNION ALL SELECT 'SK'
 ) WHERE anofox_tab_is_valid_vat_country(c)
 ----
-29
+28
 
 # Test anofox_tab_vat_normalize
 query T
@@ -203,27 +201,39 @@ SELECT anofox_tab_vat_country_name('XX')
 ----
 NULL
 
-# Test anofox_tab_vat_format - Plain style (simplified for now)
-query I
+# Test anofox_tab_vat_format - Plain style (digits only)
+query T
 SELECT anofox_tab_vat_format('DE123456789', 'plain')
 ----
-NULL
+123456789
+
+# Test anofox_tab_vat_format - ISO style (country prefix + digits)
+query T
+SELECT anofox_tab_vat_format('de 123-456-789', 'iso')
+----
+DE123456789
 
 # ============================================================================
 # Phase 6: Combined Validation
 # ============================================================================
 
-# Test anofox_tab_vat_is_valid - Valid syntax
+# Test anofox_tab_vat_is_valid - Valid syntax and check digit
 query I
-SELECT anofox_tab_vat_is_valid('DE123456789')
+SELECT anofox_tab_vat_is_valid('DE111111125')
 ----
 true
 
-# Test vat_is_valid alias - Valid syntax
+# Test vat_is_valid alias - Valid syntax and check digit
 query I
-SELECT vat_is_valid('DE123456789')
+SELECT vat_is_valid('DE111111125')
 ----
 true
+
+# Test anofox_tab_vat_is_valid - Valid syntax but invalid check digit
+query I
+SELECT anofox_tab_vat_is_valid('DE123456789')
+----
+false
 
 # Test anofox_tab_vat_is_valid - Invalid country code
 query I
@@ -266,10 +276,10 @@ NULL
 # Test batch validation
 query I
 SELECT COUNT(*) FROM (
-  SELECT 'DE123456789' AS vat UNION ALL
-  SELECT 'AT223456789' UNION ALL
-  SELECT 'BE1234567890' UNION ALL
-  SELECT 'FR12AB123456' UNION ALL
+  SELECT 'DE111111125' AS vat UNION ALL
+  SELECT 'ATU13585627' UNION ALL
+  SELECT 'BE0776091951' UNION ALL
+  SELECT 'FR40303265045' UNION ALL
   SELECT 'INVALID'
 ) WHERE anofox_tab_vat_is_valid(vat)
 ----
@@ -311,12 +321,12 @@ false
 
 # Test mixed case input
 query I
-SELECT anofox_tab_vat_is_valid('De123456789')
+SELECT anofox_tab_vat_is_valid('De111111125')
 ----
 true
 
 # Test with leading/trailing spaces (should be normalized)
 query I
-SELECT anofox_tab_vat_is_valid('  DE123456789  ')
+SELECT anofox_tab_vat_is_valid('  DE111111125  ')
 ----
 true

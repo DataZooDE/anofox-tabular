@@ -283,10 +283,10 @@ anofox_tab_phonenumber_format(number VARCHAR, region VARCHAR, format VARCHAR) �
 ```
 
 **Parameters:**
-- `format`: Format style - `'E164'`, `'INTERNATIONAL'`, `'NATIONAL'`, or `'RFC3966'`
+- `format`: Format style - `'E164'`, `'INTERNATIONAL'`, `'NATIONAL'`, or `'RFC3966'` (case-insensitive). Any other value raises an `Invalid Input` error.
 
 **Returns:**
-- `VARCHAR`: Formatted phone number
+- `VARCHAR`: Formatted phone number, or `NULL` if the number cannot be parsed as a valid phone number
 
 **Example:**
 ```sql
@@ -453,7 +453,7 @@ SELECT anofox_tab_money (alias: money(100.50, 'USD');
 
 #### `anofox_tab_money (alias: money_from_cents`
 
-Create a money value from integer cents.
+Create a money value from an integer amount in the currency's smallest unit (e.g. cents). The amount is divided by the currency's `subunit_to_unit` (100 for USD/EUR, 1 for JPY).
 
 **Signature:**
 ```sql
@@ -463,7 +463,7 @@ anofox_tab_money (alias: money_from_cents(cents BIGINT, currency_code VARCHAR) �
 **Example:**
 ```sql
 SELECT anofox_tab_money (alias: money_from_cents(10050, 'USD');
--- Returns: {amount: 10050.0, currency: 'USD'}
+-- Returns: {amount: 100.5, currency: 'USD'}
 ```
 
 ---
@@ -726,7 +726,8 @@ SELECT anofox_tab_vat (alias: vat('DE123456789');
 
 #### `anofox_tab_is_valid_vat_country (alias: is_valid_vat_country`
 
-Check if country code is valid VAT country.
+Check if country code is valid VAT country. Codes are case-insensitive and the
+VAT aliases `EL` (Greece) and `XI` (Northern Ireland / GB) are accepted.
 
 **Signature:**
 ```sql
@@ -797,7 +798,8 @@ anofox_tab_vat (alias: vat_exists(vat_string VARCHAR) → BOOLEAN
 
 #### `anofox_tab_vat (alias: vat_is_eu_member`
 
-Check if country is EU member.
+Check if country is EU member. Codes are case-insensitive and the VAT aliases
+`EL`/`XI` are normalized (e.g. `vat_is_eu_member('EL')` is true, `'XI'` is false).
 
 **Signature:**
 ```sql
@@ -825,11 +827,25 @@ SELECT anofox_tab_vat (alias: vat_country_name('DE');
 
 #### `anofox_tab_vat (alias: vat_format`
 
-Format VAT for display.
+Format VAT for display. Supported styles (case-insensitive):
+
+- `'plain'` — digits only, without country prefix
+- `'iso'` — VAT country prefix + digits (Greece uses `EL`, Northern Ireland `XI`)
+
+Unparseable VAT numbers return `NULL`; unknown styles raise an error.
 
 **Signature:**
 ```sql
 anofox_tab_vat (alias: vat_format(vat_string VARCHAR, style VARCHAR) → VARCHAR
+```
+
+**Example:**
+```sql
+SELECT anofox_tab_vat_format('de 123-456-789', 'iso');
+-- Returns: 'DE123456789'
+
+SELECT anofox_tab_vat_format('GR123456783', 'plain');
+-- Returns: '123456783'
 ```
 
 ---
@@ -838,7 +854,11 @@ anofox_tab_vat (alias: vat_format(vat_string VARCHAR, style VARCHAR) → VARCHAR
 
 #### `anofox_tab_vat (alias: vat_is_valid`
 
-Full validation (syntax + country check).
+Full validation: syntax check plus country check-digit (checksum) validation where implemented.
+
+Check digits are verified for: AT, BE, DE, DK, ES, FI, FR, GR/EL, IE, IT, LU, NL, PL, PT, SE, SI.
+Other countries are validated by syntax only. French VAT keys containing letters are accepted
+without check-digit verification.
 
 **Signature:**
 ```sql
@@ -847,8 +867,11 @@ anofox_tab_vat (alias: vat_is_valid(vat_string VARCHAR) → BOOLEAN
 
 **Example:**
 ```sql
-SELECT anofox_tab_vat (alias: vat_is_valid('DE123456789');
+SELECT anofox_tab_vat_is_valid('DE111111125');
 -- Returns: true
+
+SELECT anofox_tab_vat_is_valid('DE123456789');
+-- Returns: false (valid syntax, invalid check digit)
 ```
 
 ---
@@ -1937,7 +1960,7 @@ Set options via SQL or DuckDB's configuration file.
 SET anofox_tab_email_default_validation = 'regex';  -- Default: regex
 SET anofox_tab_email_regex_pattern = '<your-pattern>';  -- RFC 5322 inspired
 SET anofox_tab_email_dns_timeout_ms = 1000;  -- DNS timeout per try (1-5000ms)
-SET anofox_tab_email_dns_tries = 1;  -- DNS retry count
+SET anofox_tab_email_dns_tries = 1;  -- DNS retry count (1-10)
 SET anofox_tab_email_smtp_port = 25;  -- SMTP port
 SET anofox_tab_email_smtp_connect_timeout_ms = 5000;  -- TCP connect timeout
 SET anofox_tab_email_smtp_read_timeout_ms = 5000;  -- Read/write timeout
@@ -1961,6 +1984,9 @@ SELECT postal_load_data();
 ```sql
 SET anofox_tab_phonenumber_default_region = 'US';  -- Default region code
 ```
+
+The default region must be a supported 2-letter ISO region code; unknown codes are rejected.
+The value is session-scoped and snapshotted when a query is bound, so changing it mid-query has no effect on running queries.
 
 ### Tracing
 

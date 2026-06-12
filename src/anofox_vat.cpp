@@ -126,32 +126,30 @@ static void VATCountryNameFunc(DataChunk& args, ExpressionState& state,
 }
 
 // anofox_vat_format(vat, style) -> VARCHAR
+// Style: 'plain' = digits only, 'iso' = VAT country prefix (EL/XI) + digits
 static void VATFormatFunc(DataChunk& args, ExpressionState& state,
                          Vector& result) {
-  // Style: 'plain' = digits only, 'iso' = with country prefix
-  auto& vat_vec = args.data[0];
-  auto& style_vec = args.data[1];
-  size_t count = args.size();
-
-  UnifiedVectorFormat vat_data, style_data;
-  vat_vec.ToUnifiedFormat(count, vat_data);
-  style_vec.ToUnifiedFormat(count, style_data);
-
-  for (size_t i = 0; i < count; i++) {
-    size_t vat_idx = vat_data.sel->get_index(i);
-    size_t style_idx = style_data.sel->get_index(i);
-
-    if (!vat_data.validity.RowIsValid(vat_idx) ||
-        !style_data.validity.RowIsValid(style_idx)) {
-      FlatVector::SetNull(result, i, true);
-      continue;
+  auto& registry = VATRegistry::Instance();
+  IterateTwoStringInputs(args, result, [&](const std::string& vat,
+                                           const std::string& style,
+                                           size_t idx) {
+    auto split_result = registry.SplitVAT(vat);
+    if (!split_result.has_value()) {
+      FlatVector::SetNull(result, idx, true);
+      return;
     }
-
-    // For now, simplified implementation
-    FlatVector::SetNull(result, i, true);
-  }
-
-  result.Verify(count);
+    auto [country, digits] = split_result.value();
+    auto normalized_style = StringUtil::Lower(style);
+    if (normalized_style == "plain") {
+      SetStringResult(result, idx, digits);
+    } else if (normalized_style == "iso") {
+      SetStringResult(result, idx, registry.ConvertISOToVAT(country) + digits);
+    } else {
+      throw InvalidInputException(
+          "Unsupported VAT format style: %s (expected 'plain' or 'iso')",
+          style);
+    }
+  });
 }
 
 // ============================================================================
@@ -159,6 +157,7 @@ static void VATFormatFunc(DataChunk& args, ExpressionState& state,
 // ============================================================================
 
 // anofox_vat_is_valid(vat) -> BOOLEAN
+// Full validation: syntax plus country check digits where implemented.
 static void VATIsValidFunc(DataChunk& args, ExpressionState& state,
                           Vector& result) {
   auto& registry = VATRegistry::Instance();
@@ -169,7 +168,8 @@ static void VATIsValidFunc(DataChunk& args, ExpressionState& state,
       return;
     }
     auto [country, digits] = split_result.value();
-    SetBoolResult(result, idx, registry.IsValidSyntax(country, digits));
+    SetBoolResult(result, idx, registry.IsValidSyntax(country, digits) &&
+                                   registry.IsValidChecksum(country, digits));
   });
 }
 
@@ -323,10 +323,10 @@ void RegisterVATFunctions(ExtensionLoader& loader) {
   }
   {
     FunctionDescription desc;
-    desc.description = "Formats a raw VAT number using the specified format style (e.g., 'standard', 'compact').";
+    desc.description = "Formats a VAT number using the specified style: 'plain' (digits only) or 'iso' (VAT country prefix + digits).";
     desc.parameter_names = {"vat_number", "format_style"};
     desc.parameter_types = {LogicalType::VARCHAR, LogicalType::VARCHAR};
-    desc.examples = {"SELECT vat_format('DE123456789', 'standard');"};
+    desc.examples = {"SELECT vat_format('DE123456789', 'iso');"};
     desc.categories = {"vat", "formatting"};
     ScalarFunction format_func("anofox_tab_vat_format", {LogicalTypeId::VARCHAR, LogicalTypeId::VARCHAR}, LogicalTypeId::VARCHAR, VATFormatFunc);
     format_func.bind = VatFormatBind;
@@ -334,10 +334,10 @@ void RegisterVATFunctions(ExtensionLoader& loader) {
   }
   {
     FunctionDescription desc;
-    desc.description = "Returns TRUE if the VAT number has valid syntax and exists in the known country registry.";
+    desc.description = "Returns TRUE if the VAT number has valid syntax and passes the country's check-digit validation where implemented.";
     desc.parameter_names = {"vat_number"};
     desc.parameter_types = {LogicalType::VARCHAR};
-    desc.examples = {"SELECT vat_is_valid('DE123456789');"};
+    desc.examples = {"SELECT vat_is_valid('DE111111125');"};
     desc.categories = {"vat", "validation"};
     ScalarFunction is_valid_func("anofox_tab_vat_is_valid", {LogicalTypeId::VARCHAR}, LogicalTypeId::BOOLEAN, VATIsValidFunc);
     is_valid_func.bind = VatIsValidBind;

@@ -38,7 +38,13 @@ class TestMoneyFromCents:
     def test_converts_cents_to_dollars(self, conn):
         from anofox import money
         result = money.money_from_cents(conn, 1000, "USD")
-        # Extension stores the raw cents value as-is (no /100 conversion)
+        # 1000 cents = 10.00 USD (divided by the currency's subunit_to_unit)
+        assert abs(result["amount"] - 10.0) < 0.001
+
+    def test_zero_decimal_currency_unchanged(self, conn):
+        from anofox import money
+        result = money.money_from_cents(conn, 1000, "JPY")
+        # JPY has no subunit (subunit_to_unit = 1), value is unchanged
         assert abs(result["amount"] - 1000.0) < 0.001
 
 

@@ -94,30 +94,39 @@ void DBSCAN::ExpandCluster(
 		size_t current_idx = queue.front();
 		queue.pop();
 
-		if (!visited[current_idx]) {
-			visited[current_idx] = true;
-			results_[current_idx].cluster_id = cluster_id;
-
-			// Find neighbors of current point
-			std::vector<size_t> current_neighbors = RegionQuery(data, current_idx);
-			results_[current_idx].neighbor_count = current_neighbors.size();
-
-			if (current_neighbors.size() >= min_pts_) {
-				// Current point is a core point
-				point_types[current_idx] = PointType::CORE;
-				results_[current_idx].point_type = PointType::CORE;
-
-				// Add neighbors to queue
-				for (size_t neighbor_idx : current_neighbors) {
-					if (!visited[neighbor_idx]) {
-						queue.push(neighbor_idx);
-					}
-				}
-			} else {
-				// Current point is a border point
+		if (visited[current_idx]) {
+			// A point provisionally labelled noise that is density-reachable from a
+			// core point becomes a border point of this cluster (standard DBSCAN).
+			if (point_types[current_idx] == PointType::NOISE) {
 				point_types[current_idx] = PointType::BORDER;
 				results_[current_idx].point_type = PointType::BORDER;
+				results_[current_idx].cluster_id = cluster_id;
 			}
+			continue;
+		}
+
+		visited[current_idx] = true;
+		results_[current_idx].cluster_id = cluster_id;
+
+		// Find neighbors of current point
+		std::vector<size_t> current_neighbors = RegionQuery(data, current_idx);
+		results_[current_idx].neighbor_count = current_neighbors.size();
+
+		// Standard minPts semantics: the eps-neighborhood includes the point itself
+		if (current_neighbors.size() + 1 >= min_pts_) {
+			// Current point is a core point
+			point_types[current_idx] = PointType::CORE;
+			results_[current_idx].point_type = PointType::CORE;
+
+			// Add neighbors to queue; already-visited noise points are promoted
+			// to border points when popped above.
+			for (size_t neighbor_idx : current_neighbors) {
+				queue.push(neighbor_idx);
+			}
+		} else {
+			// Current point is a border point
+			point_types[current_idx] = PointType::BORDER;
+			results_[current_idx].point_type = PointType::BORDER;
 		}
 	}
 }
@@ -158,7 +167,8 @@ void DBSCAN::Fit(const std::vector<std::vector<double>>& data) {
 			std::vector<size_t> neighbors = RegionQuery(data, i);
 			results_[i].neighbor_count = neighbors.size();
 
-			if (neighbors.size() < min_pts_) {
+			// Standard minPts semantics: the eps-neighborhood includes the point itself
+			if (neighbors.size() + 1 < min_pts_) {
 				// Mark as noise (for now; may become border point later)
 				point_types[i] = PointType::NOISE;
 				results_[i].cluster_id = -1;
