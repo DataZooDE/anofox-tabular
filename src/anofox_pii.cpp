@@ -1,5 +1,6 @@
 #include "anofox_pii.hpp"
 #include "anofox_ner.hpp"
+#include "anofox_sql_utils.hpp"
 #include "anofox_trace.hpp"
 #include "anofox_function_alias.hpp"
 #include "anofox_phonenumber.hpp"
@@ -2692,8 +2693,8 @@ void PIIAuditTableFunction(ClientContext &context, TableFunctionInput &input, Da
             // For each column, query values and detect PII (row-level)
             for (const auto &col_name : columns_to_scan) {
                 // Build query to get column values with row numbers
-                std::string query = "SELECT row_number() OVER () as _row_id, \"" + col_name + "\" FROM " +
-                                   bind_data.table_name;
+                std::string query = "SELECT row_number() OVER () as _row_id, " + QuoteSqlIdentifier(col_name) +
+                                    " FROM " + BuildQueryTableRef(bind_data.table_name);
 
                 // Execute query using a new connection
                 Connection con(*context.db);
@@ -2926,8 +2927,9 @@ void PIIScanTableFunction(ClientContext &context, TableFunctionInput &input, Dat
 
             for (const auto &col_name : columns_to_scan) {
                 // Build query to get column values
-                std::string query = "SELECT \"" + col_name + "\" FROM " + bind_data.table_name +
-                                   " WHERE \"" + col_name + "\" IS NOT NULL";
+                std::string query = "SELECT " + QuoteSqlIdentifier(col_name) + " FROM " +
+                                   BuildQueryTableRef(bind_data.table_name) +
+                                   " WHERE " + QuoteSqlIdentifier(col_name) + " IS NOT NULL";
 
                 // Execute query using a new connection
                 Connection con(*context.db);
