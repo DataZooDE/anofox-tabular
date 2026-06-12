@@ -803,7 +803,7 @@ void RegisterMoneyFunctions(ExtensionLoader &loader) {
         RegisterScalarFunctionWithAlias(loader, money_same_currency_func, "money_same_currency", {std::move(desc)});
     }
 
-    AnofoxTrace(AnofoxLogLevel::Info, "[anofox] Money module functions registered");
+    AnofoxTrace(AnofoxLogLevel::Info, "Money module functions registered");
 }
 
 } // namespace anofox
