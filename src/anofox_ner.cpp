@@ -148,12 +148,12 @@ WordPieceTokenizer::WordPieceTokenizer() = default;
 WordPieceTokenizer::~WordPieceTokenizer() = default;
 
 bool WordPieceTokenizer::Load(const std::string &vocab_path) {
-    AnofoxTrace(AnofoxLogLevel::Debug, "[anofox] ner: Loading tokenizer vocabulary from: " + vocab_path);
+    AnofoxTrace(AnofoxLogLevel::Debug, "ner: Loading tokenizer vocabulary from: " + vocab_path);
 
     // Read the tokenizer.json file
     std::ifstream file(vocab_path);
     if (!file.is_open()) {
-        AnofoxTrace(AnofoxLogLevel::Warn, "[anofox] ner: Cannot open tokenizer file: " + vocab_path);
+        AnofoxTrace(AnofoxLogLevel::Warn, "ner: Cannot open tokenizer file: " + vocab_path);
         return false;
     }
 
@@ -165,14 +165,14 @@ bool WordPieceTokenizer::Load(const std::string &vocab_path) {
     // Parse JSON using yyjson
     yyjson_doc *doc = yyjson_read(json_str.c_str(), json_str.size(), 0);
     if (!doc) {
-        AnofoxTrace(AnofoxLogLevel::Error, "[anofox] ner: Failed to parse tokenizer JSON");
+        AnofoxTrace(AnofoxLogLevel::Error, "ner: Failed to parse tokenizer JSON");
         return false;
     }
 
     yyjson_val *root = yyjson_doc_get_root(doc);
     if (!root) {
         yyjson_doc_free(doc);
-        AnofoxTrace(AnofoxLogLevel::Error, "[anofox] ner: Empty tokenizer JSON");
+        AnofoxTrace(AnofoxLogLevel::Error, "ner: Empty tokenizer JSON");
         return false;
     }
 
@@ -180,14 +180,14 @@ bool WordPieceTokenizer::Load(const std::string &vocab_path) {
     yyjson_val *model = yyjson_obj_get(root, "model");
     if (!model) {
         yyjson_doc_free(doc);
-        AnofoxTrace(AnofoxLogLevel::Error, "[anofox] ner: No 'model' key in tokenizer JSON");
+        AnofoxTrace(AnofoxLogLevel::Error, "ner: No 'model' key in tokenizer JSON");
         return false;
     }
 
     yyjson_val *vocab = yyjson_obj_get(model, "vocab");
     if (!vocab) {
         yyjson_doc_free(doc);
-        AnofoxTrace(AnofoxLogLevel::Error, "[anofox] ner: No 'model.vocab' key in tokenizer JSON");
+        AnofoxTrace(AnofoxLogLevel::Error, "ner: No 'model.vocab' key in tokenizer JSON");
         return false;
     }
 
@@ -205,7 +205,7 @@ bool WordPieceTokenizer::Load(const std::string &vocab_path) {
 
     yyjson_doc_free(doc);
 
-    AnofoxTrace(AnofoxLogLevel::Info, "[anofox] ner: Loaded vocabulary with " + std::to_string(vocab_.size()) + " tokens");
+    AnofoxTrace(AnofoxLogLevel::Info, "ner: Loaded vocabulary with " + std::to_string(vocab_.size()) + " tokens");
     return !vocab_.empty();
 }
 
@@ -251,7 +251,7 @@ std::vector<int64_t> WordPieceTokenizer::Encode(const std::string &text) {
     std::vector<int64_t> input_ids;
 
     if (vocab_.empty()) {
-        AnofoxTrace(AnofoxLogLevel::Warn, "[anofox] ner: Vocabulary not loaded, cannot encode");
+        AnofoxTrace(AnofoxLogLevel::Warn, "ner: Vocabulary not loaded, cannot encode");
         return {};
     }
 
@@ -329,17 +329,17 @@ SentencePieceTokenizer::SentencePieceTokenizer()
 SentencePieceTokenizer::~SentencePieceTokenizer() = default;
 
 bool SentencePieceTokenizer::Load(const std::string &model_path) {
-    AnofoxTrace(AnofoxLogLevel::Debug, "[anofox] ner: Loading SentencePiece model from: " + model_path);
+    AnofoxTrace(AnofoxLogLevel::Debug, "ner: Loading SentencePiece model from: " + model_path);
 
     auto status = processor_->Load(model_path);
     if (!status.ok()) {
         AnofoxTrace(AnofoxLogLevel::Error,
-                    "[anofox] ner: Failed to load SentencePiece model: " + std::string(status.message()));
+                    "ner: Failed to load SentencePiece model: " + std::string(status.message()));
         return false;
     }
 
     AnofoxTrace(AnofoxLogLevel::Info,
-                "[anofox] ner: Loaded SentencePiece model with " +
+                "ner: Loaded SentencePiece model with " +
                 std::to_string(processor_->GetPieceSize()) + " tokens");
     return true;
 }
@@ -360,7 +360,7 @@ std::vector<int64_t> SentencePieceTokenizer::Encode(const std::string &text) {
     auto status = processor_->Encode(text, &piece_ids);
     if (!status.ok()) {
         AnofoxTrace(AnofoxLogLevel::Error,
-                    "[anofox] ner: SentencePiece encoding error: " + std::string(status.message()));
+                    "ner: SentencePiece encoding error: " + std::string(status.message()));
         return {};
     }
 
@@ -495,13 +495,13 @@ void NERModelManager::EnsureInitialized() {
 
 void NERModelManager::LoadModel() {
 #if HAVE_OPENVINO
-    AnofoxTrace(AnofoxLogLevel::Info, "[anofox] ner: Loading NER model...");
+    AnofoxTrace(AnofoxLogLevel::Info, "ner: Loading NER model...");
 
     model_path_ = GetModelPath();
 
     // Check if model file exists
     if (!std::filesystem::exists(model_path_)) {
-        AnofoxTrace(AnofoxLogLevel::Info, "[anofox] ner: Model not found, attempting download...");
+        AnofoxTrace(AnofoxLogLevel::Info, "ner: Model not found, attempting download...");
         status_.store(NERStatus::DOWNLOADING);
         status_message_ = "Downloading model from HuggingFace...";
 
@@ -512,19 +512,19 @@ void NERModelManager::LoadModel() {
         if (!DownloadModel(model_path_)) {
             status_.store(NERStatus::FAILED);
             status_message_ = "Failed to download model";
-            AnofoxTrace(AnofoxLogLevel::Error, "[anofox] ner: Model download failed");
+            AnofoxTrace(AnofoxLogLevel::Error, "ner: Model download failed");
             return;
         }
     }
 
     try {
         // Read model (supports .onnx directly via ONNX frontend)
-        AnofoxTrace(AnofoxLogLevel::Info, "[anofox] ner: Reading ONNX model with OpenVINO...");
+        AnofoxTrace(AnofoxLogLevel::Info, "ner: Reading ONNX model with OpenVINO...");
         std::shared_ptr<ov::Model> model = core_->read_model(model_path_);
 
         // Reshape model to accept dynamic batch and sequence length
         // The ONNX model has dynamic shapes, but OpenVINO needs explicit configuration
-        AnofoxTrace(AnofoxLogLevel::Info, "[anofox] ner: Configuring dynamic input shapes...");
+        AnofoxTrace(AnofoxLogLevel::Info, "ner: Configuring dynamic input shapes...");
         ov::PartialShape dynamic_shape = {1, ov::Dimension::dynamic()};  // batch=1, seq=dynamic
         std::map<std::string, ov::PartialShape> input_shapes;
         input_shapes["input_ids"] = dynamic_shape;
@@ -535,10 +535,10 @@ void NERModelManager::LoadModel() {
         auto available = core_->get_available_devices();
         std::string dev_list;
         for (const auto &d : available) dev_list += d + " ";
-        AnofoxTrace(AnofoxLogLevel::Info, "[anofox] ner: Available OpenVINO devices: " + dev_list);
+        AnofoxTrace(AnofoxLogLevel::Info, "ner: Available OpenVINO devices: " + dev_list);
 
         // Compile model for configured device (default AUTO: selects GPU if available, falls back to CPU)
-        AnofoxTrace(AnofoxLogLevel::Info, "[anofox] ner: Compiling model for device: " + device_name_);
+        AnofoxTrace(AnofoxLogLevel::Info, "ner: Compiling model for device: " + device_name_);
         compiled_model_ = std::make_shared<ov::CompiledModel>(
             core_->compile_model(model, device_name_)
         );
@@ -550,7 +550,7 @@ void NERModelManager::LoadModel() {
             if (di > 0) exec_dev_str += ",";
             exec_dev_str += exec_devices[di];
         }
-        AnofoxTrace(AnofoxLogLevel::Info, "[anofox] ner: Executing on: " + exec_dev_str);
+        AnofoxTrace(AnofoxLogLevel::Info, "ner: Executing on: " + exec_dev_str);
 
         // Create inference request
         infer_request_ = std::make_shared<ov::InferRequest>(
@@ -566,7 +566,7 @@ void NERModelManager::LoadModel() {
             tokenizer_ = std::make_unique<WordPieceTokenizer>();
             auto tokenizer_path = std::filesystem::path(model_path_).parent_path() / "tokenizer.json";
             if (!tokenizer_->Load(tokenizer_path.string())) {
-                AnofoxTrace(AnofoxLogLevel::Warn, "[anofox] ner: Failed to load tokenizer vocabulary, NER may not work correctly");
+                AnofoxTrace(AnofoxLogLevel::Warn, "ner: Failed to load tokenizer vocabulary, NER may not work correctly");
             }
         }
 #if HAVE_SENTENCEPIECE
@@ -575,7 +575,7 @@ void NERModelManager::LoadModel() {
             tokenizer_ = std::make_unique<SentencePieceTokenizer>();
             auto tokenizer_path = std::filesystem::path(model_path_).parent_path() / "sentencepiece.bpe.model";
             if (!tokenizer_->Load(tokenizer_path.string())) {
-                AnofoxTrace(AnofoxLogLevel::Warn, "[anofox] ner: Failed to load SentencePiece model, NER may not work correctly");
+                AnofoxTrace(AnofoxLogLevel::Warn, "ner: Failed to load SentencePiece model, NER may not work correctly");
             }
         }
 #endif
@@ -584,23 +584,23 @@ void NERModelManager::LoadModel() {
             tokenizer_ = std::make_unique<WordPieceTokenizer>();
             auto tokenizer_path = std::filesystem::path(model_path_).parent_path() / "tokenizer.json";
             if (!tokenizer_->Load(tokenizer_path.string())) {
-                AnofoxTrace(AnofoxLogLevel::Warn, "[anofox] ner: Failed to load tokenizer vocabulary, NER may not work correctly");
+                AnofoxTrace(AnofoxLogLevel::Warn, "ner: Failed to load tokenizer vocabulary, NER may not work correctly");
             }
         }
 
         current_model_name_ = model_name;
         status_.store(NERStatus::LOADED);
         status_message_ = "Model loaded successfully (" + model_name + ", device: " + exec_dev_str + ")";
-        AnofoxTrace(AnofoxLogLevel::Info, "[anofox] ner: NER model loaded from: " + model_path_);
+        AnofoxTrace(AnofoxLogLevel::Info, "ner: NER model loaded from: " + model_path_);
 
     } catch (const ov::Exception &e) {
         status_.store(NERStatus::FAILED);
         status_message_ = std::string("OpenVINO error: ") + e.what();
-        AnofoxTrace(AnofoxLogLevel::Error, "[anofox] ner: Failed to load model: " + std::string(e.what()));
+        AnofoxTrace(AnofoxLogLevel::Error, "ner: Failed to load model: " + std::string(e.what()));
     } catch (const std::exception &e) {
         status_.store(NERStatus::FAILED);
         status_message_ = std::string("Error: ") + e.what();
-        AnofoxTrace(AnofoxLogLevel::Error, "[anofox] ner: Failed to load model: " + std::string(e.what()));
+        AnofoxTrace(AnofoxLogLevel::Error, "ner: Failed to load model: " + std::string(e.what()));
     }
 #else
     status_.store(NERStatus::NOT_AVAILABLE);
@@ -638,9 +638,9 @@ bool NERModelManager::DownloadModel(const std::string &dest_path) {
         for (int attempt = 1; attempt <= max_retries && !download_success; attempt++) {
             if (attempt > 1) {
                 AnofoxTrace(AnofoxLogLevel::Info,
-                    "[anofox] ner: Retrying download attempt " + std::to_string(attempt) + "/" + std::to_string(max_retries));
+                    "ner: Retrying download attempt " + std::to_string(attempt) + "/" + std::to_string(max_retries));
             } else {
-                AnofoxTrace(AnofoxLogLevel::Info, "[anofox] ner: Downloading " + file.name + " from HuggingFace...");
+                AnofoxTrace(AnofoxLogLevel::Info, "ner: Downloading " + file.name + " from HuggingFace...");
             }
 
             status_message_ = "Downloading " + file.name + "...";
@@ -648,7 +648,7 @@ bool NERModelManager::DownloadModel(const std::string &dest_path) {
             // Open file for writing
             FILE *fp = fopen(file.dest.c_str(), "wb");
             if (!fp) {
-                AnofoxTrace(AnofoxLogLevel::Error, "[anofox] ner: Failed to open file for writing: " + file.dest);
+                AnofoxTrace(AnofoxLogLevel::Error, "ner: Failed to open file for writing: " + file.dest);
                 return false;
             }
 
@@ -656,7 +656,7 @@ bool NERModelManager::DownloadModel(const std::string &dest_path) {
             CURL *curl = curl_easy_init();
             if (!curl) {
                 fclose(fp);
-                AnofoxTrace(AnofoxLogLevel::Error, "[anofox] ner: Failed to initialize curl");
+                AnofoxTrace(AnofoxLogLevel::Error, "ner: Failed to initialize curl");
                 return false;
             }
 
@@ -682,11 +682,11 @@ bool NERModelManager::DownloadModel(const std::string &dest_path) {
 
             if (res == CURLE_OK) {
                 download_success = true;
-                AnofoxTrace(AnofoxLogLevel::Info, "[anofox] ner: Download complete: " + file.name);
+                AnofoxTrace(AnofoxLogLevel::Info, "ner: Download complete: " + file.name);
             } else {
                 const char *error_msg = curl_easy_strerror(res);
                 AnofoxTrace(AnofoxLogLevel::Warn,
-                    "[anofox] ner: Download attempt " + std::to_string(attempt) + " failed: " +
+                    "ner: Download attempt " + std::to_string(attempt) + " failed: " +
                     std::string(error_msg) + " (HTTP " + std::to_string(http_code) + ")");
 
                 // Remove partial file
@@ -695,7 +695,7 @@ bool NERModelManager::DownloadModel(const std::string &dest_path) {
                 if (attempt < max_retries) {
                     int wait_time = 1 << attempt;
                     AnofoxTrace(AnofoxLogLevel::Info,
-                        "[anofox] ner: Waiting " + std::to_string(wait_time) + "s before retry");
+                        "ner: Waiting " + std::to_string(wait_time) + "s before retry");
                     std::this_thread::sleep_for(std::chrono::seconds(wait_time));
                 }
             }
@@ -703,7 +703,7 @@ bool NERModelManager::DownloadModel(const std::string &dest_path) {
 
         if (!download_success) {
             AnofoxTrace(AnofoxLogLevel::Error,
-                "[anofox] ner: Failed to download " + file.name + " after " + std::to_string(max_retries) + " attempts");
+                "ner: Failed to download " + file.name + " after " + std::to_string(max_retries) + " attempts");
             status_message_ = "Failed to download " + file.name;
             return false;
         }
@@ -723,7 +723,7 @@ std::vector<NEREntity> NERModelManager::ExtractEntities(const std::string &text)
     if (result_cache_ && result_cache_->Capacity() > 0) {
         auto cached = result_cache_->Get(text);
         if (cached) {
-            AnofoxTrace(AnofoxLogLevel::Debug, "[anofox] ner: Cache hit");
+            AnofoxTrace(AnofoxLogLevel::Debug, "ner: Cache hit");
             return *cached;
         }
     }
@@ -731,7 +731,7 @@ std::vector<NEREntity> NERModelManager::ExtractEntities(const std::string &text)
     try {
         // Tokenize input
         if (!tokenizer_ || !tokenizer_->IsLoaded()) {
-            AnofoxTrace(AnofoxLogLevel::Error, "[anofox] ner: Tokenizer not loaded");
+            AnofoxTrace(AnofoxLogLevel::Error, "ner: Tokenizer not loaded");
             return {};
         }
         auto input_ids = tokenizer_->Encode(text);
@@ -791,10 +791,10 @@ std::vector<NEREntity> NERModelManager::ExtractEntities(const std::string &text)
         return entities;
 
     } catch (const ov::Exception &e) {
-        AnofoxTrace(AnofoxLogLevel::Error, "[anofox] ner: OpenVINO inference error: " + std::string(e.what()));
+        AnofoxTrace(AnofoxLogLevel::Error, "ner: OpenVINO inference error: " + std::string(e.what()));
         return {};
     } catch (const std::exception &e) {
-        AnofoxTrace(AnofoxLogLevel::Error, "[anofox] ner: Inference error: " + std::string(e.what()));
+        AnofoxTrace(AnofoxLogLevel::Error, "ner: Inference error: " + std::string(e.what()));
         return {};
     }
 #else
@@ -987,21 +987,21 @@ void NERModelManager::SetCacheCapacity(size_t capacity) {
     if (result_cache_) {
         result_cache_->SetCapacity(capacity);
         AnofoxTrace(AnofoxLogLevel::Info,
-            "[anofox] ner: Cache capacity set to " + std::to_string(capacity));
+            "ner: Cache capacity set to " + std::to_string(capacity));
     }
 }
 
 void NERModelManager::ClearCache() {
     if (result_cache_) {
         result_cache_->Clear();
-        AnofoxTrace(AnofoxLogLevel::Debug, "[anofox] ner: Cache cleared");
+        AnofoxTrace(AnofoxLogLevel::Debug, "ner: Cache cleared");
     }
 }
 
 void NERModelManager::SetDevice(const std::string &device_name) {
     device_name_ = device_name;
     AnofoxTrace(AnofoxLogLevel::Info,
-                "[anofox] ner: Device set to '" + device_name + "' (reload required for changes to take effect)");
+                "ner: Device set to '" + device_name + "' (reload required for changes to take effect)");
 }
 
 std::string NERModelManager::GetDevice() const {
@@ -1047,7 +1047,7 @@ std::vector<std::vector<NEREntity>> NERModelManager::ExtractEntitiesBatch(
             auto cached = result_cache_->Get(text);
             if (cached) {
                 all_results[i] = *cached;
-                AnofoxTrace(AnofoxLogLevel::Debug, "[anofox] ner: Batch cache hit");
+                AnofoxTrace(AnofoxLogLevel::Debug, "ner: Batch cache hit");
                 continue;
             }
         }
@@ -1068,7 +1068,7 @@ std::vector<std::vector<NEREntity>> NERModelManager::ExtractEntitiesBatch(
     }
 
     AnofoxTrace(AnofoxLogLevel::Debug,
-                "[anofox] ner: Batch processing " + std::to_string(cache_miss_indices.size()) +
+                "ner: Batch processing " + std::to_string(cache_miss_indices.size()) +
                 " unique texts (" + std::to_string(texts.size()) + " total)");
 
     // Phase 2: Process cache misses sequentially (true batching would require dynamic model)
@@ -1142,10 +1142,10 @@ std::vector<std::vector<NEREntity>> NERModelManager::ExtractEntitiesBatch(
 
         } catch (const ov::Exception &e) {
             AnofoxTrace(AnofoxLogLevel::Error,
-                        "[anofox] ner: OpenVINO batch inference error: " + std::string(e.what()));
+                        "ner: OpenVINO batch inference error: " + std::string(e.what()));
         } catch (const std::exception &e) {
             AnofoxTrace(AnofoxLogLevel::Error,
-                        "[anofox] ner: Batch inference error: " + std::string(e.what()));
+                        "ner: Batch inference error: " + std::string(e.what()));
         }
     }
 
@@ -1188,7 +1188,7 @@ void SetNERModelOption(ClientContext &context, SetScope scope, Value &parameter)
     SetCurrentModelName(model_name);
 
     AnofoxTrace(AnofoxLogLevel::Info,
-                "[anofox] ner: Model set to '" + model_name + "' (reload required for changes to take effect)");
+                "ner: Model set to '" + model_name + "' (reload required for changes to take effect)");
 
     // Note: Actual model reload will happen on next EnsureInitialized() call
     // TODO: Implement NERModelManager::ReloadModel() for immediate reload

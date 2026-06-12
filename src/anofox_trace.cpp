@@ -1,6 +1,7 @@
 #include "anofox_trace.hpp"
 
 #include <iostream>
+#include <mutex>
 #include <string>
 
 namespace duckdb {
@@ -72,13 +73,16 @@ std::string AnofoxTraceConfig::GetLevelString() const {
 
 void AnofoxTrace(AnofoxLogLevel level, const std::string &message) {
 	auto &config = AnofoxTraceConfig::Get();
-	if (!config.ShouldLog(level)) {
+	if (level == AnofoxLogLevel::Off || !config.ShouldLog(level)) {
 		return;
 	}
-	if (level == AnofoxLogLevel::Off) {
-		return;
-	}
-	std::cerr << "[anofox] " << message << std::endl;
+	// Compose the full line first (including the level of the message, not the
+	// configured threshold) and emit it as a single write guarded by a mutex so
+	// lines from parallel tasks cannot interleave (#51).
+	const std::string line = "[anofox] [" + LevelToString(level) + "] " + message + "\n";
+	static std::mutex output_mutex;
+	std::lock_guard<std::mutex> guard(output_mutex);
+	std::cerr << line << std::flush;
 }
 
 } // namespace anofox
