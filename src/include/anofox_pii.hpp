@@ -5,6 +5,7 @@
 #include <string>
 #include <vector>
 #include <memory>
+#include <mutex>
 #include <regex>
 #include <functional>
 #include <unordered_map>
@@ -379,6 +380,23 @@ private:
 };
 
 /**
+ * Immutable value snapshot of the PII configuration.
+ *
+ * Worker threads must never read the mutable PIIConfig singleton directly;
+ * they take a snapshot once per function invocation / data chunk and read
+ * all options through it. This avoids data races with concurrent SET
+ * callbacks mutating the singleton.
+ */
+struct PIIConfigSnapshot {
+    double min_confidence = 0.5;
+    MaskStrategy default_mask_strategy = MaskStrategy::REDACT;
+    std::vector<PIIType> enabled_types;  // Empty = all types enabled
+    bool deep_validation = false;
+
+    bool IsTypeEnabled(PIIType type) const;
+};
+
+/**
  * PII Detection Engine
  * Main class for detecting and masking PII in text
  */
@@ -393,10 +411,8 @@ public:
     static PIIEngine& Instance();
 
     /**
-     * Detect all PII in input text
-     * @param text: Input text to scan
-     * @param types: Optional filter for specific PII types (empty = all)
-     * @return Vector of all matches found, sorted by position
+     * Detect all PII in input text using a snapshot of the current
+     * configuration (convenience overload).
      */
     std::vector<PIIMatch> Detect(
         const std::string &text,
@@ -404,11 +420,30 @@ public:
     ) const;
 
     /**
-     * Batch detection of PII in multiple texts
-     * Pre-warms NER cache for efficiency when processing many texts
-     * @param texts: Vector of input texts to scan
-     * @param types: Optional filter for specific PII types (empty = all)
-     * @return Vector of match vectors (one per input text)
+     * Detect all PII in input text.
+     *
+     * Configuration semantics (applied centrally here):
+     * - An explicit non-empty `types` argument overrides the configured
+     *   `enabled_types` filter; otherwise the snapshot filter applies.
+     * - Matches below the snapshot `min_confidence` are dropped.
+     * - Overlapping matches are resolved deterministically (see
+     *   ResolveOverlaps), so the result contains non-overlapping matches
+     *   sorted by position.
+     *
+     * @param text: Input text to scan
+     * @param types: Optional filter for specific PII types (empty = use config)
+     * @param config: Configuration snapshot taken by the caller
+     * @return Vector of non-overlapping matches, sorted by position
+     */
+    std::vector<PIIMatch> Detect(
+        const std::string &text,
+        const std::vector<PIIType> &types,
+        const PIIConfigSnapshot &config
+    ) const;
+
+    /**
+     * Batch detection of PII in multiple texts using a snapshot of the
+     * current configuration (convenience overload).
      */
     std::vector<std::vector<PIIMatch>> DetectBatch(
         const std::vector<std::string> &texts,
@@ -416,16 +451,44 @@ public:
     ) const;
 
     /**
-     * Mask all PII in input text
-     * @param text: Input text to process
-     * @param strategy: Masking strategy to apply
-     * @param types: Optional filter for specific PII types (empty = all)
-     * @return Text with PII masked
+     * Batch detection of PII in multiple texts
+     * Pre-warms NER cache for efficiency when processing many texts
+     * @param texts: Vector of input texts to scan
+     * @param types: Optional filter for specific PII types (empty = use config)
+     * @param config: Configuration snapshot taken by the caller
+     * @return Vector of match vectors (one per input text)
+     */
+    std::vector<std::vector<PIIMatch>> DetectBatch(
+        const std::vector<std::string> &texts,
+        const std::vector<PIIType> &types,
+        const PIIConfigSnapshot &config
+    ) const;
+
+    /**
+     * Mask all PII in input text using a snapshot of the current
+     * configuration (convenience overload).
      */
     std::string Mask(
         const std::string &text,
         MaskStrategy strategy,
         const std::vector<PIIType> &types = {}
+    ) const;
+
+    /**
+     * Mask all PII in input text. Detection (and thus configuration
+     * filtering and overlap resolution) is shared with Detect(), so each
+     * region of the input is replaced exactly once.
+     * @param text: Input text to process
+     * @param strategy: Masking strategy to apply
+     * @param types: Optional filter for specific PII types (empty = use config)
+     * @param config: Configuration snapshot taken by the caller
+     * @return Text with PII masked
+     */
+    std::string Mask(
+        const std::string &text,
+        MaskStrategy strategy,
+        const std::vector<PIIType> &types,
+        const PIIConfigSnapshot &config
     ) const;
 
     /**
@@ -454,6 +517,17 @@ private:
      * Initialize default recognizers
      */
     void InitializeDefaultRecognizers();
+
+    /**
+     * Resolve overlapping matches deterministically.
+     *
+     * Priority: the match with the earlier start position wins; on ties the
+     * longer match wins, then the higher confidence, then the lower PIIType
+     * enumeration value (more specific, checksum-validated types come first
+     * in the enumeration). Lower-priority matches overlapping a kept match
+     * are dropped, so masking can replace each region exactly once.
+     */
+    static std::vector<PIIMatch> ResolveOverlaps(std::vector<PIIMatch> matches);
 
     /**
      * Apply masking to a single match
@@ -497,30 +571,32 @@ struct PIIAuditResult {
 
 /**
  * PII Configuration Singleton
- * Manages runtime configuration for PII detection and masking
+ * Manages runtime configuration for PII detection and masking.
+ *
+ * All accessors are mutex-guarded; the query path takes a PIIConfigSnapshot
+ * via Snapshot() once per function invocation / chunk and reads through it.
  */
 class PIIConfig {
 public:
     static PIIConfig& Get();
 
+    // Thread-safe value snapshot for use on the query path
+    PIIConfigSnapshot Snapshot() const;
+
     // Confidence threshold for NER-based detection (0.0 - 1.0)
-    double GetMinConfidence() const { return min_confidence_; }
     void SetMinConfidence(double value);
 
     // Default masking strategy
-    MaskStrategy GetDefaultMaskStrategy() const { return default_mask_strategy_; }
-    std::string GetDefaultMaskStrategyString() const { return MaskStrategyToString(default_mask_strategy_); }
+    std::string GetDefaultMaskStrategyString() const;
     void SetDefaultMaskStrategy(const std::string &strategy);
 
     // Enabled PII types filter (empty = all types enabled)
-    const std::vector<PIIType>& GetEnabledTypes() const { return enabled_types_; }
     std::string GetEnabledTypesString() const;
     void SetEnabledTypes(const std::string &types_csv);
-    bool IsTypeEnabled(PIIType type) const;
 
     // Deep validation for emails and phones (uses existing validators)
-    bool IsDeepValidationEnabled() const { return deep_validation_; }
-    void SetDeepValidation(bool enabled) { deep_validation_ = enabled; }
+    bool IsDeepValidationEnabled() const;
+    void SetDeepValidation(bool enabled);
 
     // Configuration limits
     static constexpr double MIN_CONFIDENCE = 0.0;
@@ -534,6 +610,7 @@ private:
     PIIConfig(const PIIConfig&) = delete;
     PIIConfig& operator=(const PIIConfig&) = delete;
 
+    mutable std::mutex mutex_;
     double min_confidence_;
     MaskStrategy default_mask_strategy_;
     std::vector<PIIType> enabled_types_;  // Empty = all types
