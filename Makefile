@@ -18,10 +18,31 @@ include extension-ci-tools/makefiles/duckdb_extension.Makefile
 # This simplifies .gitignore and documentation by avoiding build-ninja vs build split
 BUILD_ROOT:=build
 
+# Patches applied to the DuckDB submodule before building (see duckdb_patches/).
+# Currently: removal of stdext::checked_array_iterator from vendored fmt
+# (upstream duckdb/duckdb@0c19d698ca, on main but not in v1.5.3 / v1.4.4) —
+# newer MSVC STLs removed the type, breaking Windows builds.
+# Idempotent: already-applied patches are detected and skipped.
+.PHONY: apply_duckdb_patches
+apply_duckdb_patches:
+	@for p in $(PROJ_DIR)duckdb_patches/*.patch; do \
+		if git -C duckdb apply --reverse --check "$$p" 2>/dev/null; then \
+			echo "DuckDB patch already applied: $$p"; \
+		elif git -C duckdb apply --check "$$p" 2>/dev/null; then \
+			git -C duckdb apply "$$p" && echo "Applied DuckDB patch: $$p"; \
+		else \
+			echo "ERROR: DuckDB patch does not apply: $$p" && exit 1; \
+		fi; \
+	done
+
+release: apply_duckdb_patches
+debug: apply_duckdb_patches
+reldebug: apply_duckdb_patches
+
 # Override configure_ci to build libpostal from source with -fPIC
 # System packages (Alpine libpostal-dev) lack -fPIC, which is required
 # for linking into shared libraries (DuckDB extensions)
-configure_ci:
+configure_ci: apply_duckdb_patches
 	bash $(PROJ_DIR)/scripts/install-deps-ci.sh
 
 # Override test targets to disable telemetry during test runs
