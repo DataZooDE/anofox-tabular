@@ -11,7 +11,9 @@
 #include <cctype>
 #include <thread>
 #include <chrono>
+#include <cstdio>
 #include <cstring>
+#include <system_error>
 #include <curl/curl.h>
 
 #if HAVE_SENTENCEPIECE
@@ -55,16 +57,26 @@ const std::vector<std::string>& NERModelManager::GetLabels() {
 // ============================================================================
 
 /**
- * Metadata for supported NER models
+ * Metadata for supported NER models.
+ *
+ * All on-disk asset paths and download URLs are derived from this registry
+ * (one directory per model name), so a model may only be listed here if its
+ * assets are actually downloadable (issue #56). The previously advertised
+ * "xlm-roberta-multi" entry was removed: its HuggingFace URLs do not exist
+ * (HTTP 401, the repository has no ONNX export) and SentencePiece support is
+ * disabled in the build, so selecting it silently ran DistilBERT instead.
  */
 struct ModelMetadata {
-    std::string name;           // Short identifier (e.g., "distilbert-en")
-    std::string display_name;   // Human-readable name
-    std::string model_url;      // URL to download ONNX model
-    std::string tokenizer_url;  // URL to download tokenizer config
-    std::string tokenizer_type; // "wordpiece" or "openvino"
+    std::string name;            // Short identifier (e.g., "distilbert-en")
+    std::string display_name;    // Human-readable name
+    std::string model_url;       // URL to download ONNX model
+    std::string tokenizer_url;   // URL to download tokenizer config
+    std::string model_file;      // On-disk model file name inside the model directory
+    std::string tokenizer_file;  // On-disk tokenizer file name inside the model directory
+    std::string tokenizer_type;  // "wordpiece" or "sentencepiece"
     std::vector<std::string> languages;  // Supported languages
-    size_t model_size_mb;       // Approximate model size in MB
+    size_t model_size_mb;        // Approximate model size in MB
+    size_t max_seq_length;       // Maximum input sequence length (incl. special tokens)
 };
 
 /**
@@ -77,18 +89,12 @@ static const std::vector<ModelMetadata>& GetSupportedModels() {
             "DistilBERT English (Fast, 66MB)",
             "https://huggingface.co/onnx-community/distilbert-base-cased-finetuned-conll03-english-ONNX/resolve/main/onnx/model_quantized.onnx",
             "https://huggingface.co/onnx-community/distilbert-base-cased-finetuned-conll03-english-ONNX/resolve/main/tokenizer.json",
+            "model_quantized.onnx",
+            "tokenizer.json",
             "wordpiece",
             {"en"},
-            66
-        },
-        {
-            "xlm-roberta-multi",
-            "XLM-RoBERTa Multilingual Quantized (280MB)",
-            "https://huggingface.co/Davlan/xlm-roberta-large-finetuned-conll03-english/resolve/main/onnx/model_quantized.onnx",
-            "https://huggingface.co/Davlan/xlm-roberta-large-finetuned-conll03-english/resolve/main/tokenizer.json",
-            "openvino",  // Will use OpenVINO Tokenizers extension
-            {"en", "de", "es", "nl", "fr", "it", "pt", "pl", "ru", "zh", "ja", "ar"},
-            280
+            66,
+            NER_MAX_SEQ_LENGTH
         }
     };
     return models;
@@ -209,33 +215,8 @@ bool WordPieceTokenizer::Load(const std::string &vocab_path) {
     return !vocab_.empty();
 }
 
-std::vector<std::string> WordPieceTokenizer::Tokenize(const std::string &text) {
-    // Basic tokenization: split on whitespace and punctuation
-    std::vector<std::string> words;
-    std::string current_word;
-
-    for (size_t i = 0; i < text.size(); ++i) {
-        char c = text[i];
-        if (std::isspace(static_cast<unsigned char>(c))) {
-            if (!current_word.empty()) {
-                words.push_back(current_word);
-                current_word.clear();
-            }
-        } else if (std::ispunct(static_cast<unsigned char>(c))) {
-            if (!current_word.empty()) {
-                words.push_back(current_word);
-                current_word.clear();
-            }
-            words.push_back(std::string(1, c));
-        } else {
-            current_word += c;
-        }
-    }
-    if (!current_word.empty()) {
-        words.push_back(current_word);
-    }
-
-    return words;
+int64_t WordPieceTokenizer::SequenceEndTokenId() const {
+    return SEP_TOKEN_ID;
 }
 
 int WordPieceTokenizer::TokenToId(const std::string &token) const {
@@ -260,8 +241,8 @@ TokenizedInput WordPieceTokenizer::Encode(const std::string &text) const {
     result.ids.push_back(CLS_TOKEN_ID);
     result.offsets.push_back({0, 0});  // CLS has no text position
 
-    // Tokenize text into words
-    std::vector<std::string> words = Tokenize(text);
+    // Tokenize text into words (ASCII-focused splitting, see BasicWordSplit)
+    std::vector<std::string> words = BasicWordSplit(text);
 
     // Track position in original text
     size_t text_pos = 0;
@@ -460,24 +441,81 @@ std::string NERModelManager::GetStatusMessage() const {
     return status_message_;
 }
 
-std::string NERModelManager::DefaultModelPath() {
-    // Default path: ~/.duckdb/extensions/anofox/ner/
+/**
+ * Base directory for all NER model assets: ~/.duckdb/extensions/anofox/ner
+ * Returns an empty path when no home directory can be determined.
+ */
+static std::filesystem::path NERModelBaseDir() {
 #ifdef _WIN32
     // Windows: use USERPROFILE environment variable
     const char* userprofile = std::getenv("USERPROFILE");
     if (userprofile) {
-        auto path = std::filesystem::path(userprofile) / ".duckdb" / "extensions" / "anofox" / "ner" / "model_quantized.onnx";
-        return path.string();
+        return std::filesystem::path(userprofile) / ".duckdb" / "extensions" / "anofox" / "ner";
     }
 #else
     // Unix-like: use HOME environment variable
     const char* home = std::getenv("HOME");
     if (home) {
-        auto path = std::filesystem::path(home) / ".duckdb" / "extensions" / "anofox" / "ner" / "model_quantized.onnx";
-        return path.string();
+        return std::filesystem::path(home) / ".duckdb" / "extensions" / "anofox" / "ner";
     }
 #endif
-    return "";
+    return {};
+}
+
+/**
+ * Per-model asset directory derived from the metadata registry:
+ * <base>/<model name> (issue #56: one directory per model so tokenizer and
+ * model assets always form a matched pair).
+ */
+static std::filesystem::path NERModelDir(const ModelMetadata &metadata) {
+    auto base = NERModelBaseDir();
+    if (base.empty()) {
+        return {};
+    }
+    return base / metadata.name;
+}
+
+/**
+ * Versions before issue #56 stored the DistilBERT assets directly in the
+ * base directory. Move them into the per-model directory so existing
+ * installations do not re-download ~66 MB.
+ */
+static void MigrateLegacyAssets(const ModelMetadata &metadata,
+                                const std::filesystem::path &model_dir) {
+    if (metadata.name != "distilbert-en" || model_dir.empty()) {
+        return;
+    }
+    namespace fs = std::filesystem;
+    try {
+        const auto base = model_dir.parent_path();
+        const auto legacy_model = base / metadata.model_file;
+        const auto legacy_tokenizer = base / metadata.tokenizer_file;
+        const auto new_model = model_dir / metadata.model_file;
+        const auto new_tokenizer = model_dir / metadata.tokenizer_file;
+        if (fs::exists(legacy_model) && fs::exists(legacy_tokenizer) &&
+            !fs::exists(new_model) && !fs::exists(new_tokenizer)) {
+            fs::create_directories(model_dir);
+            fs::rename(legacy_model, new_model);
+            fs::rename(legacy_tokenizer, new_tokenizer);
+            AnofoxTrace(AnofoxLogLevel::Info,
+                        "[anofox] ner: Migrated legacy model assets to " + model_dir.string());
+        }
+    } catch (const std::exception &e) {
+        AnofoxTrace(AnofoxLogLevel::Warn,
+                    std::string("[anofox] ner: Legacy asset migration failed: ") + e.what());
+    }
+}
+
+std::string NERModelManager::DefaultModelPath() {
+    const auto *metadata = GetModelMetadata(GetCurrentModelName());
+    if (!metadata) {
+        return "";
+    }
+    auto model_dir = NERModelDir(*metadata);
+    if (model_dir.empty()) {
+        return "";
+    }
+    return (model_dir / metadata->model_file).string();
 }
 
 std::string NERModelManager::GetModelPath() const {
@@ -530,24 +568,47 @@ void NERModelManager::LoadModel() {
 #if HAVE_OPENVINO
     AnofoxTrace(AnofoxLogLevel::Info, "[anofox] ner: Loading NER model...");
 
-    const std::string model_path = GetModelPath();
+    // Resolve the configured model in the metadata registry; all asset paths
+    // and download URLs are derived from the metadata (issue #56)
+    const std::string model_name = GetCurrentModelName();
+    const ModelMetadata *metadata = GetModelMetadata(model_name);
+    if (!metadata) {
+        status_.store(NERStatus::FAILED);
+        SetStatusMessage("Unknown NER model '" + model_name + "'. Valid models: " + GetValidModelNames());
+        AnofoxTrace(AnofoxLogLevel::Error, "[anofox] ner: Unknown model: " + model_name);
+        return;
+    }
+
+    const std::filesystem::path model_dir = NERModelDir(*metadata);
+    if (model_dir.empty()) {
+        status_.store(NERStatus::FAILED);
+        SetStatusMessage("Cannot determine NER model directory (HOME/USERPROFILE not set)");
+        AnofoxTrace(AnofoxLogLevel::Error, "[anofox] ner: Cannot determine model directory");
+        return;
+    }
+    const std::string model_path = (model_dir / metadata->model_file).string();
+    const std::string tokenizer_path = (model_dir / metadata->tokenizer_file).string();
     const std::string device_name = GetDevice();
     {
         std::lock_guard<std::mutex> lock(state_mutex_);
         model_path_ = model_path;
+        current_model_name_ = model_name;
     }
 
-    // Check if model file exists
-    if (!std::filesystem::exists(model_path)) {
-        AnofoxTrace(AnofoxLogLevel::Info, "[anofox] ner: Model not found, attempting download...");
+    // Reuse assets downloaded by older versions into the flat base directory
+    MigrateLegacyAssets(*metadata, model_dir);
+
+    // Model and tokenizer must be present as a matched pair; if either is
+    // missing, (re-)download both from the metadata URLs
+    if (!std::filesystem::exists(model_path) || !std::filesystem::exists(tokenizer_path)) {
+        AnofoxTrace(AnofoxLogLevel::Info, "[anofox] ner: Model assets not found, attempting download...");
         status_.store(NERStatus::DOWNLOADING);
         SetStatusMessage("Downloading model from HuggingFace...");
 
         // Create directory if it doesn't exist
-        std::filesystem::path dir_path = std::filesystem::path(model_path).parent_path();
-        std::filesystem::create_directories(dir_path);
+        std::filesystem::create_directories(model_dir);
 
-        if (!DownloadModel(model_path)) {
+        if (!DownloadModel(*metadata, model_path, tokenizer_path)) {
             status_.store(NERStatus::FAILED);
             SetStatusMessage("Failed to download model");
             AnofoxTrace(AnofoxLogLevel::Error, "[anofox] ner: Model download failed");
@@ -594,40 +655,42 @@ void NERModelManager::LoadModel() {
         // a single ov::InferRequest is stateful and must not be shared
         // across DuckDB worker threads (issue #50)
 
-        // Create and load tokenizer based on model type
-        std::string model_name = GetCurrentModelName();
-        auto* metadata = GetModelMetadata(model_name);
-
-        if (metadata && metadata->tokenizer_type == "wordpiece") {
+        // Create and load the tokenizer matching the model's metadata. A
+        // model without a working tokenizer must not report LOADED, otherwise
+        // inference silently returns no entities (issue #56)
+        if (metadata->tokenizer_type == "wordpiece") {
             // DistilBERT uses WordPiece tokenizer (tokenizer.json)
             tokenizer_ = std::make_unique<WordPieceTokenizer>();
-            auto tokenizer_path = std::filesystem::path(model_path_).parent_path() / "tokenizer.json";
-            if (!tokenizer_->Load(tokenizer_path.string())) {
-                AnofoxTrace(AnofoxLogLevel::Warn, "[anofox] ner: Failed to load tokenizer vocabulary, NER may not work correctly");
-            }
         }
 #if HAVE_SENTENCEPIECE
-        else if (metadata && metadata->tokenizer_type == "openvino") {
-            // XLM-RoBERTa uses SentencePiece tokenizer
+        else if (metadata->tokenizer_type == "sentencepiece") {
+            // XLM-RoBERTa class models use SentencePiece tokenizers
             tokenizer_ = std::make_unique<SentencePieceTokenizer>();
-            auto tokenizer_path = std::filesystem::path(model_path_).parent_path() / "sentencepiece.bpe.model";
-            if (!tokenizer_->Load(tokenizer_path.string())) {
-                AnofoxTrace(AnofoxLogLevel::Warn, "[anofox] ner: Failed to load SentencePiece model, NER may not work correctly");
-            }
         }
 #endif
         else {
-            // Default to WordPiece for backward compatibility
-            tokenizer_ = std::make_unique<WordPieceTokenizer>();
-            auto tokenizer_path = std::filesystem::path(model_path_).parent_path() / "tokenizer.json";
-            if (!tokenizer_->Load(tokenizer_path.string())) {
-                AnofoxTrace(AnofoxLogLevel::Warn, "[anofox] ner: Failed to load tokenizer vocabulary, NER may not work correctly");
-            }
+            status_.store(NERStatus::FAILED);
+            SetStatusMessage("Tokenizer type '" + metadata->tokenizer_type +
+                             "' is not supported in this build");
+            AnofoxTrace(AnofoxLogLevel::Error,
+                        "[anofox] ner: Unsupported tokenizer type: " + metadata->tokenizer_type);
+            return;
         }
+
+        if (!tokenizer_->Load(tokenizer_path)) {
+            status_.store(NERStatus::FAILED);
+            SetStatusMessage("Failed to load tokenizer from " + tokenizer_path);
+            AnofoxTrace(AnofoxLogLevel::Error,
+                        "[anofox] ner: Failed to load tokenizer: " + tokenizer_path);
+            return;
+        }
+
+        // Bound inputs at the model's maximum sequence length (issue #56);
+        // written before LOADED is published, immutable afterwards
+        max_seq_length_ = metadata->max_seq_length;
 
         {
             std::lock_guard<std::mutex> lock(state_mutex_);
-            current_model_name_ = model_name;
             status_message_ = "Model loaded successfully (" + model_name + ", device: " + exec_dev_str + ")";
         }
         // Publish LOADED last: readers that observe LOADED are guaranteed to
@@ -650,26 +713,95 @@ void NERModelManager::LoadModel() {
 #endif
 }
 
-bool NERModelManager::DownloadModel(const std::string &dest_path) {
-    // HuggingFace URLs for the DistilBERT NER model
-    static const std::string MODEL_URL =
-        "https://huggingface.co/onnx-community/distilbert-base-cased-finetuned-conll03-english-ONNX/resolve/main/onnx/model_quantized.onnx";
-    static const std::string TOKENIZER_URL =
-        "https://huggingface.co/onnx-community/distilbert-base-cased-finetuned-conll03-english-ONNX/resolve/main/tokenizer.json";
+namespace {
 
-    std::filesystem::path model_dir = std::filesystem::path(dest_path).parent_path();
-    std::string tokenizer_path = (model_dir / "tokenizer.json").string();
+// RAII wrappers for the C resources used during download (issue #56)
+struct FileDeleter {
+    void operator()(std::FILE *file) const noexcept {
+        if (file) {
+            fclose(file);
+        }
+    }
+};
+using FileHandle = std::unique_ptr<std::FILE, FileDeleter>;
 
-    // Download both files
+struct CurlDeleter {
+    void operator()(CURL *curl) const noexcept {
+        if (curl) {
+            curl_easy_cleanup(curl);
+        }
+    }
+};
+using CurlHandle = std::unique_ptr<CURL, CurlDeleter>;
+
+/**
+ * Download `url` into a `<dest>.tmp` file and atomically rename it to `dest`
+ * on success, so a partially written file can never be mistaken for a valid
+ * asset. Returns an empty string on success, an error description otherwise.
+ */
+std::string DownloadToFileAtomic(const std::string &url, const std::string &dest) {
+    const std::string tmp_path = dest + ".tmp";
+
+    {
+        FileHandle file(fopen(tmp_path.c_str(), "wb"));
+        if (!file) {
+            return "failed to open file for writing: " + tmp_path;
+        }
+
+        CurlHandle curl(curl_easy_init());
+        if (!curl) {
+            return "failed to initialize curl";
+        }
+
+        curl_easy_setopt(curl.get(), CURLOPT_URL, url.c_str());
+        curl_easy_setopt(curl.get(), CURLOPT_WRITEFUNCTION, WriteDataToFile);
+        curl_easy_setopt(curl.get(), CURLOPT_WRITEDATA, file.get());
+        curl_easy_setopt(curl.get(), CURLOPT_FOLLOWLOCATION, 1L);
+        curl_easy_setopt(curl.get(), CURLOPT_CONNECTTIMEOUT, 30L);
+        curl_easy_setopt(curl.get(), CURLOPT_TIMEOUT, 600L);  // 10 minute timeout for large model
+        curl_easy_setopt(curl.get(), CURLOPT_FAILONERROR, 1L);
+        curl_easy_setopt(curl.get(), CURLOPT_SSL_VERIFYPEER, 1L);
+        curl_easy_setopt(curl.get(), CURLOPT_SSL_VERIFYHOST, 2L);
+        curl_easy_setopt(curl.get(), CURLOPT_USERAGENT, "anofox-tabular/1.0");
+
+        CURLcode res = curl_easy_perform(curl.get());
+        long http_code = 0;
+        curl_easy_getinfo(curl.get(), CURLINFO_RESPONSE_CODE, &http_code);
+
+        if (res != CURLE_OK) {
+            std::error_code ignored;
+            std::filesystem::remove(tmp_path, ignored);
+            return std::string(curl_easy_strerror(res)) + " (HTTP " + std::to_string(http_code) + ")";
+        }
+        // FileHandle goes out of scope here, flushing and closing the file
+        // before the rename below
+    }
+
+    try {
+        std::filesystem::rename(tmp_path, dest);
+    } catch (const std::exception &e) {
+        std::error_code ignored;
+        std::filesystem::remove(tmp_path, ignored);
+        return std::string("failed to rename downloaded file: ") + e.what();
+    }
+    return "";
+}
+
+} // anonymous namespace
+
+bool NERModelManager::DownloadModel(const ModelMetadata &metadata, const std::string &model_dest,
+                                    const std::string &tokenizer_dest) {
+    // Download both assets of the model described by the metadata registry;
+    // URLs are never hard-coded here (issue #56)
     struct FileToDownload {
         std::string url;
         std::string dest;
         std::string name;
     };
 
-    std::vector<FileToDownload> files = {
-        {TOKENIZER_URL, tokenizer_path, "tokenizer.json"},
-        {MODEL_URL, dest_path, "model_quantized.onnx"}
+    const std::vector<FileToDownload> files = {
+        {metadata.tokenizer_url, tokenizer_dest, metadata.tokenizer_file},
+        {metadata.model_url, model_dest, metadata.model_file}
     };
 
     const int max_retries = 3;
@@ -687,52 +819,13 @@ bool NERModelManager::DownloadModel(const std::string &dest_path) {
 
             SetStatusMessage("Downloading " + file.name + "...");
 
-            // Open file for writing
-            FILE *fp = fopen(file.dest.c_str(), "wb");
-            if (!fp) {
-                AnofoxTrace(AnofoxLogLevel::Error, "[anofox] ner: Failed to open file for writing: " + file.dest);
-                return false;
-            }
-
-            // Initialize curl
-            CURL *curl = curl_easy_init();
-            if (!curl) {
-                fclose(fp);
-                AnofoxTrace(AnofoxLogLevel::Error, "[anofox] ner: Failed to initialize curl");
-                return false;
-            }
-
-            // Configure curl options
-            curl_easy_setopt(curl, CURLOPT_URL, file.url.c_str());
-            curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteDataToFile);
-            curl_easy_setopt(curl, CURLOPT_WRITEDATA, fp);
-            curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
-            curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 30L);
-            curl_easy_setopt(curl, CURLOPT_TIMEOUT, 600L);  // 10 minute timeout for large model
-            curl_easy_setopt(curl, CURLOPT_FAILONERROR, 1L);
-            curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 1L);
-            curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 2L);
-            curl_easy_setopt(curl, CURLOPT_USERAGENT, "anofox-tabular/1.0");
-
-            // Perform download
-            CURLcode res = curl_easy_perform(curl);
-            long http_code = 0;
-            curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
-
-            curl_easy_cleanup(curl);
-            fclose(fp);
-
-            if (res == CURLE_OK) {
+            std::string error = DownloadToFileAtomic(file.url, file.dest);
+            if (error.empty()) {
                 download_success = true;
                 AnofoxTrace(AnofoxLogLevel::Info, "[anofox] ner: Download complete: " + file.name);
             } else {
-                const char *error_msg = curl_easy_strerror(res);
                 AnofoxTrace(AnofoxLogLevel::Warn,
-                    "[anofox] ner: Download attempt " + std::to_string(attempt) + " failed: " +
-                    std::string(error_msg) + " (HTTP " + std::to_string(http_code) + ")");
-
-                // Remove partial file
-                std::filesystem::remove(file.dest);
+                    "[anofox] ner: Download attempt " + std::to_string(attempt) + " failed: " + error);
 
                 if (attempt < max_retries) {
                     int wait_time = 1 << attempt;
@@ -749,6 +842,14 @@ bool NERModelManager::DownloadModel(const std::string &dest_path) {
             SetStatusMessage("Failed to download " + file.name);
             return false;
         }
+    }
+
+    // Both assets must exist as a matched pair before declaring success
+    if (!std::filesystem::exists(model_dest) || !std::filesystem::exists(tokenizer_dest)) {
+        AnofoxTrace(AnofoxLogLevel::Error,
+            "[anofox] ner: Download finished but assets are incomplete (model/tokenizer pair mismatch)");
+        SetStatusMessage("Download incomplete: model/tokenizer asset pair mismatch");
+        return false;
     }
 
     SetStatusMessage("Download complete");
@@ -781,6 +882,16 @@ std::vector<NEREntity> NERModelManager::RunSingleInference(const std::string &te
         TokenizedInput tokenized = tokenizer_->Encode(text);
         if (tokenized.ids.empty()) {
             return {};
+        }
+
+        // Bound the sequence at the model's maximum length (issue #56).
+        // Truncation drops whole tokens only, so the retained byte offsets
+        // are still valid; text beyond the limit is ignored.
+        if (tokenized.ids.size() > max_seq_length_) {
+            AnofoxTrace(AnofoxLogLevel::Debug,
+                "[anofox] ner: Truncating input from " + std::to_string(tokenized.ids.size()) +
+                " to " + std::to_string(max_seq_length_) + " tokens (model limit)");
+            TruncateTokenizedInput(tokenized, max_seq_length_, tokenizer_->SequenceEndTokenId());
         }
 
         size_t actual_length = tokenized.ids.size();
@@ -823,8 +934,11 @@ std::vector<NEREntity> NERModelManager::RunSingleInference(const std::string &te
         // Run inference
         infer_request.infer();
 
-        // Get output tensor
+        // Get output tensor and validate its shape before reading any logits;
+        // a mismatch would mean an out-of-bounds read (issue #56)
         ov::Tensor output_tensor = infer_request.get_output_tensor(0);
+        const ov::Shape &output_shape = output_tensor.get_shape();
+        ValidateLogitsShape(output_shape, seq_length, static_cast<size_t>(NUM_LABELS));
         const float* logits_data = output_tensor.data<float>();
 
         std::vector<float> logits(logits_data, logits_data + seq_length * NUM_LABELS);
@@ -1142,20 +1256,31 @@ void SetNERModelOption(ClientContext &context, SetScope scope, Value &parameter)
     }
     auto model_name = StringValue::Get(parameter);
 
-    // Validate model name
+    // Validate model name against the metadata registry: only models whose
+    // assets are actually downloadable are listed (issue #56)
     if (!GetModelMetadata(model_name)) {
         throw InvalidInputException(
             "Unsupported NER model: " + model_name + ". Valid models: " + GetValidModelNames());
     }
 
-    // Store the new model name
+    // Switching models after the model has been loaded (or while a load is in
+    // progress) is rejected instead of silently doing nothing: the #50
+    // architecture treats compiled model and tokenizer as immutable once
+    // LOADED is published, so a hot swap is not safe (issue #56)
+    auto snapshot = NERModelManager::Instance().GetStatusSnapshot();
+    const bool load_active = snapshot.status == NERStatus::LOADED ||
+                             snapshot.status == NERStatus::DOWNLOADING;
+    if (load_active && model_name != snapshot.model_name) {
+        throw InvalidInputException(
+            "anofox_ner_model cannot be changed after the NER model has been loaded "
+            "(currently '" + snapshot.model_name + "'). Restart the process to switch models.");
+    }
+
+    // Store the new model name; it takes effect on the first model load
     SetCurrentModelName(model_name);
 
     AnofoxTrace(AnofoxLogLevel::Info,
-                "[anofox] ner: Model set to '" + model_name + "' (reload required for changes to take effect)");
-
-    // Note: Actual model reload will happen on next EnsureInitialized() call
-    // TODO: Implement NERModelManager::ReloadModel() for immediate reload
+                "[anofox] ner: Model set to '" + model_name + "' (takes effect on first model load)");
 }
 
 void SetNERDeviceOption(ClientContext &context, SetScope scope, Value &parameter) {
@@ -1178,7 +1303,7 @@ void RegisterNEROptions(ExtensionLoader &loader) {
                               SetNERCacheSizeOption);
 
     config.AddExtensionOption("anofox_ner_model",
-                              "NER model to use: distilbert-en (fast, English) or xlm-roberta-multi (multilingual)",
+                              "NER model to use (supported: distilbert-en); must be set before the model is first loaded",
                               LogicalTypeId::VARCHAR,
                               Value("distilbert-en"),
                               SetNERModelOption);

@@ -4,10 +4,13 @@
 #include <vector>
 #include <memory>
 #include <atomic>
+#include <cctype>
 #include <mutex>
 #include <unordered_map>
 #include <list>
 #include <optional>
+#include <stdexcept>
+#include <utility>
 
 #include "duckdb/main/extension/extension_loader.hpp"
 
@@ -175,6 +178,118 @@ struct TokenizedInput {
     std::vector<std::pair<size_t, size_t>> offsets;
 };
 
+// ============================================================================
+// Input bounding helpers (issue #56)
+//
+// Header-only so they can be unit-tested in anofox_tabular_cpp_tests without
+// linking OpenVINO or the rest of the extension.
+// ============================================================================
+
+/**
+ * Maximum number of tokens (including special tokens) fed into the NER model.
+ * BERT-class models such as DistilBERT have max_position_embeddings = 512;
+ * longer sequences fail shape inference inside OpenVINO.
+ */
+constexpr size_t NER_MAX_SEQ_LENGTH = 512;
+
+/**
+ * Bound a tokenized input at the model's maximum sequence length.
+ *
+ * Sequences longer than max_seq_length are truncated at a token boundary:
+ * the first max_seq_length - 1 tokens are kept and the trailing special
+ * end-of-sequence token (final_token_id) is re-appended so the model still
+ * sees a well-formed sequence. Text beyond the limit is ignored (documented
+ * truncation semantics; no sliding window).
+ *
+ * UTF-8 safety: truncation only drops whole tokens, so every retained offset
+ * pair is exactly one produced by the tokenizer — no new byte offsets that
+ * could cut into a multibyte character are ever introduced. The re-appended
+ * end token carries an empty offset range (special tokens have no position).
+ *
+ * A max_seq_length of 0 means "unbounded" and leaves the input untouched.
+ */
+inline void TruncateTokenizedInput(TokenizedInput &input, size_t max_seq_length,
+                                   int64_t final_token_id) {
+    if (max_seq_length == 0 || input.ids.size() <= max_seq_length) {
+        return;
+    }
+    input.ids.resize(max_seq_length - 1);
+    input.offsets.resize(max_seq_length - 1);
+    const size_t last_end = input.offsets.empty() ? 0 : input.offsets.back().second;
+    input.ids.push_back(final_token_id);
+    input.offsets.push_back({last_end, last_end});
+}
+
+/**
+ * Validate the shape of the model output tensor before reading any logits.
+ *
+ * The NER model must emit exactly seq_length * num_labels logits, laid out as
+ * [1, seq_length, num_labels] (or the squeezed [seq_length, num_labels]).
+ * Reading a differently shaped buffer would be out-of-bounds, so a mismatch
+ * raises a clear std::runtime_error instead.
+ */
+inline void ValidateLogitsShape(const std::vector<size_t> &shape, size_t seq_length,
+                                size_t num_labels) {
+    size_t total_elements = shape.empty() ? 0 : 1;
+    for (size_t dim : shape) {
+        total_elements *= dim;
+    }
+    const bool valid = !shape.empty() && shape.back() == num_labels &&
+                       total_elements == seq_length * num_labels;
+    if (!valid) {
+        std::string actual;
+        for (size_t i = 0; i < shape.size(); ++i) {
+            if (i > 0) {
+                actual += "x";
+            }
+            actual += std::to_string(shape[i]);
+        }
+        throw std::runtime_error(
+            "NER output tensor shape mismatch: got [" + actual + "], expected " +
+            std::to_string(seq_length) + "x" + std::to_string(num_labels) +
+            " logits (1x" + std::to_string(seq_length) + "x" + std::to_string(num_labels) + ")");
+    }
+}
+
+/**
+ * Basic word splitting used by the hand-written WordPiece tokenizer: split on
+ * ASCII whitespace and keep ASCII punctuation as separate single-char tokens.
+ *
+ * Documented limitation (issue #56): classification is per byte via
+ * std::isspace/std::ispunct, so only ASCII separators are recognized. UTF-8
+ * multibyte sequences are never split apart (continuation bytes are neither
+ * space nor punctuation), but non-ASCII punctuation/whitespace does NOT act
+ * as a word boundary. The bundled DistilBERT model is English-only, so the
+ * tokenizer is intentionally ASCII-focused.
+ */
+inline std::vector<std::string> BasicWordSplit(const std::string &text) {
+    std::vector<std::string> words;
+    std::string current_word;
+
+    for (size_t i = 0; i < text.size(); ++i) {
+        char c = text[i];
+        if (std::isspace(static_cast<unsigned char>(c))) {
+            if (!current_word.empty()) {
+                words.push_back(current_word);
+                current_word.clear();
+            }
+        } else if (std::ispunct(static_cast<unsigned char>(c))) {
+            if (!current_word.empty()) {
+                words.push_back(current_word);
+                current_word.clear();
+            }
+            words.push_back(std::string(1, c));
+        } else {
+            current_word += c;
+        }
+    }
+    if (!current_word.empty()) {
+        words.push_back(current_word);
+    }
+
+    return words;
+}
+
 /**
  * Abstract base class for tokenizers.
  * Encode() is const and returns all per-call state by value, so a loaded
@@ -186,6 +301,12 @@ public:
     virtual bool Load(const std::string &model_path) = 0;
     virtual TokenizedInput Encode(const std::string &text) const = 0;
     virtual bool IsLoaded() const = 0;
+
+    /**
+     * Id of the special token that terminates a sequence ([SEP] / </s>).
+     * Used to keep truncated sequences well-formed (issue #56).
+     */
+    virtual int64_t SequenceEndTokenId() const = 0;
 };
 
 /**
@@ -212,10 +333,14 @@ public:
      */
     bool IsLoaded() const override { return !vocab_.empty(); }
 
+    /**
+     * BERT/DistilBERT [SEP] token id
+     */
+    int64_t SequenceEndTokenId() const override;
+
 private:
     std::unordered_map<std::string, int> vocab_;
 
-    static std::vector<std::string> Tokenize(const std::string &text);
     int TokenToId(const std::string &token) const;
 };
 
@@ -243,6 +368,11 @@ public:
      */
     bool IsLoaded() const override;
 
+    /**
+     * XLM-RoBERTa </s> (EOS) token id
+     */
+    int64_t SequenceEndTokenId() const override { return EOS_TOKEN_ID; }
+
 private:
     std::unique_ptr<::sentencepiece::SentencePieceProcessor> processor_;
 
@@ -252,6 +382,12 @@ private:
     static constexpr int PAD_TOKEN_ID = 1;  // <pad>
 };
 #endif
+
+/**
+ * Metadata describing a supported NER model (defined in anofox_ner.cpp).
+ * Drives on-disk asset paths and download URLs (issue #56).
+ */
+struct ModelMetadata;
 
 /**
  * Immutable snapshot of the NER model manager status.
@@ -379,7 +515,14 @@ private:
     NERModelManager& operator=(const NERModelManager&) = delete;
 
     void LoadModel();
-    bool DownloadModel(const std::string &dest_path);
+
+    /**
+     * Download the model + tokenizer asset pair described by `metadata`.
+     * Files are first written to .tmp paths and atomically renamed on
+     * success, so partial downloads never leave mismatched pairs (issue #56).
+     */
+    bool DownloadModel(const ModelMetadata &metadata, const std::string &model_dest,
+                       const std::string &tokenizer_dest);
     std::vector<NEREntity> PostProcess(
         const std::vector<float> &logits,
         size_t seq_length,
@@ -428,6 +571,10 @@ private:
     // immutable after LoadModel() publishes NERStatus::LOADED
     std::unique_ptr<ITokenizer> tokenizer_;
     std::string current_model_name_;  // Track which model is loaded (guarded by state_mutex_)
+
+    // Maximum sequence length of the loaded model (from ModelMetadata);
+    // written by LoadModel() before LOADED is published, immutable afterwards
+    size_t max_seq_length_ = NER_MAX_SEQ_LENGTH;
 
     // Result cache for repeated texts
     std::unique_ptr<LRUCache<std::string, std::vector<NEREntity>>> result_cache_;
