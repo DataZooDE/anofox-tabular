@@ -347,6 +347,14 @@ if(EXISTS "${DUCKDB_CATCH_DIR}/catch.hpp")
     )
     find_package(Threads REQUIRED)
     target_link_libraries(anofox_tabular_cpp_tests PRIVATE Threads::Threads)
+    # The tests reference out-of-line DuckDB symbols (Value, LogicalType,
+    # InternalException, Allocator, ...). GNU/clang resolve these loosely, but
+    # MSVC needs the DuckDB static library linked explicitly or the standalone
+    # executable fails with LNK2019. duckdb_static exists when building inside
+    # the DuckDB tree (the distribution/CI build).
+    if(TARGET duckdb_static)
+        target_link_libraries(anofox_tabular_cpp_tests PRIVATE duckdb_static)
+    endif()
     # anofox_ner.hpp includes OpenVINO headers when HAVE_OPENVINO=1
     if(OPENVINO_FOUND)
         target_link_libraries(anofox_tabular_cpp_tests PRIVATE openvino::runtime)
