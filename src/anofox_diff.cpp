@@ -17,6 +17,7 @@
 #include "duckdb/main/client_context.hpp"
 
 #include <string>
+#include <type_traits>
 #include <unordered_set>
 
 namespace duckdb {
@@ -56,6 +57,39 @@ vector<string> ParseColumnList(const Value &column_value) {
 	return result;
 }
 
+// DuckDB v1.5 resolves view columns via BindView()/GetColumnInfo(); v1.4 stores
+// the bound names directly on the catalog entry. No version macro is visible to
+// extension builds, so the available API is detected at compile time.
+template <typename T, typename = void>
+struct ViewHasGetColumnInfo : std::false_type {};
+template <typename T>
+struct ViewHasGetColumnInfo<T, std::void_t<decltype(std::declval<T &>().GetColumnInfo())>> : std::true_type {};
+
+template <typename VIEW>
+typename std::enable_if<ViewHasGetColumnInfo<VIEW>::value, vector<string>>::type
+ResolveViewColumnNames(ClientContext &context, VIEW &view) {
+	view.BindView(context);
+	auto column_info = view.GetColumnInfo();
+	if (!column_info) {
+		return {};
+	}
+	vector<string> result;
+	for (idx_t i = 0; i < column_info->names.size(); i++) {
+		result.push_back(i < view.aliases.size() ? view.aliases[i] : column_info->names[i]);
+	}
+	return result;
+}
+
+template <typename VIEW>
+typename std::enable_if<!ViewHasGetColumnInfo<VIEW>::value, vector<string>>::type
+ResolveViewColumnNames(ClientContext &, VIEW &view) {
+	vector<string> result;
+	for (idx_t i = 0; i < view.names.size(); i++) {
+		result.push_back(i < view.aliases.size() ? view.aliases[i] : view.names[i]);
+	}
+	return result;
+}
+
 // Resolve the column names of a table or view through the catalog so schema
 // problems surface as clear binder errors instead of confusing errors from
 // the generated SQL.
@@ -75,13 +109,9 @@ vector<string> GetRelationColumnNames(ClientContext &context, const string &func
 		}
 	} else if (entry->type == CatalogType::VIEW_ENTRY) {
 		auto &view = entry->Cast<ViewCatalogEntry>();
-		view.BindView(context);
-		auto column_info = view.GetColumnInfo();
-		if (!column_info) {
+		result = ResolveViewColumnNames(context, view);
+		if (result.empty()) {
 			throw BinderException("%s: unable to resolve the columns of view '%s'", function_name, table_name);
-		}
-		for (idx_t i = 0; i < column_info->names.size(); i++) {
-			result.push_back(i < view.aliases.size() ? view.aliases[i] : column_info->names[i]);
 		}
 	} else {
 		throw BinderException("%s: '%s' is not a table or view", function_name, table_name);
