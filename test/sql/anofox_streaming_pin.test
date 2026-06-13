@@ -158,7 +158,7 @@ FROM anofox_tab_outlier_tree('pin_ot', 'grp,val', 'outliers')
 ORDER BY row_id, column_name;
 ----
 1500	grp	A	0.0	0.0	1365	36.9459	0.0	0.0	[{"column":"val","type":"numeric","operator":">","value":500}]	Value A for column 'grp' is unusually rare (cluster size: 1365) when val > 500	0.0007
-1500	val	100000	169.5987	2579.3302	1500	33689.8017	-6717.213	7056.4103	[{"column":"grp","type":"categorical","operator":"in","values":["A"]}]	Value 100000 for column 'val' is unusually high (mean: 169.60, SD: 2579.33, z-score: 33689.80) when grp IN ('A')	0.0
+1500	val	100000	169.5987	2579.3302	1500	33689.8017	-6717.213	7056.4103	[{"column":"grp","type":"categorical","operator":"not_in","values":["B"]}]	Value 100000 for column 'val' is unusually high (mean: 169.60, SD: 2579.33, z-score: 33689.80) when grp NOT IN ('B')	0.0
 
 # ===--------------------------------------------------------------------===
 # isolation_forest — pinned via row counts, data-derived values, and

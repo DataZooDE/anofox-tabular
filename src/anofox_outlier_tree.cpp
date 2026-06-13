@@ -463,12 +463,26 @@ std::optional<SplitCondition> OutlierTree::FindBestCategoricalSplit(
         return std::nullopt;  // Need at least 2 categories to split
     }
 
-    // Simple binary split: put most common category on one side
+    // Simple binary split: put most common category on one side.
+    // Iterate categories in ascending index order rather than over the
+    // unordered_map directly: its iteration order is implementation-defined and
+    // differs across STL implementations (libstdc++/libc++/MSVC), which would
+    // otherwise break ties for "most common" differently per platform and emit
+    // a logically-equivalent but textually-different split (e.g. IN ["A"] vs
+    // NOT IN ["B"]). Sorting makes the chosen category — and the emitted
+    // explanation — deterministic everywhere; ties resolve to the lowest index.
+    std::vector<int> sorted_cats;
+    sorted_cats.reserve(category_rows.size());
+    for (const auto& [cat, rows] : category_rows) {
+        sorted_cats.push_back(cat);
+    }
+    std::sort(sorted_cats.begin(), sorted_cats.end());
+
     int most_common_cat = -1;
     size_t max_count = 0;
-    for (const auto& [cat, rows] : category_rows) {
-        if (rows.size() > max_count) {
-            max_count = rows.size();
+    for (int cat : sorted_cats) {
+        if (category_rows[cat].size() > max_count) {
+            max_count = category_rows[cat].size();
             most_common_cat = cat;
         }
     }
