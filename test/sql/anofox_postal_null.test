@@ -2,6 +2,12 @@
 # description: Postal NULL semantics and option safety that must work without the libpostal data bundle
 # group: [anofox_tabular]
 
+# The postal module is only compiled when libpostal is available (Linux). On
+# platforms where it is not (macOS, Windows), the postal functions and the
+# anofox_tab_postal_data_path setting are absent. The Makefile test targets set
+# POSTAL_AVAILABLE when libpostal is detected so this still runs in Linux CI.
+require-env POSTAL_AVAILABLE
+
 require anofox_tabular
 
 statement ok

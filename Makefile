@@ -45,15 +45,24 @@ reldebug: apply_duckdb_patches
 configure_ci: apply_duckdb_patches
 	bash $(PROJ_DIR)/scripts/install-deps-ci.sh
 
+# The postal module is only compiled when libpostal is available (see
+# CMakeLists.txt: static lib in /usr/local or /usr/lib, else pkg-config). On
+# macOS/Windows it is absent, so postal functions and the
+# anofox_tab_postal_data_path setting are not registered. Mirror that same
+# detection here so postal tests run in Linux CI and skip elsewhere, via the
+# POSTAL_AVAILABLE env var the postal sqllogictests guard on.
+POSTAL_AVAILABLE := $(if $(or $(wildcard /usr/local/lib/libpostal.a),$(wildcard /usr/lib/libpostal.a),$(shell pkg-config --exists libpostal 2>/dev/null && echo 1)),1,)
+POSTAL_TEST_ENV := $(if $(POSTAL_AVAILABLE),POSTAL_AVAILABLE=1,)
+
 # Override test targets to disable telemetry during test runs
 # This prevents local tests and CI/CD from polluting PostHog telemetry data
 # DNNL_MAX_CPU_ISA=AVX2: limits OneDNN (used by OpenVINO) to AVX2 at most,
 # preventing SIGILL in manylinux Docker containers that restrict AVX-512 CPUID
 test_release_internal:
-	DATAZOO_DISABLE_TELEMETRY=1 DNNL_MAX_CPU_ISA=AVX2 ./build/release/test/unittest "test/*"
+	DATAZOO_DISABLE_TELEMETRY=1 DNNL_MAX_CPU_ISA=AVX2 $(POSTAL_TEST_ENV) ./build/release/test/unittest "test/*"
 
 test_debug_internal:
-	DATAZOO_DISABLE_TELEMETRY=1 DNNL_MAX_CPU_ISA=AVX2 ./build/debug/test/unittest "test/*"
+	DATAZOO_DISABLE_TELEMETRY=1 DNNL_MAX_CPU_ISA=AVX2 $(POSTAL_TEST_ENV) ./build/debug/test/unittest "test/*"
 
 test_reldebug_internal:
-	DATAZOO_DISABLE_TELEMETRY=1 DNNL_MAX_CPU_ISA=AVX2 ./build/reldebug/test/unittest "test/*"
+	DATAZOO_DISABLE_TELEMETRY=1 DNNL_MAX_CPU_ISA=AVX2 $(POSTAL_TEST_ENV) ./build/reldebug/test/unittest "test/*"
