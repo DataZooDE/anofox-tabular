@@ -176,7 +176,10 @@ TEST_CASE("BasicWordSplit keeps UTF-8 multibyte sequences intact (documented lim
 
     // Documented limitation: non-ASCII punctuation (here U+00AB) is NOT a
     // word boundary — the surrounding text stays one token.
-    auto guillemet = BasicWordSplit("a\xC2\xABb");
+    // Split the literal so the \xAB hex escape does not greedily absorb the
+    // following 'b' (also a hex digit) into an out-of-range \xABb escape, which
+    // clang rejects as a hard error.
+    auto guillemet = BasicWordSplit("a\xC2\xAB" "b");
     REQUIRE(guillemet.size() == 1);
-    REQUIRE(guillemet[0] == "a\xC2\xABb");
+    REQUIRE(guillemet[0] == "a\xC2\xAB" "b");
 }

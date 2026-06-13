@@ -23,6 +23,10 @@
 #ifdef _WIN32
 #include <winsock2.h>
 #include <ws2tcpip.h>
+// Undefine Windows min/max macros that conflict with std::min/std::max and
+// std::numeric_limits (e.g. ClampToDeadline's std::min call below).
+#undef min
+#undef max
 #else
 #include <arpa/inet.h>
 #include <errno.h>

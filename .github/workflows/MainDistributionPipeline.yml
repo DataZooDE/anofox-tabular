@@ -28,8 +28,14 @@ jobs:
       # Exclude MinGW builds - vcpkg OpenSSL build issues
       # Exclude musl builds - OpenVINO binary components require glibc
       # Exclude ARM64 Linux builds - vcpkg OpenVINO build timeout issues
-      # Note: Windows builds WITHOUT OpenVINO (NER unavailable, pattern-based PII works)
-      exclude_archs: wasm_mvp;wasm_eh;wasm_threads;windows_amd64_mingw;linux_amd64_musl;linux_arm64
+      # Exclude Windows on the v1.4.4 LTS line only: after the windows-latest
+      # runner image migration, the v1.4.4 extension-ci-tools toolchain passes
+      # the MSVC flag /Zc:__cplusplus to MinGW c++.exe while building DuckDB's
+      # own parquet extension, which fails before our code compiles. This is an
+      # upstream v1.4.4 CI-tooling/runner issue we cannot patch from here. The
+      # v1.5.3 line below keeps full Windows support, so Windows users are
+      # covered; v1.4.4 LTS ships Linux + macOS.
+      exclude_archs: wasm_mvp;wasm_eh;wasm_threads;windows_amd64_mingw;windows_amd64;linux_amd64_musl;linux_arm64
 
   duckdb-v1_4_4-deploy:
     name: Deploy extension binaries (v1.4.4)
@@ -39,7 +45,7 @@ jobs:
     with:
       duckdb_version: v1.4.4
       extension_name: anofox_tabular
-      exclude_archs: wasm_mvp;wasm_eh;wasm_threads;windows_amd64_mingw;linux_amd64_musl;linux_arm64
+      exclude_archs: wasm_mvp;wasm_eh;wasm_threads;windows_amd64_mingw;windows_amd64;linux_amd64_musl;linux_arm64
       deploy_latest: ${{ startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/main' }}
       deploy_versioned: ${{ startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/main' }}
 

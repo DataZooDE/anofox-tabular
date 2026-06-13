@@ -13,9 +13,30 @@
 #include "duckdb/common/string_util.hpp"
 
 #include <cmath>
+#include <type_traits>
 
 namespace duckdb {
 namespace anofox {
+
+//----------------------------------------------------------------------------------------------------------------------
+// Version compatibility
+//----------------------------------------------------------------------------------------------------------------------
+
+// ScalarFunction::SetFallible() exists only in DuckDB v1.5+. On v1.4.4 the
+// "fallible" concept does not exist (scalar functions may always throw), so
+// marking a function fallible is a no-op there. Detected at compile time so a
+// single source tree builds against both DuckDB versions.
+template <typename T, typename = void>
+struct HasSetFallible : std::false_type {};
+template <typename T>
+struct HasSetFallible<T, std::void_t<decltype(std::declval<T &>().SetFallible())>> : std::true_type {};
+
+template <typename T>
+static void SetFallibleCompat(T &func) {
+    if constexpr (HasSetFallible<T>::value) {
+        func.SetFallible();
+    }
+}
 
 //----------------------------------------------------------------------------------------------------------------------
 // Type Helpers
@@ -651,7 +672,7 @@ void RegisterMoneyFunctions(ExtensionLoader &loader) {
         desc.categories = {"money"};
         ScalarFunction money_func("anofox_tab_money", {LogicalTypeId::DOUBLE, LogicalTypeId::VARCHAR}, GetMoneyType(), AnofoxMoneyFunction);
         money_func.bind = MoneyBind;
-        money_func.SetFallible();
+        SetFallibleCompat(money_func);
         RegisterScalarFunctionWithAlias(loader, money_func, "money", {std::move(desc)});
     }
     {
@@ -663,7 +684,7 @@ void RegisterMoneyFunctions(ExtensionLoader &loader) {
         desc.categories = {"money"};
         ScalarFunction money_from_cents_func("anofox_tab_money_from_cents", {LogicalTypeId::BIGINT, LogicalTypeId::VARCHAR}, GetMoneyType(), AnofoxMoneyFromCentsFunction);
         money_from_cents_func.bind = MoneyFromCentsBind;
-        money_from_cents_func.SetFallible();
+        SetFallibleCompat(money_from_cents_func);
         RegisterScalarFunctionWithAlias(loader, money_from_cents_func, "money_from_cents", {std::move(desc)});
     }
     {
@@ -675,7 +696,7 @@ void RegisterMoneyFunctions(ExtensionLoader &loader) {
         desc.categories = {"money"};
         ScalarFunction money_amount_func("anofox_tab_money_amount", {GetMoneyType()}, GetMoneyAmountType(), AnofoxMoneyAmountFunction);
         money_amount_func.bind = MoneyAmountBind;
-        money_amount_func.SetFallible();
+        SetFallibleCompat(money_amount_func);
         RegisterScalarFunctionWithAlias(loader, money_amount_func, "money_amount", {std::move(desc)});
     }
     {
@@ -687,7 +708,7 @@ void RegisterMoneyFunctions(ExtensionLoader &loader) {
         desc.categories = {"money"};
         ScalarFunction money_currency_func("anofox_tab_money_currency", {GetMoneyType()}, LogicalTypeId::VARCHAR, AnofoxMoneyCurrencyFunction);
         money_currency_func.bind = MoneyCurrencyBind;
-        money_currency_func.SetFallible();
+        SetFallibleCompat(money_currency_func);
         RegisterScalarFunctionWithAlias(loader, money_currency_func, "money_currency", {std::move(desc)});
     }
     {
@@ -710,7 +731,7 @@ void RegisterMoneyFunctions(ExtensionLoader &loader) {
         desc.categories = {"money"};
         ScalarFunction currency_symbol_func("anofox_tab_currency_symbol", {LogicalTypeId::VARCHAR}, LogicalTypeId::VARCHAR, AnofoxCurrencySymbolFunction);
         currency_symbol_func.bind = CurrencySymbolBind;
-        currency_symbol_func.SetFallible();
+        SetFallibleCompat(currency_symbol_func);
         RegisterScalarFunctionWithAlias(loader, currency_symbol_func, "currency_symbol", {std::move(desc)});
     }
     {
@@ -722,7 +743,7 @@ void RegisterMoneyFunctions(ExtensionLoader &loader) {
         desc.categories = {"money"};
         ScalarFunction currency_name_func("anofox_tab_currency_name", {LogicalTypeId::VARCHAR}, LogicalTypeId::VARCHAR, AnofoxCurrencyNameFunction);
         currency_name_func.bind = CurrencyNameBind;
-        currency_name_func.SetFallible();
+        SetFallibleCompat(currency_name_func);
         RegisterScalarFunctionWithAlias(loader, currency_name_func, "currency_name", {std::move(desc)});
     }
     {
@@ -734,7 +755,7 @@ void RegisterMoneyFunctions(ExtensionLoader &loader) {
         desc.categories = {"money", "formatting"};
         ScalarFunction money_format_func("anofox_tab_money_format", {GetMoneyType(), LogicalTypeId::VARCHAR}, LogicalTypeId::VARCHAR, AnofoxMoneyFormatFunction);
         money_format_func.bind = MoneyFormatBind;
-        money_format_func.SetFallible();
+        SetFallibleCompat(money_format_func);
         RegisterScalarFunctionWithAlias(loader, money_format_func, "money_format", {std::move(desc)});
     }
     {
@@ -746,7 +767,7 @@ void RegisterMoneyFunctions(ExtensionLoader &loader) {
         desc.categories = {"money", "validation"};
         ScalarFunction money_is_positive_func("anofox_tab_money_is_positive", {GetMoneyType()}, LogicalTypeId::BOOLEAN, AnofoxMoneyIsPositiveFunction);
         money_is_positive_func.bind = MoneyIsPositiveBind;
-        money_is_positive_func.SetFallible();
+        SetFallibleCompat(money_is_positive_func);
         RegisterScalarFunctionWithAlias(loader, money_is_positive_func, "money_is_positive", {std::move(desc)});
     }
     {
@@ -758,7 +779,7 @@ void RegisterMoneyFunctions(ExtensionLoader &loader) {
         desc.categories = {"money", "validation"};
         ScalarFunction money_is_negative_func("anofox_tab_money_is_negative", {GetMoneyType()}, LogicalTypeId::BOOLEAN, AnofoxMoneyIsNegativeFunction);
         money_is_negative_func.bind = MoneyIsNegativeBind;
-        money_is_negative_func.SetFallible();
+        SetFallibleCompat(money_is_negative_func);
         RegisterScalarFunctionWithAlias(loader, money_is_negative_func, "money_is_negative", {std::move(desc)});
     }
     {
@@ -770,7 +791,7 @@ void RegisterMoneyFunctions(ExtensionLoader &loader) {
         desc.categories = {"money", "validation"};
         ScalarFunction money_is_zero_func("anofox_tab_money_is_zero", {GetMoneyType()}, LogicalTypeId::BOOLEAN, AnofoxMoneyIsZeroFunction);
         money_is_zero_func.bind = MoneyIsZeroBind;
-        money_is_zero_func.SetFallible();
+        SetFallibleCompat(money_is_zero_func);
         RegisterScalarFunctionWithAlias(loader, money_is_zero_func, "money_is_zero", {std::move(desc)});
     }
     {
@@ -782,7 +803,7 @@ void RegisterMoneyFunctions(ExtensionLoader &loader) {
         desc.categories = {"money"};
         ScalarFunction money_abs_func("anofox_tab_money_abs", {GetMoneyType()}, GetMoneyType(), AnofoxMoneyAbsFunction);
         money_abs_func.bind = MoneyAbsBind;
-        money_abs_func.SetFallible();
+        SetFallibleCompat(money_abs_func);
         RegisterScalarFunctionWithAlias(loader, money_abs_func, "money_abs", {std::move(desc)});
     }
     {
@@ -794,7 +815,7 @@ void RegisterMoneyFunctions(ExtensionLoader &loader) {
         desc.categories = {"money", "arithmetic"};
         ScalarFunction money_add_func("anofox_tab_money_add", {GetMoneyType(), GetMoneyType()}, GetMoneyType(), AnofoxMoneyAddFunction);
         money_add_func.bind = MoneyAddBind;
-        money_add_func.SetFallible();
+        SetFallibleCompat(money_add_func);
         RegisterScalarFunctionWithAlias(loader, money_add_func, "money_add", {std::move(desc)});
     }
     {
@@ -806,7 +827,7 @@ void RegisterMoneyFunctions(ExtensionLoader &loader) {
         desc.categories = {"money", "arithmetic"};
         ScalarFunction money_subtract_func("anofox_tab_money_subtract", {GetMoneyType(), GetMoneyType()}, GetMoneyType(), AnofoxMoneySubtractFunction);
         money_subtract_func.bind = MoneySubtractBind;
-        money_subtract_func.SetFallible();
+        SetFallibleCompat(money_subtract_func);
         RegisterScalarFunctionWithAlias(loader, money_subtract_func, "money_subtract", {std::move(desc)});
     }
     {
@@ -818,7 +839,7 @@ void RegisterMoneyFunctions(ExtensionLoader &loader) {
         desc.categories = {"money", "arithmetic"};
         ScalarFunction money_multiply_func("anofox_tab_money_multiply", {GetMoneyType(), LogicalTypeId::DOUBLE}, GetMoneyType(), AnofoxMoneyMultiplyFunction);
         money_multiply_func.bind = MoneyMultiplyBind;
-        money_multiply_func.SetFallible();
+        SetFallibleCompat(money_multiply_func);
         RegisterScalarFunctionWithAlias(loader, money_multiply_func, "money_multiply", {std::move(desc)});
     }
     {
@@ -830,7 +851,7 @@ void RegisterMoneyFunctions(ExtensionLoader &loader) {
         desc.categories = {"money", "validation"};
         ScalarFunction money_in_range_func("anofox_tab_money_in_range", {GetMoneyType(), LogicalTypeId::DOUBLE, LogicalTypeId::DOUBLE}, LogicalTypeId::BOOLEAN, AnofoxMoneyInRangeFunction);
         money_in_range_func.bind = MoneyInRangeBind;
-        money_in_range_func.SetFallible();
+        SetFallibleCompat(money_in_range_func);
         RegisterScalarFunctionWithAlias(loader, money_in_range_func, "money_in_range", {std::move(desc)});
     }
     {
@@ -842,7 +863,7 @@ void RegisterMoneyFunctions(ExtensionLoader &loader) {
         desc.categories = {"money", "comparison"};
         ScalarFunction money_same_currency_func("anofox_tab_money_same_currency", {GetMoneyType(), GetMoneyType()}, LogicalTypeId::BOOLEAN, AnofoxMoneySameCurrencyFunction);
         money_same_currency_func.bind = MoneySameCurrencyBind;
-        money_same_currency_func.SetFallible();
+        SetFallibleCompat(money_same_currency_func);
         RegisterScalarFunctionWithAlias(loader, money_same_currency_func, "money_same_currency", {std::move(desc)});
     }
 

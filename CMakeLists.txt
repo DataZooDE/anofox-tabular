@@ -329,13 +329,23 @@ endif()
 # Standalone Catch2 unit test binary for extension-internal data structures
 # (e.g. the NER LRU cache). Uses the Catch2 header bundled with DuckDB.
 # Run: ./build/<config>/extension/anofox_tabular/anofox_tabular_cpp_tests
+#
+# Not built on Windows/MSVC: these tests pull in DuckDB types through the
+# anofox headers (e.g. LogicalType/Value via the NER LRU cache), and MSVC
+# eagerly emits "default constructor closures" that reference DuckDB's
+# out-of-line symbols, so the standalone executable fails to link (LNK2019).
+# GCC/clang never reference those symbols here, so it links on Linux/macOS.
+# This binary is a local-developer convenience and is build-only in CI (it is
+# not executed by `make test`, which runs the unittest binary), so skipping it
+# on Windows loses no CI coverage; the tests' logic is platform-independent and
+# verified on the Linux and macOS matrix builds.
 set(DUCKDB_CATCH_DIR "${CMAKE_CURRENT_SOURCE_DIR}/duckdb/third_party/catch")
 if(NOT EXISTS "${DUCKDB_CATCH_DIR}/catch.hpp")
     # Built from within the DuckDB build tree (extension template): the top-level
     # CMake project is DuckDB itself
     set(DUCKDB_CATCH_DIR "${CMAKE_SOURCE_DIR}/third_party/catch")
 endif()
-if(EXISTS "${DUCKDB_CATCH_DIR}/catch.hpp")
+if(NOT WIN32 AND EXISTS "${DUCKDB_CATCH_DIR}/catch.hpp")
     add_executable(anofox_tabular_cpp_tests
         test/cpp/test_ner_lru_cache.cpp
         test/cpp/test_ner_input_bounding.cpp
@@ -351,6 +361,8 @@ if(EXISTS "${DUCKDB_CATCH_DIR}/catch.hpp")
     if(OPENVINO_FOUND)
         target_link_libraries(anofox_tabular_cpp_tests PRIVATE openvino::runtime)
     endif()
+elseif(WIN32)
+    message(STATUS "Skipping standalone anofox_tabular_cpp_tests on Windows (MSVC link limitation)")
 else()
     message(STATUS "Catch2 header not found - skipping anofox_tabular_cpp_tests")
 endif()
