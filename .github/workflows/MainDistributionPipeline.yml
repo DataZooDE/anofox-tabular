@@ -16,45 +16,43 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  duckdb-v1_4_4-build:
-    name: Build extension binaries (v1.4.4)
-    uses: duckdb/extension-ci-tools/.github/workflows/_extension_distribution.yml@v1.4.4
+  duckdb-v1_4_5-build:
+    name: Build extension binaries (v1.4.5)
+    uses: duckdb/extension-ci-tools/.github/workflows/_extension_distribution.yml@v1.4-andium
     with:
-      duckdb_version: v1.4.4
-      ci_tools_version: v1.4.4
+      duckdb_version: v1.4.5
+      ci_tools_version: v1.4-andium
       extension_name: anofox_tabular
       # Exclude WASM builds - extension uses features not compatible with WASM
       # (libpostal, libphonenumber, DNS/SMTP network operations)
       # Exclude MinGW builds - vcpkg OpenSSL build issues
       # Exclude musl builds - OpenVINO binary components require glibc
       # Exclude ARM64 Linux builds - vcpkg OpenVINO build timeout issues
-      # Exclude Windows on the v1.4.4 LTS line only: after the windows-latest
-      # runner image migration, the v1.4.4 extension-ci-tools toolchain passes
-      # the MSVC flag /Zc:__cplusplus to MinGW c++.exe while building DuckDB's
-      # own parquet extension, which fails before our code compiles. This is an
-      # upstream v1.4.4 CI-tooling/runner issue we cannot patch from here. The
-      # v1.5.3 line below keeps full Windows support, so Windows users are
-      # covered; v1.4.4 LTS ships Linux + macOS.
-      exclude_archs: wasm_mvp;wasm_eh;wasm_threads;windows_amd64_mingw;windows_amd64;linux_amd64_musl;linux_arm64
+      # Windows on the LTS line: previously excluded because the v1.4.4
+      # extension-ci-tools toolchain passed the MSVC flag /Zc:__cplusplus to
+      # MinGW c++.exe while building DuckDB's parquet extension. Re-enabled here
+      # to test whether the rolling v1.4-andium toolchain resolves it. If the
+      # windows_amd64 job fails on that issue, re-add windows_amd64 below.
+      exclude_archs: wasm_mvp;wasm_eh;wasm_threads;windows_amd64_mingw;linux_amd64_musl;linux_arm64
 
-  duckdb-v1_4_4-deploy:
-    name: Deploy extension binaries (v1.4.4)
-    needs: duckdb-v1_4_4-build
+  duckdb-v1_4_5-deploy:
+    name: Deploy extension binaries (v1.4.5)
+    needs: duckdb-v1_4_5-build
     uses: ./.github/workflows/_extension_deploy.yml
     secrets: inherit
     with:
-      duckdb_version: v1.4.4
+      duckdb_version: v1.4.5
       extension_name: anofox_tabular
-      exclude_archs: wasm_mvp;wasm_eh;wasm_threads;windows_amd64_mingw;windows_amd64;linux_amd64_musl;linux_arm64
+      exclude_archs: wasm_mvp;wasm_eh;wasm_threads;windows_amd64_mingw;linux_amd64_musl;linux_arm64
       deploy_latest: ${{ startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/main' }}
       deploy_versioned: ${{ startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/main' }}
 
-  duckdb-v1_5_3-build:
-    name: Build extension binaries (v1.5.3)
-    uses: duckdb/extension-ci-tools/.github/workflows/_extension_distribution.yml@v1.5.3
+  duckdb-v1_5_4-build:
+    name: Build extension binaries (v1.5.4)
+    uses: duckdb/extension-ci-tools/.github/workflows/_extension_distribution.yml@v1.5-variegata
     with:
-      duckdb_version: v1.5.3
-      ci_tools_version: v1.5.3
+      duckdb_version: v1.5.4
+      ci_tools_version: v1.5-variegata
       extension_name: anofox_tabular
       # Exclude WASM builds - extension uses features not compatible with WASM
       # (libpostal, libphonenumber, DNS/SMTP network operations)
@@ -64,13 +62,13 @@ jobs:
       # Note: Windows builds WITHOUT OpenVINO (NER unavailable, pattern-based PII works)
       exclude_archs: wasm_mvp;wasm_eh;wasm_threads;windows_amd64_mingw;linux_amd64_musl;linux_arm64
 
-  duckdb-v1_5_3-deploy:
-    name: Deploy extension binaries (v1.5.3)
-    needs: duckdb-v1_5_3-build
+  duckdb-v1_5_4-deploy:
+    name: Deploy extension binaries (v1.5.4)
+    needs: duckdb-v1_5_4-build
     uses: ./.github/workflows/_extension_deploy.yml
     secrets: inherit
     with:
-      duckdb_version: v1.5.3
+      duckdb_version: v1.5.4
       extension_name: anofox_tabular
       exclude_archs: wasm_mvp;wasm_eh;wasm_threads;windows_amd64_mingw;linux_amd64_musl;linux_arm64
       deploy_latest: ${{ startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/main' }}
