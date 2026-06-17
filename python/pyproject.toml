@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "anofox-tabular"
-version = "0.5.1"
+version = "2026.6.17"
 description = "Python wrapper for the anofox-tabular DuckDB extension — data quality, PII, and validation primitives"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -48,5 +48,5 @@ testpaths = ["tests"]
 
 [dependency-groups]
 dev = [
-    "duckdb==1.5.3",
+    "duckdb==1.5.4",
 ]

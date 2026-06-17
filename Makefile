@@ -19,13 +19,15 @@ include extension-ci-tools/makefiles/duckdb_extension.Makefile
 BUILD_ROOT:=build
 
 # Patches applied to the DuckDB submodule before building (see duckdb_patches/).
-# Currently: removal of stdext::checked_array_iterator from vendored fmt
-# (upstream duckdb/duckdb@0c19d698ca, on main but not in v1.5.3 / v1.4.4) —
-# newer MSVC STLs removed the type, breaking Windows builds.
-# Idempotent: already-applied patches are detected and skipped.
+# Currently EMPTY: the previous fmt stdext::checked_array_iterator removal
+# (upstream duckdb/duckdb@0c19d698ca) is now included in v1.4.5 and v1.5.4, so
+# no patch is needed. The mechanism is kept for future submodule patches.
+# Idempotent: already-applied patches are detected and skipped; an empty
+# duckdb_patches/ directory is a no-op (the unexpanded glob is skipped).
 .PHONY: apply_duckdb_patches
 apply_duckdb_patches:
 	@for p in $(PROJ_DIR)duckdb_patches/*.patch; do \
+		[ -e "$$p" ] || continue; \
 		if git -C duckdb apply --reverse --check "$$p" 2>/dev/null; then \
 			echo "DuckDB patch already applied: $$p"; \
 		elif git -C duckdb apply --check "$$p" 2>/dev/null; then \
