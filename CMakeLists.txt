@@ -276,6 +276,13 @@ target_include_directories(${LOADABLE_EXTENSION_NAME} PRIVATE
     ${LIBPOSTAL_INCLUDE_DIRS}
 )
 
+# posthog-telemetry reads the machine id from the IORegistry on macOS
+# (IORegistryEntryFromPath et al.), which requires linking IOKit explicitly.
+if(APPLE)
+    target_link_libraries(${EXTENSION_NAME} "-framework IOKit" "-framework CoreFoundation")
+    target_link_libraries(${LOADABLE_EXTENSION_NAME} "-framework IOKit" "-framework CoreFoundation")
+endif()
+
 # Work around GCC 14 COMDAT vs non-COMDAT conflict on Linux for DuckDB v1.5+.
 # DuckDB compiles with C++11 (setting static constexpr defs as non-COMDAT), while
 # this extension uses C++17 (GCC 14 emits COMDAT for the same inline constexpr
