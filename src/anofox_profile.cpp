@@ -214,7 +214,7 @@ static string GenerateSummarySQL(const string &table_name, int64_t total_nulls,
 
 static unique_ptr<TableRef> ProfileSummaryBindReplace(ClientContext &context,
                                                        TableFunctionBindInput &input) {
-	PostHogTelemetry::Instance().CaptureFunctionExecution("profile_summary");
+	PostHogTelemetry::Instance().RecordFunctionCall("profile_summary");
 	if (input.inputs.empty()) {
 		throw BinderException("profile_summary requires 1 argument: table_name");
 	}
@@ -293,7 +293,7 @@ static unique_ptr<FunctionData> ProfileTableBind(ClientContext &context,
                                                   TableFunctionBindInput &input,
                                                   vector<LogicalType> &return_types,
                                                   vector<string> &names) {
-	PostHogTelemetry::Instance().CaptureFunctionExecution("profile_table");
+	PostHogTelemetry::Instance().RecordFunctionCall("profile_table");
 	if (input.inputs.empty()) {
 		throw BinderException("profile_table requires at least 1 argument: table_name");
 	}
@@ -643,7 +643,7 @@ static unique_ptr<FunctionData> ProfileCorrelationsBind(ClientContext &context,
                                                          TableFunctionBindInput &input,
                                                          vector<LogicalType> &return_types,
                                                          vector<string> &names) {
-	PostHogTelemetry::Instance().CaptureFunctionExecution("profile_correlations");
+	PostHogTelemetry::Instance().RecordFunctionCall("profile_correlations");
 	if (input.inputs.empty()) {
 		throw BinderException("profile_correlations requires at least 1 argument: table_name");
 	}

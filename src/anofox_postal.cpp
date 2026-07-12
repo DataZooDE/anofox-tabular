@@ -595,7 +595,7 @@ unique_ptr<GlobalTableFunctionState> PostalStatusInit(ClientContext &, TableFunc
 
 unique_ptr<FunctionData> PostalStatusBind(ClientContext &, TableFunctionBindInput &, vector<LogicalType> &return_types,
                                           vector<string> &names) {
-	PostHogTelemetry::Instance().CaptureFunctionExecution("postal_status");
+	PostHogTelemetry::Instance().RecordFunctionCall("postal_status");
 	names.emplace_back("initialized");
 	return_types.emplace_back(LogicalTypeId::BOOLEAN);
 	names.emplace_back("data_present");
@@ -607,17 +607,17 @@ unique_ptr<FunctionData> PostalStatusBind(ClientContext &, TableFunctionBindInpu
 
 // Telemetry bind functions for scalar functions
 unique_ptr<FunctionData> PostalParseAddressBind(ClientContext &, ScalarFunction &, vector<unique_ptr<Expression>> &) {
-	PostHogTelemetry::Instance().CaptureFunctionExecution("postal_parse_address");
+	PostHogTelemetry::Instance().RecordFunctionCall("postal_parse_address");
 	return nullptr;
 }
 
 unique_ptr<FunctionData> PostalExpandAddressBind(ClientContext &, ScalarFunction &, vector<unique_ptr<Expression>> &) {
-	PostHogTelemetry::Instance().CaptureFunctionExecution("postal_expand_address");
+	PostHogTelemetry::Instance().RecordFunctionCall("postal_expand_address");
 	return nullptr;
 }
 
 unique_ptr<FunctionData> PostalLoadDataBind(ClientContext &, ScalarFunction &, vector<unique_ptr<Expression>> &) {
-	PostHogTelemetry::Instance().CaptureFunctionExecution("postal_load_data");
+	PostHogTelemetry::Instance().RecordFunctionCall("postal_load_data");
 	return nullptr;
 }
 

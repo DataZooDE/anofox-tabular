@@ -111,6 +111,10 @@ void LoadInternal(ExtensionLoader &loader) {
 		if (db.TryGetCurrentSetting("anofox_telemetry_key", key_value) && !key_value.IsNull()) {
 			telemetry.SetAPIKey(StringValue::Get(key_value.DefaultCastAs(LogicalType::VARCHAR)));
 		}
+		// Schema-2: declare the product envelope and associate the deployment group
+		// before emitting the load event so every event carries product + group.
+		telemetry.SetProduct("anofox_tabular", version, "oss");
+		telemetry.AssociateGroup("deployment", PostHogTelemetry::GetDistinctId());
 		telemetry.CaptureExtensionLoad("anofox_tabular", version);
 	} else {
 		// Still record the extension name so later re-enabling via SQL produces

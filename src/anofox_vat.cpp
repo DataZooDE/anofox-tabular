@@ -178,52 +178,52 @@ static void VATIsValidFunc(DataChunk& args, ExpressionState& state,
 
 // Telemetry bind functions for scalar functions
 unique_ptr<FunctionData> VatBind(ClientContext &, ScalarFunction &, vector<unique_ptr<Expression>> &) {
-  PostHogTelemetry::Instance().CaptureFunctionExecution("vat");
+  PostHogTelemetry::Instance().RecordFunctionCall("vat");
   return nullptr;
 }
 
 unique_ptr<FunctionData> IsValidVatCountryBind(ClientContext &, ScalarFunction &, vector<unique_ptr<Expression>> &) {
-  PostHogTelemetry::Instance().CaptureFunctionExecution("is_valid_vat_country");
+  PostHogTelemetry::Instance().RecordFunctionCall("is_valid_vat_country");
   return nullptr;
 }
 
 unique_ptr<FunctionData> VatNormalizeBind(ClientContext &, ScalarFunction &, vector<unique_ptr<Expression>> &) {
-  PostHogTelemetry::Instance().CaptureFunctionExecution("vat_normalize");
+  PostHogTelemetry::Instance().RecordFunctionCall("vat_normalize");
   return nullptr;
 }
 
 unique_ptr<FunctionData> VatIsValidSyntaxBind(ClientContext &, ScalarFunction &, vector<unique_ptr<Expression>> &) {
-  PostHogTelemetry::Instance().CaptureFunctionExecution("vat_is_valid_syntax");
+  PostHogTelemetry::Instance().RecordFunctionCall("vat_is_valid_syntax");
   return nullptr;
 }
 
 unique_ptr<FunctionData> VatSplitBind(ClientContext &, ScalarFunction &, vector<unique_ptr<Expression>> &) {
-  PostHogTelemetry::Instance().CaptureFunctionExecution("vat_split");
+  PostHogTelemetry::Instance().RecordFunctionCall("vat_split");
   return nullptr;
 }
 
 unique_ptr<FunctionData> VatExistsBind(ClientContext &, ScalarFunction &, vector<unique_ptr<Expression>> &) {
-  PostHogTelemetry::Instance().CaptureFunctionExecution("vat_exists");
+  PostHogTelemetry::Instance().RecordFunctionCall("vat_exists");
   return nullptr;
 }
 
 unique_ptr<FunctionData> VatIsEuMemberBind(ClientContext &, ScalarFunction &, vector<unique_ptr<Expression>> &) {
-  PostHogTelemetry::Instance().CaptureFunctionExecution("vat_is_eu_member");
+  PostHogTelemetry::Instance().RecordFunctionCall("vat_is_eu_member");
   return nullptr;
 }
 
 unique_ptr<FunctionData> VatCountryNameBind(ClientContext &, ScalarFunction &, vector<unique_ptr<Expression>> &) {
-  PostHogTelemetry::Instance().CaptureFunctionExecution("vat_country_name");
+  PostHogTelemetry::Instance().RecordFunctionCall("vat_country_name");
   return nullptr;
 }
 
 unique_ptr<FunctionData> VatFormatBind(ClientContext &, ScalarFunction &, vector<unique_ptr<Expression>> &) {
-  PostHogTelemetry::Instance().CaptureFunctionExecution("vat_format");
+  PostHogTelemetry::Instance().RecordFunctionCall("vat_format");
   return nullptr;
 }
 
 unique_ptr<FunctionData> VatIsValidBind(ClientContext &, ScalarFunction &, vector<unique_ptr<Expression>> &) {
-  PostHogTelemetry::Instance().CaptureFunctionExecution("vat_is_valid");
+  PostHogTelemetry::Instance().RecordFunctionCall("vat_is_valid");
   return nullptr;
 }
 

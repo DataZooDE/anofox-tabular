@@ -274,7 +274,7 @@ static string GenerateJoinDiffSQL(const string &source_table, const string &targ
 }
 
 static unique_ptr<TableRef> JoinDiffBindReplace(ClientContext &context, TableFunctionBindInput &input) {
-	PostHogTelemetry::Instance().CaptureFunctionExecution("diff_joindiff");
+	PostHogTelemetry::Instance().RecordFunctionCall("diff_joindiff");
 	// Parameters:
 	// 0: source_table (VARCHAR)
 	// 1: target_table (VARCHAR)
@@ -327,7 +327,7 @@ static unique_ptr<TableRef> JoinDiffBindReplace(ClientContext &context, TableFun
 
 // HashDiff bind_replace - wraps JoinDiff with separate telemetry tracking
 static unique_ptr<TableRef> HashDiffBindReplace(ClientContext &context, TableFunctionBindInput &input) {
-	PostHogTelemetry::Instance().CaptureFunctionExecution("diff_hashdiff");
+	PostHogTelemetry::Instance().RecordFunctionCall("diff_hashdiff");
 	// HashDiff currently executes the same NULL-safe full outer join plan as
 	// JoinDiff; it is tracked separately for telemetry purposes.
 

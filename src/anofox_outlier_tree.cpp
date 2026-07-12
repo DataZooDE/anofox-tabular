@@ -822,7 +822,7 @@ static unique_ptr<GlobalTableFunctionState> OutlierTreeInit(ClientContext &, Tab
 // Bind function
 static unique_ptr<FunctionData> OutlierTreeBind(ClientContext &context, TableFunctionBindInput &input,
                                                  vector<LogicalType> &return_types, vector<string> &names) {
-    PostHogTelemetry::Instance().CaptureFunctionExecution("outlier_tree");
+    PostHogTelemetry::Instance().RecordFunctionCall("outlier_tree");
 
     if (input.inputs.size() < 2) {
         throw BinderException("outlier_tree requires at least 2 arguments: table_name, columns");
