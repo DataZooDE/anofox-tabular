@@ -574,87 +574,87 @@ static void AnofoxCurrencyNameFunction(DataChunk &args, ExpressionState &state, 
 
 // Telemetry bind functions for scalar functions
 unique_ptr<FunctionData> MoneyBind(ClientContext &, ScalarFunction &, vector<unique_ptr<Expression>> &) {
-    PostHogTelemetry::Instance().CaptureFunctionExecution("money");
+    PostHogTelemetry::Instance().RecordFunctionCall("money");
     return nullptr;
 }
 
 unique_ptr<FunctionData> MoneyFromCentsBind(ClientContext &, ScalarFunction &, vector<unique_ptr<Expression>> &) {
-    PostHogTelemetry::Instance().CaptureFunctionExecution("money_from_cents");
+    PostHogTelemetry::Instance().RecordFunctionCall("money_from_cents");
     return nullptr;
 }
 
 unique_ptr<FunctionData> MoneyAmountBind(ClientContext &, ScalarFunction &, vector<unique_ptr<Expression>> &) {
-    PostHogTelemetry::Instance().CaptureFunctionExecution("money_amount");
+    PostHogTelemetry::Instance().RecordFunctionCall("money_amount");
     return nullptr;
 }
 
 unique_ptr<FunctionData> MoneyCurrencyBind(ClientContext &, ScalarFunction &, vector<unique_ptr<Expression>> &) {
-    PostHogTelemetry::Instance().CaptureFunctionExecution("money_currency");
+    PostHogTelemetry::Instance().RecordFunctionCall("money_currency");
     return nullptr;
 }
 
 unique_ptr<FunctionData> IsValidCurrencyBind(ClientContext &, ScalarFunction &, vector<unique_ptr<Expression>> &) {
-    PostHogTelemetry::Instance().CaptureFunctionExecution("is_valid_currency");
+    PostHogTelemetry::Instance().RecordFunctionCall("is_valid_currency");
     return nullptr;
 }
 
 unique_ptr<FunctionData> CurrencySymbolBind(ClientContext &, ScalarFunction &, vector<unique_ptr<Expression>> &) {
-    PostHogTelemetry::Instance().CaptureFunctionExecution("currency_symbol");
+    PostHogTelemetry::Instance().RecordFunctionCall("currency_symbol");
     return nullptr;
 }
 
 unique_ptr<FunctionData> CurrencyNameBind(ClientContext &, ScalarFunction &, vector<unique_ptr<Expression>> &) {
-    PostHogTelemetry::Instance().CaptureFunctionExecution("currency_name");
+    PostHogTelemetry::Instance().RecordFunctionCall("currency_name");
     return nullptr;
 }
 
 unique_ptr<FunctionData> MoneyFormatBind(ClientContext &, ScalarFunction &, vector<unique_ptr<Expression>> &) {
-    PostHogTelemetry::Instance().CaptureFunctionExecution("money_format");
+    PostHogTelemetry::Instance().RecordFunctionCall("money_format");
     return nullptr;
 }
 
 unique_ptr<FunctionData> MoneyIsPositiveBind(ClientContext &, ScalarFunction &, vector<unique_ptr<Expression>> &) {
-    PostHogTelemetry::Instance().CaptureFunctionExecution("money_is_positive");
+    PostHogTelemetry::Instance().RecordFunctionCall("money_is_positive");
     return nullptr;
 }
 
 unique_ptr<FunctionData> MoneyIsNegativeBind(ClientContext &, ScalarFunction &, vector<unique_ptr<Expression>> &) {
-    PostHogTelemetry::Instance().CaptureFunctionExecution("money_is_negative");
+    PostHogTelemetry::Instance().RecordFunctionCall("money_is_negative");
     return nullptr;
 }
 
 unique_ptr<FunctionData> MoneyIsZeroBind(ClientContext &, ScalarFunction &, vector<unique_ptr<Expression>> &) {
-    PostHogTelemetry::Instance().CaptureFunctionExecution("money_is_zero");
+    PostHogTelemetry::Instance().RecordFunctionCall("money_is_zero");
     return nullptr;
 }
 
 unique_ptr<FunctionData> MoneyAbsBind(ClientContext &, ScalarFunction &, vector<unique_ptr<Expression>> &) {
-    PostHogTelemetry::Instance().CaptureFunctionExecution("money_abs");
+    PostHogTelemetry::Instance().RecordFunctionCall("money_abs");
     return nullptr;
 }
 
 unique_ptr<FunctionData> MoneyAddBind(ClientContext &, ScalarFunction &, vector<unique_ptr<Expression>> &) {
-    PostHogTelemetry::Instance().CaptureFunctionExecution("money_add");
+    PostHogTelemetry::Instance().RecordFunctionCall("money_add");
     return nullptr;
 }
 
 unique_ptr<FunctionData> MoneySubtractBind(ClientContext &, ScalarFunction &, vector<unique_ptr<Expression>> &) {
-    PostHogTelemetry::Instance().CaptureFunctionExecution("money_subtract");
+    PostHogTelemetry::Instance().RecordFunctionCall("money_subtract");
     return nullptr;
 }
 
 unique_ptr<FunctionData> MoneyMultiplyBind(ClientContext &, ScalarFunction &, vector<unique_ptr<Expression>> &) {
-    PostHogTelemetry::Instance().CaptureFunctionExecution("money_multiply");
+    PostHogTelemetry::Instance().RecordFunctionCall("money_multiply");
     return nullptr;
 }
 
 unique_ptr<FunctionData> MoneyInRangeBind(ClientContext &, ScalarFunction &, vector<unique_ptr<Expression>> &) {
-    PostHogTelemetry::Instance().CaptureFunctionExecution("money_in_range");
+    PostHogTelemetry::Instance().RecordFunctionCall("money_in_range");
     return nullptr;
 }
 
 unique_ptr<FunctionData> MoneySameCurrencyBind(ClientContext &, ScalarFunction &, vector<unique_ptr<Expression>> &) {
-    PostHogTelemetry::Instance().CaptureFunctionExecution("money_same_currency");
+    PostHogTelemetry::Instance().RecordFunctionCall("money_same_currency");
     return nullptr;
 }
 

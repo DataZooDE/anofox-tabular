@@ -518,7 +518,7 @@ struct EmailConfigState : public GlobalTableFunctionState {
 
 unique_ptr<FunctionData> EmailConfigBind(ClientContext &, TableFunctionBindInput &, vector<LogicalType> &return_types,
                                          vector<string> &names) {
-    PostHogTelemetry::Instance().CaptureFunctionExecution("email_config");
+    PostHogTelemetry::Instance().RecordFunctionCall("email_config");
     auto bind_data = make_uniq<EmailConfigBindData>();
     bind_data->entries = EmailConfig::Get().List();
     return_types = {LogicalTypeId::VARCHAR, LogicalTypeId::VARCHAR};
@@ -746,12 +746,12 @@ void RegisterEmailOptions(ExtensionLoader &loader) {
 
 // Telemetry bind functions for scalar functions
 unique_ptr<FunctionData> EmailValidateBind(ClientContext &, ScalarFunction &, vector<unique_ptr<Expression>> &) {
-	PostHogTelemetry::Instance().CaptureFunctionExecution("email_validate");
+	PostHogTelemetry::Instance().RecordFunctionCall("email_validate");
 	return nullptr;
 }
 
 unique_ptr<FunctionData> EmailIsValidBind(ClientContext &, ScalarFunction &, vector<unique_ptr<Expression>> &) {
-	PostHogTelemetry::Instance().CaptureFunctionExecution("email_is_valid");
+	PostHogTelemetry::Instance().RecordFunctionCall("email_is_valid");
 	return nullptr;
 }
 

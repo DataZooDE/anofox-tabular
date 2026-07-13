@@ -969,7 +969,7 @@ unique_ptr<GlobalTableFunctionState> PhoneStatusInit(ClientContext&, TableFuncti
 
 unique_ptr<FunctionData> PhoneStatusBind(ClientContext& context, TableFunctionBindInput&,
                                          vector<LogicalType>& return_types, vector<string>& names) {
-	PostHogTelemetry::Instance().CaptureFunctionExecution("phonenumber_status");
+	PostHogTelemetry::Instance().RecordFunctionCall("phonenumber_status");
 	names.emplace_back("initialized");
 	return_types.emplace_back(LogicalTypeId::BOOLEAN);
 	names.emplace_back("default_region");
@@ -979,7 +979,7 @@ unique_ptr<FunctionData> PhoneStatusBind(ClientContext& context, TableFunctionBi
 
 // Shared bind: capture telemetry and snapshot the session default region
 unique_ptr<FunctionData> PhoneScalarBind(ClientContext& context, const char* telemetry_name) {
-	PostHogTelemetry::Instance().CaptureFunctionExecution(telemetry_name);
+	PostHogTelemetry::Instance().RecordFunctionCall(telemetry_name);
 	return make_uniq<PhoneBindData>(SnapshotDefaultRegion(context));
 }
 

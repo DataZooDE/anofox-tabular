@@ -335,7 +335,7 @@ static string GenerateFreshnessSQL(const string &table_ref, const string &timest
 //===--------------------------------------------------------------------===//
 
 static unique_ptr<TableRef> MetricVolumeBindReplace(ClientContext &context, TableFunctionBindInput &input) {
-	PostHogTelemetry::Instance().CaptureFunctionExecution("metric_volume");
+	PostHogTelemetry::Instance().RecordFunctionCall("metric_volume");
 	if (input.inputs.size() < 3) {
 		throw BinderException("anofox_metric_volume requires 3 arguments: table_name, min_rows, max_rows");
 	}
@@ -347,7 +347,7 @@ static unique_ptr<TableRef> MetricVolumeBindReplace(ClientContext &context, Tabl
 }
 
 static unique_ptr<TableRef> MetricNullRateBindReplace(ClientContext &context, TableFunctionBindInput &input) {
-	PostHogTelemetry::Instance().CaptureFunctionExecution("metric_null_rate");
+	PostHogTelemetry::Instance().RecordFunctionCall("metric_null_rate");
 	if (input.inputs.size() < 3) {
 		throw BinderException("anofox_metric_null_rate requires 3 arguments: table_name, column_name, max_null_rate");
 	}
@@ -361,7 +361,7 @@ static unique_ptr<TableRef> MetricNullRateBindReplace(ClientContext &context, Ta
 }
 
 static unique_ptr<TableRef> MetricDistinctCountBindReplace(ClientContext &context, TableFunctionBindInput &input) {
-	PostHogTelemetry::Instance().CaptureFunctionExecution("metric_distinct_count");
+	PostHogTelemetry::Instance().RecordFunctionCall("metric_distinct_count");
 	if (input.inputs.size() < 4) {
 		throw BinderException("anofox_metric_distinct_count requires 4 arguments: table_name, column_name, min_distinct, max_distinct");
 	}
@@ -374,7 +374,7 @@ static unique_ptr<TableRef> MetricDistinctCountBindReplace(ClientContext &contex
 }
 
 static unique_ptr<TableRef> MetricZscoreBindReplace(ClientContext &context, TableFunctionBindInput &input) {
-	PostHogTelemetry::Instance().CaptureFunctionExecution("metric_zscore");
+	PostHogTelemetry::Instance().RecordFunctionCall("metric_zscore");
 	if (input.inputs.size() < 3) {
 		throw BinderException("anofox_metric_zscore requires 3 arguments: table_name, column_name, threshold");
 	}
@@ -388,7 +388,7 @@ static unique_ptr<TableRef> MetricZscoreBindReplace(ClientContext &context, Tabl
 }
 
 static unique_ptr<TableRef> MetricIQRBindReplace(ClientContext &context, TableFunctionBindInput &input) {
-	PostHogTelemetry::Instance().CaptureFunctionExecution("metric_iqr");
+	PostHogTelemetry::Instance().RecordFunctionCall("metric_iqr");
 	if (input.inputs.size() < 3) {
 		throw BinderException("anofox_metric_iqr requires 3 arguments: table_name, column_name, iqr_multiplier");
 	}
@@ -402,7 +402,7 @@ static unique_ptr<TableRef> MetricIQRBindReplace(ClientContext &context, TableFu
 }
 
 static unique_ptr<TableRef> MetricSchemaBindReplace(ClientContext &context, TableFunctionBindInput &input) {
-	PostHogTelemetry::Instance().CaptureFunctionExecution("metric_schema");
+	PostHogTelemetry::Instance().RecordFunctionCall("metric_schema");
 	if (input.inputs.size() < 2) {
 		throw BinderException("anofox_metric_schema requires 2 arguments: table_name, required_columns");
 	}
@@ -425,7 +425,7 @@ static unique_ptr<TableRef> MetricSchemaBindReplace(ClientContext &context, Tabl
 }
 
 static unique_ptr<TableRef> MetricFreshnessBindReplace(ClientContext &context, TableFunctionBindInput &input) {
-	PostHogTelemetry::Instance().CaptureFunctionExecution("metric_freshness");
+	PostHogTelemetry::Instance().RecordFunctionCall("metric_freshness");
 	if (input.inputs.size() < 3) {
 		throw BinderException("anofox_metric_freshness requires at least 3 arguments: table_name, timestamp_column, max_age");
 	}
@@ -539,7 +539,7 @@ static void ParseIsolationForestCommonParameters(TableFunctionBindInput &input, 
 // Bind function for univariate isolation forest
 static unique_ptr<FunctionData> IsolationForestBind(ClientContext &context, TableFunctionBindInput &input,
                                                     vector<LogicalType> &return_types, vector<string> &names) {
-	PostHogTelemetry::Instance().CaptureFunctionExecution("isolation_forest");
+	PostHogTelemetry::Instance().RecordFunctionCall("isolation_forest");
 	if (input.inputs.size() < 2) {
 		throw BinderException("isolation_forest requires at least 2 arguments: table_name, column_name");
 	}
@@ -592,7 +592,7 @@ static unique_ptr<FunctionData> IsolationForestBind(ClientContext &context, Tabl
 // Bind function for multivariate isolation forest
 static unique_ptr<FunctionData> IsolationForestMultivariateBind(ClientContext &context, TableFunctionBindInput &input,
                                                                  vector<LogicalType> &return_types, vector<string> &names) {
-	PostHogTelemetry::Instance().CaptureFunctionExecution("isolation_forest_mv");
+	PostHogTelemetry::Instance().RecordFunctionCall("isolation_forest_mv");
 	if (input.inputs.size() < 2) {
 		throw BinderException("isolation_forest_mv requires at least 2 arguments: table_name, column_names");
 	}
@@ -1135,7 +1135,7 @@ static void DefineDBSCANSchema(const string &output_mode, bool include_value, bo
 // Bind function for univariate DBSCAN
 static unique_ptr<FunctionData> DBSCANBind(ClientContext &context, TableFunctionBindInput &input,
                                            vector<LogicalType> &return_types, vector<string> &names) {
-	PostHogTelemetry::Instance().CaptureFunctionExecution("metric_dbscan");
+	PostHogTelemetry::Instance().RecordFunctionCall("metric_dbscan");
 	if (input.inputs.size() < 2) {
 		throw BinderException("dbscan requires at least 2 arguments: table_name, column_name");
 	}
@@ -1155,7 +1155,7 @@ static unique_ptr<FunctionData> DBSCANBind(ClientContext &context, TableFunction
 // Bind function for multivariate DBSCAN
 static unique_ptr<FunctionData> DBSCANMultivariateBind(ClientContext &context, TableFunctionBindInput &input,
                                                        vector<LogicalType> &return_types, vector<string> &names) {
-	PostHogTelemetry::Instance().CaptureFunctionExecution("metric_dbscan_mv");
+	PostHogTelemetry::Instance().RecordFunctionCall("metric_dbscan_mv");
 	if (input.inputs.size() < 2) {
 		throw BinderException("dbscan_mv requires at least 2 arguments: table_name, column_names");
 	}

@@ -2396,7 +2396,7 @@ unique_ptr<GlobalTableFunctionState> PIIStatusInit(ClientContext &, TableFunctio
 
 unique_ptr<FunctionData> PIIStatusBind(ClientContext &, TableFunctionBindInput &,
                                         vector<LogicalType> &return_types, vector<string> &names) {
-    PostHogTelemetry::Instance().CaptureFunctionExecution("pii_status");
+    PostHogTelemetry::Instance().RecordFunctionCall("pii_status");
 
     names.emplace_back("pii_type");
     return_types.emplace_back(LogicalTypeId::VARCHAR);
@@ -2509,7 +2509,7 @@ unique_ptr<GlobalTableFunctionState> NERStatusInit(ClientContext &, TableFunctio
 
 unique_ptr<FunctionData> NERStatusBind(ClientContext &, TableFunctionBindInput &,
                                        vector<LogicalType> &return_types, vector<string> &names) {
-    PostHogTelemetry::Instance().CaptureFunctionExecution("anofox_ner_status");
+    PostHogTelemetry::Instance().RecordFunctionCall("anofox_ner_status");
 
     names.emplace_back("onnx_available");
     return_types.emplace_back(LogicalTypeId::BOOLEAN);
@@ -2660,7 +2660,7 @@ unique_ptr<GlobalTableFunctionState> PIIAuditTableInit(ClientContext &, TableFun
 
 unique_ptr<FunctionData> PIIAuditTableBind(ClientContext &context, TableFunctionBindInput &input,
                                             vector<LogicalType> &return_types, vector<string> &names) {
-    PostHogTelemetry::Instance().CaptureFunctionExecution("pii_audit_table");
+    PostHogTelemetry::Instance().RecordFunctionCall("pii_audit_table");
 
     // Get table name (required)
     if (input.inputs.empty()) {
@@ -2905,7 +2905,7 @@ unique_ptr<GlobalTableFunctionState> PIIScanTableInit(ClientContext &, TableFunc
 
 unique_ptr<FunctionData> PIIScanTableBind(ClientContext &context, TableFunctionBindInput &input,
                                            vector<LogicalType> &return_types, vector<string> &names) {
-    PostHogTelemetry::Instance().CaptureFunctionExecution("pii_scan_table");
+    PostHogTelemetry::Instance().RecordFunctionCall("pii_scan_table");
 
     // Get table name (required)
     if (input.inputs.empty()) {
@@ -3097,97 +3097,97 @@ TableFunctionSet CreatePIIScanTableFunctionSet() {
 // ============================================================================
 
 unique_ptr<FunctionData> PIIDetectBind(ClientContext &, ScalarFunction &, vector<unique_ptr<Expression>> &) {
-    PostHogTelemetry::Instance().CaptureFunctionExecution("pii_detect");
+    PostHogTelemetry::Instance().RecordFunctionCall("pii_detect");
     return nullptr;
 }
 
 unique_ptr<FunctionData> PIIMaskBind(ClientContext &, ScalarFunction &, vector<unique_ptr<Expression>> &) {
-    PostHogTelemetry::Instance().CaptureFunctionExecution("pii_mask");
+    PostHogTelemetry::Instance().RecordFunctionCall("pii_mask");
     return nullptr;
 }
 
 unique_ptr<FunctionData> PIIContainsBind(ClientContext &, ScalarFunction &, vector<unique_ptr<Expression>> &) {
-    PostHogTelemetry::Instance().CaptureFunctionExecution("pii_contains");
+    PostHogTelemetry::Instance().RecordFunctionCall("pii_contains");
     return nullptr;
 }
 
 unique_ptr<FunctionData> PIICountBind(ClientContext &, ScalarFunction &, vector<unique_ptr<Expression>> &) {
-    PostHogTelemetry::Instance().CaptureFunctionExecution("pii_count");
+    PostHogTelemetry::Instance().RecordFunctionCall("pii_count");
     return nullptr;
 }
 
 unique_ptr<FunctionData> PIIIsValidSSNBind(ClientContext &, ScalarFunction &, vector<unique_ptr<Expression>> &) {
-    PostHogTelemetry::Instance().CaptureFunctionExecution("pii_is_valid_ssn");
+    PostHogTelemetry::Instance().RecordFunctionCall("pii_is_valid_ssn");
     return nullptr;
 }
 
 unique_ptr<FunctionData> PIIIsValidIBANBind(ClientContext &, ScalarFunction &, vector<unique_ptr<Expression>> &) {
-    PostHogTelemetry::Instance().CaptureFunctionExecution("pii_is_valid_iban");
+    PostHogTelemetry::Instance().RecordFunctionCall("pii_is_valid_iban");
     return nullptr;
 }
 
 unique_ptr<FunctionData> PIIIsValidCreditCardBind(ClientContext &, ScalarFunction &, vector<unique_ptr<Expression>> &) {
-    PostHogTelemetry::Instance().CaptureFunctionExecution("pii_is_valid_credit_card");
+    PostHogTelemetry::Instance().RecordFunctionCall("pii_is_valid_credit_card");
     return nullptr;
 }
 
 unique_ptr<FunctionData> PIIIsValidNINOBind(ClientContext &, ScalarFunction &, vector<unique_ptr<Expression>> &) {
-    PostHogTelemetry::Instance().CaptureFunctionExecution("pii_is_valid_nino");
+    PostHogTelemetry::Instance().RecordFunctionCall("pii_is_valid_nino");
     return nullptr;
 }
 
 unique_ptr<FunctionData> PIIIsValidDETaxIDBind(ClientContext &, ScalarFunction &, vector<unique_ptr<Expression>> &) {
-    PostHogTelemetry::Instance().CaptureFunctionExecution("pii_is_valid_de_tax_id");
+    PostHogTelemetry::Instance().RecordFunctionCall("pii_is_valid_de_tax_id");
     return nullptr;
 }
 
 unique_ptr<FunctionData> PIIIsValidCryptoBind(ClientContext &, ScalarFunction &, vector<unique_ptr<Expression>> &) {
-    PostHogTelemetry::Instance().CaptureFunctionExecution("pii_is_valid_crypto_address");
+    PostHogTelemetry::Instance().RecordFunctionCall("pii_is_valid_crypto_address");
     return nullptr;
 }
 
 unique_ptr<FunctionData> PIIDetectEmailsBind(ClientContext &, ScalarFunction &, vector<unique_ptr<Expression>> &) {
-    PostHogTelemetry::Instance().CaptureFunctionExecution("pii_detect_emails");
+    PostHogTelemetry::Instance().RecordFunctionCall("pii_detect_emails");
     return nullptr;
 }
 
 unique_ptr<FunctionData> PIIDetectPhonesBind(ClientContext &, ScalarFunction &, vector<unique_ptr<Expression>> &) {
-    PostHogTelemetry::Instance().CaptureFunctionExecution("pii_detect_phones");
+    PostHogTelemetry::Instance().RecordFunctionCall("pii_detect_phones");
     return nullptr;
 }
 
 unique_ptr<FunctionData> PIIDetectCreditCardsBind(ClientContext &, ScalarFunction &, vector<unique_ptr<Expression>> &) {
-    PostHogTelemetry::Instance().CaptureFunctionExecution("pii_detect_credit_cards");
+    PostHogTelemetry::Instance().RecordFunctionCall("pii_detect_credit_cards");
     return nullptr;
 }
 
 unique_ptr<FunctionData> PIIDetectSSNsBind(ClientContext &, ScalarFunction &, vector<unique_ptr<Expression>> &) {
-    PostHogTelemetry::Instance().CaptureFunctionExecution("pii_detect_ssns");
+    PostHogTelemetry::Instance().RecordFunctionCall("pii_detect_ssns");
     return nullptr;
 }
 
 unique_ptr<FunctionData> PIIDetectNamesBind(ClientContext &, ScalarFunction &, vector<unique_ptr<Expression>> &) {
-    PostHogTelemetry::Instance().CaptureFunctionExecution("pii_detect_names");
+    PostHogTelemetry::Instance().RecordFunctionCall("pii_detect_names");
     return nullptr;
 }
 
 unique_ptr<FunctionData> PIIDetectIBANsBind(ClientContext &, ScalarFunction &, vector<unique_ptr<Expression>> &) {
-    PostHogTelemetry::Instance().CaptureFunctionExecution("pii_detect_ibans");
+    PostHogTelemetry::Instance().RecordFunctionCall("pii_detect_ibans");
     return nullptr;
 }
 
 unique_ptr<FunctionData> PIIDetectBatchBind(ClientContext &, ScalarFunction &, vector<unique_ptr<Expression>> &) {
-    PostHogTelemetry::Instance().CaptureFunctionExecution("pii_detect_batch");
+    PostHogTelemetry::Instance().RecordFunctionCall("pii_detect_batch");
     return nullptr;
 }
 
 unique_ptr<FunctionData> PIIMaskColumnBind(ClientContext &, ScalarFunction &, vector<unique_ptr<Expression>> &) {
-    PostHogTelemetry::Instance().CaptureFunctionExecution("pii_mask_column");
+    PostHogTelemetry::Instance().RecordFunctionCall("pii_mask_column");
     return nullptr;
 }
 
 unique_ptr<FunctionData> PIIRedactColumnBind(ClientContext &, ScalarFunction &, vector<unique_ptr<Expression>> &) {
-    PostHogTelemetry::Instance().CaptureFunctionExecution("pii_redact_column");
+    PostHogTelemetry::Instance().RecordFunctionCall("pii_redact_column");
     return nullptr;
 }
 
