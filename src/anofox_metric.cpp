@@ -1370,7 +1370,7 @@ void RegisterMetricFunctions(ExtensionLoader &loader) {
 	TableFunction volume_func("anofox_tab_volume",
 	                           {LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::BIGINT), LogicalType(LogicalTypeId::BIGINT)},
 	                           nullptr, nullptr);
-	volume_func.bind_replace = MetricVolumeBindReplace;
+	volume_func.bind_replace = DATAZOO_GUARD(ANOFOX_TABULAR_BANNER, MetricVolumeBindReplace);
 	{
 		FunctionDescription desc;
 		desc.description = "Asserts that a table has between min_rows and max_rows rows, returning the count and assertion status.";
@@ -1385,7 +1385,7 @@ void RegisterMetricFunctions(ExtensionLoader &loader) {
 	TableFunction null_rate_func("anofox_tab_null_rate",
 	                              {LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::DOUBLE)},
 	                              nullptr, nullptr);
-	null_rate_func.bind_replace = MetricNullRateBindReplace;
+	null_rate_func.bind_replace = DATAZOO_GUARD(ANOFOX_TABULAR_BANNER, MetricNullRateBindReplace);
 	{
 		FunctionDescription desc;
 		desc.description = "Asserts that the fraction of NULL values in a column does not exceed max_null_rate.";
@@ -1401,7 +1401,7 @@ void RegisterMetricFunctions(ExtensionLoader &loader) {
 	                             {LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::VARCHAR),
 	                              LogicalType(LogicalTypeId::BIGINT), LogicalType(LogicalTypeId::BIGINT)},
 	                             nullptr, nullptr);
-	distinct_func.bind_replace = MetricDistinctCountBindReplace;
+	distinct_func.bind_replace = DATAZOO_GUARD(ANOFOX_TABULAR_BANNER, MetricDistinctCountBindReplace);
 	{
 		FunctionDescription desc;
 		desc.description = "Asserts that the number of distinct values in a column is between min_distinct and max_distinct.";
@@ -1416,7 +1416,7 @@ void RegisterMetricFunctions(ExtensionLoader &loader) {
 	TableFunction zscore_func("anofox_tab_zscore",
 	                           {LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::DOUBLE)},
 	                           nullptr, nullptr);
-	zscore_func.bind_replace = MetricZscoreBindReplace;
+	zscore_func.bind_replace = DATAZOO_GUARD(ANOFOX_TABULAR_BANNER, MetricZscoreBindReplace);
 	{
 		FunctionDescription desc;
 		desc.description = "Identifies rows where a numeric column value deviates more than threshold standard deviations from the mean.";
@@ -1431,7 +1431,7 @@ void RegisterMetricFunctions(ExtensionLoader &loader) {
 	TableFunction iqr_func("anofox_tab_iqr",
 	                        {LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::DOUBLE)},
 	                        nullptr, nullptr);
-	iqr_func.bind_replace = MetricIQRBindReplace;
+	iqr_func.bind_replace = DATAZOO_GUARD(ANOFOX_TABULAR_BANNER, MetricIQRBindReplace);
 	{
 		FunctionDescription desc;
 		desc.description = "Identifies rows where a numeric column value is an outlier by the IQR (interquartile range) method.";
@@ -1446,7 +1446,7 @@ void RegisterMetricFunctions(ExtensionLoader &loader) {
 	TableFunction schema_func("anofox_tab_schema_check",
 	                           {LogicalType(LogicalTypeId::VARCHAR), LogicalType::LIST(LogicalType(LogicalTypeId::VARCHAR))},
 	                           nullptr, nullptr);
-	schema_func.bind_replace = MetricSchemaBindReplace;
+	schema_func.bind_replace = DATAZOO_GUARD(ANOFOX_TABULAR_BANNER, MetricSchemaBindReplace);
 	{
 		FunctionDescription desc;
 		desc.description = "Asserts that a table contains all the required column names.";
@@ -1464,7 +1464,7 @@ void RegisterMetricFunctions(ExtensionLoader &loader) {
 	TableFunction freshness_func_basic("anofox_tab_freshness",
 	                                    {LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::INTERVAL)},
 	                                    nullptr, nullptr);
-	freshness_func_basic.bind_replace = MetricFreshnessBindReplace;
+	freshness_func_basic.bind_replace = DATAZOO_GUARD(ANOFOX_TABULAR_BANNER, MetricFreshnessBindReplace);
 	freshness_set.AddFunction(freshness_func_basic);
 
 	// Full overload with 4 parameters (includes reference_time)
@@ -1472,7 +1472,7 @@ void RegisterMetricFunctions(ExtensionLoader &loader) {
 	                                   {LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::VARCHAR),
 	                                    LogicalType(LogicalTypeId::INTERVAL), LogicalType(LogicalTypeId::TIMESTAMP)},
 	                                   nullptr, nullptr);
-	freshness_func_full.bind_replace = MetricFreshnessBindReplace;
+	freshness_func_full.bind_replace = DATAZOO_GUARD(ANOFOX_TABULAR_BANNER, MetricFreshnessBindReplace);
 	freshness_set.AddFunction(freshness_func_full);
 
 	{

@@ -790,7 +790,7 @@ void RegisterProfileFunctions(ExtensionLoader &loader) {
 	// profile_summary(table_name VARCHAR) → bind_replace, pure SQL
 	TableFunction summary_func("anofox_tab_profile_summary", {LogicalType(LogicalTypeId::VARCHAR)}, nullptr,
 	                           nullptr);
-	summary_func.bind_replace = ProfileSummaryBindReplace;
+	summary_func.bind_replace = DATAZOO_GUARD(ANOFOX_TABULAR_BANNER, ProfileSummaryBindReplace);
 	{
 		FunctionDescription desc;
 		desc.description = "Returns a summary profile of all columns in a table, including min, max, null_count, and distinct_count.";

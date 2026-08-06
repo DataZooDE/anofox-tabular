@@ -1478,3 +1478,18 @@ This project incorporates third-party libraries and their respective licenses. F
 <p align="center">
   <sub>Built with ❤️ for the DuckDB community</sub>
 </p>
+
+## Feedback
+
+If `anofox_tabular` misbehaves — a profile that looks wrong, a PII match it missed,
+a diff that surprises you — please
+[open an issue](https://github.com/DataZooDE/anofox-tabular/issues). Results depend on
+real data shapes we cannot reproduce here, so a report with your input is the fastest
+path to a fix. Errors from the diff and metric functions end with that link.
+
+If it saved you time, a star on the repo helps other people find it.
+
+The first time you load the extension in an interactive terminal each day, a small
+banner says the same thing. It never prints when output is piped, in notebooks, or in
+CI. Silence it with `SET datazoo_banner = false;` or `DATAZOO_NO_BANNER=1`.
+
