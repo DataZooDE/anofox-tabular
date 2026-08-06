@@ -15,6 +15,7 @@
 #include <iomanip>
 #include <limits>
 #include <sstream>
+#include "anofox_tabular_banner.hpp"
 
 namespace duckdb {
 namespace anofox {
@@ -1126,7 +1127,7 @@ void RegisterOutlierTreeFunctions(ExtensionLoader &loader) {
     // 3-parameter version (table, columns, mode)
     TableFunction outlier_tree_3("anofox_tab_outlier_tree",
         {LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::VARCHAR)},
-        OutlierTreeExecute, OutlierTreeBind, OutlierTreeInit);
+        DATAZOO_GUARD(ANOFOX_TABULAR_BANNER, OutlierTreeExecute), DATAZOO_GUARD(ANOFOX_TABULAR_BANNER, OutlierTreeBind), OutlierTreeInit);
     outlier_tree_set.AddFunction(outlier_tree_3);
 
     // 9-parameter version (all parameters)
@@ -1134,7 +1135,7 @@ void RegisterOutlierTreeFunctions(ExtensionLoader &loader) {
         {LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::VARCHAR),
          LogicalType(LogicalTypeId::INTEGER), LogicalType(LogicalTypeId::DOUBLE), LogicalType(LogicalTypeId::INTEGER),
          LogicalType(LogicalTypeId::INTEGER), LogicalType(LogicalTypeId::DOUBLE), LogicalType(LogicalTypeId::DOUBLE)},
-        OutlierTreeExecute, OutlierTreeBind, OutlierTreeInit);
+        DATAZOO_GUARD(ANOFOX_TABULAR_BANNER, OutlierTreeExecute), DATAZOO_GUARD(ANOFOX_TABULAR_BANNER, OutlierTreeBind), OutlierTreeInit);
     outlier_tree_set.AddFunction(outlier_tree_9);
 
     FunctionDescription ot_desc;

@@ -190,6 +190,17 @@ add_library(anofox_trace_obj OBJECT src/anofox_trace.cpp)
 set_property(TARGET anofox_trace_obj PROPERTY INCLUDE_DIRECTORIES "")
 target_include_directories(anofox_trace_obj PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/include)
 
+# Feedback banner (header-only). Telemetry ON so a printed banner counts as a
+# banner_shown event through the instance configured above. The include path is
+# global rather than via target_link_libraries: DuckDB's extension macros do not
+# reliably propagate an INTERFACE include (see anofox-forecast, where that cost
+# a build).
+set(DATAZOO_BANNER_TELEMETRY ON CACHE BOOL "" FORCE)
+set(DATAZOO_BANNER_TELEMETRY_INCLUDE_DIR
+    ${CMAKE_CURRENT_SOURCE_DIR}/posthog-telemetry/include CACHE PATH "" FORCE)
+add_subdirectory(datazoo-banner)
+include_directories(${CMAKE_CURRENT_SOURCE_DIR}/datazoo-banner/include)
+
 build_static_extension(${TARGET_NAME} ${EXTENSION_SOURCES})
 build_loadable_extension(${TARGET_NAME} " " ${EXTENSION_SOURCES})
 

@@ -16,6 +16,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include "anofox_tabular_banner.hpp"
 
 namespace duckdb {
 namespace anofox {
@@ -1508,7 +1509,7 @@ void RegisterMetricFunctions(ExtensionLoader &loader) {
 	    LogicalType(LogicalTypeId::BIGINT),  LogicalType(LogicalTypeId::DOUBLE),  LogicalType(LogicalTypeId::VARCHAR),
 	    LogicalType(LogicalTypeId::BIGINT)};
 	TableFunctionSet iso_forest_set("anofox_tab_isolation_forest");
-	AddPrefixArities(iso_forest_set, "anofox_tab_isolation_forest", iso_forest_args, 2, IsolationForestExecute,
+	AddPrefixArities(iso_forest_set, "anofox_tab_isolation_forest", iso_forest_args, 2, DATAZOO_GUARD(ANOFOX_TABULAR_BANNER, IsolationForestExecute),
 	                 IsolationForestBind, IsolationForestInit);
 	{
 		FunctionDescription desc;
@@ -1533,7 +1534,7 @@ void RegisterMetricFunctions(ExtensionLoader &loader) {
 	    LogicalType(LogicalTypeId::DOUBLE)};
 	TableFunctionSet iso_forest_mv_set("anofox_tab_isolation_forest_mv");
 	AddPrefixArities(iso_forest_mv_set, "anofox_tab_isolation_forest_mv", iso_forest_mv_args, 2,
-	                 IsolationForestExecute, IsolationForestMultivariateBind, IsolationForestInit);
+	                 DATAZOO_GUARD(ANOFOX_TABULAR_BANNER, IsolationForestExecute), DATAZOO_GUARD(ANOFOX_TABULAR_BANNER, IsolationForestMultivariateBind), IsolationForestInit);
 	{
 		FunctionDescription desc;
 		desc.description =
@@ -1553,7 +1554,7 @@ void RegisterMetricFunctions(ExtensionLoader &loader) {
 	                                         LogicalType(LogicalTypeId::DOUBLE), LogicalType(LogicalTypeId::BIGINT),
 	                                         LogicalType(LogicalTypeId::VARCHAR)};
 	TableFunctionSet dbscan_set("anofox_tab_dbscan");
-	AddPrefixArities(dbscan_set, "anofox_tab_dbscan", dbscan_args, 2, DBSCANExecute, DBSCANBind, DBSCANInit);
+	AddPrefixArities(dbscan_set, "anofox_tab_dbscan", dbscan_args, 2, DATAZOO_GUARD(ANOFOX_TABULAR_BANNER, DBSCANExecute), DATAZOO_GUARD(ANOFOX_TABULAR_BANNER, DBSCANBind), DBSCANInit);
 	{
 		FunctionDescription desc;
 		desc.description = "Clusters rows by a numeric column using DBSCAN. Returns cluster labels and noise flags.";
@@ -1567,7 +1568,7 @@ void RegisterMetricFunctions(ExtensionLoader &loader) {
 	// (alias: dbscan_mv)
 	// All parameters after column_names are optional; defaults are applied at bind time.
 	TableFunctionSet dbscan_mv_set("anofox_tab_dbscan_mv");
-	AddPrefixArities(dbscan_mv_set, "anofox_tab_dbscan_mv", dbscan_args, 2, DBSCANExecute, DBSCANMultivariateBind,
+	AddPrefixArities(dbscan_mv_set, "anofox_tab_dbscan_mv", dbscan_args, 2, DATAZOO_GUARD(ANOFOX_TABULAR_BANNER, DBSCANExecute), DATAZOO_GUARD(ANOFOX_TABULAR_BANNER, DBSCANMultivariateBind),
 	                 DBSCANInit);
 	{
 		FunctionDescription desc;

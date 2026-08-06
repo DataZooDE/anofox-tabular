@@ -19,6 +19,7 @@
 #include <limits>
 #include <mutex>
 #include <regex>
+#include "anofox_tabular_banner.hpp"
 
 namespace duckdb {
 namespace anofox {
@@ -808,7 +809,7 @@ void RegisterEmailFunctions(ExtensionLoader &loader) {
 		desc.description = "Returns the current configuration settings for the email validation module.";
 		desc.examples = {"SELECT * FROM email_config();"};
 		desc.categories = {"email", "config"};
-		TableFunction config_fun("anofox_tab_email_config", {}, EmailConfigFunction, EmailConfigBind);
+		TableFunction config_fun("anofox_tab_email_config", {}, DATAZOO_GUARD(ANOFOX_TABULAR_BANNER, EmailConfigFunction), DATAZOO_GUARD(ANOFOX_TABULAR_BANNER, EmailConfigBind));
 		config_fun.init_global = EmailConfigInit;
 		RegisterTableFunctionWithAlias(loader, config_fun, "email_config", {std::move(desc)});
 	}
