@@ -569,6 +569,7 @@ PhoneNumberFormatOption ParseFormatOption(const std::string& format_str) {
 
 // SQL Function registrations (keeping existing structure)
 #include "duckdb/common/types/value.hpp"
+#include "anofox_tabular_banner.hpp"
 
 namespace duckdb {
 namespace anofox {
@@ -1106,7 +1107,7 @@ ScalarFunction CreateExampleScalar(const string& name) {
 }
 
 TableFunction CreateStatusTable(const string& name) {
-	return TableFunction(name, {}, PhoneStatusFunction, PhoneStatusBind, PhoneStatusInit);
+	return TableFunction(name, {}, DATAZOO_GUARD(ANOFOX_TABULAR_BANNER, PhoneStatusFunction), DATAZOO_GUARD(ANOFOX_TABULAR_BANNER, PhoneStatusBind), PhoneStatusInit);
 }
 
 } // namespace
@@ -1226,7 +1227,7 @@ void RegisterPhonenumberFunctions(ExtensionLoader& loader) {
 		RegisterScalarFunctionWithAlias(loader, example_func, "phonenumber_example", {std::move(desc)});
 	}
 
-	// Register phonenumber_status (telemetry in PhoneStatusBind)
+	// Register phonenumber_status (telemetry in DATAZOO_GUARD(ANOFOX_TABULAR_BANNER, PhoneStatusBind))
 	{
 		FunctionDescription desc;
 		desc.description = "Returns the current configuration and status of the phone number module.";

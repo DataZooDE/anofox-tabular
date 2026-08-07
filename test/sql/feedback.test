@@ -1,0 +1,46 @@
+# name: test/sql/feedback.test
+# description: The feedback banner's two contracts: errors from user-facing entry
+#              points carry an issue link, and the banner never writes anything
+#              under a test runner.
+# group: [sql]
+
+require anofox_tabular
+
+# --- The diff and metric surfaces are reached through bind_replace hooks rather
+#     than a plain bind, which the first pass of guards missed entirely. This
+#     asserts the path a user actually hits.
+statement error
+SELECT * FROM anofox_tab_diff_joindiff('a', 'b', 'c');
+----
+https://github.com/DataZooDE/anofox-tabular/issues
+
+# The link is appended, not substituted: the real diagnostic must survive.
+statement error
+SELECT * FROM anofox_tab_diff_joindiff('a', 'b', 'c');
+----
+table or view 'a' does not exist
+
+# --- The profile surface is annotated too. Worth an explicit assertion: when
+#     checked by eye the footer looked absent, because DuckDB prints a LINE/caret
+#     context block between the message and the hint and a truncated view cut it
+#     off. It was there all along.
+statement error
+SELECT * FROM anofox_tab_profile_table('no_such_table');
+----
+https://github.com/DataZooDE/anofox-tabular/issues
+
+# --- Errors DuckDB raises before dispatch are deliberately NOT annotated -- they
+#     are not ours, and claiming them would send users to the wrong tracker.
+statement error
+SELECT * FROM anofox_tab_diff_joindiff();
+----
+Binder Error
+
+# --- The opt-out knob exists and is settable. The banner itself cannot be
+#     observed from a .test file at all -- stderr is not a tty here, which is
+#     precisely the guarantee that keeps this suite's expected output unchanged.
+statement ok
+SET datazoo_banner = false;
+
+statement ok
+SET datazoo_banner = true;

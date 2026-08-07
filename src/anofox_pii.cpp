@@ -25,6 +25,7 @@
 #include <cctype>
 #include <cmath>
 #include <openssl/sha.h>
+#include "anofox_tabular_banner.hpp"
 
 namespace duckdb {
 namespace anofox {
@@ -2492,7 +2493,7 @@ void PIIStatusFunction(ClientContext &, TableFunctionInput &input, DataChunk &ou
 }
 
 TableFunction CreatePIIStatusFunction() {
-    return TableFunction("anofox_tab_pii_status", {}, PIIStatusFunction, PIIStatusBind, PIIStatusInit);
+    return TableFunction("anofox_tab_pii_status", {}, DATAZOO_GUARD(ANOFOX_TABULAR_BANNER, PIIStatusFunction), DATAZOO_GUARD(ANOFOX_TABULAR_BANNER, PIIStatusBind), PIIStatusInit);
 }
 
 // ============================================================================
@@ -2581,7 +2582,7 @@ void NERStatusFunction(ClientContext &, TableFunctionInput &input, DataChunk &ou
 }
 
 TableFunction CreateNERStatusFunction() {
-    return TableFunction("anofox_ner_status", {}, NERStatusFunction, NERStatusBind, NERStatusInit);
+    return TableFunction("anofox_ner_status", {}, DATAZOO_GUARD(ANOFOX_TABULAR_BANNER, NERStatusFunction), DATAZOO_GUARD(ANOFOX_TABULAR_BANNER, NERStatusBind), NERStatusInit);
 }
 
 // ============================================================================
@@ -2850,13 +2851,13 @@ TableFunctionSet CreatePIIAuditTableFunctionSet() {
     // Version 1: table_name only
     TableFunction func1("anofox_tab_pii_audit_table",
                         {LogicalType::VARCHAR},
-                        PIIAuditTableFunction, PIIAuditTableBind, PIIAuditTableInit);
+                        DATAZOO_GUARD(ANOFOX_TABULAR_BANNER, PIIAuditTableFunction), DATAZOO_GUARD(ANOFOX_TABULAR_BANNER, PIIAuditTableBind), PIIAuditTableInit);
     set.AddFunction(func1);
 
     // Version 2: table_name + column filter
     TableFunction func2("anofox_tab_pii_audit_table",
                         {LogicalType::VARCHAR, LogicalType::VARCHAR},
-                        PIIAuditTableFunction, PIIAuditTableBind, PIIAuditTableInit);
+                        DATAZOO_GUARD(ANOFOX_TABULAR_BANNER, PIIAuditTableFunction), DATAZOO_GUARD(ANOFOX_TABULAR_BANNER, PIIAuditTableBind), PIIAuditTableInit);
     set.AddFunction(func2);
 
     return set;
@@ -3078,13 +3079,13 @@ TableFunctionSet CreatePIIScanTableFunctionSet() {
     // Version 1: table_name only
     TableFunction func1("anofox_tab_pii_scan_table",
                         {LogicalType::VARCHAR},
-                        PIIScanTableFunction, PIIScanTableBind, PIIScanTableInit);
+                        DATAZOO_GUARD(ANOFOX_TABULAR_BANNER, PIIScanTableFunction), DATAZOO_GUARD(ANOFOX_TABULAR_BANNER, PIIScanTableBind), PIIScanTableInit);
     set.AddFunction(func1);
 
     // Version 2: table_name + column filter
     TableFunction func2("anofox_tab_pii_scan_table",
                         {LogicalType::VARCHAR, LogicalType::VARCHAR},
-                        PIIScanTableFunction, PIIScanTableBind, PIIScanTableInit);
+                        DATAZOO_GUARD(ANOFOX_TABULAR_BANNER, PIIScanTableFunction), DATAZOO_GUARD(ANOFOX_TABULAR_BANNER, PIIScanTableBind), PIIScanTableInit);
     set.AddFunction(func2);
 
     return set;
@@ -3310,7 +3311,7 @@ void PIIConfigFunction(ClientContext &, TableFunctionInput &input, DataChunk &ou
 }
 
 TableFunction CreatePIIConfigFunction() {
-    TableFunction func("anofox_tab_pii_config", {}, PIIConfigFunction, PIIConfigBind, PIIConfigInit);
+    TableFunction func("anofox_tab_pii_config", {}, DATAZOO_GUARD(ANOFOX_TABULAR_BANNER, PIIConfigFunction), DATAZOO_GUARD(ANOFOX_TABULAR_BANNER, PIIConfigBind), PIIConfigInit);
     return func;
 }
 

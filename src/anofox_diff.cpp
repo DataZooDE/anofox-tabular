@@ -19,6 +19,7 @@
 #include <string>
 #include <type_traits>
 #include <unordered_set>
+#include "anofox_tabular_banner.hpp"
 
 namespace duckdb {
 namespace anofox {
@@ -381,7 +382,7 @@ void RegisterDiffFunctions(ExtensionLoader &loader) {
 	                             {LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::VARCHAR),
 	                              LogicalType(LogicalTypeId::VARCHAR)},
 	                             nullptr, nullptr);
-	joindiff_single.bind_replace = JoinDiffBindReplace;
+	joindiff_single.bind_replace = DATAZOO_GUARD(ANOFOX_TABULAR_BANNER, JoinDiffBindReplace);
 	joindiff_single.named_parameters["source_table"] = LogicalType(LogicalTypeId::VARCHAR);
 	joindiff_single.named_parameters["target_table"] = LogicalType(LogicalTypeId::VARCHAR);
 	joindiff_single.named_parameters["primary_key"] = LogicalType(LogicalTypeId::VARCHAR);
@@ -393,7 +394,7 @@ void RegisterDiffFunctions(ExtensionLoader &loader) {
 	                                      LogicalType(LogicalTypeId::VARCHAR),
 	                                      LogicalType::LIST(LogicalType(LogicalTypeId::VARCHAR))},
 	                                     nullptr, nullptr);
-	joindiff_single_compare.bind_replace = JoinDiffBindReplace;
+	joindiff_single_compare.bind_replace = DATAZOO_GUARD(ANOFOX_TABULAR_BANNER, JoinDiffBindReplace);
 	joindiff_single_compare.named_parameters["source_table"] = LogicalType(LogicalTypeId::VARCHAR);
 	joindiff_single_compare.named_parameters["target_table"] = LogicalType(LogicalTypeId::VARCHAR);
 	joindiff_single_compare.named_parameters["primary_key"] = LogicalType(LogicalTypeId::VARCHAR);
@@ -407,7 +408,7 @@ void RegisterDiffFunctions(ExtensionLoader &loader) {
 	                                   LogicalType::LIST(LogicalType(LogicalTypeId::VARCHAR)),
 	                                   LogicalType(LogicalTypeId::BOOLEAN)},
 	                                  nullptr, nullptr);
-	joindiff_single_full.bind_replace = JoinDiffBindReplace;
+	joindiff_single_full.bind_replace = DATAZOO_GUARD(ANOFOX_TABULAR_BANNER, JoinDiffBindReplace);
 	joindiff_single_full.named_parameters["source_table"] = LogicalType(LogicalTypeId::VARCHAR);
 	joindiff_single_full.named_parameters["target_table"] = LogicalType(LogicalTypeId::VARCHAR);
 	joindiff_single_full.named_parameters["primary_key"] = LogicalType(LogicalTypeId::VARCHAR);
@@ -420,7 +421,7 @@ void RegisterDiffFunctions(ExtensionLoader &loader) {
 	                               {LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::VARCHAR),
 	                                LogicalType::LIST(LogicalType(LogicalTypeId::VARCHAR))},
 	                               nullptr, nullptr);
-	joindiff_compound.bind_replace = JoinDiffBindReplace;
+	joindiff_compound.bind_replace = DATAZOO_GUARD(ANOFOX_TABULAR_BANNER, JoinDiffBindReplace);
 	joindiff_compound.named_parameters["source_table"] = LogicalType(LogicalTypeId::VARCHAR);
 	joindiff_compound.named_parameters["target_table"] = LogicalType(LogicalTypeId::VARCHAR);
 	joindiff_compound.named_parameters["primary_keys"] = LogicalType::LIST(LogicalType(LogicalTypeId::VARCHAR));
@@ -432,7 +433,7 @@ void RegisterDiffFunctions(ExtensionLoader &loader) {
 	                                        LogicalType::LIST(LogicalType(LogicalTypeId::VARCHAR)),
 	                                        LogicalType::LIST(LogicalType(LogicalTypeId::VARCHAR))},
 	                                       nullptr, nullptr);
-	joindiff_compound_compare.bind_replace = JoinDiffBindReplace;
+	joindiff_compound_compare.bind_replace = DATAZOO_GUARD(ANOFOX_TABULAR_BANNER, JoinDiffBindReplace);
 	joindiff_compound_compare.named_parameters["source_table"] = LogicalType(LogicalTypeId::VARCHAR);
 	joindiff_compound_compare.named_parameters["target_table"] = LogicalType(LogicalTypeId::VARCHAR);
 	joindiff_compound_compare.named_parameters["primary_keys"] = LogicalType::LIST(LogicalType(LogicalTypeId::VARCHAR));
@@ -446,7 +447,7 @@ void RegisterDiffFunctions(ExtensionLoader &loader) {
 	                                     LogicalType::LIST(LogicalType(LogicalTypeId::VARCHAR)),
 	                                     LogicalType(LogicalTypeId::BOOLEAN)},
 	                                    nullptr, nullptr);
-	joindiff_compound_full.bind_replace = JoinDiffBindReplace;
+	joindiff_compound_full.bind_replace = DATAZOO_GUARD(ANOFOX_TABULAR_BANNER, JoinDiffBindReplace);
 	joindiff_compound_full.named_parameters["source_table"] = LogicalType(LogicalTypeId::VARCHAR);
 	joindiff_compound_full.named_parameters["target_table"] = LogicalType(LogicalTypeId::VARCHAR);
 	joindiff_compound_full.named_parameters["primary_keys"] = LogicalType::LIST(LogicalType(LogicalTypeId::VARCHAR));
@@ -481,7 +482,7 @@ void RegisterDiffFunctions(ExtensionLoader &loader) {
 	                             {LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::VARCHAR),
 	                              LogicalType(LogicalTypeId::VARCHAR)},
 	                             nullptr, nullptr);
-	hashdiff_single.bind_replace = HashDiffBindReplace;
+	hashdiff_single.bind_replace = DATAZOO_GUARD(ANOFOX_TABULAR_BANNER, HashDiffBindReplace);
 	hashdiff_single.named_parameters["source_table"] = LogicalType(LogicalTypeId::VARCHAR);
 	hashdiff_single.named_parameters["target_table"] = LogicalType(LogicalTypeId::VARCHAR);
 	hashdiff_single.named_parameters["primary_key"] = LogicalType(LogicalTypeId::VARCHAR);
@@ -492,7 +493,7 @@ void RegisterDiffFunctions(ExtensionLoader &loader) {
 	                                       {LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::VARCHAR),
 	                                        LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::BIGINT)},
 	                                       nullptr, nullptr);
-	hashdiff_single_threshold.bind_replace = HashDiffBindReplace;
+	hashdiff_single_threshold.bind_replace = DATAZOO_GUARD(ANOFOX_TABULAR_BANNER, HashDiffBindReplace);
 	hashdiff_single_threshold.named_parameters["source_table"] = LogicalType(LogicalTypeId::VARCHAR);
 	hashdiff_single_threshold.named_parameters["target_table"] = LogicalType(LogicalTypeId::VARCHAR);
 	hashdiff_single_threshold.named_parameters["primary_key"] = LogicalType(LogicalTypeId::VARCHAR);
@@ -505,7 +506,7 @@ void RegisterDiffFunctions(ExtensionLoader &loader) {
 	                                   LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::BIGINT),
 	                                   LogicalType(LogicalTypeId::BIGINT)},
 	                                  nullptr, nullptr);
-	hashdiff_single_full.bind_replace = HashDiffBindReplace;
+	hashdiff_single_full.bind_replace = DATAZOO_GUARD(ANOFOX_TABULAR_BANNER, HashDiffBindReplace);
 	hashdiff_single_full.named_parameters["source_table"] = LogicalType(LogicalTypeId::VARCHAR);
 	hashdiff_single_full.named_parameters["target_table"] = LogicalType(LogicalTypeId::VARCHAR);
 	hashdiff_single_full.named_parameters["primary_key"] = LogicalType(LogicalTypeId::VARCHAR);
@@ -518,7 +519,7 @@ void RegisterDiffFunctions(ExtensionLoader &loader) {
 	                               {LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::VARCHAR),
 	                                LogicalType::LIST(LogicalType(LogicalTypeId::VARCHAR))},
 	                               nullptr, nullptr);
-	hashdiff_compound.bind_replace = HashDiffBindReplace;
+	hashdiff_compound.bind_replace = DATAZOO_GUARD(ANOFOX_TABULAR_BANNER, HashDiffBindReplace);
 	hashdiff_compound.named_parameters["source_table"] = LogicalType(LogicalTypeId::VARCHAR);
 	hashdiff_compound.named_parameters["target_table"] = LogicalType(LogicalTypeId::VARCHAR);
 	hashdiff_compound.named_parameters["primary_keys"] = LogicalType::LIST(LogicalType(LogicalTypeId::VARCHAR));

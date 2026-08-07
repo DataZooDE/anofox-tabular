@@ -1,4 +1,5 @@
 #include "anofox_postal.hpp"
+#include "anofox_tabular_banner.hpp"
 
 #if HAVE_LIBPOSTAL
 
@@ -636,7 +637,7 @@ void PostalStatusFunction(ClientContext &context, TableFunctionInput &input, Dat
 }
 
 TableFunction CreateStatusFunction(const string &name) {
-	return TableFunction(name, {}, PostalStatusFunction, PostalStatusBind, PostalStatusInit);
+	return TableFunction(name, {}, DATAZOO_GUARD(ANOFOX_TABULAR_BANNER, PostalStatusFunction), DATAZOO_GUARD(ANOFOX_TABULAR_BANNER, PostalStatusBind), PostalStatusInit);
 }
 
 void PostalLoadDataFunction(DataChunk &, ExpressionState &state, Vector &result) {
@@ -694,7 +695,7 @@ void RegisterPostalFunctions(ExtensionLoader &loader) {
 		RegisterScalarFunctionWithAlias(loader, expand_func, "postal_expand_address", {std::move(desc)});
 	}
 
-	// Register postal_status (telemetry in PostalStatusBind)
+	// Register postal_status (telemetry in DATAZOO_GUARD(ANOFOX_TABULAR_BANNER, PostalStatusBind))
 	{
 		FunctionDescription desc;
 		desc.description = "Returns the current status of the libpostal address parser, including whether it is initialized and the data directory path.";

@@ -15,6 +15,7 @@
 #include "duckdb/parser/statement/select_statement.hpp"
 
 #include <algorithm>
+#include "anofox_tabular_banner.hpp"
 
 namespace duckdb {
 namespace anofox {
@@ -789,7 +790,7 @@ void RegisterProfileFunctions(ExtensionLoader &loader) {
 	// profile_summary(table_name VARCHAR) → bind_replace, pure SQL
 	TableFunction summary_func("anofox_tab_profile_summary", {LogicalType(LogicalTypeId::VARCHAR)}, nullptr,
 	                           nullptr);
-	summary_func.bind_replace = ProfileSummaryBindReplace;
+	summary_func.bind_replace = DATAZOO_GUARD(ANOFOX_TABULAR_BANNER, ProfileSummaryBindReplace);
 	{
 		FunctionDescription desc;
 		desc.description = "Returns a summary profile of all columns in a table, including min, max, null_count, and distinct_count.";
@@ -803,25 +804,25 @@ void RegisterProfileFunctions(ExtensionLoader &loader) {
 	// profile_table(table_name [, cols [, sample_size [, exact]]]) — multiple overloads
 	TableFunctionSet profile_set("anofox_tab_profile_table");
 
-	TableFunction p1("anofox_tab_profile_table", {LogicalType(LogicalTypeId::VARCHAR)}, ProfileTableExecute,
-	                 ProfileTableBind, ProfileTableInit);
+	TableFunction p1("anofox_tab_profile_table", {LogicalType(LogicalTypeId::VARCHAR)}, DATAZOO_GUARD(ANOFOX_TABULAR_BANNER, ProfileTableExecute),
+	                 DATAZOO_GUARD(ANOFOX_TABULAR_BANNER, ProfileTableBind), ProfileTableInit);
 	profile_set.AddFunction(p1);
 
 	TableFunction p2("anofox_tab_profile_table",
 	                 {LogicalType(LogicalTypeId::VARCHAR), LogicalType::LIST(LogicalType(LogicalTypeId::VARCHAR))},
-	                 ProfileTableExecute, ProfileTableBind, ProfileTableInit);
+	                 DATAZOO_GUARD(ANOFOX_TABULAR_BANNER, ProfileTableExecute), DATAZOO_GUARD(ANOFOX_TABULAR_BANNER, ProfileTableBind), ProfileTableInit);
 	profile_set.AddFunction(p2);
 
 	TableFunction p3("anofox_tab_profile_table",
 	                 {LogicalType(LogicalTypeId::VARCHAR), LogicalType::LIST(LogicalType(LogicalTypeId::VARCHAR)),
 	                  LogicalType(LogicalTypeId::BIGINT)},
-	                 ProfileTableExecute, ProfileTableBind, ProfileTableInit);
+	                 DATAZOO_GUARD(ANOFOX_TABULAR_BANNER, ProfileTableExecute), DATAZOO_GUARD(ANOFOX_TABULAR_BANNER, ProfileTableBind), ProfileTableInit);
 	profile_set.AddFunction(p3);
 
 	TableFunction p4("anofox_tab_profile_table",
 	                 {LogicalType(LogicalTypeId::VARCHAR), LogicalType::LIST(LogicalType(LogicalTypeId::VARCHAR)),
 	                  LogicalType(LogicalTypeId::BIGINT), LogicalType(LogicalTypeId::BOOLEAN)},
-	                 ProfileTableExecute, ProfileTableBind, ProfileTableInit);
+	                 DATAZOO_GUARD(ANOFOX_TABULAR_BANNER, ProfileTableExecute), DATAZOO_GUARD(ANOFOX_TABULAR_BANNER, ProfileTableBind), ProfileTableInit);
 	profile_set.AddFunction(p4);
 
 	{
@@ -837,13 +838,13 @@ void RegisterProfileFunctions(ExtensionLoader &loader) {
 	TableFunctionSet corr_set("anofox_tab_profile_correlations");
 
 	TableFunction c1("anofox_tab_profile_correlations", {LogicalType(LogicalTypeId::VARCHAR)},
-	                 ProfileCorrelationsExecute, ProfileCorrelationsBind,
+	                 DATAZOO_GUARD(ANOFOX_TABULAR_BANNER, ProfileCorrelationsExecute), DATAZOO_GUARD(ANOFOX_TABULAR_BANNER, ProfileCorrelationsBind),
 	                 ProfileCorrelationsInit);
 	corr_set.AddFunction(c1);
 
 	TableFunction c2("anofox_tab_profile_correlations",
 	                 {LogicalType(LogicalTypeId::VARCHAR), LogicalType::LIST(LogicalType(LogicalTypeId::VARCHAR))},
-	                 ProfileCorrelationsExecute, ProfileCorrelationsBind,
+	                 DATAZOO_GUARD(ANOFOX_TABULAR_BANNER, ProfileCorrelationsExecute), DATAZOO_GUARD(ANOFOX_TABULAR_BANNER, ProfileCorrelationsBind),
 	                 ProfileCorrelationsInit);
 	corr_set.AddFunction(c2);
 
