@@ -20,6 +20,15 @@ SELECT * FROM anofox_tab_diff_joindiff('a', 'b', 'c');
 ----
 table or view 'a' does not exist
 
+# --- The profile surface is annotated too. Worth an explicit assertion: when
+#     checked by eye the footer looked absent, because DuckDB prints a LINE/caret
+#     context block between the message and the hint and a truncated view cut it
+#     off. It was there all along.
+statement error
+SELECT * FROM anofox_tab_profile_table('no_such_table');
+----
+https://github.com/DataZooDE/anofox-tabular/issues
+
 # --- Errors DuckDB raises before dispatch are deliberately NOT annotated -- they
 #     are not ours, and claiming them would send users to the wrong tracker.
 statement error
