@@ -35,9 +35,18 @@ jobs:
       # windows_amd64 job fails on that issue, re-add windows_amd64 below.
       exclude_archs: wasm_mvp;wasm_eh;wasm_threads;windows_amd64_mingw;linux_amd64_musl;linux_arm64
 
+  duckdb-v1_4_5-smoke-test:
+    name: Smoke test (v1.4.5)
+    needs: duckdb-v1_4_5-build
+    uses: ./.github/workflows/_extension_smoke_test.yml
+    with:
+      duckdb_version: v1.4.5
+      extension_name: anofox_tabular
+      exclude_archs: 'wasm_mvp;wasm_eh;wasm_threads;windows_amd64_mingw;linux_amd64_musl;linux_arm64'
+
   duckdb-v1_4_5-deploy:
     name: Deploy extension binaries (v1.4.5)
-    needs: duckdb-v1_4_5-build
+    needs: [duckdb-v1_4_5-build, duckdb-v1_4_5-smoke-test]
     uses: ./.github/workflows/_extension_deploy.yml
     secrets: inherit
     with:
@@ -62,9 +71,18 @@ jobs:
       # Note: Windows builds WITHOUT OpenVINO (NER unavailable, pattern-based PII works)
       exclude_archs: wasm_mvp;wasm_eh;wasm_threads;windows_amd64_mingw;linux_amd64_musl;linux_arm64
 
+  duckdb-v1_5_5-smoke-test:
+    name: Smoke test (v1.5.5)
+    needs: duckdb-v1_5_5-build
+    uses: ./.github/workflows/_extension_smoke_test.yml
+    with:
+      duckdb_version: v1.5.5
+      extension_name: anofox_tabular
+      exclude_archs: 'wasm_mvp;wasm_eh;wasm_threads;windows_amd64_mingw;linux_amd64_musl;linux_arm64'
+
   duckdb-v1_5_5-deploy:
     name: Deploy extension binaries (v1.5.5)
-    needs: duckdb-v1_5_5-build
+    needs: [duckdb-v1_5_5-build, duckdb-v1_5_5-smoke-test]
     uses: ./.github/workflows/_extension_deploy.yml
     secrets: inherit
     with:
