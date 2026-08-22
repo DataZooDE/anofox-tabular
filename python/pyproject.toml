@@ -48,5 +48,5 @@ testpaths = ["tests"]
 
 [dependency-groups]
 dev = [
-    "duckdb==1.5.4",
+    "duckdb==1.5.5",
 ]
