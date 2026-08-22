@@ -1,0 +1,283 @@
+# name: test/sql/anofox_check.test
+# description: Check primitive table functions (regex_match, values_in_set, agg_check,
+#              duplicate_count, occurrence, match_rate, compliance)
+# group: [anofox_tabular]
+
+require anofox_tabular
+
+statement ok
+LOAD anofox_tabular
+
+statement ok
+SET anofox_tab_trace_enabled = false
+
+# ===--------------------------------------------------------------------===
+# Test Setup
+# ===--------------------------------------------------------------------===
+
+statement ok
+CREATE TEMP TABLE check_users (
+    id INTEGER,
+    email VARCHAR,
+    status VARCHAR,
+    amount DOUBLE
+)
+
+statement ok
+INSERT INTO check_users VALUES
+    (1, 'alice@example.com', 'active', 10.0),
+    (2, 'bob@example.com', 'active', 20.0),
+    (3, 'not-an-email', 'inactive', 30.0),
+    (4, NULL, 'active', 40.0),
+    (5, 'eve@example.com', 'banned', 100.0)
+
+statement ok
+CREATE TEMP TABLE check_customers (id INTEGER, name VARCHAR)
+
+statement ok
+INSERT INTO check_customers VALUES (1, 'alice'), (2, 'bob'), (3, 'carol')
+
+statement ok
+CREATE TEMP TABLE check_orders (order_id INTEGER, customer_id INTEGER, order_date DATE)
+
+statement ok
+INSERT INTO check_orders VALUES
+    (100, 1, DATE '2026-01-01'),
+    (101, 1, DATE '2026-01-02'),
+    (102, 2, DATE '2026-01-01'),
+    (103, 9, DATE '2026-01-03')
+
+statement ok
+CREATE TEMP TABLE check_empty (v VARCHAR)
+
+statement ok
+CREATE TEMP TABLE check_weird ("weird ""col""" VARCHAR)
+
+statement ok
+INSERT INTO check_weird VALUES ('it''s'), ('plain')
+
+# ===--------------------------------------------------------------------===
+# regex_match
+# ===--------------------------------------------------------------------===
+
+# 4 of 4 non-NULL emails, 3 match -> rate 0.75; NULL email is excluded
+query TRII
+SELECT status, match_rate, matched_count, total_count FROM regex_match('check_users', 'email', '^[^@]+@[^@]+$', 0.7)
+----
+pass	0.750000	3	4
+
+# fails below minimum
+query T
+SELECT status FROM regex_match('check_users', 'email', '^[^@]+@[^@]+$', 0.9)
+----
+fail
+
+# optional max threshold: fails above maximum
+query T
+SELECT status FROM regex_match('check_users', 'email', '^[^@]+@[^@]+$', 0.0, 0.5)
+----
+fail
+
+# empty table passes trivially
+query TI
+SELECT status, total_count FROM regex_match('check_empty', 'v', '^x$', 1.0)
+----
+pass	0
+
+# quoting: pattern with a single quote and a quoted column name
+query T
+SELECT status FROM regex_match('check_weird', 'weird "col"', '''', 0.4, 0.6)
+----
+pass
+
+# alias fidelity: primary name works identically
+query T
+SELECT status FROM anofox_tab_regex_match('check_users', 'email', '^[^@]+@[^@]+$', 0.7)
+----
+pass
+
+# ===--------------------------------------------------------------------===
+# values_in_set
+# ===--------------------------------------------------------------------===
+
+# 4 of 5 statuses in the allowed set -> rate 0.8
+query TRII
+SELECT status, in_set_rate, in_set_count, total_count
+FROM values_in_set('check_users', 'status', ['active', 'inactive'], 0.8)
+----
+pass	0.800000	4	5
+
+# default min_rate = 1.0 -> fails and reports the violating value
+query TT
+SELECT status, sample_violations::VARCHAR FROM values_in_set('check_users', 'status', ['active', 'inactive'])
+----
+fail	[banned]
+
+# empty table passes trivially
+query T
+SELECT status FROM values_in_set('check_empty', 'v', ['a'])
+----
+pass
+
+# ===--------------------------------------------------------------------===
+# agg_check
+# ===--------------------------------------------------------------------===
+
+# avg(amount) = 40 within [10, 100]
+query TTR
+SELECT status, agg, value FROM agg_check('check_users', 'amount', 'avg', 10.0, 100.0)
+----
+pass	avg	40.000000
+
+# max(amount) = 100 exceeds upper threshold 50
+query T
+SELECT status FROM agg_check('check_users', 'amount', 'max', NULL, 50.0)
+----
+fail
+
+# min with NULL upper bound
+query T
+SELECT status FROM agg_check('check_users', 'amount', 'min', 5.0, NULL)
+----
+pass
+
+# sum / median / stddev variants execute
+query T
+SELECT status FROM agg_check('check_users', 'amount', 'sum', 100.0, 500.0)
+----
+pass
+
+# empty table passes trivially with NULL value
+query TR
+SELECT status, value FROM agg_check('check_empty', 'v', 'avg', 0.0, 1.0)
+----
+pass	NULL
+
+# ===--------------------------------------------------------------------===
+# duplicate_count
+# ===--------------------------------------------------------------------===
+
+# order_id is unique -> 0 duplicates, default max 0
+query TII
+SELECT status, duplicate_count, total_count FROM duplicate_count('check_orders', 'order_id')
+----
+pass	0	4
+
+# customer_id has 1 duplicate (customer 1 appears twice)
+query TI
+SELECT status, duplicate_count FROM duplicate_count('check_orders', 'customer_id')
+----
+fail	1
+
+# duplicate allowance
+query T
+SELECT status FROM duplicate_count('check_orders', 'customer_id', 5)
+----
+pass
+
+# multi-column key: (customer_id, order_date) is unique
+query T
+SELECT status FROM duplicate_count('check_orders', 'customer_id,order_date')
+----
+pass
+
+# empty table passes trivially
+query T
+SELECT status FROM duplicate_count('check_empty', 'v')
+----
+pass
+
+# ===--------------------------------------------------------------------===
+# occurrence
+# ===--------------------------------------------------------------------===
+
+# most frequent status is 'active' with 3 occurrences
+query TTIT
+SELECT status, mode, occurrence, extreme_value FROM occurrence('check_users', 'status', 'max', NULL, 5)
+----
+pass	max	3	active
+
+# max occurrence 3 exceeds upper threshold 2
+query T
+SELECT status FROM occurrence('check_users', 'status', 'max', NULL, 2)
+----
+fail
+
+# min occurrence is 1 ('inactive'/'banned'), below lower threshold 2
+query TI
+SELECT status, occurrence FROM occurrence('check_users', 'status', 'min', 2, NULL)
+----
+fail	1
+
+# empty table passes trivially
+query T
+SELECT status FROM occurrence('check_empty', 'v', 'max', 1, 10)
+----
+pass
+
+# ===--------------------------------------------------------------------===
+# match_rate
+# ===--------------------------------------------------------------------===
+
+# 3 of 4 orders have a known customer -> rate 0.75; default min_rate 1.0 fails
+query TRII
+SELECT status, match_rate, matched_count, total_count
+FROM match_rate('check_orders', 'check_customers', 'customer_id', 'id')
+----
+fail	0.750000	3	4
+
+# explicit threshold passes
+query T
+SELECT status FROM match_rate('check_orders', 'check_customers', 'customer_id', 'id', 0.7)
+----
+pass
+
+# duplicate right-side keys must not inflate the rate (right side is deduplicated)
+statement ok
+CREATE TEMP TABLE check_customers_dup AS SELECT * FROM check_customers UNION ALL SELECT * FROM check_customers
+
+query RI
+SELECT match_rate, total_count FROM match_rate('check_orders', 'check_customers_dup', 'customer_id', 'id', 0.0)
+----
+0.750000	4
+
+# empty left table passes trivially
+query T
+SELECT status FROM match_rate('check_empty', 'check_customers', 'v', 'name')
+----
+pass
+
+# ===--------------------------------------------------------------------===
+# compliance
+# ===--------------------------------------------------------------------===
+
+# all amounts positive -> rate 1.0, default min_rate 1.0
+query TRII
+SELECT status, compliance_rate, compliant_count, total_count
+FROM compliance('check_users', 'amount > 0')
+----
+pass	1.000000	5	5
+
+# NULL predicate result counts as non-compliant (email IS NULL for one row)
+query TI
+SELECT status, compliant_count FROM compliance('check_users', 'email LIKE ''%@%''', 1.0)
+----
+fail	3
+
+# threshold makes it pass
+query T
+SELECT status FROM compliance('check_users', 'email LIKE ''%@%''', 0.5)
+----
+pass
+
+# compound expression
+query T
+SELECT status FROM compliance('check_users', 'amount BETWEEN 0 AND 1000 AND status IS NOT NULL')
+----
+pass
+
+# empty table passes trivially
+query T
+SELECT status FROM compliance('check_empty', 'v IS NOT NULL')
+----
+pass

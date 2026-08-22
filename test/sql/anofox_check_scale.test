@@ -1,0 +1,195 @@
+# name: test/sql/anofox_check_scale.test
+# description: Scale test — the check functions and the suite runner against ~2 million
+#              generated order rows with defects seeded at known rates (3% NULL customer,
+#              0.1% negative amounts, 0.01% dirty status, ~2% broken FK, one collapsed day).
+#              Mirrors the NYC-taxi-scale validation; deterministic and offline.
+# group: [anofox_tabular]
+
+require anofox_tabular
+
+statement ok
+LOAD anofox_tabular
+
+statement ok
+SET anofox_tab_trace_enabled = false
+
+# ===--------------------------------------------------------------------===
+# Test Setup: ~2M orders over 60 days; the last day collapses to 5% volume
+# ===--------------------------------------------------------------------===
+
+statement ok
+CREATE TEMP TABLE big_orders AS
+SELECT
+    i AS order_id,
+    DATE '2026-01-01' + CAST(i % 60 AS INTEGER) AS order_date,
+    CASE WHEN i % 100 < 3 THEN NULL ELSE 'c' || CAST(i % 50000 AS VARCHAR) END AS customer_ref,
+    CASE WHEN i % 1000 = 0 THEN -1.0 ELSE CAST(i % 500 AS DOUBLE) / 10.0 END AS amount,
+    CASE WHEN i % 10000 = 0 THEN 'UNKNOWN'
+         WHEN i % 2 = 0 THEN 'completed'
+         ELSE 'pending' END AS status
+FROM range(2000000) t(i)
+WHERE NOT (i % 60 = 59 AND (i // 60) % 20 != 0)
+
+statement ok
+CREATE TEMP TABLE big_customers AS
+SELECT 'c' || CAST(i AS VARCHAR) AS customer_id FROM range(49000) t(i)
+
+# ~2M rows survive the collapse-day filter
+query I
+SELECT COUNT(*) > 1900000 AND COUNT(*) < 2000000 FROM big_orders
+----
+true
+
+# ===--------------------------------------------------------------------===
+# Primitives at scale (each returns exactly one row)
+# ===--------------------------------------------------------------------===
+
+query T
+SELECT status FROM volume('big_orders', 1900000, 2000000)
+----
+pass
+
+# seeded 3% NULL rate
+query TT
+SELECT status, null_rate BETWEEN 0.025 AND 0.035 FROM null_rate('big_orders', 'customer_ref', 0.05)
+----
+pass	true
+
+query T
+SELECT status FROM null_rate('big_orders', 'customer_ref', 0.02)
+----
+fail
+
+# 0.1% negative amounts: fails full compliance, passes at 99%
+query T
+SELECT status FROM compliance('big_orders', 'amount >= 0')
+----
+fail
+
+query T
+SELECT status FROM compliance('big_orders', 'amount >= 0', 0.99)
+----
+pass
+
+# dirty 'UNKNOWN' status is rare but breaks strict set membership
+query TT
+SELECT status, list_contains(sample_violations, 'UNKNOWN')
+FROM values_in_set('big_orders', 'status', ['completed', 'pending'])
+----
+fail	true
+
+query T
+SELECT status FROM values_in_set('big_orders', 'status', ['completed', 'pending'], 0.999)
+----
+pass
+
+# regex: lowercase statuses only — 'UNKNOWN' violates
+query T
+SELECT status FROM regex_match('big_orders', 'status', '^[a-z]+$', 1.0)
+----
+fail
+
+# order_id is unique even at 2M rows
+query TI
+SELECT status, duplicate_count FROM duplicate_count('big_orders', 'order_id')
+----
+pass	0
+
+# customer_ref repeats heavily (50k values across 2M rows)
+query T
+SELECT status FROM duplicate_count('big_orders', 'customer_ref', 1000)
+----
+fail
+
+# ~2% of customer refs are missing from the reference table (c49000..c49999)
+query TT
+SELECT status, match_rate BETWEEN 0.90 AND 0.97
+FROM match_rate('big_orders', 'big_customers', 'customer_ref', 'customer_id', 0.99)
+----
+fail	true
+
+query T
+SELECT status FROM match_rate('big_orders', 'big_customers', 'customer_ref', 'customer_id', 0.90)
+----
+pass
+
+query T
+SELECT status FROM agg_check('big_orders', 'amount', 'avg', 20.0, 30.0)
+----
+pass
+
+query T
+SELECT status FROM agg_check('big_orders', 'amount', 'min', 0.0, NULL)
+----
+fail
+
+# ===--------------------------------------------------------------------===
+# Time-aware checks: the collapsed last day must be flagged
+# ===--------------------------------------------------------------------===
+
+# normal mid-series day is stable
+query T
+SELECT status FROM rel_count_change('big_orders', 'order_date', NULL, 7, -0.5, 0.5, DATE '2026-02-01')
+----
+pass
+
+# collapse day (~5% of normal volume) breaks the baseline band
+query T
+SELECT status FROM rel_count_change('big_orders', 'order_date', NULL, 7, -0.5, 0.5, DATE '2026-03-01')
+----
+fail
+
+query T
+SELECT status FROM metric_anomaly_iqr('big_orders', 'order_date', NULL, 30, 1.5, 'both', DATE '2026-03-01')
+----
+fail
+
+query T
+SELECT status FROM metric_anomaly_iqr('big_orders', 'order_date', NULL, 30, 1.5, 'upper', DATE '2026-03-01')
+----
+pass
+
+# ===--------------------------------------------------------------------===
+# Suite runner at scale, with identifier partitioning and persistence
+# ===--------------------------------------------------------------------===
+
+statement ok
+CREATE TABLE big_dq_checks (
+    check_name VARCHAR, check_type VARCHAR, table_name VARCHAR, column_name VARCHAR,
+    params VARCHAR, lower_threshold DOUBLE, upper_threshold DOUBLE,
+    monitor_only BOOLEAN, identifier_column VARCHAR, filter_expr VARCHAR
+)
+
+statement ok
+INSERT INTO big_dq_checks VALUES
+    ('volume',        'volume',       'big_orders', NULL, NULL, 1900000, 2000000, false, NULL, NULL),
+    ('cust_nulls',    'null_rate',    'big_orders', 'customer_ref', NULL, NULL, 0.05, false, NULL, NULL),
+    ('amount_pos',    'compliance',   'big_orders', NULL, '{"expression": "amount >= 0"}', 1.0, NULL, true, NULL, NULL),
+    ('cust_fk',       'match_rate',   'big_orders', 'customer_ref', '{"right_table": "big_customers", "left_keys": "customer_ref", "right_keys": "customer_id"}', 0.99, NULL, false, NULL, NULL),
+    ('avg_by_status', 'agg',          'big_orders', 'amount', '{"agg": "avg"}', 0.0, 60.0, false, 'status', NULL)
+
+query TTT
+SELECT check_name, identifier, status FROM run_checks('big_dq_checks') ORDER BY check_name, identifier
+----
+amount_pos	NULL	warn
+avg_by_status	UNKNOWN	fail
+avg_by_status	completed	pass
+avg_by_status	pending	pass
+cust_fk	NULL	fail
+cust_nulls	NULL	pass
+volume	NULL	pass
+
+# persistence over the 2M-row targets
+statement ok
+CREATE TABLE big_dq_results AS SELECT * FROM run_checks('big_dq_checks') LIMIT 0
+
+statement ok
+INSERT INTO big_dq_results SELECT * FROM run_checks('big_dq_checks')
+
+query I
+SELECT COUNT(*) FROM big_dq_results
+----
+7
+
+statement ok
+DROP TABLE big_dq_checks; DROP TABLE big_dq_results

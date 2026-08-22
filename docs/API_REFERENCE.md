@@ -55,11 +55,12 @@ All functions have aliases without the `anofox_tab_` prefix. For example:
 5. [VAT Validation](#vat-validation)
 6. [PII Detection](#pii-detection)
 7. [Data Quality Metrics](#data-quality-metrics)
-8. [Anomaly Detection](#anomaly-detection)
-9. [Data Diffing](#data-diffing)
-10. [Configuration](#configuration)
-11. [Function Coverage Matrix](#function-coverage-matrix)
-12. [Notes](#notes)
+8. [Check Suites](#check-suites)
+9. [Anomaly Detection](#anomaly-detection)
+10. [Data Diffing](#data-diffing)
+11. [Configuration](#configuration)
+12. [Function Coverage Matrix](#function-coverage-matrix)
+13. [Notes](#notes)
 
 ---
 
@@ -1308,148 +1309,456 @@ SET anofox_pii_default_mask_strategy = 'partial';
 
 ## Data Quality Metrics
 
-Track essential data quality dimensions.
+Track essential data quality dimensions. Every function is a table function registered under its
+canonical `anofox_tab_*` name plus the short alias shown; each returns exactly one assertion-style
+summary row with a `status` ('pass'/'fail') and a human-readable `message`, even for empty input.
 
 ### Functions
 
-#### `anofox_tab_metric_ (alias: metric_volume`
+#### `anofox_tab_volume` (alias: `volume`)
 
 Validate row count against thresholds.
 
 **Signature:**
 ```sql
-anofox_tab_metric_ (alias: metric_volume(table_name VARCHAR [, min_rows BIGINT, max_rows BIGINT]) → TABLE
+volume(table_name VARCHAR, min_rows BIGINT, max_rows BIGINT) → TABLE
 ```
 
-**Returns:**
-- `TABLE`: Row count validation results
+**Returns:** `status`, `row_count`, `min_threshold`, `max_threshold`, `message`
 
 **Example:**
 ```sql
-SELECT * FROM anofox_tab_metric_ (alias: metric_volume('orders', 1000, 1000000);
+SELECT * FROM volume('orders', 1000, 1000000);
 ```
 
 ---
 
-#### `anofox_tab_metric_ (alias: metric_null_rate`
+#### `anofox_tab_null_rate` (alias: `null_rate`)
 
 Check null percentage in a column.
 
 **Signature:**
 ```sql
-anofox_tab_metric_ (alias: metric_null_rate(table_name VARCHAR, column_name VARCHAR [, max_null_rate DOUBLE]) → TABLE
+null_rate(table_name VARCHAR, column_name VARCHAR, max_null_rate DOUBLE) → TABLE
 ```
 
-**Returns:**
-- `TABLE`: Null rate validation results
+**Returns:** `status`, `null_count`, `total_count`, `null_rate`, `threshold`, `message`
 
 **Example:**
 ```sql
-SELECT * FROM anofox_tab_metric_ (alias: metric_null_rate('users', 'email', 0.05);
+SELECT * FROM null_rate('users', 'email', 0.05);
 ```
 
 ---
 
-#### `anofox_tab_metric_ (alias: metric_distinct_count`
+#### `anofox_tab_distinct_count` (alias: `distinct_count`)
 
 Validate cardinality (distinct count) of a column.
 
 **Signature:**
 ```sql
-anofox_tab_metric_ (alias: metric_distinct_count(table_name VARCHAR, column_name VARCHAR [, min BIGINT, max BIGINT]) → TABLE
+distinct_count(table_name VARCHAR, column_name VARCHAR, min_distinct BIGINT, max_distinct BIGINT) → TABLE
 ```
 
-**Returns:**
-- `TABLE`: Distinct count validation results
+**Returns:** `status`, `distinct_count`, `min_threshold`, `max_threshold`, `message`
 
 **Example:**
 ```sql
-SELECT * FROM anofox_tab_metric_ (alias: metric_distinct_count('products', 'sku', 100, NULL);
+SELECT * FROM distinct_count('products', 'sku', 100, NULL);
 ```
 
 ---
 
-#### `anofox_tab_metric_ (alias: metric_schema`
+#### `anofox_tab_schema_check` (alias: `schema_check`)
 
-Check required columns exist in table.
+Check required columns exist in a table.
 
 **Signature:**
 ```sql
-anofox_tab_metric_ (alias: metric_schema(table_name VARCHAR, required_cols LIST<VARCHAR>) → TABLE
+schema_check(table_name VARCHAR, required_columns LIST<VARCHAR>) → TABLE
 ```
 
-**Returns:**
-- `TABLE`: Schema validation results
+**Returns:** `status`, `missing_columns`, `message`
 
 **Example:**
 ```sql
-SELECT * FROM anofox_tab_metric_ (alias: metric_schema('table', ['id', 'created_at']);
+SELECT * FROM schema_check('orders', ['id', 'created_at']);
 ```
 
 ---
 
-#### `anofox_tab_metric_ (alias: metric_freshness`
+#### `anofox_tab_freshness` (alias: `freshness`)
 
 Validate data recency (maximum age check).
 
 **Signature:**
 ```sql
-anofox_tab_metric_ (alias: metric_freshness(table_name VARCHAR, ts_col VARCHAR, max_age INTERVAL [, ref_time TIMESTAMP]) → TABLE
+freshness(table_name VARCHAR, timestamp_column VARCHAR, max_age INTERVAL [, reference_time TIMESTAMP]) → TABLE
 ```
 
-**Returns:**
-- `TABLE`: Freshness validation results
+**Returns:** `status`, `metric_value`, `threshold`, `age_seconds`, `message`
 
 **Example:**
 ```sql
-SELECT * FROM anofox_tab_metric_ (alias: metric_freshness('events', 'timestamp', INTERVAL '1 hour');
+SELECT * FROM freshness('events', 'created_at', INTERVAL '1 hour');
 ```
 
 ---
 
-#### `anofox_tab_metric_ (alias: metric_zscore`
+#### `anofox_tab_zscore` (alias: `zscore`)
 
-Detect outliers via z-score method (assumes normal distribution).
+Detect outliers via the z-score method (assumes normal distribution).
 
 **Signature:**
 ```sql
-anofox_tab_metric_ (alias: metric_zscore(table_name VARCHAR, column_name VARCHAR [, threshold DOUBLE]) → TABLE
+zscore(table_name VARCHAR, column_name VARCHAR, threshold DOUBLE) → TABLE
 ```
 
 **Parameters:**
-- `threshold`: Z-score threshold (default: 3.0)
+- `threshold`: Z-score threshold (typical value: 3.0)
 
-**Returns:**
-- `TABLE`: Outlier detection results with z-scores
+**Returns:** `status`, `mean`, `stddev`, `outlier_count`, `total_count`, `outlier_rate`, `threshold`, `message`
 
 **Example:**
 ```sql
-SELECT * FROM anofox_tab_metric_ (alias: metric_zscore('transactions', 'amount', 3.0);
+SELECT * FROM zscore('transactions', 'amount', 3.0);
 ```
 
 ---
 
-#### `anofox_tab_metric_ (alias: metric_iqr`
+#### `anofox_tab_iqr` (alias: `iqr`)
 
-Detect outliers via IQR method (non-parametric, robust to distribution).
+Detect outliers via the IQR method (non-parametric, robust to distribution).
 
 **Signature:**
 ```sql
-anofox_tab_metric_ (alias: metric_iqr(table_name VARCHAR, column_name VARCHAR [, multiplier DOUBLE]) → TABLE
+iqr(table_name VARCHAR, column_name VARCHAR, iqr_multiplier DOUBLE) → TABLE
 ```
 
 **Parameters:**
-- `multiplier`: IQR multiplier (default: 1.5)
+- `iqr_multiplier`: IQR multiplier for the outlier fences (typical value: 1.5)
 
-**Returns:**
-- `TABLE`: Outlier detection results with IQR scores
+**Returns:** `status`, `q1`, `q3`, `iqr`, `lower_bound`, `upper_bound`, `outlier_count`, `total_count`, `multiplier`, `message`
 
 **Example:**
 ```sql
-SELECT * FROM anofox_tab_metric_ (alias: metric_iqr('transactions', 'amount', 1.5);
+SELECT * FROM iqr('transactions', 'amount', 1.5);
 ```
 
 ---
+
+#### `anofox_tab_regex_match` (alias: `regex_match`)
+
+Assert that the share of non-NULL values matching a regex pattern is within bounds.
+
+**Signature:**
+```sql
+regex_match(table_name VARCHAR, column_name VARCHAR, pattern VARCHAR, min_match_rate DOUBLE [, max_match_rate DOUBLE]) → TABLE
+```
+
+**Parameters:**
+- `pattern`: Regular expression (RE2 syntax, as accepted by `regexp_matches`)
+- `min_match_rate`: Minimum acceptable match rate (NULL = unbounded)
+- `max_match_rate`: Maximum acceptable match rate (optional; omit or NULL = unbounded)
+
+**Returns:** `status`, `match_rate`, `matched_count`, `total_count`, `min_threshold`, `max_threshold`, `message`
+
+**Empty input:** an empty table or all-NULL column passes trivially with `total_count = 0`.
+
+**Example:**
+```sql
+SELECT * FROM regex_match('users', 'email', '^[^@]+@[^@]+$', 0.99);
+```
+
+---
+
+#### `anofox_tab_values_in_set` (alias: `values_in_set`)
+
+Assert that the share of non-NULL values contained in an allowed value set is at least `min_rate`.
+Values are compared as strings.
+
+**Signature:**
+```sql
+values_in_set(table_name VARCHAR, column_name VARCHAR, allowed_values LIST<VARCHAR> [, min_rate DOUBLE = 1.0]) → TABLE
+```
+
+**Returns:** `status`, `in_set_rate`, `in_set_count`, `total_count`, `threshold`, `sample_violations` (up to 5 distinct offending values), `message`
+
+**Empty input:** an empty table or all-NULL column passes trivially with `total_count = 0`.
+
+**Example:**
+```sql
+SELECT * FROM values_in_set('orders', 'status', ['completed', 'pending', 'failed']);
+```
+
+---
+
+#### `anofox_tab_agg_check` (alias: `agg_check`)
+
+Assert that an aggregate of a numeric column is within bounds.
+
+**Signature:**
+```sql
+agg_check(table_name VARCHAR, column_name VARCHAR, agg VARCHAR, lower_threshold DOUBLE, upper_threshold DOUBLE) → TABLE
+```
+
+**Parameters:**
+- `agg`: one of `'avg'`, `'min'`, `'max'`, `'sum'`, `'median'`, `'stddev'` (validated at bind time)
+- `lower_threshold` / `upper_threshold`: bounds; `NULL` = unbounded
+
+**Returns:** `status`, `agg`, `value`, `lower_threshold`, `upper_threshold`, `message`
+
+**Empty input:** an empty table or all-NULL column yields `value = NULL` and passes trivially.
+
+**Example:**
+```sql
+SELECT * FROM agg_check('orders', 'amount', 'avg', 10.0, 500.0);
+```
+
+---
+
+#### `anofox_tab_duplicate_count` (alias: `duplicate_count`)
+
+Assert that the number of duplicate values in a column (or comma-separated column combination)
+does not exceed `max_duplicates`. Duplicates are computed as `COUNT(*) - COUNT(DISTINCT key)`;
+for a single column, NULL values count as duplicates of each other.
+
+**Signature:**
+```sql
+duplicate_count(table_name VARCHAR, column_names VARCHAR [, max_duplicates BIGINT = 0]) → TABLE
+```
+
+**Returns:** `status`, `duplicate_count`, `total_count`, `threshold`, `message`
+
+**Example:**
+```sql
+SELECT * FROM duplicate_count('orders', 'order_id');
+SELECT * FROM duplicate_count('orders', 'customer_id,order_date', 10);
+```
+
+---
+
+#### `anofox_tab_occurrence` (alias: `occurrence`)
+
+Assert that the highest (`'max'`) or lowest (`'min'`) frequency of any single value in a column is
+within bounds. NULL values are excluded.
+
+**Signature:**
+```sql
+occurrence(table_name VARCHAR, column_name VARCHAR, mode VARCHAR, lower_threshold BIGINT, upper_threshold BIGINT) → TABLE
+```
+
+**Parameters:**
+- `mode`: `'max'` or `'min'` (validated at bind time)
+- `lower_threshold` / `upper_threshold`: bounds; `NULL` = unbounded
+
+**Returns:** `status`, `mode`, `occurrence`, `extreme_value` (the value at the extreme frequency), `distinct_values`, `lower_threshold`, `upper_threshold`, `message`
+
+**Empty input:** an empty table or all-NULL column yields `occurrence = NULL` and passes trivially.
+
+**Example:**
+```sql
+SELECT * FROM occurrence('orders', 'customer_id', 'max', NULL, 100);
+```
+
+---
+
+#### `anofox_tab_match_rate` (alias: `match_rate`)
+
+Assert that the share of left-table rows with a join partner in the right table is at least
+`min_rate`. The right side is deduplicated on its key columns so join fan-out cannot inflate the
+rate. Doubles as a referential-integrity / foreign-key check.
+
+**Signature:**
+```sql
+match_rate(left_table VARCHAR, right_table VARCHAR, left_keys VARCHAR, right_keys VARCHAR [, min_rate DOUBLE = 1.0]) → TABLE
+```
+
+**Parameters:**
+- `left_keys` / `right_keys`: comma-separated key column lists; must have the same number of columns
+
+**Returns:** `status`, `match_rate`, `matched_count`, `total_count`, `threshold`, `message`
+
+**Empty input:** an empty left table passes trivially with `total_count = 0`.
+
+**Example:**
+```sql
+SELECT * FROM match_rate('orders', 'customers', 'customer_id', 'id', 1.0);
+```
+
+---
+
+#### `anofox_tab_compliance` (alias: `compliance`)
+
+Assert that the share of rows satisfying a SQL boolean expression is at least `min_rate`. Rows
+where the expression evaluates to NULL count as non-compliant.
+
+> **Security note:** the expression is executed as SQL with the caller's privileges. It is
+> validated at bind time to be a single boolean expression (multi-statement injection payloads are
+> rejected with a binder error), but scalar subqueries remain allowed — pass only trusted
+> expressions. The trust model is the same as running SQL directly.
+
+**Signature:**
+```sql
+compliance(table_name VARCHAR, expression VARCHAR [, min_rate DOUBLE = 1.0]) → TABLE
+```
+
+**Returns:** `status`, `compliance_rate`, `compliant_count`, `total_count`, `threshold`, `message`
+
+**Empty input:** an empty table passes trivially with `total_count = 0`.
+
+**Example:**
+```sql
+SELECT * FROM compliance('orders', 'amount > 0 AND status IS NOT NULL', 0.95);
+```
+
+---
+
+#### `anofox_tab_rel_count_change` (alias: `rel_count_change`)
+
+Assert that the daily (distinct) count on a reference date stays within a relative change band
+around the rolling baseline average.
+
+**Signature:**
+```sql
+rel_count_change(table_name VARCHAR, date_column VARCHAR [, count_column VARCHAR,
+                 window_days BIGINT = 7, lower_threshold DOUBLE = -0.5,
+                 upper_threshold DOUBLE = 0.5, reference_date DATE]) → TABLE
+```
+
+**Parameters:**
+- `count_column`: column counted with `COUNT(DISTINCT ...)` per day; NULL/omitted = daily row count
+- `window_days`: baseline window, the days *strictly before* the reference date
+- `reference_date`: NULL/omitted = the latest date present in the data
+
+**Returns:** `status`, `reference_date`, `reference_count`, `baseline_avg`, `baseline_days`, `rel_change`, `lower_threshold`, `upper_threshold`, `message`
+
+**Trivial pass:** empty input, no baseline days, or a zero baseline pass with an explicit message
+(not enough history is not a failure).
+
+**Example:**
+```sql
+SELECT * FROM rel_count_change('orders', 'order_date', NULL, 7, -0.5, 0.5);
+```
+
+---
+
+#### `anofox_tab_metric_anomaly_iqr` (alias: `metric_anomaly_iqr`)
+
+Flag the reference date as anomalous when its daily metric falls outside `Q1/Q3 ± k·IQR` of the
+trailing window (distinct from the row-level `iqr` check).
+
+**Signature:**
+```sql
+metric_anomaly_iqr(table_name VARCHAR, date_column VARCHAR [, metric_column VARCHAR,
+                   window_days BIGINT = 30, k DOUBLE = 1.5, mode VARCHAR = 'both',
+                   reference_date DATE]) → TABLE
+```
+
+**Parameters:**
+- `metric_column`: column averaged per day; NULL/omitted = daily row count
+- `mode`: `'both'`, `'upper'` or `'lower'` — which bound(s) to enforce
+- `reference_date`: NULL/omitted = the latest date present in the data
+
+**Returns:** `status`, `reference_date`, `metric_value`, `q1`, `q3`, `lower_bound`, `upper_bound`, `baseline_days`, `mode`, `message`
+
+**Trivial pass:** empty input or an empty baseline window pass with an explicit message.
+
+**Recipe — anomaly detection on your check history:** point it at a persisted `run_checks`
+result table: `SELECT * FROM metric_anomaly_iqr('dq_results', 'run_ts', 'value', 30, 1.5, 'both');`
+
+**Example:**
+```sql
+SELECT * FROM metric_anomaly_iqr('orders', 'order_date', NULL, 30, 1.5, 'both');
+```
+
+---
+
+#### `anofox_tab_rolling_values_in_set` (alias: `rolling_values_in_set`)
+
+Assert values-in-set membership over the trailing `window_days` days ending at the reference date
+(inclusive).
+
+**Signature:**
+```sql
+rolling_values_in_set(table_name VARCHAR, column_name VARCHAR, allowed_values LIST<VARCHAR>,
+                      date_column VARCHAR [, window_days BIGINT = 7, min_rate DOUBLE = 1.0,
+                      reference_date DATE]) → TABLE
+```
+
+**Returns:** `status`, `reference_date`, `in_set_rate`, `in_set_count`, `total_count`, `threshold`, `sample_violations`, `message`
+
+**Example:**
+```sql
+SELECT * FROM rolling_values_in_set('orders', 'status', ['completed', 'pending'], 'order_date', 14);
+```
+
+---
+
+## Check Suites
+
+Define many checks once in a SQL table and run them all with one call, getting one uniform result
+row per check (and per identifier partition).
+
+#### `anofox_tab_run_checks` (alias: `run_checks`)
+
+**Signature:**
+```sql
+run_checks(checks_table VARCHAR) → TABLE
+```
+
+**Checks-table contract** (validated at bind time):
+
+| Column | Type | Meaning |
+|--------|------|---------|
+| `check_name` | VARCHAR | Unique label for the check (required) |
+| `check_type` | VARCHAR | One of `volume`, `null_rate`, `distinct_count`, `regex_match`, `values_in_set`, `agg`, `duplicate_count`, `occurrence`, `match_rate`, `compliance`, `freshness`, `rel_count_change`, `metric_anomaly_iqr`, `rolling_values_in_set` |
+| `table_name` | VARCHAR | Target table or view (required) |
+| `column_name` | VARCHAR | Column to check (NULL where not applicable; comma-separated for `duplicate_count`) |
+| `params` | VARCHAR (JSON) | Type-specific parameters, see below |
+| `lower_threshold` / `upper_threshold` | DOUBLE | Value bounds; NULL = unbounded |
+| `monitor_only` | BOOLEAN | true records `'warn'` instead of `'fail'` |
+| `identifier_column` | VARCHAR | Optional partition column: one result row per distinct value |
+| `filter_expr` | VARCHAR | Optional SQL boolean pre-filter; supports `${today}`, `${yesterday}`, `${today±N}`, `${yesterday±N}` tokens |
+
+**`params` keys by check type:** `pattern` (regex_match), `allowed_values` JSON array
+(values_in_set, rolling_values_in_set), `agg` (agg), `mode` (occurrence, metric_anomaly_iqr),
+`expression` (compliance), `right_table`/`left_keys`/`right_keys` (match_rate),
+`date_column`/`count_column`/`metric_column`/`window_days`/`k`/`reference_date` (time-aware checks),
+`reference_time` (freshness; the `value` is the age in seconds vs this timestamp, default `now()`).
+
+**Uniform result schema:** `run_ts TIMESTAMP`, `check_name`, `check_type`, `table_name`,
+`column_name`, `identifier`, `value DOUBLE`, `lower_threshold`, `upper_threshold`,
+`status` (`'pass' | 'warn' | 'fail' | 'error'`), `message`.
+
+**Behavior notes:**
+- The checks table must be a **regular (non-temporary) table** — it is read through a separate
+  connection at bind time. Target tables may be temporary tables or views.
+- **Error isolation:** a missing target table or an unsupported identifier combination yields a
+  single `status = 'error'` row for that check instead of failing the whole run.
+- `identifier_column` is supported for `volume`, `null_rate`, `distinct_count`, `regex_match`,
+  `values_in_set`, `agg`, `duplicate_count`, `compliance` and `freshness`.
+- A NULL `value` (e.g. empty input) passes trivially.
+- `compliance` expressions and `filter_expr` are validated at bind time to be single SQL boolean
+  expressions (multi-statement payloads are rejected) but still execute with the caller's
+  privileges — same trust model as running SQL directly.
+
+**Persistence recipe** (results history for monitoring):
+```sql
+CREATE TABLE IF NOT EXISTS dq_results AS SELECT * FROM run_checks('dq_checks') LIMIT 0;
+INSERT INTO dq_results SELECT * FROM run_checks('dq_checks');
+-- metric-level anomaly detection over the history:
+SELECT * FROM metric_anomaly_iqr('dq_results', 'run_ts', 'value', 30, 1.5, 'both');
+```
+
+**Example:**
+```sql
+SELECT check_name, status, value, message FROM run_checks('dq_checks') ORDER BY check_name;
+```
+
+---
+
+
 
 ## Anomaly Detection
 
@@ -2045,17 +2354,17 @@ SET anofox_telemetry_key = 'your_custom_key';
 | Money & Currency | 17 | Scalar functions |
 | VAT Validation | 10 | Scalar functions |
 | PII Detection | 20 | 15 scalar + 5 table functions |
-| Data Quality Metrics | 8 | Table functions |
+| Data Quality Metrics | 19 | Table functions |
 | Anomaly Detection | 5 | Table functions |
 | Data Diffing | 2 | Table functions |
-| **Total** | **78** | |
+| **Total** | **89** | |
 
 ### Function Type Breakdown
 
 | Type | Count | Examples |
 |------|-------|----------|
 | Scalar Functions | 60 | `anofox_tab_email_is_valid` (alias: `email_is_valid`), `anofox_tab_pii_detect` (alias: `pii_detect`), `anofox_tab_vat_is_valid` (alias: `vat_is_valid`) |
-| Table Functions | 18 | `anofox_tab_metric_volume` (alias: `volume`), `anofox_tab_metric_isolation_forest` (alias: `isolation_forest`), `anofox_tab_outlier_tree` (alias: `outlier_tree`) |
+| Table Functions | 29 | `anofox_tab_volume` (alias: `volume`), `anofox_tab_compliance` (alias: `compliance`), `anofox_tab_isolation_forest` (alias: `isolation_forest`), `anofox_tab_outlier_tree` (alias: `outlier_tree`) |
 
 ### Module Status
 
@@ -2067,7 +2376,7 @@ SET anofox_telemetry_key = 'your_custom_key';
 | Money & Currency | 17 | Stable | None |
 | VAT Validation | 10 | Stable | None |
 | PII Detection | 20 | Stable | OpenVINO (for NER), OpenSSL (for hash masking) |
-| Data Quality Metrics | 8 | Stable | None |
+| Data Quality Metrics | 19 | Stable | None |
 | Anomaly Detection | 5 | Stable | None |
 | Data Diffing | 2 | Stable | None |
 

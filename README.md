@@ -59,7 +59,7 @@ WHERE vat_is_valid(vat_id)
 - Multi-currency arithmetic (10 currencies)
 
 **Data Quality & Anomaly Detection:**
-- 8 data quality metrics (volume, nulls, freshness, schema)
+- 18 data quality checks (volume, nulls, freshness, schema, regex, value sets, aggregates, duplicates, referential integrity, custom predicates, time-aware baselines) plus a config-driven check-suite runner
 - Enhanced Isolation Forest with categorical support, Extended IF, SCiForest
 - DBSCAN density-based clustering
 - Statistical outliers via Z-Score and IQR
@@ -116,12 +116,12 @@ WHERE vat_is_valid(vat_id)
 | 💰 **Money & Currency** | 17 | Multi-currency operations, 10 currencies | ✨ New |
 | 💼 **VAT Validation** | 10 | European VAT compliance, 29 countries | ✨ New |
 | 🕵️ **PII Detection** | 20 | Detect & mask 17 PII types (SSN, IBAN, NAME, etc.) | ✨ New |
-| 🔍 **Quality Metrics** | 8 | Volume, nulls, freshness, schema checks | Stable |
+| 🔍 **Quality Metrics** | 19 | 18 checks + check-suite runner (run_checks) | Stable |
 | 🤖 **Anomaly Detection** | 5 | Isolation Forest, DBSCAN, OutlierTree (explainable) | ✨ Enhanced |
 | 🔄 **Data Diffing** | 2 | Table comparison, migration validation | Stable |
 | 📊 **Data Profiling** | 3 | Column stats, correlations, table overview | ✨ New |
 
-**Total: 81 SQL Functions** | **Zero Required Dependencies***
+**Total: 92 SQL Functions** | **Zero Required Dependencies***
 
 <sub>*Except libpostal (address parsing) and optional DNS/SMTP for email</sub>
 
@@ -447,11 +447,49 @@ Track essential data quality dimensions:
 
 | Metric | Purpose | Example |
 |--------|---------|---------|
-| **Volume** | Row count thresholds | `metric_volume('orders', 1000, 1000000)` |
-| **Null Rate** | Missing value detection | `metric_null_rate('users', 'email', 0.05)` |
-| **Distinctness** | Cardinality validation | `metric_distinct_count('products', 'sku', 100, NULL)` |
-| **Freshness** | Data recency checks | `metric_freshness('events', 'timestamp', INTERVAL '1 hour')` |
-| **Schema** | Required column validation | `metric_schema('table', ['id', 'created_at'])` |
+| **Volume** | Row count thresholds | `volume('orders', 1000, 1000000)` |
+| **Null Rate** | Missing value detection | `null_rate('users', 'email', 0.05)` |
+| **Distinctness** | Cardinality validation | `distinct_count('products', 'sku', 100, NULL)` |
+| **Freshness** | Data recency checks | `freshness('events', 'timestamp', INTERVAL '1 hour')` |
+| **Schema** | Required column validation | `schema_check('table', ['id', 'created_at'])` |
+| **Regex Match** | Format conformance rate | `regex_match('users', 'email', '^[^@]+@[^@]+$', 0.99)` |
+| **Values In Set** | Allowed value membership | `values_in_set('orders', 'status', ['completed', 'pending'])` |
+| **Aggregate** | avg/min/max/sum/median/stddev bounds | `agg_check('orders', 'amount', 'avg', 10.0, 500.0)` |
+| **Duplicates** | Duplicate key detection | `duplicate_count('orders', 'order_id')` |
+| **Occurrence** | Value frequency bounds | `occurrence('orders', 'customer_id', 'max', NULL, 100)` |
+| **Match Rate** | Referential integrity across tables | `match_rate('orders', 'customers', 'customer_id', 'id')` |
+| **Compliance** | Custom SQL predicate satisfaction | `compliance('orders', 'amount > 0', 0.95)` |
+| **Rel. Count Change** | Daily count vs rolling baseline | `rel_count_change('orders', 'order_date', NULL, 7, -0.5, 0.5)` |
+| **Metric IQR Anomaly** | Daily metric outside IQR band | `metric_anomaly_iqr('orders', 'order_date', NULL, 30, 1.5, 'both')` |
+| **Rolling Values In Set** | Set membership over a date window | `rolling_values_in_set('orders', 'status', ['completed'], 'order_date', 14)` |
+
+**Check suites** — define checks once in a SQL table and run them all with one call:
+
+```sql
+CREATE TABLE dq_checks (
+    check_name VARCHAR, check_type VARCHAR, table_name VARCHAR, column_name VARCHAR,
+    params VARCHAR,               -- type-specific JSON, e.g. '{"pattern": "^..."}'
+    lower_threshold DOUBLE, upper_threshold DOUBLE,
+    monitor_only BOOLEAN,         -- true records 'warn' instead of 'fail'
+    identifier_column VARCHAR,    -- optional: one result row per partition value
+    filter_expr VARCHAR           -- optional SQL pre-filter; supports ${today}, ${yesterday}, ${today-N}
+);
+
+INSERT INTO dq_checks VALUES
+    ('orders_volume', 'volume', 'orders', NULL, NULL, 1000, NULL, false, NULL, NULL),
+    ('orders_fk', 'match_rate', 'orders', 'customer_id',
+     '{"right_table": "customers", "left_keys": "customer_id", "right_keys": "id"}', 1.0, NULL, false, NULL, NULL);
+
+SELECT * FROM run_checks('dq_checks');  -- uniform rows: run_ts, check_name, ..., value, status, message
+
+-- persist results for historical monitoring, then detect metric anomalies over time:
+CREATE TABLE IF NOT EXISTS dq_results AS SELECT * FROM run_checks('dq_checks') LIMIT 0;
+INSERT INTO dq_results SELECT * FROM run_checks('dq_checks');
+SELECT * FROM metric_anomaly_iqr('dq_results', 'run_ts', 'value', 30, 1.5, 'both');
+```
+
+The checks table must be a regular (non-temporary) table (it is read through a separate
+connection at bind time); the *target* tables may be temporary tables or views.
 
 **Statistical Outlier Detection:**
 - **Z-Score** - Parametric outlier detection (assumes normal distribution)
@@ -459,7 +497,7 @@ Track essential data quality dimensions:
 
 ```sql
 -- Find statistical outliers using IQR method
-SELECT * FROM metric_iqr('transactions', 'amount', 1.5);
+SELECT * FROM iqr('transactions', 'amount', 1.5);
 ```
 
 [📖 See complete Metrics module documentation](#data-quality-metrics-functions)
@@ -970,15 +1008,33 @@ All other countries are validated by syntax only. French VAT keys containing let
 
 ### Data Quality Metrics Functions
 
-| Function | Signature | Description |
+All functions are registered under their canonical `anofox_tab_*` name plus the short alias shown.
+
+| Function (alias) | Signature | Description |
 |----------|-----------|-------------|
-| `anofox_tab_metric_volume` | `(table VARCHAR [, min_rows BIGINT, max_rows BIGINT]) → TABLE` | Validate row count |
-| `anofox_tab_metric_null_rate` | `(table VARCHAR, column VARCHAR [, max_null_rate DOUBLE]) → TABLE` | Check null percentage |
-| `anofox_tab_metric_distinct_count` | `(table VARCHAR, column VARCHAR [, min BIGINT, max BIGINT]) → TABLE` | Validate cardinality |
-| `anofox_tab_metric_schema` | `(table VARCHAR, required_cols LIST<VARCHAR>) → TABLE` | Check required columns exist |
-| `anofox_tab_metric_freshness` | `(table VARCHAR, ts_col VARCHAR, max_age INTERVAL [, ref_time TIMESTAMP]) → TABLE` | Validate data recency |
-| `anofox_tab_metric_zscore` | `(table VARCHAR, column VARCHAR [, threshold DOUBLE]) → TABLE` | Detect outliers via z-score (default: 3.0) |
-| `anofox_tab_metric_iqr` | `(table VARCHAR, column VARCHAR [, multiplier DOUBLE]) → TABLE` | Detect outliers via IQR (default: 1.5) |
+| `anofox_tab_volume` (`volume`) | `(table VARCHAR, min_rows BIGINT, max_rows BIGINT) → TABLE` | Validate row count |
+| `anofox_tab_null_rate` (`null_rate`) | `(table VARCHAR, column VARCHAR, max_null_rate DOUBLE) → TABLE` | Check null percentage |
+| `anofox_tab_distinct_count` (`distinct_count`) | `(table VARCHAR, column VARCHAR, min BIGINT, max BIGINT) → TABLE` | Validate cardinality |
+| `anofox_tab_schema_check` (`schema_check`) | `(table VARCHAR, required_cols LIST<VARCHAR>) → TABLE` | Check required columns exist |
+| `anofox_tab_freshness` (`freshness`) | `(table VARCHAR, ts_col VARCHAR, max_age INTERVAL [, ref_time TIMESTAMP]) → TABLE` | Validate data recency |
+| `anofox_tab_zscore` (`zscore`) | `(table VARCHAR, column VARCHAR, threshold DOUBLE) → TABLE` | Detect outliers via z-score |
+| `anofox_tab_iqr` (`iqr`) | `(table VARCHAR, column VARCHAR, multiplier DOUBLE) → TABLE` | Detect outliers via IQR |
+| `anofox_tab_regex_match` (`regex_match`) | `(table VARCHAR, column VARCHAR, pattern VARCHAR, min_match_rate DOUBLE [, max_match_rate DOUBLE]) → TABLE` | Share of values matching a regex |
+| `anofox_tab_values_in_set` (`values_in_set`) | `(table VARCHAR, column VARCHAR, allowed LIST<VARCHAR> [, min_rate DOUBLE = 1.0]) → TABLE` | Share of values inside an allowed set (reports up to 5 sample violations) |
+| `anofox_tab_agg_check` (`agg_check`) | `(table VARCHAR, column VARCHAR, agg VARCHAR, lower DOUBLE, upper DOUBLE) → TABLE` | Assert avg/min/max/sum/median/stddev bounds (NULL = unbounded) |
+| `anofox_tab_duplicate_count` (`duplicate_count`) | `(table VARCHAR, columns VARCHAR [, max_duplicates BIGINT = 0]) → TABLE` | Duplicate count for a column or comma-separated key |
+| `anofox_tab_occurrence` (`occurrence`) | `(table VARCHAR, column VARCHAR, mode VARCHAR, lower BIGINT, upper BIGINT) → TABLE` | Highest (`'max'`) or lowest (`'min'`) frequency of any single value |
+| `anofox_tab_match_rate` (`match_rate`) | `(left VARCHAR, right VARCHAR, left_keys VARCHAR, right_keys VARCHAR [, min_rate DOUBLE = 1.0]) → TABLE` | Share of left rows with a join partner (referential integrity) |
+| `anofox_tab_compliance` (`compliance`) | `(table VARCHAR, expression VARCHAR [, min_rate DOUBLE = 1.0]) → TABLE` | Share of rows satisfying a SQL boolean expression |
+| `anofox_tab_rel_count_change` (`rel_count_change`) | `(table VARCHAR, date_col VARCHAR [, count_col VARCHAR, window_days BIGINT = 7, lower DOUBLE = -0.5, upper DOUBLE = 0.5, reference_date DATE]) → TABLE` | Daily (distinct) count vs rolling baseline average |
+| `anofox_tab_metric_anomaly_iqr` (`metric_anomaly_iqr`) | `(table VARCHAR, date_col VARCHAR [, metric_col VARCHAR, window_days BIGINT = 30, k DOUBLE = 1.5, mode VARCHAR = 'both', reference_date DATE]) → TABLE` | Daily metric outside Q1/Q3 ± k·IQR of the trailing window |
+| `anofox_tab_rolling_values_in_set` (`rolling_values_in_set`) | `(table VARCHAR, column VARCHAR, allowed LIST<VARCHAR>, date_col VARCHAR [, window_days BIGINT = 7, min_rate DOUBLE = 1.0, reference_date DATE]) → TABLE` | Values-in-set rate over a trailing date window |
+| `anofox_tab_run_checks` (`run_checks`) | `(checks_table VARCHAR) → TABLE` | Run every check in a checks table; uniform result rows |
+
+> **Security note:** `compliance` executes the caller-supplied expression as SQL with the caller's
+> privileges. The expression is validated at bind time to be a single boolean expression
+> (multi-statement payloads are rejected), but pass only trusted expressions — the trust model is
+> the same as running SQL directly.
 
 **Parameter validation:** numeric parameters are validated at bind time. Negative or out-of-range
 integer parameters and non-finite (`NaN`/`Infinity`) double parameters (`max_null_rate`, `threshold`,
@@ -995,6 +1051,16 @@ an empty table or an all-NULL column:
 | `zscore` | `total_count = 0`, `outlier_count = 0`, `outlier_rate = 0.0`, NULL `mean`/`stddev`, status `pass` | `outlier_count = 0`, status `pass` (z-scores are defined as 0) |
 | `iqr` | `total_count = 0`, `outlier_count = 0`, NULL quantiles/bounds, status `pass` | `outlier_count = 0`, status `pass` |
 | `freshness` | NULL `metric_value`/`age_seconds`, status `fail` ("No timestamp values found") | n/a |
+| `regex_match` | `match_rate = 0.0`, `total_count = 0`, status `pass` ("passed trivially") | n/a |
+| `values_in_set` | `in_set_rate = 0.0`, `total_count = 0`, status `pass` ("passed trivially") | n/a |
+| `agg_check` | NULL `value`, status `pass` ("passed trivially") | n/a |
+| `duplicate_count` | `duplicate_count = 0`, `total_count = 0`, status `pass` | n/a |
+| `occurrence` | NULL `occurrence`/`extreme_value`, status `pass` ("passed trivially") | n/a |
+| `match_rate` | empty left table: `match_rate = 0.0`, `total_count = 0`, status `pass` ("passed trivially") | n/a |
+| `compliance` | `compliance_rate = 0.0`, `total_count = 0`, status `pass` ("passed trivially") | n/a |
+| `rel_count_change` | empty input, no baseline days, or zero baseline: status `pass` ("passed trivially") | n/a |
+| `metric_anomaly_iqr` | empty input or empty baseline window: status `pass` ("passed trivially") | n/a |
+| `rolling_values_in_set` | empty window: `total_count = 0`, status `pass` ("passed trivially") | n/a |
 
 ### Anomaly Detection Functions
 
@@ -1212,6 +1278,10 @@ make test_debug
 - `anofox_postal.test` - Address parsing
 - `anofox_phonenumber.test` - Phone validation
 - `anofox_metric.test` - Data quality metrics
+- `anofox_check.test` / `anofox_check_validation.test` - Check primitives and parameter/injection validation
+- `anofox_check_temporal.test` - Time-aware checks against a daily feed with collapse/spike days
+- `anofox_check_suite.test` - Suite runner: partitioning, monitor_only, error isolation, persistence
+- `anofox_check_scale.test` - All checks + suite runner against ~2M generated rows with seeded defects
 - `anofox_isolation_forest.test` - Anomaly detection
 - `anofox_dbscan.test` - Clustering algorithms
 - `anofox_diff.test` - Table comparison
