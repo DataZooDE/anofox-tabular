@@ -10,6 +10,7 @@
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/main/connection.hpp"
 #include "anofox_tabular_banner.hpp"
+#include "yyjson.hpp"
 
 #include <algorithm>
 
@@ -26,7 +27,8 @@ struct CheckSpec {
 	string column_name;
 	// params (all optional, empty when absent)
 	string pattern;
-	string allowed_values_json;
+	vector<string> allowed_values;
+	bool has_allowed_values = false;
 	string agg;
 	string mode;
 	string expression;
@@ -48,6 +50,77 @@ struct CheckSpec {
 	string filter_expr;
 };
 
+// Parse the params JSON of one check with DuckDB's bundled yyjson (no dependency on the
+// json SQL extension, which is not loaded in every environment).
+static void ParseCheckParams(CheckSpec &spec, const string &params_json) {
+	using namespace duckdb_yyjson;
+	if (params_json.empty()) {
+		return;
+	}
+	struct YyjsonDocFree {
+		void operator()(yyjson_doc *doc_handle) const {
+			yyjson_doc_free(doc_handle);
+		}
+	};
+	std::unique_ptr<yyjson_doc, YyjsonDocFree> doc(yyjson_read(params_json.c_str(), params_json.size(), 0));
+	yyjson_val *root = doc ? yyjson_doc_get_root(doc.get()) : nullptr;
+	if (!root || !yyjson_is_obj(root)) {
+		throw BinderException("run_checks: check '" + spec.check_name + "': params must be a JSON object, got '" +
+		                      params_json + "'");
+	}
+
+	auto get_scalar = [&](const char *key) -> string {
+		auto *val = yyjson_obj_get(root, key);
+		if (!val || yyjson_is_null(val)) {
+			return string();
+		}
+		if (yyjson_is_str(val)) {
+			return yyjson_get_str(val);
+		}
+		if (yyjson_is_int(val)) {
+			return std::to_string(yyjson_get_sint(val));
+		}
+		if (yyjson_is_real(val)) {
+			return std::to_string(yyjson_get_real(val));
+		}
+		throw BinderException("run_checks: check '" + spec.check_name + "': params." + key +
+		                      " must be a string or number");
+	};
+
+	spec.pattern = get_scalar("pattern");
+	spec.agg = get_scalar("agg");
+	spec.mode = get_scalar("mode");
+	spec.expression = get_scalar("expression");
+	spec.right_table = get_scalar("right_table");
+	spec.left_keys = get_scalar("left_keys");
+	spec.right_keys = get_scalar("right_keys");
+	spec.date_column = get_scalar("date_column");
+	spec.count_column = get_scalar("count_column");
+	spec.metric_column = get_scalar("metric_column");
+	spec.window_days = get_scalar("window_days");
+	spec.k = get_scalar("k");
+	spec.reference_date = get_scalar("reference_date");
+	spec.reference_time = get_scalar("reference_time");
+
+	auto *allowed = yyjson_obj_get(root, "allowed_values");
+	if (allowed && !yyjson_is_null(allowed)) {
+		if (!yyjson_is_arr(allowed)) {
+			throw BinderException("run_checks: check '" + spec.check_name +
+			                      "': params.allowed_values must be a JSON array of strings");
+		}
+		spec.has_allowed_values = true;
+		size_t idx, max;
+		yyjson_val *element;
+		yyjson_arr_foreach(allowed, idx, max, element) {
+			if (!yyjson_is_str(element)) {
+				throw BinderException("run_checks: check '" + spec.check_name +
+				                      "': params.allowed_values must be a JSON array of strings");
+			}
+			spec.allowed_values.push_back(yyjson_get_str(element));
+		}
+	}
+}
+
 // Read the checks table at bind time through a sibling connection. A sibling connection
 // cannot see TEMP tables or Python-registered views of the calling connection, which is
 // why the checks table must be a regular table; the *target* tables are referenced via
@@ -55,27 +128,8 @@ struct CheckSpec {
 // temporary.
 static vector<CheckSpec> ReadCheckSpecs(ClientContext &context, const string &checks_table) {
 	Connection con(*context.db);
-	// The params extraction below uses json_extract_string; the json extension is
-	// statically linked (extension_config.cmake) but not necessarily loaded in
-	// every environment (e.g. the sqllogictest runner disables autoloading).
-	con.Query("LOAD json");
 	string sql =
-	    "SELECT check_name, check_type, table_name, column_name, "
-	    "json_extract_string(params, '$.pattern'), "
-	    "CAST(json_extract(params, '$.allowed_values') AS VARCHAR), "
-	    "json_extract_string(params, '$.agg'), "
-	    "json_extract_string(params, '$.mode'), "
-	    "json_extract_string(params, '$.expression'), "
-	    "json_extract_string(params, '$.right_table'), "
-	    "json_extract_string(params, '$.left_keys'), "
-	    "json_extract_string(params, '$.right_keys'), "
-	    "json_extract_string(params, '$.date_column'), "
-	    "json_extract_string(params, '$.count_column'), "
-	    "json_extract_string(params, '$.metric_column'), "
-	    "json_extract_string(params, '$.window_days'), "
-	    "json_extract_string(params, '$.k'), "
-	    "json_extract_string(params, '$.reference_date'), "
-	    "json_extract_string(params, '$.reference_time'), "
+	    "SELECT check_name, check_type, table_name, column_name, params, "
 	    "CAST(lower_threshold AS DOUBLE), CAST(upper_threshold AS DOUBLE), "
 	    "COALESCE(monitor_only, false), identifier_column, filter_expr "
 	    "FROM " + BuildQueryTableRef(checks_table) + " ORDER BY check_name";
@@ -100,32 +154,18 @@ static vector<CheckSpec> ReadCheckSpecs(ClientContext &context, const string &ch
 		std::transform(spec.check_type.begin(), spec.check_type.end(), spec.check_type.begin(), ::tolower);
 		spec.table_name = str_at(row, 2);
 		spec.column_name = str_at(row, 3);
-		spec.pattern = str_at(row, 4);
-		spec.allowed_values_json = str_at(row, 5);
-		spec.agg = str_at(row, 6);
-		spec.mode = str_at(row, 7);
-		spec.expression = str_at(row, 8);
-		spec.right_table = str_at(row, 9);
-		spec.left_keys = str_at(row, 10);
-		spec.right_keys = str_at(row, 11);
-		spec.date_column = str_at(row, 12);
-		spec.count_column = str_at(row, 13);
-		spec.metric_column = str_at(row, 14);
-		spec.window_days = str_at(row, 15);
-		spec.k = str_at(row, 16);
-		spec.reference_date = str_at(row, 17);
-		spec.reference_time = str_at(row, 18);
-		spec.lower_threshold = result->GetValue(19, row);
-		spec.upper_threshold = result->GetValue(20, row);
-		spec.monitor_only = !result->GetValue(21, row).IsNull() && result->GetValue(21, row).GetValue<bool>();
-		spec.identifier_column = str_at(row, 22);
-		spec.filter_expr = str_at(row, 23);
+		spec.lower_threshold = result->GetValue(5, row);
+		spec.upper_threshold = result->GetValue(6, row);
+		spec.monitor_only = !result->GetValue(7, row).IsNull() && result->GetValue(7, row).GetValue<bool>();
+		spec.identifier_column = str_at(row, 8);
+		spec.filter_expr = str_at(row, 9);
 		if (spec.check_name.empty()) {
 			throw BinderException("run_checks: every check in '" + checks_table + "' must have a check_name");
 		}
 		if (spec.table_name.empty()) {
 			throw BinderException("run_checks: check '" + spec.check_name + "' must have a table_name");
 		}
+		ParseCheckParams(spec, str_at(row, 4));
 		specs.push_back(std::move(spec));
 	}
 	if (specs.empty()) {
@@ -247,8 +287,22 @@ static void RequireParam(const CheckSpec &spec, const string &value, const strin
 }
 
 static string BuildAllowedArrayFromJson(const CheckSpec &spec) {
-	RequireParam(spec, spec.allowed_values_json, "allowed_values");
-	return "('" + EscapeSqlStringLiteral(spec.allowed_values_json) + "'::JSON)::VARCHAR[]";
+	if (!spec.has_allowed_values) {
+		throw BinderException("run_checks: check '" + spec.check_name + "' (" + spec.check_type +
+		                      ") requires params.allowed_values");
+	}
+	string literal = "[]::VARCHAR[]";
+	if (!spec.allowed_values.empty()) {
+		string elements;
+		for (auto &value : spec.allowed_values) {
+			if (!elements.empty()) {
+				elements += ", ";
+			}
+			elements += "'" + EscapeSqlStringLiteral(value) + "'";
+		}
+		literal = "[" + elements + "]::VARCHAR[]";
+	}
+	return literal;
 }
 
 // Build the comma-separated quoted identifier list for duplicate_count keys
