@@ -13,7 +13,7 @@ resolution-markers = [
 
 [[package]]
 name = "anofox-tabular"
-version = "2026.6.17"
+version = "2026.8.22"
 source = { editable = "." }
 dependencies = [
     { name = "duckdb" },
