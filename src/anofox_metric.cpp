@@ -23,50 +23,8 @@ namespace anofox {
 
 namespace {
 
-static unique_ptr<SubqueryRef> ParseSubquery(const string &query, const ParserOptions &options, const string &err_msg) {
-	Parser parser(options);
-	parser.ParseQuery(query);
-	if (parser.statements.size() != 1 || parser.statements[0]->type != StatementType::SELECT_STATEMENT) {
-		throw ParserException(err_msg);
-	}
-	auto select_stmt = unique_ptr_cast<SQLStatement, SelectStatement>(std::move(parser.statements[0]));
-	return make_uniq<SubqueryRef>(std::move(select_stmt));
-}
-
-// Helper: reject NaN/Inf double parameters at bind time with a clear error.
-// NULL values are left alone (callers substitute their documented defaults).
-static void ValidateFiniteDouble(const Value &value, const string &function_name, const string &parameter_name) {
-	if (value.IsNull()) {
-		return;
-	}
-	double val = value.GetValue<double>();
-	if (!std::isfinite(val)) {
-		throw BinderException(function_name + ": " + parameter_name + " must be a finite number");
-	}
-}
-
-// Helper: parse a comma-separated column list, trimming whitespace and surrounding quotes
-static vector<string> ParseCommaSeparatedColumns(const string &columns_str) {
-	vector<string> column_names;
-	size_t start = 0;
-	for (size_t i = 0; i <= columns_str.length(); ++i) {
-		if (i == columns_str.length() || columns_str[i] == ',') {
-			string col = columns_str.substr(start, i - start);
-			size_t col_start = col.find_first_not_of(" \t\n\r");
-			size_t col_end = col.find_last_not_of(" \t\n\r");
-			if (col_start != string::npos) {
-				col = col.substr(col_start, col_end - col_start + 1);
-				if (col.length() >= 2 && ((col.front() == '"' && col.back() == '"') ||
-				                          (col.front() == '\'' && col.back() == '\''))) {
-					col = col.substr(1, col.length() - 2);
-				}
-				column_names.push_back(col);
-			}
-			start = i + 1;
-		}
-	}
-	return column_names;
-}
+// ParseSubquery, ValidateFiniteDouble and ParseCommaSeparatedColumns are shared
+// helpers from anofox_sql_utils.hpp.
 
 // Helper: Generate SQL for volume metrics
 static string GenerateVolumeSQL(const string &table_ref, const Value &min_rows, const Value &max_rows) {

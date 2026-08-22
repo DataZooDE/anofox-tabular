@@ -1,0 +1,236 @@
+# name: test/sql/anofox_check_suite.test
+# description: Check-suite runner (run_checks): SQL-table-driven check configuration, uniform
+#              result schema, monitor_only/severity, identifier partitioning, per-check error
+#              isolation, filters with relative-date tokens, and result persistence.
+# group: [anofox_tabular]
+
+require anofox_tabular
+
+statement ok
+LOAD anofox_tabular
+
+statement ok
+SET anofox_tab_trace_enabled = false
+
+# ===--------------------------------------------------------------------===
+# Test Setup: a small e-commerce schema (targets may be TEMP; the checks
+# table itself must be a real table because it is read at bind time)
+# ===--------------------------------------------------------------------===
+
+statement ok
+CREATE TEMP TABLE customers (id INTEGER, country VARCHAR, email VARCHAR)
+
+statement ok
+INSERT INTO customers VALUES
+    (1, 'DE', 'anna@example.com'),
+    (2, 'DE', 'ben@example.com'),
+    (3, 'AT', NULL),
+    (4, 'AT', 'dora@example.com'),
+    (5, 'CH', 'emil@example')
+
+statement ok
+CREATE TEMP TABLE orders (order_id INTEGER, customer_id INTEGER, status VARCHAR, amount DOUBLE, created_at TIMESTAMP)
+
+statement ok
+INSERT INTO orders VALUES
+    (100, 1, 'completed', 59.90, TIMESTAMP '2026-02-01 08:00:00'),
+    (101, 1, 'completed', 12.50, TIMESTAMP '2026-02-01 09:30:00'),
+    (102, 2, 'pending',   99.00, TIMESTAMP '2026-02-01 10:00:00'),
+    (103, 3, 'completed', -5.00, TIMESTAMP '2026-02-01 11:00:00'),
+    (104, 9, 'unknown',   20.00, TIMESTAMP '2026-02-01 12:00:00')
+
+statement ok
+CREATE TABLE dq_checks (
+    check_name VARCHAR,
+    check_type VARCHAR,
+    table_name VARCHAR,
+    column_name VARCHAR,
+    params VARCHAR,
+    lower_threshold DOUBLE,
+    upper_threshold DOUBLE,
+    monitor_only BOOLEAN,
+    identifier_column VARCHAR,
+    filter_expr VARCHAR
+)
+
+statement ok
+INSERT INTO dq_checks VALUES
+    ('orders_volume',        'volume',          'orders',    NULL,          NULL, 1, 1000, false, NULL, NULL),
+    ('orders_status_set',    'values_in_set',   'orders',    'status',      '{"allowed_values": ["completed", "pending", "cancelled"]}', 1.0, NULL, false, NULL, NULL),
+    ('orders_amount_pos',    'compliance',      'orders',    NULL,          '{"expression": "amount > 0"}', 1.0, NULL, true, NULL, NULL),
+    ('orders_customer_fk',   'match_rate',      'orders',    'customer_id', '{"right_table": "customers", "left_keys": "customer_id", "right_keys": "id"}', 1.0, NULL, false, NULL, NULL),
+    ('orders_pk_unique',     'duplicate_count', 'orders',    'order_id',    NULL, NULL, 0, false, NULL, NULL),
+    ('customers_email_null', 'null_rate',       'customers', 'email',       NULL, NULL, 0.4, false, 'country', NULL),
+    ('customers_email_fmt',  'regex_match',     'customers', 'email',       '{"pattern": "^[^@]+@[^@]+\\\\.[^@]+$"}', 0.9, NULL, false, NULL, NULL),
+    ('orders_fresh',         'freshness',       'orders',    'created_at',  '{"reference_time": "2026-02-01 13:00:00"}', NULL, 7200, false, NULL, NULL),
+    ('missing_table_check',  'volume',          'no_such_table', NULL,      NULL, 1, NULL, false, NULL, NULL)
+
+# ===--------------------------------------------------------------------===
+# Uniform result schema: one row per check (plus one per identifier
+# partition), ordered by check_name
+# ===--------------------------------------------------------------------===
+
+query TTTT
+SELECT check_name, check_type, status, identifier FROM run_checks('dq_checks') ORDER BY check_name, identifier
+----
+customers_email_fmt	regex_match	fail	NULL
+customers_email_null	null_rate	fail	AT
+customers_email_null	null_rate	pass	CH
+customers_email_null	null_rate	pass	DE
+missing_table_check	volume	error	NULL
+orders_amount_pos	compliance	warn	NULL
+orders_customer_fk	match_rate	fail	NULL
+orders_fresh	freshness	pass	NULL
+orders_pk_unique	duplicate_count	pass	NULL
+orders_status_set	values_in_set	fail	NULL
+orders_volume	volume	pass	NULL
+
+# values are populated and typed DOUBLE
+query TR
+SELECT check_name, value FROM run_checks('dq_checks')
+WHERE check_name IN ('orders_volume', 'orders_customer_fk') ORDER BY check_name
+----
+orders_customer_fk	0.800000
+orders_volume	5.000000
+
+# monitor_only downgrades a failing check to 'warn' but keeps the metric
+query TR
+SELECT status, value FROM run_checks('dq_checks') WHERE check_name = 'orders_amount_pos'
+----
+warn	0.800000
+
+# error isolation: the missing table yields an error row with a message, not a query failure
+query TT
+SELECT status, message ILIKE '%no_such_table%' FROM run_checks('dq_checks') WHERE check_name = 'missing_table_check'
+----
+error	true
+
+# thresholds are echoed in the uniform schema
+query RR
+SELECT lower_threshold, upper_threshold FROM run_checks('dq_checks') WHERE check_name = 'orders_fresh'
+----
+NULL	7200.000000
+
+# freshness value is the age in seconds vs the configured reference time (last order 12:00 -> 3600s)
+query R
+SELECT value FROM run_checks('dq_checks') WHERE check_name = 'orders_fresh'
+----
+3600.000000
+
+# ===--------------------------------------------------------------------===
+# Filters, including relative-date tokens
+# ===--------------------------------------------------------------------===
+
+statement ok
+CREATE TABLE dq_checks_filtered (
+    check_name VARCHAR, check_type VARCHAR, table_name VARCHAR, column_name VARCHAR,
+    params VARCHAR, lower_threshold DOUBLE, upper_threshold DOUBLE,
+    monitor_only BOOLEAN, identifier_column VARCHAR, filter_expr VARCHAR
+)
+
+statement ok
+INSERT INTO dq_checks_filtered VALUES
+    ('completed_volume', 'volume', 'orders', NULL, NULL, 3, NULL, false, NULL, 'status = ''completed'''),
+    ('past_orders',      'volume', 'orders', NULL, NULL, 5, NULL, false, NULL, 'created_at <= ${today}')
+
+# static filter: only 3 completed orders
+query TR
+SELECT status, value FROM run_checks('dq_checks_filtered') WHERE check_name = 'completed_volume'
+----
+pass	3.000000
+
+# ${today} substitutes to current_date; all 2026 fixture orders lie in the past
+query TR
+SELECT status, value FROM run_checks('dq_checks_filtered') WHERE check_name = 'past_orders'
+----
+pass	5.000000
+
+# ===--------------------------------------------------------------------===
+# Persistence: results append to a plain table via INSERT INTO ... SELECT
+# ===--------------------------------------------------------------------===
+
+statement ok
+CREATE TABLE dq_results AS SELECT * FROM run_checks('dq_checks') LIMIT 0
+
+statement ok
+INSERT INTO dq_results SELECT * FROM run_checks('dq_checks')
+
+query I
+SELECT COUNT(*) FROM dq_results
+----
+11
+
+# rerun appends (history accumulates)
+statement ok
+INSERT INTO dq_results SELECT * FROM run_checks('dq_checks')
+
+query I
+SELECT COUNT(*) FROM dq_results
+----
+22
+
+query I
+SELECT COUNT(DISTINCT check_name) FROM dq_results
+----
+9
+
+# ===--------------------------------------------------------------------===
+# Validation errors
+# ===--------------------------------------------------------------------===
+
+# empty checks table
+statement ok
+CREATE TABLE dq_checks_empty AS SELECT * FROM dq_checks LIMIT 0
+
+statement error
+SELECT * FROM run_checks('dq_checks_empty')
+----
+contains no checks
+
+# unknown check type
+statement ok
+CREATE TABLE dq_checks_bad AS SELECT * FROM dq_checks LIMIT 0
+
+statement ok
+INSERT INTO dq_checks_bad VALUES ('bad', 'teleport', 'orders', NULL, NULL, NULL, NULL, false, NULL, NULL)
+
+statement error
+SELECT * FROM run_checks('dq_checks_bad')
+----
+unknown check_type
+
+# malicious filter_expr is rejected at bind time
+statement ok
+CREATE TABLE dq_checks_evil AS SELECT * FROM dq_checks LIMIT 0
+
+statement ok
+INSERT INTO dq_checks_evil VALUES ('evil', 'volume', 'orders', NULL, NULL, 1, NULL, false, NULL, '1=1); DROP TABLE orders;--')
+
+statement error
+SELECT * FROM run_checks('dq_checks_evil')
+----
+filter_expr
+
+query I
+SELECT COUNT(*) FROM orders
+----
+5
+
+# a TEMP checks table cannot be read at bind time -> clear error
+statement ok
+CREATE TEMP TABLE dq_checks_temp AS SELECT * FROM dq_checks
+
+statement error
+SELECT * FROM run_checks('dq_checks_temp')
+----
+non-temporary
+
+# alias fidelity
+query I
+SELECT DISTINCT alias_of FROM duckdb_functions() WHERE function_name = 'run_checks';
+----
+anofox_tab_run_checks
+
+# cleanup of persistent tables (sqllogictest DBs are shared per file run)
+statement ok
+DROP TABLE dq_checks; DROP TABLE dq_checks_filtered; DROP TABLE dq_results; DROP TABLE dq_checks_empty; DROP TABLE dq_checks_bad; DROP TABLE dq_checks_evil

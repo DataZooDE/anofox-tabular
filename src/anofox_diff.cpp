@@ -192,15 +192,7 @@ vector<string> ResolveCompareColumns(ClientContext &context, const string &funct
 // JoinDiff Bind Replace - Generate SQL Query
 //===--------------------------------------------------------------------===//
 
-static unique_ptr<SubqueryRef> ParseSubquery(const string &query, const ParserOptions &options, const string &err_msg) {
-	Parser parser(options);
-	parser.ParseQuery(query);
-	if (parser.statements.size() != 1 || parser.statements[0]->type != StatementType::SELECT_STATEMENT) {
-		throw ParserException(err_msg);
-	}
-	auto select_stmt = unique_ptr_cast<SQLStatement, SelectStatement>(std::move(parser.statements[0]));
-	return make_uniq<SubqueryRef>(std::move(select_stmt));
-}
+// ParseSubquery is a shared helper from anofox_sql_utils.hpp.
 
 static string GenerateJoinDiffSQL(const string &source_table, const string &target_table,
                                   const vector<string> &primary_keys, const vector<string> &compare_columns,

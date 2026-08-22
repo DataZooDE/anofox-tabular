@@ -1,0 +1,139 @@
+# name: test/sql/anofox_check_validation.test
+# description: Parameter validation and injection resistance for check primitives
+# group: [anofox_tabular]
+
+require anofox_tabular
+
+statement ok
+LOAD anofox_tabular
+
+statement ok
+SET anofox_tab_trace_enabled = false
+
+statement ok
+CREATE TEMP TABLE checkval_t (v VARCHAR, n DOUBLE)
+
+statement ok
+INSERT INTO checkval_t VALUES ('a', 1.0), ('b', 2.0)
+
+# ===--------------------------------------------------------------------===
+# regex_match validation
+# ===--------------------------------------------------------------------===
+
+statement error
+SELECT * FROM regex_match('checkval_t', 'v', NULL, 0.5)
+----
+pattern must not be NULL
+
+statement error
+SELECT * FROM regex_match('checkval_t', 'v', '^a$', 'nan'::DOUBLE)
+----
+must be a finite number
+
+# ===--------------------------------------------------------------------===
+# agg_check validation: whitelist rejects unknown aggregates
+# ===--------------------------------------------------------------------===
+
+statement error
+SELECT * FROM agg_check('checkval_t', 'n', 'variance', 0.0, 1.0)
+----
+agg must be one of
+
+statement error
+SELECT * FROM agg_check('checkval_t', 'n', 'count(*) FROM checkval_t); DROP TABLE checkval_t;--', 0.0, 1.0)
+----
+agg must be one of
+
+# ===--------------------------------------------------------------------===
+# occurrence validation
+# ===--------------------------------------------------------------------===
+
+statement error
+SELECT * FROM occurrence('checkval_t', 'v', 'median', 1, 10)
+----
+mode must be 'max' or 'min'
+
+# ===--------------------------------------------------------------------===
+# duplicate_count validation
+# ===--------------------------------------------------------------------===
+
+statement error
+SELECT * FROM duplicate_count('checkval_t', '')
+----
+column_names must contain at least one column
+
+statement error
+SELECT * FROM duplicate_count('checkval_t', 'v', -1)
+----
+max_duplicates must be >= 0
+
+# ===--------------------------------------------------------------------===
+# match_rate validation
+# ===--------------------------------------------------------------------===
+
+statement error
+SELECT * FROM match_rate('checkval_t', 'checkval_t', 'v,n', 'v')
+----
+same number of columns
+
+statement error
+SELECT * FROM match_rate('checkval_t', 'checkval_t', '', '')
+----
+left_keys must contain at least one column
+
+# ===--------------------------------------------------------------------===
+# compliance validation: injection attempts must be binder errors
+# ===--------------------------------------------------------------------===
+
+statement error
+SELECT * FROM compliance('checkval_t', NULL)
+----
+expression must not be NULL
+
+statement error
+SELECT * FROM compliance('checkval_t', '')
+----
+expression must not be empty
+
+# multi-statement payload is rejected
+statement error
+SELECT * FROM compliance('checkval_t', '1); DROP TABLE checkval_t;--')
+----
+single SQL boolean expression
+
+# unbalanced parenthesis payload is rejected
+statement error
+SELECT * FROM compliance('checkval_t', '1)) UNION SELECT * FROM checkval_t --')
+----
+failed to parse expression
+
+# the table survived the injection attempts
+query I
+SELECT COUNT(*) FROM checkval_t
+----
+2
+
+# legitimate scalar subqueries inside the expression remain allowed (documented trust model)
+query T
+SELECT status FROM compliance('checkval_t', 'n <= (SELECT MAX(n) FROM checkval_t)')
+----
+pass
+
+# ===--------------------------------------------------------------------===
+# Alias metadata fidelity for check functions
+# ===--------------------------------------------------------------------===
+
+query I
+SELECT DISTINCT alias_of FROM duckdb_functions() WHERE function_name = 'compliance';
+----
+anofox_tab_compliance
+
+query I
+SELECT DISTINCT alias_of FROM duckdb_functions() WHERE function_name = 'regex_match';
+----
+anofox_tab_regex_match
+
+query I
+SELECT DISTINCT alias_of FROM duckdb_functions() WHERE function_name = 'match_rate';
+----
+anofox_tab_match_rate

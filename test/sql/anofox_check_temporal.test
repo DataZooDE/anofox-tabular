@@ -1,0 +1,182 @@
+# name: test/sql/anofox_check_temporal.test
+# description: Time-aware checks (rel_count_change, metric_anomaly_iqr, rolling_values_in_set)
+#              against a realistic daily order feed. Reference dates are always explicit so the
+#              tests are deterministic.
+# group: [anofox_tabular]
+
+require anofox_tabular
+
+statement ok
+LOAD anofox_tabular
+
+statement ok
+SET anofox_tab_trace_enabled = false
+
+# ===--------------------------------------------------------------------===
+# Test Setup: a two-week order feed with ~10 orders/day, one day with a
+# volume collapse (2026-01-14: 2 orders) and one spike (2026-01-15: 40 orders).
+# Statuses are 'shipped'/'open' except 2026-01-15 which introduces 'SHIPPED '
+# (dirty upstream data), a realistic drift users want to catch.
+# ===--------------------------------------------------------------------===
+
+statement ok
+CREATE TEMP TABLE daily_orders AS
+SELECT
+    ROW_NUMBER() OVER () AS order_id,
+    d::DATE AS order_date,
+    CASE WHEN d = DATE '2026-01-15' AND r % 3 = 0 THEN 'SHIPPED ' -- dirty value appears on the spike day
+         WHEN r % 2 = 0 THEN 'shipped'
+         ELSE 'open' END AS status
+FROM (
+    SELECT d, unnest(range(1, CASE
+        WHEN d = DATE '2026-01-14' THEN 3   -- collapse: 2 orders
+        WHEN d = DATE '2026-01-15' THEN 41  -- spike: 40 orders
+        ELSE 11 END)) AS r                  -- normal: 10 orders/day
+    FROM (SELECT unnest(generate_series(DATE '2026-01-01', DATE '2026-01-15', INTERVAL '1 day')) AS d)
+)
+
+# sanity: 13 normal days * 10 + 2 + 40 = 172 orders
+query I
+SELECT COUNT(*) FROM daily_orders
+----
+172
+
+# ===--------------------------------------------------------------------===
+# rel_count_change
+# ===--------------------------------------------------------------------===
+
+# collapse day: 2 orders vs a 7-day baseline of 10/day -> -0.8, outside [-0.5, 0.5]
+query TRR
+SELECT status, reference_count, rel_change
+FROM rel_count_change('daily_orders', 'order_date', NULL, 7, -0.5, 0.5, DATE '2026-01-13')
+----
+pass	10.000000	0.000000
+
+query TR
+SELECT status, rel_change
+FROM rel_count_change('daily_orders', 'order_date', NULL, 7, -0.5, 0.5, DATE '2026-01-14')
+----
+fail	-0.800000
+
+# spike day: baseline includes the collapse day (avg (6*10+2)/7 ~ 8.857), 40 orders -> +3.516
+query T
+SELECT status FROM rel_count_change('daily_orders', 'order_date', NULL, 7, -0.5, 0.5, DATE '2026-01-15')
+----
+fail
+
+# wider tolerance passes the collapse day
+query T
+SELECT status FROM rel_count_change('daily_orders', 'order_date', NULL, 7, -0.9, 4.0, DATE '2026-01-14')
+----
+pass
+
+# distinct-count variant: distinct statuses per day
+query T
+SELECT status FROM rel_count_change('daily_orders', 'order_date', 'status', 7, -0.5, 0.5, DATE '2026-01-13')
+----
+pass
+
+# defaults: latest day in the data (2026-01-15, the spike) is the reference
+query T
+SELECT status FROM rel_count_change('daily_orders', 'order_date')
+----
+fail
+
+# first day has no baseline -> passes trivially
+query TT
+SELECT status, message LIKE '%baseline%' FROM rel_count_change('daily_orders', 'order_date', NULL, 7, -0.5, 0.5, DATE '2026-01-01')
+----
+pass	true
+
+# empty table passes trivially
+statement ok
+CREATE TEMP TABLE empty_orders (order_date DATE)
+
+query T
+SELECT status FROM rel_count_change('empty_orders', 'order_date')
+----
+pass
+
+# ===--------------------------------------------------------------------===
+# metric_anomaly_iqr
+# ===--------------------------------------------------------------------===
+
+# normal day within the IQR band of the preceding window
+query TR
+SELECT status, metric_value FROM metric_anomaly_iqr('daily_orders', 'order_date', NULL, 30, 1.5, 'both', DATE '2026-01-13')
+----
+pass	10.000000
+
+# collapse day is below the lower bound
+query TR
+SELECT status, metric_value FROM metric_anomaly_iqr('daily_orders', 'order_date', NULL, 30, 1.5, 'both', DATE '2026-01-14')
+----
+fail	2.000000
+
+# spike day is above the upper bound
+query T
+SELECT status FROM metric_anomaly_iqr('daily_orders', 'order_date', NULL, 30, 1.5, 'both', DATE '2026-01-15')
+----
+fail
+
+# mode 'upper' ignores the collapse (only flags spikes)
+query T
+SELECT status FROM metric_anomaly_iqr('daily_orders', 'order_date', NULL, 30, 1.5, 'upper', DATE '2026-01-14')
+----
+pass
+
+# mode 'lower' ignores the spike
+query T
+SELECT status FROM metric_anomaly_iqr('daily_orders', 'order_date', NULL, 30, 1.5, 'lower', DATE '2026-01-15')
+----
+pass
+
+# first day has no window -> passes trivially
+query T
+SELECT status FROM metric_anomaly_iqr('daily_orders', 'order_date', NULL, 30, 1.5, 'both', DATE '2026-01-01')
+----
+pass
+
+# empty table passes trivially
+query T
+SELECT status FROM metric_anomaly_iqr('empty_orders', 'order_date')
+----
+pass
+
+# invalid mode is a binder error
+statement error
+SELECT * FROM metric_anomaly_iqr('daily_orders', 'order_date', NULL, 30, 1.5, 'sideways', DATE '2026-01-13')
+----
+mode must be
+
+# ===--------------------------------------------------------------------===
+# rolling_values_in_set
+# ===--------------------------------------------------------------------===
+
+# before the dirty value appears the trailing week is clean
+query T
+SELECT status FROM rolling_values_in_set('daily_orders', 'status', ['shipped', 'open'], 'order_date', 7, 1.0, DATE '2026-01-14')
+----
+pass
+
+# the window ending on the spike day contains the dirty 'SHIPPED ' values
+query TT
+SELECT status, list_contains(sample_violations, 'SHIPPED ')
+FROM rolling_values_in_set('daily_orders', 'status', ['shipped', 'open'], 'order_date', 7, 1.0, DATE '2026-01-15')
+----
+fail	true
+
+# a relaxed rate tolerates the drift
+query T
+SELECT status FROM rolling_values_in_set('daily_orders', 'status', ['shipped', 'open'], 'order_date', 7, 0.5, DATE '2026-01-15')
+----
+pass
+
+# empty table passes trivially
+statement ok
+CREATE TEMP TABLE empty_status (status VARCHAR, order_date DATE)
+
+query T
+SELECT status FROM rolling_values_in_set('empty_status', 'status', ['open'], 'order_date')
+----
+pass

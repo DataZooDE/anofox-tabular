@@ -26,17 +26,7 @@ namespace {
 // Helpers
 //===--------------------------------------------------------------------===//
 
-static unique_ptr<SubqueryRef> ParseSubquery(const string &query, const ParserOptions &options,
-                                              const string &err_msg) {
-	Parser parser(options);
-	parser.ParseQuery(query);
-	if (parser.statements.size() != 1 ||
-	    parser.statements[0]->type != StatementType::SELECT_STATEMENT) {
-		throw ParserException(err_msg);
-	}
-	auto select_stmt = unique_ptr_cast<SQLStatement, SelectStatement>(std::move(parser.statements[0]));
-	return make_uniq<SubqueryRef>(std::move(select_stmt));
-}
+// ParseSubquery is a shared helper from anofox_sql_utils.hpp.
 
 // Escape a column/table name as a SQL string literal (single-quote escaping)
 static string EscapeStringLiteral(const string &s) {
