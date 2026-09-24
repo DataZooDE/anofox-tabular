@@ -1433,6 +1433,8 @@ void RegisterMetricFunctions(ExtensionLoader &loader) {
 	freshness_func_full.bind_replace = DATAZOO_GUARD(ANOFOX_TABULAR_BANNER, MetricFreshnessBindReplace);
 	freshness_set.AddFunction(freshness_func_full);
 
+	// Carried out of the block below so the alias can be given the same description.
+	FunctionDescription freshness_alias_desc;
 	{
 		FunctionDescription desc;
 		desc.description = "Returns rows where the most recent value in a timestamp column is older than the specified maximum age interval. Optionally accepts a reference time.";
@@ -1440,8 +1442,9 @@ void RegisterMetricFunctions(ExtensionLoader &loader) {
 		desc.examples = {"SELECT * FROM freshness('events', 'created_at', INTERVAL '1 day');"};
 		desc.categories = {"metric", "data-quality"};
 		CreateTableFunctionInfo freshness_info(freshness_set);
-		freshness_info.descriptions = {std::move(desc)};
+		freshness_info.descriptions = {desc};
 		loader.RegisterFunction(freshness_info);
+		freshness_alias_desc = std::move(desc);
 	}
 
 	// Register alias
@@ -1456,6 +1459,8 @@ void RegisterMetricFunctions(ExtensionLoader &loader) {
 	}
 	CreateTableFunctionInfo alias_freshness_info(alias_freshness_set);
 	alias_freshness_info.alias_of = "anofox_tab_freshness";
+	// Same description on the alias -- see the note on the outlier_tree alias.
+	alias_freshness_info.descriptions = {std::move(freshness_alias_desc)};
 	loader.RegisterFunction(alias_freshness_info);
 
 	// anofox_tab_isolation_forest(table_name, column_name, n_trees=100, sample_size=256, contamination=0.1,

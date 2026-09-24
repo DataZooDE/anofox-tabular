@@ -1140,11 +1140,18 @@ void RegisterOutlierTreeFunctions(ExtensionLoader &loader) {
 
     FunctionDescription ot_desc;
     ot_desc.description = "Identifies statistical outliers in a table using the OutlierTree algorithm, returning an explanation of which conditions make each row an outlier.";
-    ot_desc.parameter_names = {"table_name", "columns", "mode"};
+    // Covers the LONGEST overload. A shorter overload takes a prefix of this list and
+    // renders correctly; naming only the first three left the 9-argument form as
+    // (table_name, columns, mode, col3, col4, col5, col6, col7, col8) -- documented at
+    // the front, placeholders at the back. Names and defaults are from the bind at
+    // OutlierTreeBind (inputs[3..8]) and docs/API_REFERENCE.md.
+    ot_desc.parameter_names = {"table_name",        "columns",          "mode",
+                               "max_depth",         "max_perc_outliers", "min_size_numeric",
+                               "min_size_categ",    "z_norm",            "z_outlier"};
     ot_desc.examples = {"SELECT * FROM outlier_tree('transactions', 'amount,balance', 'summary');"};
     ot_desc.categories = {"metric", "anomaly-detection"};
     CreateTableFunctionInfo outlier_tree_info(outlier_tree_set);
-    outlier_tree_info.descriptions = {std::move(ot_desc)};
+    outlier_tree_info.descriptions = {ot_desc};
     loader.RegisterFunction(outlier_tree_info);
 
     // Register alias: outlier_tree
@@ -1153,6 +1160,11 @@ void RegisterOutlierTreeFunctions(ExtensionLoader &loader) {
     alias_outlier_tree_set.AddFunction(outlier_tree_9);
     CreateTableFunctionInfo alias_outlier_tree_info(alias_outlier_tree_set);
     alias_outlier_tree_info.alias_of = "anofox_tab_outlier_tree";
+    // The alias carries the SAME description, which is what #51 settled and what
+    // anofox_function_alias.hpp does for every other alias in this extension. Without
+    // it an agent handed the short name gets nothing back, and the arguments render as
+    // col0, col1, ... because parameter_names travels on the description.
+    alias_outlier_tree_info.descriptions = {std::move(ot_desc)};
     loader.RegisterFunction(alias_outlier_tree_info);
 }
 
