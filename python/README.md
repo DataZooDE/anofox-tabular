@@ -133,10 +133,17 @@ The `anofox_conn` session-scoped fixture is provided automatically. Tests skip i
 
 The package resolves the extension binary in this order:
 
-1. `ANOFOX_EXT_PATH` environment variable (path to local binary)
-2. `extension_path` argument to `connect()`
-3. Cached binary in `~/.anofox/extensions/`
-4. Download from community registry → S3 mirror (`https://get.erpl.io`)
+1. `extension_path` argument to `connect()` (path to a local binary)
+2. `ANOFOX_EXT_PATH` environment variable
+3. Cached binary in `~/.anofox/extensions/<duckdb version>/<platform>/`
+4. Download from the DuckDB community registry, then the S3 mirror
+   (`https://get.erpl.io`), both laid out as
+   `<base>/v<duckdb version>/<platform>/anofox_tabular.duckdb_extension.gz`
+
+Downloads are verified against a `.sha256` sidecar published next to the
+archive. The S3 mirror publishes sidecars for every build; the community
+registry does not, so by default downloads come from the mirror. Set
+`ANOFOX_ALLOW_INSECURE_DOWNLOAD=1` to accept archives without a sidecar.
 
 ## Development
 
