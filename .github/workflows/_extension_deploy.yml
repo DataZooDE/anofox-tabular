@@ -113,3 +113,5 @@ jobs:
           export EXT_VERSION=$(git tag --points-at HEAD | grep -E '^v[0-9]' | head -1)
           export EXT_VERSION=${EXT_VERSION:=$(git log -1 --format=%h)}
           ${{ inputs.deploy_script }} ${{ inputs.extension_name }} $EXT_VERSION $DUCKDB_VERSION ${{ matrix.duckdb_arch }} $BUCKET_NAME ${{inputs.deploy_latest || 'true' && 'false'}} ${{inputs.deploy_versioned || 'true' && 'false'}}
+          # Publish a sha256 sidecar next to each archive so clients can verify downloads.
+          ./scripts/upload-checksum-sidecar.sh ${{ inputs.extension_name }} $EXT_VERSION $DUCKDB_VERSION ${{ matrix.duckdb_arch }} $BUCKET_NAME ${{inputs.deploy_latest || 'true' && 'false'}} ${{inputs.deploy_versioned || 'true' && 'false'}}
