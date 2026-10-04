@@ -92,17 +92,27 @@ class AnofoxLoader:
         cached.parent.mkdir(parents=True, exist_ok=True)
         errors: list[str] = []
         for url in self._candidate_urls():
-            try:
-                expected_sha = None
-                if not self._allow_insecure_download:
+            expected_sha = None
+            if not self._allow_insecure_download:
+                # The sidecar holds the digest of the compressed archive as
+                # published (``sha256sum <name>.duckdb_extension.gz``).
+                try:
                     expected_sha = _fetch_sha256(f"{url}.sha256")
-                _download(url, cached, expected_sha256=expected_sha)
-                if expected_sha:
-                    self._cached_checksum_path().write_text(expected_sha)
-                return str(cached)
+                except Exception as exc:
+                    errors.append(
+                        f"{url}: no checksum sidecar available ({exc}); set "
+                        "ANOFOX_ALLOW_INSECURE_DOWNLOAD=1 to download without verification"
+                    )
+                    continue
+            try:
+                payload_sha = _download(url, cached, expected_sha256=expected_sha)
             except Exception as exc:
                 errors.append(f"{url}: {exc}")
                 continue
+            if expected_sha:
+                # Cache hits are verified against the *decompressed* binary.
+                self._cached_checksum_path().write_text(payload_sha)
+            return str(cached)
 
         raise RuntimeError(
             f"Could not find or download extension '{self._extension_name}'. "
@@ -141,19 +151,32 @@ class AnofoxLoader:
         return self._cached_path().with_suffix(".duckdb_extension.sha256")
 
     def _candidate_urls(self) -> list[str]:
-        """Return download URLs to try, in priority order."""
+        """
+        Return download URLs to try, in priority order.
+
+        Both sources use DuckDB's extension repository layout,
+        ``<base>/<duckdb tag>/<platform>/<name>.duckdb_extension.gz``, where
+        the DuckDB tag carries a ``v`` prefix (``v1.5.6``) while the installed
+        ``duckdb`` package reports ``1.5.6``.
+        """
         gz_name = f"{self._extension_name}.duckdb_extension.gz"
+        tag = _duckdb_tag(self._duckdb_version)
         return [
             # Community registry (official DuckDB community extensions)
-            f"{_COMMUNITY_REGISTRY_BASE}/v1/{self._duckdb_version}/{self._arch}/{self._extension_name}/{gz_name}",
-            # Direct S3 mirror (latest)
-            f"{self._s3_base_url}/{self._duckdb_version}/{self._arch}/{gz_name}",
+            f"{_COMMUNITY_REGISTRY_BASE}/{tag}/{self._arch}/{gz_name}",
+            # Direct S3 mirror (latest build from main)
+            f"{self._s3_base_url}/{tag}/{self._arch}/{gz_name}",
         ]
 
 
 # ---------------------------------------------------------------------------
 # Module-level helpers
 # ---------------------------------------------------------------------------
+
+def _duckdb_tag(version: str) -> str:
+    """Map a DuckDB version (``"1.5.6"``) to its repository tag (``"v1.5.6"``)."""
+    return version if version.startswith("v") else f"v{version}"
+
 
 def _detect_duckdb_version() -> str:
     """Return the installed DuckDB version string, e.g. ``"1.1.3"``."""
@@ -190,9 +213,13 @@ def _detect_platform() -> str:
     return f"{os_name}_{arch}"
 
 
-def _download(url: str, destination: Path, expected_sha256: Optional[str] = None) -> None:
+def _download(url: str, destination: Path, expected_sha256: Optional[str] = None) -> str:
     """
     Download *url* to *destination*, decompressing gzip on the fly.
+
+    *expected_sha256* is checked against the bytes as downloaded (the
+    compressed archive), matching a ``sha256sum`` sidecar published next to
+    it.  Returns the SHA256 of the decompressed payload that was written.
 
     Raises :class:`urllib.error.URLError` or :class:`OSError` on failure.
     """
@@ -201,15 +228,16 @@ def _download(url: str, destination: Path, expected_sha256: Optional[str] = None
         with urllib.request.urlopen(url, timeout=30) as response:
             data = response.read()
 
+        if expected_sha256:
+            _verify_sha256(data, expected_sha256)
+
         # Decompress if the URL ends with .gz
         if url.endswith(".gz"):
             data = gzip.decompress(data)
 
-        if expected_sha256:
-            _verify_sha256(data, expected_sha256)
-
         tmp.write_bytes(data)
         shutil.move(str(tmp), str(destination))
+        return hashlib.sha256(data).hexdigest()
     finally:
         if tmp.exists():
             tmp.unlink(missing_ok=True)
