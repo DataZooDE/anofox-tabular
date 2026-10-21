@@ -203,18 +203,11 @@ Declared in `vcpkg.json`:
 
 ## Updating DuckDB Version
 
-When bumping DuckDB target version:
-
-1. Update submodules:
-   - `./duckdb` → latest tagged release
-   - `./extension-ci-tools` → branch matching DuckDB version (e.g., `v1.1.0`)
-
-2. Check for C++ API breaking changes:
-   - DuckDB [Release Notes](https://github.com/duckdb/duckdb/releases)
-   - [Core extension patches](https://github.com/duckdb/duckdb/commits/main/.github/patches/extensions)
-   - Git history of affected header files
-
-3. Adjust code as needed (DuckDB's internal C++ API is not guaranteed stable)
+One source tree builds on DuckDB v1.5.6 and the DuckDB 2.0 pre-release that
+community-extensions builds; API differences sit behind duckdb-compat helpers.
+See `docs/UPDATING.md` for the line table, the rules for new code (function
+names, registration through `anofox_function_alias.hpp`, `SetChildCardinality`)
+and the bump procedure.
 
 ## Key Files to Know
 

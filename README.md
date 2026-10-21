@@ -2,7 +2,7 @@
 
 > **A data quality and validation toolkit for DuckDB**
 
-[![DuckDB](https://img.shields.io/badge/DuckDB-1.4.5_LTS_%7C_1.5.6-green)](https://duckdb.org/)
+[![DuckDB](https://img.shields.io/badge/DuckDB-1.5.6_%7C_2.0-green)](https://duckdb.org/)
 [![C++17](https://img.shields.io/badge/C++-17-blue.svg)](https://isocpp.org/)
 [![License](https://img.shields.io/badge/license-BSL%201.1-blue.svg)](LICENSE)
 [![Functions](https://img.shields.io/badge/Functions-81-green)]()
@@ -171,7 +171,7 @@ uv run postal_verification.py
 
 | Requirement | Version | Notes |
 |-------------|---------|-------|
-| **DuckDB** | ≥ v1.4.2 | Required |
+| **DuckDB** | v1.5.6 or 2.0 | Required |
 | **C++ Compiler** | GCC 8+, Clang 7+, MSVC 2019+ | C++17 compatible |
 | **CMake** | ≥ 3.21 | Build system |
 | **Ninja** | Any | Recommended for faster builds |

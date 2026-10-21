@@ -1,7 +1,7 @@
 # Anofox Tabular Extension - API Reference
 
 **Version:** 0.1.0  
-**DuckDB Version:** ≥ v1.4.2
+**DuckDB Version:** v1.5.6 or 2.0
 
 ---
 
