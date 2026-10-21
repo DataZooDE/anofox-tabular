@@ -14,6 +14,8 @@
 #include "duckdb/main/config.hpp"
 #include "duckdb/parser/parsed_data/create_scalar_function_info.hpp"
 #include "duckdb/planner/expression/bound_function_expression.hpp"
+#include "anofox_duckdb_vectors.hpp"
+#include "duckdb_compat.hpp"
 
 #include "anofox_trace.hpp"
 
@@ -621,10 +623,22 @@ std::string SnapshotDefaultRegion(ClientContext& context) {
 	return PhoneNumberManager::Instance().GetDefaultRegion();
 }
 
+// The expression's bind data: BindInfo() on DuckDB 2.0, the public bind_info
+// field before
+template <class EXPR>
+auto BindDataOf(const EXPR& expr, int) -> decltype(expr.BindInfo().get()) {
+	return expr.BindInfo().get();
+}
+template <class EXPR>
+auto BindDataOf(const EXPR& expr, long) -> decltype(expr.bind_info.get()) {
+	return expr.bind_info.get();
+}
+
 const std::string& GetBoundDefaultRegion(ExpressionState& state) {
 	auto& func_expr = state.expr.Cast<BoundFunctionExpression>();
-	D_ASSERT(func_expr.bind_info);
-	return func_expr.bind_info->Cast<PhoneBindData>().default_region;
+	auto bind_data = BindDataOf(func_expr, 0);
+	D_ASSERT(bind_data);
+	return bind_data->Cast<PhoneBindData>().default_region;
 }
 
 void PhoneParseFunction(DataChunk& args, ExpressionState& state, Vector& result) {
@@ -642,17 +656,17 @@ void PhoneParseFunction(DataChunk& args, ExpressionState& state, Vector& result)
 	result.SetVectorType(VectorType::FLAT_VECTOR);
 	auto& children = StructVector::GetEntries(result);
 
-	auto& valid_vec = *children[0];
-	auto& country_code_vec = *children[1];
-	auto& national_number_vec = *children[2];
-	auto& region_vec = *children[3];
-	auto& type_vec = *children[4];
+	auto& valid_vec = anofox::VectorRef(children[0]);
+	auto& country_code_vec = anofox::VectorRef(children[1]);
+	auto& national_number_vec = anofox::VectorRef(children[2]);
+	auto& region_vec = anofox::VectorRef(children[3]);
+	auto& type_vec = anofox::VectorRef(children[4]);
 
-	auto valid_data = FlatVector::GetData<bool>(valid_vec);
-	auto country_data = FlatVector::GetData<int32_t>(country_code_vec);
-	auto national_data = FlatVector::GetData<string_t>(national_number_vec);
-	auto region_data_out = FlatVector::GetData<string_t>(region_vec);
-	auto type_data = FlatVector::GetData<string_t>(type_vec);
+	auto valid_data = duckdb_compat::FlatData<bool>(valid_vec);
+	auto country_data = duckdb_compat::FlatData<int32_t>(country_code_vec);
+	auto national_data = duckdb_compat::FlatData<string_t>(national_number_vec);
+	auto region_data_out = duckdb_compat::FlatData<string_t>(region_vec);
+	auto type_data = duckdb_compat::FlatData<string_t>(type_vec);
 
 	for (idx_t i = 0; i < args.size(); i++) {
 		auto nr_idx = number_data.sel->get_index(i);
@@ -661,14 +675,14 @@ void PhoneParseFunction(DataChunk& args, ExpressionState& state, Vector& result)
 		if (!number_data.validity.RowIsValid(nr_idx)) {
 			FlatVector::SetNull(result, i, true);
 			for (auto& child : children) {
-				FlatVector::SetNull(*child, i, true);
+				FlatVector::SetNull(anofox::VectorRef(child), i, true);
 			}
 			continue;
 		}
 
-		auto raw_number = reinterpret_cast<string_t*>(number_data.data)[nr_idx].GetString();
+		auto raw_number = UnifiedVectorFormat::GetData<string_t>(number_data)[nr_idx].GetString();
 		auto region_hint = region_data.validity.RowIsValid(reg_idx)
-		                     ? reinterpret_cast<string_t*>(region_data.data)[reg_idx].GetString()
+		                     ? UnifiedVectorFormat::GetData<string_t>(region_data)[reg_idx].GetString()
 		                     : std::string();
 
 		auto parts = PhoneNumberManager::Instance().Parse(raw_number, region_hint, default_region);
@@ -712,7 +726,7 @@ void PhoneFormatFunction(DataChunk& args, ExpressionState& state, Vector& result
 	formats.ToUnifiedFormat(args.size(), format_data);
 
 	result.SetVectorType(VectorType::FLAT_VECTOR);
-	auto result_data = FlatVector::GetData<string_t>(result);
+	auto result_data = duckdb_compat::FlatData<string_t>(result);
 
 	for (idx_t i = 0; i < args.size(); i++) {
 		auto nr_idx = number_data.sel->get_index(i);
@@ -725,11 +739,11 @@ void PhoneFormatFunction(DataChunk& args, ExpressionState& state, Vector& result
 			continue;
 		}
 
-		auto raw_number = reinterpret_cast<string_t*>(number_data.data)[nr_idx].GetString();
+		auto raw_number = UnifiedVectorFormat::GetData<string_t>(number_data)[nr_idx].GetString();
 		auto region_hint = region_data.validity.RowIsValid(reg_idx)
-		                     ? reinterpret_cast<string_t*>(region_data.data)[reg_idx].GetString()
+		                     ? UnifiedVectorFormat::GetData<string_t>(region_data)[reg_idx].GetString()
 		                     : std::string();
-		auto format_str = reinterpret_cast<string_t*>(format_data.data)[fmt_idx].GetString();
+		auto format_str = UnifiedVectorFormat::GetData<string_t>(format_data)[fmt_idx].GetString();
 
 		// Unknown format strings raise an error (outside the try block below)
 		auto format_option = ParseFormatOption(format_str);
@@ -758,7 +772,7 @@ void PhoneRegionFunction(DataChunk& args, ExpressionState& state, Vector& result
 	regions.ToUnifiedFormat(args.size(), region_data);
 
 	result.SetVectorType(VectorType::FLAT_VECTOR);
-	auto result_data = FlatVector::GetData<string_t>(result);
+	auto result_data = duckdb_compat::FlatData<string_t>(result);
 
 	for (idx_t i = 0; i < args.size(); i++) {
 		auto nr_idx = number_data.sel->get_index(i);
@@ -769,9 +783,9 @@ void PhoneRegionFunction(DataChunk& args, ExpressionState& state, Vector& result
 			continue;
 		}
 
-		auto raw_number = reinterpret_cast<string_t*>(number_data.data)[nr_idx].GetString();
+		auto raw_number = UnifiedVectorFormat::GetData<string_t>(number_data)[nr_idx].GetString();
 		auto region_hint = region_data.validity.RowIsValid(reg_idx)
-		                     ? reinterpret_cast<string_t*>(region_data.data)[reg_idx].GetString()
+		                     ? UnifiedVectorFormat::GetData<string_t>(region_data)[reg_idx].GetString()
 		                     : std::string();
 
 		try {
@@ -797,7 +811,7 @@ void PhoneIsValidFunction(DataChunk& args, ExpressionState& state, Vector& resul
 	regions.ToUnifiedFormat(args.size(), region_data);
 
 	result.SetVectorType(VectorType::FLAT_VECTOR);
-	auto result_data = FlatVector::GetData<bool>(result);
+	auto result_data = duckdb_compat::FlatData<bool>(result);
 
 	for (idx_t i = 0; i < args.size(); i++) {
 		auto nr_idx = number_data.sel->get_index(i);
@@ -808,9 +822,9 @@ void PhoneIsValidFunction(DataChunk& args, ExpressionState& state, Vector& resul
 			continue;
 		}
 
-		auto raw_number = reinterpret_cast<string_t*>(number_data.data)[nr_idx].GetString();
+		auto raw_number = UnifiedVectorFormat::GetData<string_t>(number_data)[nr_idx].GetString();
 		auto region_hint = region_data.validity.RowIsValid(reg_idx)
-		                     ? reinterpret_cast<string_t*>(region_data.data)[reg_idx].GetString()
+		                     ? UnifiedVectorFormat::GetData<string_t>(region_data)[reg_idx].GetString()
 		                     : std::string();
 
 		result_data[i] = PhoneNumberManager::Instance().IsValid(raw_number, region_hint, default_region);
@@ -831,7 +845,7 @@ void PhoneIsPossibleFunction(DataChunk& args, ExpressionState& state, Vector& re
 	regions.ToUnifiedFormat(args.size(), region_data);
 
 	result.SetVectorType(VectorType::FLAT_VECTOR);
-	auto result_data = FlatVector::GetData<bool>(result);
+	auto result_data = duckdb_compat::FlatData<bool>(result);
 
 	for (idx_t i = 0; i < args.size(); i++) {
 		auto nr_idx = number_data.sel->get_index(i);
@@ -842,9 +856,9 @@ void PhoneIsPossibleFunction(DataChunk& args, ExpressionState& state, Vector& re
 			continue;
 		}
 
-		auto raw_number = reinterpret_cast<string_t*>(number_data.data)[nr_idx].GetString();
+		auto raw_number = UnifiedVectorFormat::GetData<string_t>(number_data)[nr_idx].GetString();
 		auto region_hint = region_data.validity.RowIsValid(reg_idx)
-		                     ? reinterpret_cast<string_t*>(region_data.data)[reg_idx].GetString()
+		                     ? UnifiedVectorFormat::GetData<string_t>(region_data)[reg_idx].GetString()
 		                     : std::string();
 
 		result_data[i] = PhoneNumberManager::Instance().IsPossible(raw_number, region_hint, default_region);
@@ -865,7 +879,7 @@ void PhoneIsValidForRegionFunction(DataChunk& args, ExpressionState& state, Vect
 	regions.ToUnifiedFormat(args.size(), region_data);
 
 	result.SetVectorType(VectorType::FLAT_VECTOR);
-	auto result_data = FlatVector::GetData<bool>(result);
+	auto result_data = duckdb_compat::FlatData<bool>(result);
 
 	for (idx_t i = 0; i < args.size(); i++) {
 		auto nr_idx = number_data.sel->get_index(i);
@@ -876,10 +890,10 @@ void PhoneIsValidForRegionFunction(DataChunk& args, ExpressionState& state, Vect
 			continue;
 		}
 
-		auto raw_number = reinterpret_cast<string_t*>(number_data.data)[nr_idx].GetString();
+		auto raw_number = UnifiedVectorFormat::GetData<string_t>(number_data)[nr_idx].GetString();
 		// When region is NULL, pass empty string to use default region (US)
 		auto region_hint = region_data.validity.RowIsValid(reg_idx)
-		                     ? reinterpret_cast<string_t*>(region_data.data)[reg_idx].GetString()
+		                     ? UnifiedVectorFormat::GetData<string_t>(region_data)[reg_idx].GetString()
 		                     : std::string();
 
 		result_data[i] = PhoneNumberManager::Instance().IsValidForRegion(raw_number, region_hint, default_region);
@@ -903,7 +917,7 @@ void PhoneMatchFunction(DataChunk& args, ExpressionState& state, Vector& result)
 	regions.ToUnifiedFormat(args.size(), region_data);
 
 	result.SetVectorType(VectorType::FLAT_VECTOR);
-	auto result_data = FlatVector::GetData<string_t>(result);
+	auto result_data = duckdb_compat::FlatData<string_t>(result);
 
 	for (idx_t i = 0; i < args.size(); i++) {
 		auto nr1_idx = number1_data.sel->get_index(i);
@@ -916,10 +930,10 @@ void PhoneMatchFunction(DataChunk& args, ExpressionState& state, Vector& result)
 			continue;
 		}
 
-		auto raw_number1 = reinterpret_cast<string_t*>(number1_data.data)[nr1_idx].GetString();
-		auto raw_number2 = reinterpret_cast<string_t*>(number2_data.data)[nr2_idx].GetString();
+		auto raw_number1 = UnifiedVectorFormat::GetData<string_t>(number1_data)[nr1_idx].GetString();
+		auto raw_number2 = UnifiedVectorFormat::GetData<string_t>(number2_data)[nr2_idx].GetString();
 		auto region_hint = region_data.validity.RowIsValid(reg_idx)
-		                     ? reinterpret_cast<string_t*>(region_data.data)[reg_idx].GetString()
+		                     ? UnifiedVectorFormat::GetData<string_t>(region_data)[reg_idx].GetString()
 		                     : std::string();
 
 		auto match_result = PhoneNumberManager::Instance().Match(raw_number1, raw_number2, region_hint, default_region);
@@ -938,7 +952,7 @@ void PhoneExampleFunction(DataChunk& args, ExpressionState& state, Vector& resul
 	regions.ToUnifiedFormat(args.size(), region_data);
 
 	result.SetVectorType(VectorType::FLAT_VECTOR);
-	auto result_data = FlatVector::GetData<string_t>(result);
+	auto result_data = duckdb_compat::FlatData<string_t>(result);
 
 	for (idx_t i = 0; i < args.size(); i++) {
 		auto reg_idx = region_data.sel->get_index(i);
@@ -948,7 +962,7 @@ void PhoneExampleFunction(DataChunk& args, ExpressionState& state, Vector& resul
 			continue;
 		}
 
-		auto region_hint = reinterpret_cast<string_t*>(region_data.data)[reg_idx].GetString();
+		auto region_hint = UnifiedVectorFormat::GetData<string_t>(region_data)[reg_idx].GetString();
 
 		auto example = PhoneNumberManager::Instance().GetExampleNumber(region_hint, default_region);
 		if (example.empty()) {
@@ -969,7 +983,7 @@ unique_ptr<GlobalTableFunctionState> PhoneStatusInit(ClientContext&, TableFuncti
 }
 
 unique_ptr<FunctionData> PhoneStatusBind(ClientContext& context, TableFunctionBindInput&,
-                                         vector<LogicalType>& return_types, vector<string>& names) {
+                                         vector<LogicalType>& return_types, duckdb_compat::BindNames &names) {
 	PostHogTelemetry::Instance().RecordFunctionCall("phonenumber_status");
 	names.emplace_back("initialized");
 	return_types.emplace_back(LogicalTypeId::BOOLEAN);
@@ -984,37 +998,35 @@ unique_ptr<FunctionData> PhoneScalarBind(ClientContext& context, const char* tel
 	return make_uniq<PhoneBindData>(SnapshotDefaultRegion(context));
 }
 
-unique_ptr<FunctionData> PhoneParseBind(ClientContext& context, ScalarFunction&, vector<unique_ptr<Expression>>&) {
+unique_ptr<FunctionData> PhoneParseBind(ClientContext &context) {
 	return PhoneScalarBind(context, "phonenumber_parse");
 }
 
-unique_ptr<FunctionData> PhoneFormatBind(ClientContext& context, ScalarFunction&, vector<unique_ptr<Expression>>&) {
+unique_ptr<FunctionData> PhoneFormatBind(ClientContext &context) {
 	return PhoneScalarBind(context, "phonenumber_format");
 }
 
-unique_ptr<FunctionData> PhoneRegionBind(ClientContext& context, ScalarFunction&, vector<unique_ptr<Expression>>&) {
+unique_ptr<FunctionData> PhoneRegionBind(ClientContext &context) {
 	return PhoneScalarBind(context, "phonenumber_region");
 }
 
-unique_ptr<FunctionData> PhoneIsValidBind(ClientContext& context, ScalarFunction&, vector<unique_ptr<Expression>>&) {
+unique_ptr<FunctionData> PhoneIsValidBind(ClientContext &context) {
 	return PhoneScalarBind(context, "phonenumber_is_valid");
 }
 
-unique_ptr<FunctionData> PhoneIsPossibleBind(ClientContext& context, ScalarFunction&,
-                                             vector<unique_ptr<Expression>>&) {
+unique_ptr<FunctionData> PhoneIsPossibleBind(ClientContext &context) {
 	return PhoneScalarBind(context, "phonenumber_is_possible");
 }
 
-unique_ptr<FunctionData> PhoneIsValidForRegionBind(ClientContext& context, ScalarFunction&,
-                                                   vector<unique_ptr<Expression>>&) {
+unique_ptr<FunctionData> PhoneIsValidForRegionBind(ClientContext &context) {
 	return PhoneScalarBind(context, "phonenumber_is_valid_for_region");
 }
 
-unique_ptr<FunctionData> PhoneMatchBind(ClientContext& context, ScalarFunction&, vector<unique_ptr<Expression>>&) {
+unique_ptr<FunctionData> PhoneMatchBind(ClientContext &context) {
 	return PhoneScalarBind(context, "phonenumber_match");
 }
 
-unique_ptr<FunctionData> PhoneExampleBind(ClientContext& context, ScalarFunction&, vector<unique_ptr<Expression>>&) {
+unique_ptr<FunctionData> PhoneExampleBind(ClientContext &context) {
 	return PhoneScalarBind(context, "phonenumber_example");
 }
 
@@ -1028,7 +1040,7 @@ void PhoneStatusFunction(ClientContext&, TableFunctionInput& input, DataChunk& o
 	// Report the session's default region (snapshotted at bind time), not the
 	// process-wide fallback.
 	auto& bind_data = input.bind_data->Cast<PhoneBindData>();
-	output.SetCardinality(1);
+	duckdb_compat::SetChildCardinality(output, 1);
 	output.SetValue(0, 0, Value::BOOLEAN(status.initialized));
 	output.SetValue(1, 0, Value(bind_data.default_region));
 	state.done = true;
@@ -1039,75 +1051,75 @@ void PhoneStatusFunction(ClientContext&, TableFunctionInput& input, DataChunk& o
 // bind data at bind time, so they are stable within a query but not across
 // queries.
 ScalarFunction CreateParseScalar(const string& name) {
-	ScalarFunction function(name, {LogicalTypeId::VARCHAR, LogicalTypeId::VARCHAR},
+	ScalarFunction function(duckdb_compat::FunctionName(name), {LogicalTypeId::VARCHAR, LogicalTypeId::VARCHAR},
 	                        LogicalType::STRUCT({{"valid", LogicalTypeId::BOOLEAN},
 	                                             {"country_code", LogicalTypeId::INTEGER},
 	                                             {"national_number", LogicalTypeId::VARCHAR},
 	                                             {"region", LogicalTypeId::VARCHAR},
 	                                             {"type", LogicalTypeId::VARCHAR}}),
 	                        PhoneParseFunction);
-	function.stability = FunctionStability::CONSISTENT_WITHIN_QUERY;
-	function.null_handling = FunctionNullHandling::SPECIAL_HANDLING;
+	duckdb_compat::SetStability(function, FunctionStability::CONSISTENT_WITHIN_QUERY);
+	duckdb_compat::SetNullHandling(function, FunctionNullHandling::SPECIAL_HANDLING);
 	return function;
 }
 
 ScalarFunction CreateFormatScalar(const string& name) {
-	ScalarFunction function(name, {LogicalTypeId::VARCHAR, LogicalTypeId::VARCHAR, LogicalTypeId::VARCHAR},
+	ScalarFunction function(duckdb_compat::FunctionName(name), {LogicalTypeId::VARCHAR, LogicalTypeId::VARCHAR, LogicalTypeId::VARCHAR},
 	                        LogicalTypeId::VARCHAR, PhoneFormatFunction);
-	function.stability = FunctionStability::CONSISTENT_WITHIN_QUERY;
-	function.null_handling = FunctionNullHandling::SPECIAL_HANDLING;
+	duckdb_compat::SetStability(function, FunctionStability::CONSISTENT_WITHIN_QUERY);
+	duckdb_compat::SetNullHandling(function, FunctionNullHandling::SPECIAL_HANDLING);
 	return function;
 }
 
 ScalarFunction CreateRegionScalar(const string& name) {
-	ScalarFunction function(name, {LogicalTypeId::VARCHAR, LogicalTypeId::VARCHAR}, LogicalTypeId::VARCHAR,
+	ScalarFunction function(duckdb_compat::FunctionName(name), {LogicalTypeId::VARCHAR, LogicalTypeId::VARCHAR}, LogicalTypeId::VARCHAR,
 	                        PhoneRegionFunction);
-	function.stability = FunctionStability::CONSISTENT_WITHIN_QUERY;
-	function.null_handling = FunctionNullHandling::SPECIAL_HANDLING;
+	duckdb_compat::SetStability(function, FunctionStability::CONSISTENT_WITHIN_QUERY);
+	duckdb_compat::SetNullHandling(function, FunctionNullHandling::SPECIAL_HANDLING);
 	return function;
 }
 
 ScalarFunction CreateIsValidScalar(const string& name) {
-	ScalarFunction function(name, {LogicalTypeId::VARCHAR, LogicalTypeId::VARCHAR}, LogicalTypeId::BOOLEAN,
+	ScalarFunction function(duckdb_compat::FunctionName(name), {LogicalTypeId::VARCHAR, LogicalTypeId::VARCHAR}, LogicalTypeId::BOOLEAN,
 	                        PhoneIsValidFunction);
-	function.stability = FunctionStability::CONSISTENT_WITHIN_QUERY;
-	function.null_handling = FunctionNullHandling::SPECIAL_HANDLING;
+	duckdb_compat::SetStability(function, FunctionStability::CONSISTENT_WITHIN_QUERY);
+	duckdb_compat::SetNullHandling(function, FunctionNullHandling::SPECIAL_HANDLING);
 	return function;
 }
 
 ScalarFunction CreateIsPossibleScalar(const string& name) {
-	ScalarFunction function(name, {LogicalTypeId::VARCHAR, LogicalTypeId::VARCHAR}, LogicalTypeId::BOOLEAN,
+	ScalarFunction function(duckdb_compat::FunctionName(name), {LogicalTypeId::VARCHAR, LogicalTypeId::VARCHAR}, LogicalTypeId::BOOLEAN,
 	                        PhoneIsPossibleFunction);
-	function.stability = FunctionStability::CONSISTENT_WITHIN_QUERY;
-	function.null_handling = FunctionNullHandling::SPECIAL_HANDLING;
+	duckdb_compat::SetStability(function, FunctionStability::CONSISTENT_WITHIN_QUERY);
+	duckdb_compat::SetNullHandling(function, FunctionNullHandling::SPECIAL_HANDLING);
 	return function;
 }
 
 ScalarFunction CreateIsValidForRegionScalar(const string& name) {
-	ScalarFunction function(name, {LogicalTypeId::VARCHAR, LogicalTypeId::VARCHAR}, LogicalTypeId::BOOLEAN,
+	ScalarFunction function(duckdb_compat::FunctionName(name), {LogicalTypeId::VARCHAR, LogicalTypeId::VARCHAR}, LogicalTypeId::BOOLEAN,
 	                        PhoneIsValidForRegionFunction);
-	function.stability = FunctionStability::CONSISTENT_WITHIN_QUERY;
-	function.null_handling = FunctionNullHandling::SPECIAL_HANDLING;
+	duckdb_compat::SetStability(function, FunctionStability::CONSISTENT_WITHIN_QUERY);
+	duckdb_compat::SetNullHandling(function, FunctionNullHandling::SPECIAL_HANDLING);
 	return function;
 }
 
 ScalarFunction CreateMatchScalar(const string& name) {
-	ScalarFunction function(name, {LogicalTypeId::VARCHAR, LogicalTypeId::VARCHAR, LogicalTypeId::VARCHAR},
+	ScalarFunction function(duckdb_compat::FunctionName(name), {LogicalTypeId::VARCHAR, LogicalTypeId::VARCHAR, LogicalTypeId::VARCHAR},
 	                        LogicalTypeId::VARCHAR, PhoneMatchFunction);
-	function.stability = FunctionStability::CONSISTENT_WITHIN_QUERY;
-	function.null_handling = FunctionNullHandling::SPECIAL_HANDLING;
+	duckdb_compat::SetStability(function, FunctionStability::CONSISTENT_WITHIN_QUERY);
+	duckdb_compat::SetNullHandling(function, FunctionNullHandling::SPECIAL_HANDLING);
 	return function;
 }
 
 ScalarFunction CreateExampleScalar(const string& name) {
-	ScalarFunction function(name, {LogicalTypeId::VARCHAR}, LogicalTypeId::VARCHAR, PhoneExampleFunction);
-	function.stability = FunctionStability::CONSISTENT_WITHIN_QUERY;
-	function.null_handling = FunctionNullHandling::SPECIAL_HANDLING;
+	ScalarFunction function(duckdb_compat::FunctionName(name), {LogicalTypeId::VARCHAR}, LogicalTypeId::VARCHAR, PhoneExampleFunction);
+	duckdb_compat::SetStability(function, FunctionStability::CONSISTENT_WITHIN_QUERY);
+	duckdb_compat::SetNullHandling(function, FunctionNullHandling::SPECIAL_HANDLING);
 	return function;
 }
 
 TableFunction CreateStatusTable(const string& name) {
-	return TableFunction(name, {}, DATAZOO_GUARD(ANOFOX_TABULAR_BANNER, PhoneStatusFunction), DATAZOO_GUARD(ANOFOX_TABULAR_BANNER, PhoneStatusBind), PhoneStatusInit);
+	return TableFunction(duckdb_compat::FunctionName(name), {}, DATAZOO_GUARD(ANOFOX_TABULAR_BANNER, PhoneStatusFunction), DATAZOO_GUARD(ANOFOX_TABULAR_BANNER, PhoneStatusBind), PhoneStatusInit);
 }
 
 } // namespace
@@ -1132,7 +1144,7 @@ void RegisterPhonenumberFunctions(ExtensionLoader& loader) {
 		desc.examples = {"SELECT phonenumber_parse('+14155552671');"};
 		desc.categories = {"phone", "parsing"};
 		ScalarFunction parse_func = CreateParseScalar("anofox_tab_phonenumber_parse");
-		parse_func.bind = PhoneParseBind;
+		parse_func.SetBindCallback(&ScalarContextBind<PhoneParseBind>::Bind);
 		RegisterScalarFunctionWithAlias(loader, parse_func, "phonenumber_parse", {std::move(desc)});
 	}
 
@@ -1145,7 +1157,7 @@ void RegisterPhonenumberFunctions(ExtensionLoader& loader) {
 		desc.examples = {"SELECT phonenumber_format('+14155552671', 'NATIONAL');"};
 		desc.categories = {"phone", "formatting"};
 		ScalarFunction format_func = CreateFormatScalar("anofox_tab_phonenumber_format");
-		format_func.bind = PhoneFormatBind;
+		format_func.SetBindCallback(&ScalarContextBind<PhoneFormatBind>::Bind);
 		RegisterScalarFunctionWithAlias(loader, format_func, "phonenumber_format", {std::move(desc)});
 	}
 
@@ -1158,7 +1170,7 @@ void RegisterPhonenumberFunctions(ExtensionLoader& loader) {
 		desc.examples = {"SELECT phonenumber_region('+14155552671');"};
 		desc.categories = {"phone", "parsing"};
 		ScalarFunction region_func = CreateRegionScalar("anofox_tab_phonenumber_region");
-		region_func.bind = PhoneRegionBind;
+		region_func.SetBindCallback(&ScalarContextBind<PhoneRegionBind>::Bind);
 		RegisterScalarFunctionWithAlias(loader, region_func, "phonenumber_region", {std::move(desc)});
 	}
 
@@ -1171,7 +1183,7 @@ void RegisterPhonenumberFunctions(ExtensionLoader& loader) {
 		desc.examples = {"SELECT phonenumber_is_valid('+14155552671');"};
 		desc.categories = {"phone", "validation"};
 		ScalarFunction is_valid_func = CreateIsValidScalar("anofox_tab_phonenumber_is_valid");
-		is_valid_func.bind = PhoneIsValidBind;
+		is_valid_func.SetBindCallback(&ScalarContextBind<PhoneIsValidBind>::Bind);
 		RegisterScalarFunctionWithAlias(loader, is_valid_func, "phonenumber_is_valid", {std::move(desc)});
 	}
 
@@ -1184,7 +1196,7 @@ void RegisterPhonenumberFunctions(ExtensionLoader& loader) {
 		desc.examples = {"SELECT phonenumber_is_possible('+14155552671');"};
 		desc.categories = {"phone", "validation"};
 		ScalarFunction is_possible_func = CreateIsPossibleScalar("anofox_tab_phonenumber_is_possible");
-		is_possible_func.bind = PhoneIsPossibleBind;
+		is_possible_func.SetBindCallback(&ScalarContextBind<PhoneIsPossibleBind>::Bind);
 		RegisterScalarFunctionWithAlias(loader, is_possible_func, "phonenumber_is_possible", {std::move(desc)});
 	}
 
@@ -1197,7 +1209,7 @@ void RegisterPhonenumberFunctions(ExtensionLoader& loader) {
 		desc.examples = {"SELECT phonenumber_is_valid_for_region('+14155552671', 'US');"};
 		desc.categories = {"phone", "validation"};
 		ScalarFunction is_valid_for_region_func = CreateIsValidForRegionScalar("anofox_tab_phonenumber_is_valid_for_region");
-		is_valid_for_region_func.bind = PhoneIsValidForRegionBind;
+		is_valid_for_region_func.SetBindCallback(&ScalarContextBind<PhoneIsValidForRegionBind>::Bind);
 		RegisterScalarFunctionWithAlias(loader, is_valid_for_region_func, "phonenumber_is_valid_for_region", {std::move(desc)});
 	}
 
@@ -1210,7 +1222,7 @@ void RegisterPhonenumberFunctions(ExtensionLoader& loader) {
 		desc.examples = {"SELECT phonenumber_match('+14155552671', '(415) 555-2671');"};
 		desc.categories = {"phone", "comparison"};
 		ScalarFunction match_func = CreateMatchScalar("anofox_tab_phonenumber_match");
-		match_func.bind = PhoneMatchBind;
+		match_func.SetBindCallback(&ScalarContextBind<PhoneMatchBind>::Bind);
 		RegisterScalarFunctionWithAlias(loader, match_func, "phonenumber_match", {std::move(desc)});
 	}
 
@@ -1223,7 +1235,7 @@ void RegisterPhonenumberFunctions(ExtensionLoader& loader) {
 		desc.examples = {"SELECT phonenumber_example('US');"};
 		desc.categories = {"phone", "utility"};
 		ScalarFunction example_func = CreateExampleScalar("anofox_tab_phonenumber_example");
-		example_func.bind = PhoneExampleBind;
+		example_func.SetBindCallback(&ScalarContextBind<PhoneExampleBind>::Bind);
 		RegisterScalarFunctionWithAlias(loader, example_func, "phonenumber_example", {std::move(desc)});
 	}
 

@@ -177,52 +177,52 @@ static void VATIsValidFunc(DataChunk& args, ExpressionState& state,
 // ============================================================================
 
 // Telemetry bind functions for scalar functions
-unique_ptr<FunctionData> VatBind(ClientContext &, ScalarFunction &, vector<unique_ptr<Expression>> &) {
+unique_ptr<FunctionData> VatBind(ClientContext &) {
   PostHogTelemetry::Instance().RecordFunctionCall("vat");
   return nullptr;
 }
 
-unique_ptr<FunctionData> IsValidVatCountryBind(ClientContext &, ScalarFunction &, vector<unique_ptr<Expression>> &) {
+unique_ptr<FunctionData> IsValidVatCountryBind(ClientContext &) {
   PostHogTelemetry::Instance().RecordFunctionCall("is_valid_vat_country");
   return nullptr;
 }
 
-unique_ptr<FunctionData> VatNormalizeBind(ClientContext &, ScalarFunction &, vector<unique_ptr<Expression>> &) {
+unique_ptr<FunctionData> VatNormalizeBind(ClientContext &) {
   PostHogTelemetry::Instance().RecordFunctionCall("vat_normalize");
   return nullptr;
 }
 
-unique_ptr<FunctionData> VatIsValidSyntaxBind(ClientContext &, ScalarFunction &, vector<unique_ptr<Expression>> &) {
+unique_ptr<FunctionData> VatIsValidSyntaxBind(ClientContext &) {
   PostHogTelemetry::Instance().RecordFunctionCall("vat_is_valid_syntax");
   return nullptr;
 }
 
-unique_ptr<FunctionData> VatSplitBind(ClientContext &, ScalarFunction &, vector<unique_ptr<Expression>> &) {
+unique_ptr<FunctionData> VatSplitBind(ClientContext &) {
   PostHogTelemetry::Instance().RecordFunctionCall("vat_split");
   return nullptr;
 }
 
-unique_ptr<FunctionData> VatExistsBind(ClientContext &, ScalarFunction &, vector<unique_ptr<Expression>> &) {
+unique_ptr<FunctionData> VatExistsBind(ClientContext &) {
   PostHogTelemetry::Instance().RecordFunctionCall("vat_exists");
   return nullptr;
 }
 
-unique_ptr<FunctionData> VatIsEuMemberBind(ClientContext &, ScalarFunction &, vector<unique_ptr<Expression>> &) {
+unique_ptr<FunctionData> VatIsEuMemberBind(ClientContext &) {
   PostHogTelemetry::Instance().RecordFunctionCall("vat_is_eu_member");
   return nullptr;
 }
 
-unique_ptr<FunctionData> VatCountryNameBind(ClientContext &, ScalarFunction &, vector<unique_ptr<Expression>> &) {
+unique_ptr<FunctionData> VatCountryNameBind(ClientContext &) {
   PostHogTelemetry::Instance().RecordFunctionCall("vat_country_name");
   return nullptr;
 }
 
-unique_ptr<FunctionData> VatFormatBind(ClientContext &, ScalarFunction &, vector<unique_ptr<Expression>> &) {
+unique_ptr<FunctionData> VatFormatBind(ClientContext &) {
   PostHogTelemetry::Instance().RecordFunctionCall("vat_format");
   return nullptr;
 }
 
-unique_ptr<FunctionData> VatIsValidBind(ClientContext &, ScalarFunction &, vector<unique_ptr<Expression>> &) {
+unique_ptr<FunctionData> VatIsValidBind(ClientContext &) {
   PostHogTelemetry::Instance().RecordFunctionCall("vat_is_valid");
   return nullptr;
 }
@@ -240,7 +240,7 @@ void RegisterVATFunctions(ExtensionLoader& loader) {
     desc.examples = {"SELECT vat('DE123456789');"};
     desc.categories = {"vat", "parsing"};
     ScalarFunction vat_func("anofox_tab_vat", {LogicalTypeId::VARCHAR}, GetVATType(), VATParseFunc);
-    vat_func.bind = VatBind;
+    vat_func.SetBindCallback(&anofox::ScalarContextBind<VatBind>::Bind);
     anofox::RegisterScalarFunctionWithAlias(loader, vat_func, "vat", {std::move(desc)});
   }
   {
@@ -251,7 +251,7 @@ void RegisterVATFunctions(ExtensionLoader& loader) {
     desc.examples = {"SELECT is_valid_vat_country('DE');"};
     desc.categories = {"vat", "validation"};
     ScalarFunction is_valid_country_func("anofox_tab_is_valid_vat_country", {LogicalTypeId::VARCHAR}, LogicalTypeId::BOOLEAN, IsValidVATCountryFunc);
-    is_valid_country_func.bind = IsValidVatCountryBind;
+    is_valid_country_func.SetBindCallback(&anofox::ScalarContextBind<IsValidVatCountryBind>::Bind);
     anofox::RegisterScalarFunctionWithAlias(loader, is_valid_country_func, "is_valid_vat_country", {std::move(desc)});
   }
   {
@@ -262,7 +262,7 @@ void RegisterVATFunctions(ExtensionLoader& loader) {
     desc.examples = {"SELECT vat_normalize('DE 123 456 789');"};
     desc.categories = {"vat"};
     ScalarFunction normalize_func("anofox_tab_vat_normalize", {LogicalTypeId::VARCHAR}, LogicalTypeId::VARCHAR, VATNormalizeFunc);
-    normalize_func.bind = VatNormalizeBind;
+    normalize_func.SetBindCallback(&anofox::ScalarContextBind<VatNormalizeBind>::Bind);
     anofox::RegisterScalarFunctionWithAlias(loader, normalize_func, "vat_normalize", {std::move(desc)});
   }
   {
@@ -273,7 +273,7 @@ void RegisterVATFunctions(ExtensionLoader& loader) {
     desc.examples = {"SELECT vat_is_valid_syntax('DE123456789');"};
     desc.categories = {"vat", "validation"};
     ScalarFunction is_valid_syntax_func("anofox_tab_vat_is_valid_syntax", {LogicalTypeId::VARCHAR}, LogicalTypeId::BOOLEAN, VATIsValidSyntaxFunc);
-    is_valid_syntax_func.bind = VatIsValidSyntaxBind;
+    is_valid_syntax_func.SetBindCallback(&anofox::ScalarContextBind<VatIsValidSyntaxBind>::Bind);
     anofox::RegisterScalarFunctionWithAlias(loader, is_valid_syntax_func, "vat_is_valid_syntax", {std::move(desc)});
   }
   {
@@ -284,7 +284,7 @@ void RegisterVATFunctions(ExtensionLoader& loader) {
     desc.examples = {"SELECT vat_split('DE123456789');"};
     desc.categories = {"vat", "parsing"};
     ScalarFunction split_func("anofox_tab_vat_split", {LogicalTypeId::VARCHAR}, GetVATType(), VATSplitFunc);
-    split_func.bind = VatSplitBind;
+    split_func.SetBindCallback(&anofox::ScalarContextBind<VatSplitBind>::Bind);
     anofox::RegisterScalarFunctionWithAlias(loader, split_func, "vat_split", {std::move(desc)});
   }
   {
@@ -295,7 +295,7 @@ void RegisterVATFunctions(ExtensionLoader& loader) {
     desc.examples = {"SELECT vat_exists('DE123456789');"};
     desc.categories = {"vat", "validation"};
     ScalarFunction exists_func("anofox_tab_vat_exists", {LogicalTypeId::VARCHAR}, LogicalTypeId::BOOLEAN, VATExistsFunc);
-    exists_func.bind = VatExistsBind;
+    exists_func.SetBindCallback(&anofox::ScalarContextBind<VatExistsBind>::Bind);
     anofox::RegisterScalarFunctionWithAlias(loader, exists_func, "vat_exists", {std::move(desc)});
   }
   {
@@ -306,7 +306,7 @@ void RegisterVATFunctions(ExtensionLoader& loader) {
     desc.examples = {"SELECT vat_is_eu_member('DE123456789');"};
     desc.categories = {"vat", "utility"};
     ScalarFunction is_eu_member_func("anofox_tab_vat_is_eu_member", {LogicalTypeId::VARCHAR}, LogicalTypeId::BOOLEAN, VATIsEUMemberFunc);
-    is_eu_member_func.bind = VatIsEuMemberBind;
+    is_eu_member_func.SetBindCallback(&anofox::ScalarContextBind<VatIsEuMemberBind>::Bind);
     anofox::RegisterScalarFunctionWithAlias(loader, is_eu_member_func, "vat_is_eu_member", {std::move(desc)});
   }
   {
@@ -317,7 +317,7 @@ void RegisterVATFunctions(ExtensionLoader& loader) {
     desc.examples = {"SELECT vat_country_name('DE123456789');"};
     desc.categories = {"vat", "utility"};
     ScalarFunction country_name_func("anofox_tab_vat_country_name", {LogicalTypeId::VARCHAR}, LogicalTypeId::VARCHAR, VATCountryNameFunc);
-    country_name_func.bind = VatCountryNameBind;
+    country_name_func.SetBindCallback(&anofox::ScalarContextBind<VatCountryNameBind>::Bind);
     anofox::RegisterScalarFunctionWithAlias(loader, country_name_func, "vat_country_name", {std::move(desc)});
   }
   {
@@ -328,7 +328,7 @@ void RegisterVATFunctions(ExtensionLoader& loader) {
     desc.examples = {"SELECT vat_format('DE123456789', 'iso');"};
     desc.categories = {"vat", "formatting"};
     ScalarFunction format_func("anofox_tab_vat_format", {LogicalTypeId::VARCHAR, LogicalTypeId::VARCHAR}, LogicalTypeId::VARCHAR, VATFormatFunc);
-    format_func.bind = VatFormatBind;
+    format_func.SetBindCallback(&anofox::ScalarContextBind<VatFormatBind>::Bind);
     anofox::RegisterScalarFunctionWithAlias(loader, format_func, "vat_format", {std::move(desc)});
   }
   {
@@ -339,7 +339,7 @@ void RegisterVATFunctions(ExtensionLoader& loader) {
     desc.examples = {"SELECT vat_is_valid('DE111111125');"};
     desc.categories = {"vat", "validation"};
     ScalarFunction is_valid_func("anofox_tab_vat_is_valid", {LogicalTypeId::VARCHAR}, LogicalTypeId::BOOLEAN, VATIsValidFunc);
-    is_valid_func.bind = VatIsValidBind;
+    is_valid_func.SetBindCallback(&anofox::ScalarContextBind<VatIsValidBind>::Bind);
     anofox::RegisterScalarFunctionWithAlias(loader, is_valid_func, "vat_is_valid", {std::move(desc)});
   }
 }

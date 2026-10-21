@@ -7,6 +7,7 @@
 #include "duckdb/parser/parser.hpp"
 #include "duckdb/parser/tableref/subqueryref.hpp"
 #include "duckdb/common/exception.hpp"
+#include "duckdb_compat.hpp"
 #include "anofox_tabular_banner.hpp"
 
 #include <algorithm>
@@ -23,7 +24,7 @@ static void AddPrefixAritiesBindReplace(TableFunctionSet &set, const string &nam
                                         table_function_bind_replace_t bind_replace) {
 	for (idx_t arity = min_arity; arity <= full_args.size(); ++arity) {
 		vector<LogicalType> args(full_args.begin(), full_args.begin() + arity);
-		TableFunction func(name, std::move(args), nullptr, nullptr);
+		TableFunction func(duckdb_compat::FunctionName(name), std::move(args), nullptr, nullptr);
 		func.bind_replace = bind_replace;
 		set.AddFunction(func);
 	}
@@ -62,13 +63,13 @@ void ValidateBooleanExpression(ClientContext &context, const string &expr, const
 	if (expr.empty()) {
 		throw BinderException(function_name + ": expression must not be empty");
 	}
-	Parser parser(context.GetParserOptions());
+	vector<unique_ptr<SQLStatement>> statements;
 	try {
-		parser.ParseQuery("SELECT (" + expr + ")");
+		statements = ParseWithContextSettings(context, "SELECT (" + expr + ")");
 	} catch (const std::exception &ex) {
 		throw BinderException(function_name + ": failed to parse expression '" + expr + "': " + ex.what());
 	}
-	if (parser.statements.size() != 1 || parser.statements[0]->type != StatementType::SELECT_STATEMENT) {
+	if (statements.size() != 1 || statements[0]->type != StatementType::SELECT_STATEMENT) {
 		throw BinderException(function_name + ": expression must be a single SQL boolean expression");
 	}
 }
@@ -602,7 +603,7 @@ static unique_ptr<TableRef> CheckRegexMatchBindReplace(ClientContext &context, T
 
 	string table_ref = BuildQueryTableRef(table_name);
 	string sql = GenerateRegexMatchSQL(table_ref, column_name, pattern, input.inputs[3], max_rate);
-	return ParseSubquery(sql, context.GetParserOptions(), "Failed to parse regex match check query");
+	return ParseSubquery(sql, context, "Failed to parse regex match check query");
 }
 
 static unique_ptr<TableRef> CheckValuesInSetBindReplace(ClientContext &context, TableFunctionBindInput &input) {
@@ -620,7 +621,7 @@ static unique_ptr<TableRef> CheckValuesInSetBindReplace(ClientContext &context, 
 
 	string table_ref = BuildQueryTableRef(table_name);
 	string sql = GenerateValuesInSetSQL(table_ref, column_name, allowed_array, min_rate);
-	return ParseSubquery(sql, context.GetParserOptions(), "Failed to parse values-in-set check query");
+	return ParseSubquery(sql, context, "Failed to parse values-in-set check query");
 }
 
 static unique_ptr<TableRef> CheckAggBindReplace(ClientContext &context, TableFunctionBindInput &input) {
@@ -644,7 +645,7 @@ static unique_ptr<TableRef> CheckAggBindReplace(ClientContext &context, TableFun
 
 	string table_ref = BuildQueryTableRef(table_name);
 	string sql = GenerateAggCheckSQL(table_ref, column_name, agg, input.inputs[3], input.inputs[4]);
-	return ParseSubquery(sql, context.GetParserOptions(), "Failed to parse aggregate check query");
+	return ParseSubquery(sql, context, "Failed to parse aggregate check query");
 }
 
 static unique_ptr<TableRef> CheckDuplicateCountBindReplace(ClientContext &context, TableFunctionBindInput &input) {
@@ -666,7 +667,7 @@ static unique_ptr<TableRef> CheckDuplicateCountBindReplace(ClientContext &contex
 
 	string table_ref = BuildQueryTableRef(table_name);
 	string sql = GenerateDuplicateCountSQL(table_ref, column_names, max_duplicates);
-	return ParseSubquery(sql, context.GetParserOptions(), "Failed to parse duplicate count check query");
+	return ParseSubquery(sql, context, "Failed to parse duplicate count check query");
 }
 
 static unique_ptr<TableRef> CheckOccurrenceBindReplace(ClientContext &context, TableFunctionBindInput &input) {
@@ -686,7 +687,7 @@ static unique_ptr<TableRef> CheckOccurrenceBindReplace(ClientContext &context, T
 
 	string table_ref = BuildQueryTableRef(table_name);
 	string sql = GenerateOccurrenceSQL(table_ref, column_name, mode, input.inputs[3], input.inputs[4]);
-	return ParseSubquery(sql, context.GetParserOptions(), "Failed to parse occurrence check query");
+	return ParseSubquery(sql, context, "Failed to parse occurrence check query");
 }
 
 static unique_ptr<TableRef> CheckMatchRateBindReplace(ClientContext &context, TableFunctionBindInput &input) {
@@ -714,7 +715,7 @@ static unique_ptr<TableRef> CheckMatchRateBindReplace(ClientContext &context, Ta
 	                                       "', keys=" + std::to_string(left_keys.size()));
 	string sql = GenerateMatchRateSQL(BuildQueryTableRef(left_table), BuildQueryTableRef(right_table), left_keys,
 	                                  right_keys, min_rate);
-	return ParseSubquery(sql, context.GetParserOptions(), "Failed to parse match rate check query");
+	return ParseSubquery(sql, context, "Failed to parse match rate check query");
 }
 
 static unique_ptr<TableRef> CheckComplianceBindReplace(ClientContext &context, TableFunctionBindInput &input) {
@@ -736,7 +737,7 @@ static unique_ptr<TableRef> CheckComplianceBindReplace(ClientContext &context, T
 	AnofoxTrace(AnofoxLogLevel::Debug, "check: compliance table='" + table_name + "', expression='" + expression + "'");
 	string table_ref = BuildQueryTableRef(table_name);
 	string sql = GenerateComplianceSQL(table_ref, expression, min_rate);
-	return ParseSubquery(sql, context.GetParserOptions(), "Failed to parse compliance check query");
+	return ParseSubquery(sql, context, "Failed to parse compliance check query");
 }
 
 static unique_ptr<TableRef> CheckRelCountChangeBindReplace(ClientContext &context, TableFunctionBindInput &input) {
@@ -763,7 +764,7 @@ static unique_ptr<TableRef> CheckRelCountChangeBindReplace(ClientContext &contex
 	string table_ref = BuildQueryTableRef(table_name);
 	string sql = GenerateRelCountChangeSQL(table_ref, date_column, count_column, window_days, lower, upper,
 	                                       reference_date);
-	return ParseSubquery(sql, context.GetParserOptions(), "Failed to parse relative count change check query");
+	return ParseSubquery(sql, context, "Failed to parse relative count change check query");
 }
 
 static unique_ptr<TableRef> CheckMetricAnomalyIQRBindReplace(ClientContext &context, TableFunctionBindInput &input) {
@@ -795,7 +796,7 @@ static unique_ptr<TableRef> CheckMetricAnomalyIQRBindReplace(ClientContext &cont
 	string table_ref = BuildQueryTableRef(table_name);
 	string sql =
 	    GenerateMetricAnomalyIQRSQL(table_ref, date_column, metric_column, window_days, k, mode, reference_date);
-	return ParseSubquery(sql, context.GetParserOptions(), "Failed to parse metric anomaly IQR check query");
+	return ParseSubquery(sql, context, "Failed to parse metric anomaly IQR check query");
 }
 
 static unique_ptr<TableRef> CheckRollingValuesInSetBindReplace(ClientContext &context, TableFunctionBindInput &input) {
@@ -817,7 +818,7 @@ static unique_ptr<TableRef> CheckRollingValuesInSetBindReplace(ClientContext &co
 	string table_ref = BuildQueryTableRef(table_name);
 	string sql = GenerateRollingValuesInSetSQL(table_ref, column_name, allowed_array, date_column, window_days,
 	                                           min_rate, reference_date);
-	return ParseSubquery(sql, context.GetParserOptions(), "Failed to parse rolling values-in-set check query");
+	return ParseSubquery(sql, context, "Failed to parse rolling values-in-set check query");
 }
 
 //===--------------------------------------------------------------------===//

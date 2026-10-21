@@ -4,6 +4,8 @@
 #include "duckdb/common/types/vector.hpp"
 #include "duckdb/common/vector_operations/vector_operations.hpp"
 #include "duckdb/common/string_util.hpp"
+#include "duckdb_compat.hpp"
+#include "anofox_duckdb_vectors.hpp"
 
 namespace duckdb {
 namespace anofox {
@@ -37,8 +39,8 @@ struct MoneyStructData {
   UnifiedVectorFormat struct_data;
   UnifiedVectorFormat amount_data;
   UnifiedVectorFormat currency_data;
-  int64_t* amount_values;
-  string_t* currency_values;
+  const int64_t* amount_values;
+  const string_t* currency_values;
 
   //! A money row is only usable if the parent struct and both children are non-NULL.
   //! A struct with NULL children is treated as a NULL money value (issue #43).
@@ -76,15 +78,15 @@ inline MoneyStructData ExtractMoneyStruct(Vector& money_vec, idx_t count) {
   }
 
   MoneyStructData data{
-    *children[0],
-    *children[1],
+    anofox::VectorRef(children[0]),
+    anofox::VectorRef(children[1]),
   };
 
   money_vec.ToUnifiedFormat(count, data.struct_data);
   data.amount_vec.ToUnifiedFormat(count, data.amount_data);
   data.currency_vec.ToUnifiedFormat(count, data.currency_data);
-  data.amount_values = reinterpret_cast<int64_t*>(data.amount_data.data);
-  data.currency_values = reinterpret_cast<string_t*>(data.currency_data.data);
+  data.amount_values = UnifiedVectorFormat::GetData<int64_t>(data.amount_data);
+  data.currency_values = UnifiedVectorFormat::GetData<string_t>(data.currency_data);
 
   return data;
 }
@@ -106,15 +108,15 @@ inline MoneyResultBuilder PrepareMoneyResult(Vector& result) {
     throw InvalidInputException("Money struct must have exactly 2 fields");
   }
 
-  auto& amount_vec = *children[0];
-  auto& currency_vec = *children[1];
+  auto& amount_vec = anofox::VectorRef(children[0]);
+  auto& currency_vec = anofox::VectorRef(children[1]);
 
   amount_vec.SetVectorType(VectorType::FLAT_VECTOR);
   currency_vec.SetVectorType(VectorType::FLAT_VECTOR);
 
   return MoneyResultBuilder{
-    FlatVector::GetData<int64_t>(amount_vec),
-    FlatVector::GetData<string_t>(currency_vec),
+    duckdb_compat::FlatData<int64_t>(amount_vec),
+    duckdb_compat::FlatData<string_t>(currency_vec),
     currency_vec,
   };
 }
@@ -148,7 +150,7 @@ inline void IterateCurrencyCode(DataChunk& args, Vector& result, Op op) {
 
   UnifiedVectorFormat code_data;
   code_vec.ToUnifiedFormat(count, code_data);
-  auto code_values = reinterpret_cast<string_t*>(code_data.data);
+  auto code_values = UnifiedVectorFormat::GetData<string_t>(code_data);
 
   for (idx_t i = 0; i < count; i++) {
     auto idx = code_data.sel->get_index(i);
@@ -171,7 +173,7 @@ inline void IterateMoneyComparison(DataChunk& args, Vector& result,
   idx_t count = args.size();
 
   auto data = ExtractMoneyStruct(money_vec, count);
-  auto result_data = FlatVector::GetData<bool>(result);
+  auto result_data = duckdb_compat::FlatData<bool>(result);
 
   for (idx_t i = 0; i < count; i++) {
     if (!data.RowIsValid(i)) {

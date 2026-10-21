@@ -12,6 +12,8 @@
 #include "duckdb/function/table_function.hpp"
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/main/config.hpp"
+#include "anofox_duckdb_vectors.hpp"
+#include "duckdb_compat.hpp"
 
 #include <algorithm>
 #include <string>
@@ -408,7 +410,7 @@ void AppendToListVector(Vector &list_vec, const std::vector<std::string> &values
 	auto offset = ListVector::GetListSize(list_vec);
 	ListVector::Reserve(list_vec, offset + values.size());
 	auto &child = ListVector::GetEntry(list_vec);
-	auto child_data = FlatVector::GetData<string_t>(child);
+	auto child_data = duckdb_compat::FlatData<string_t>(child);
 	for (idx_t i = 0; i < values.size(); i++) {
 		child_data[offset + i] = StringVector::AddString(child, values[i]);
 	}
@@ -418,19 +420,19 @@ void AppendToListVector(Vector &list_vec, const std::vector<std::string> &values
 void EmailValidateFunction(DataChunk &args, ExpressionState &, Vector &result) {
 	result.SetVectorType(VectorType::FLAT_VECTOR);
 	auto &children = StructVector::GetEntries(result);
-	auto &valid_vec = *children[0];
-	auto &stage_vec = *children[1];
-	auto &reason_vec = *children[2];
-	auto &mx_vec = *children[3];
-	auto &smtp_vec = *children[4];
+	auto &valid_vec = anofox::VectorRef(children[0]);
+	auto &stage_vec = anofox::VectorRef(children[1]);
+	auto &reason_vec = anofox::VectorRef(children[2]);
+	auto &mx_vec = anofox::VectorRef(children[3]);
+	auto &smtp_vec = anofox::VectorRef(children[4]);
 	auto &smtp_children = StructVector::GetEntries(smtp_vec);
-	auto &smtp_transcript_vec = *smtp_children[0];
+	auto &smtp_transcript_vec = anofox::VectorRef(smtp_children[0]);
 
-	auto valid_data = FlatVector::GetData<bool>(valid_vec);
-	auto stage_data = FlatVector::GetData<string_t>(stage_vec);
-	auto reason_data = FlatVector::GetData<string_t>(reason_vec);
-	auto mx_entries = FlatVector::GetData<list_entry_t>(mx_vec);
-	auto transcript_entries = FlatVector::GetData<list_entry_t>(smtp_transcript_vec);
+	auto valid_data = duckdb_compat::FlatData<bool>(valid_vec);
+	auto stage_data = duckdb_compat::FlatData<string_t>(stage_vec);
+	auto reason_data = duckdb_compat::FlatData<string_t>(reason_vec);
+	auto mx_entries = duckdb_compat::FlatData<list_entry_t>(mx_vec);
+	auto transcript_entries = duckdb_compat::FlatData<list_entry_t>(smtp_transcript_vec);
 
 	ListVector::SetListSize(mx_vec, 0);
 	ListVector::SetListSize(smtp_transcript_vec, 0);
@@ -482,7 +484,7 @@ void EmailValidateFunction(DataChunk &args, ExpressionState &, Vector &result) {
 
 void EmailIsValidFunction(DataChunk &args, ExpressionState &, Vector &result) {
 	result.SetVectorType(VectorType::FLAT_VECTOR);
-	auto bool_data = FlatVector::GetData<bool>(result);
+	auto bool_data = duckdb_compat::FlatData<bool>(result);
 
 	// Normalize the inputs and hoist all configuration exactly once per chunk.
 	UnifiedVectorFormat email_data;
@@ -518,12 +520,13 @@ struct EmailConfigState : public GlobalTableFunctionState {
 };
 
 unique_ptr<FunctionData> EmailConfigBind(ClientContext &, TableFunctionBindInput &, vector<LogicalType> &return_types,
-                                         vector<string> &names) {
+                                         duckdb_compat::BindNames &names) {
     PostHogTelemetry::Instance().RecordFunctionCall("email_config");
     auto bind_data = make_uniq<EmailConfigBindData>();
     bind_data->entries = EmailConfig::Get().List();
     return_types = {LogicalTypeId::VARCHAR, LogicalTypeId::VARCHAR};
-    names = {"key", "value"};
+    names.emplace_back("key");
+    names.emplace_back("value");
     return std::move(bind_data);
 }
 
@@ -535,16 +538,16 @@ void EmailConfigFunction(ClientContext &, TableFunctionInput &input, DataChunk &
     auto &entries = input.bind_data->Cast<EmailConfigBindData>().entries;
     auto &state = input.global_state->Cast<EmailConfigState>();
     if (state.offset >= entries.size()) {
-        output.SetCardinality(0);
+        duckdb_compat::SetChildCardinality(output, 0);
         return;
     }
 
     idx_t remaining = entries.size() - state.offset;
     idx_t to_write = remaining;
-    output.SetCardinality(to_write);
+    duckdb_compat::SetChildCardinality(output, to_write);
 
-    auto key_data = FlatVector::GetData<string_t>(output.data[0]);
-    auto value_data = FlatVector::GetData<string_t>(output.data[1]);
+    auto key_data = duckdb_compat::FlatData<string_t>(output.data[0]);
+    auto value_data = duckdb_compat::FlatData<string_t>(output.data[1]);
 
     for (idx_t i = 0; i < to_write; i++) {
         auto &entry = entries[state.offset + i];
@@ -746,12 +749,12 @@ void RegisterEmailOptions(ExtensionLoader &loader) {
 }
 
 // Telemetry bind functions for scalar functions
-unique_ptr<FunctionData> EmailValidateBind(ClientContext &, ScalarFunction &, vector<unique_ptr<Expression>> &) {
+unique_ptr<FunctionData> EmailValidateBind(ClientContext &) {
 	PostHogTelemetry::Instance().RecordFunctionCall("email_validate");
 	return nullptr;
 }
 
-unique_ptr<FunctionData> EmailIsValidBind(ClientContext &, ScalarFunction &, vector<unique_ptr<Expression>> &) {
+unique_ptr<FunctionData> EmailIsValidBind(ClientContext &) {
 	PostHogTelemetry::Instance().RecordFunctionCall("email_is_valid");
 	return nullptr;
 }
@@ -760,15 +763,15 @@ void RegisterEmailFunctions(ExtensionLoader &loader) {
 	// Register email_validate with two overloads
 	ScalarFunctionSet validate_set("anofox_tab_email_validate");
 	ScalarFunction validate_fun("anofox_tab_email_validate", {LogicalTypeId::VARCHAR, LogicalTypeId::VARCHAR}, GetEmailValidateReturnType(), EmailValidateFunction);
-	validate_fun.null_handling = FunctionNullHandling::SPECIAL_HANDLING;
-	validate_fun.stability = FunctionStability::CONSISTENT;
-	validate_fun.bind = EmailValidateBind;
+	duckdb_compat::SetNullHandling(validate_fun, FunctionNullHandling::SPECIAL_HANDLING);
+	duckdb_compat::SetStability(validate_fun, FunctionStability::CONSISTENT);
+	validate_fun.SetBindCallback(&ScalarContextBind<EmailValidateBind>::Bind);
 	validate_set.AddFunction(validate_fun);
 
 	ScalarFunction validate_single("anofox_tab_email_validate", {LogicalTypeId::VARCHAR}, GetEmailValidateReturnType(), EmailValidateFunction);
-	validate_single.null_handling = FunctionNullHandling::SPECIAL_HANDLING;
-	validate_single.stability = FunctionStability::CONSISTENT;
-	validate_single.bind = EmailValidateBind;
+	duckdb_compat::SetNullHandling(validate_single, FunctionNullHandling::SPECIAL_HANDLING);
+	duckdb_compat::SetStability(validate_single, FunctionStability::CONSISTENT);
+	validate_single.SetBindCallback(&ScalarContextBind<EmailValidateBind>::Bind);
 	validate_set.AddFunction(validate_single);
 
 	{
@@ -783,15 +786,15 @@ void RegisterEmailFunctions(ExtensionLoader &loader) {
 	// Register email_is_valid with two overloads
 	ScalarFunctionSet is_valid_set("anofox_tab_email_is_valid");
 	ScalarFunction is_valid_fun("anofox_tab_email_is_valid", {LogicalTypeId::VARCHAR, LogicalTypeId::VARCHAR}, LogicalTypeId::BOOLEAN, EmailIsValidFunction);
-	is_valid_fun.null_handling = FunctionNullHandling::SPECIAL_HANDLING;
-	is_valid_fun.stability = FunctionStability::CONSISTENT;
-	is_valid_fun.bind = EmailIsValidBind;
+	duckdb_compat::SetNullHandling(is_valid_fun, FunctionNullHandling::SPECIAL_HANDLING);
+	duckdb_compat::SetStability(is_valid_fun, FunctionStability::CONSISTENT);
+	is_valid_fun.SetBindCallback(&ScalarContextBind<EmailIsValidBind>::Bind);
 	is_valid_set.AddFunction(is_valid_fun);
 
 	ScalarFunction is_valid_single("anofox_tab_email_is_valid", {LogicalTypeId::VARCHAR}, LogicalTypeId::BOOLEAN, EmailIsValidFunction);
-	is_valid_single.null_handling = FunctionNullHandling::SPECIAL_HANDLING;
-	is_valid_single.stability = FunctionStability::CONSISTENT;
-	is_valid_single.bind = EmailIsValidBind;
+	duckdb_compat::SetNullHandling(is_valid_single, FunctionNullHandling::SPECIAL_HANDLING);
+	duckdb_compat::SetStability(is_valid_single, FunctionStability::CONSISTENT);
+	is_valid_single.SetBindCallback(&ScalarContextBind<EmailIsValidBind>::Bind);
 	is_valid_set.AddFunction(is_valid_single);
 
 	{

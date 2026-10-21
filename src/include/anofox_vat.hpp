@@ -4,6 +4,8 @@
 #include "duckdb/common/types/string_type.hpp"
 #include "duckdb/common/vector_operations/vector_operations.hpp"
 #include "duckdb/execution/expression_executor.hpp"
+#include "duckdb_compat.hpp"
+#include "anofox_duckdb_vectors.hpp"
 #include <memory>
 #include <optional>
 #include <regex>
@@ -96,14 +98,14 @@ inline void IterateTwoStringInputs(DataChunk& args, Vector& result,
 
 // Set a boolean result value
 inline void SetBoolResult(Vector& result, size_t idx, bool value) {
-  auto result_data = FlatVector::GetData<bool>(result);
+  auto result_data = duckdb_compat::FlatData<bool>(result);
   result_data[idx] = value;
 }
 
 // Set a string result value
 inline void SetStringResult(Vector& result, size_t idx,
                            const std::string& value) {
-  auto result_strings = FlatVector::GetData<string_t>(result);
+  auto result_strings = duckdb_compat::FlatData<string_t>(result);
   result_strings[idx] = StringVector::AddString(result, value);
 }
 
@@ -112,10 +114,10 @@ inline void SetVATStructResult(Vector& result, size_t idx,
                                const std::string& country,
                                const std::string& digits) {
   auto& struct_entries = StructVector::GetEntries(result);
-  auto& country_vec = *struct_entries[0];
-  auto& digits_vec = *struct_entries[1];
-  auto country_strings = FlatVector::GetData<string_t>(country_vec);
-  auto digits_strings = FlatVector::GetData<string_t>(digits_vec);
+  auto& country_vec = anofox::VectorRef(struct_entries[0]);
+  auto& digits_vec = anofox::VectorRef(struct_entries[1]);
+  auto country_strings = duckdb_compat::FlatData<string_t>(country_vec);
+  auto digits_strings = duckdb_compat::FlatData<string_t>(digits_vec);
 
   country_strings[idx] = StringVector::AddString(country_vec, country);
   digits_strings[idx] = StringVector::AddString(digits_vec, digits);

@@ -17,6 +17,8 @@
 #include "duckdb/main/config.hpp"
 #include "duckdb/main/connection.hpp"
 #include "duckdb/parser/qualified_name.hpp"
+#include "anofox_duckdb_vectors.hpp"
+#include "duckdb_compat.hpp"
 
 #include <algorithm>
 #include <array>
@@ -1863,16 +1865,16 @@ void ExecutePIIDetectToList(DataChunk &args, Vector &result, const std::vector<P
     result.SetVectorType(VectorType::FLAT_VECTOR);
 
     // Get list entries data and child struct vector
-    auto list_entries = FlatVector::GetData<list_entry_t>(result);
+    auto list_entries = duckdb_compat::FlatData<list_entry_t>(result);
     auto &child_struct = ListVector::GetEntry(result);
     auto &struct_children = StructVector::GetEntries(child_struct);
 
     // References to individual struct fields
-    auto &type_vec = *struct_children[0];       // VARCHAR: type
-    auto &text_vec = *struct_children[1];       // VARCHAR: text
-    auto &start_pos_vec = *struct_children[2];  // BIGINT: start_pos
-    auto &end_pos_vec = *struct_children[3];    // BIGINT: end_pos
-    auto &confidence_vec = *struct_children[4]; // DOUBLE: confidence
+    auto &type_vec = anofox::VectorRef(struct_children[0]);       // VARCHAR: type
+    auto &text_vec = anofox::VectorRef(struct_children[1]);       // VARCHAR: text
+    auto &start_pos_vec = anofox::VectorRef(struct_children[2]);  // BIGINT: start_pos
+    auto &end_pos_vec = anofox::VectorRef(struct_children[3]);    // BIGINT: end_pos
+    auto &confidence_vec = anofox::VectorRef(struct_children[4]); // DOUBLE: confidence
 
     // Reset list size
     ListVector::SetListSize(result, 0);
@@ -1900,11 +1902,11 @@ void ExecutePIIDetectToList(DataChunk &args, Vector &result, const std::vector<P
 
         // Re-fetch the child data pointers after Reserve: growing the list may
         // reallocate the child vectors.
-        auto type_data = FlatVector::GetData<string_t>(type_vec);
-        auto text_data = FlatVector::GetData<string_t>(text_vec);
-        auto start_data = FlatVector::GetData<int64_t>(start_pos_vec);
-        auto end_data = FlatVector::GetData<int64_t>(end_pos_vec);
-        auto confidence_data = FlatVector::GetData<double>(confidence_vec);
+        auto type_data = duckdb_compat::FlatData<string_t>(type_vec);
+        auto text_data = duckdb_compat::FlatData<string_t>(text_vec);
+        auto start_data = duckdb_compat::FlatData<int64_t>(start_pos_vec);
+        auto end_data = duckdb_compat::FlatData<int64_t>(end_pos_vec);
+        auto confidence_data = duckdb_compat::FlatData<double>(confidence_vec);
 
         for (idx_t i = 0; i < matches.size(); i++) {
             auto &match = matches[i];
@@ -2396,7 +2398,7 @@ unique_ptr<GlobalTableFunctionState> PIIStatusInit(ClientContext &, TableFunctio
 }
 
 unique_ptr<FunctionData> PIIStatusBind(ClientContext &, TableFunctionBindInput &,
-                                        vector<LogicalType> &return_types, vector<string> &names) {
+                                        vector<LogicalType> &return_types, duckdb_compat::BindNames &names) {
     PostHogTelemetry::Instance().RecordFunctionCall("pii_status");
 
     names.emplace_back("pii_type");
@@ -2418,7 +2420,7 @@ void PIIStatusFunction(ClientContext &, TableFunctionInput &input, DataChunk &ou
     auto &state = input.global_state->Cast<PIIStatusState>();
 
     if (state.current_index >= state.types.size()) {
-        output.SetCardinality(0);
+        duckdb_compat::SetChildCardinality(output, 0);
         return;
     }
 
@@ -2467,7 +2469,7 @@ void PIIStatusFunction(ClientContext &, TableFunctionInput &input, DataChunk &ou
     idx_t remaining = state.types.size() - state.current_index;
     idx_t count = MinValue<idx_t>(remaining, STANDARD_VECTOR_SIZE);
 
-    output.SetCardinality(count);
+    duckdb_compat::SetChildCardinality(output, count);
 
     for (idx_t i = 0; i < count; i++) {
         PIIType type = state.types[state.current_index + i];
@@ -2509,7 +2511,7 @@ unique_ptr<GlobalTableFunctionState> NERStatusInit(ClientContext &, TableFunctio
 }
 
 unique_ptr<FunctionData> NERStatusBind(ClientContext &, TableFunctionBindInput &,
-                                       vector<LogicalType> &return_types, vector<string> &names) {
+                                       vector<LogicalType> &return_types, duckdb_compat::BindNames &names) {
     PostHogTelemetry::Instance().RecordFunctionCall("anofox_ner_status");
 
     names.emplace_back("onnx_available");
@@ -2534,11 +2536,11 @@ void NERStatusFunction(ClientContext &, TableFunctionInput &input, DataChunk &ou
     auto &state = input.global_state->Cast<NERStatusState>();
 
     if (state.returned) {
-        output.SetCardinality(0);
+        duckdb_compat::SetChildCardinality(output, 0);
         return;
     }
 
-    output.SetCardinality(1);
+    duckdb_compat::SetChildCardinality(output, 1);
 
 #if HAVE_OPENVINO
     auto &ner = NERModelManager::Instance();
@@ -2602,9 +2604,12 @@ struct PIIAuditTableBindData : public TableFunctionData {
 static std::vector<std::string> ResolvePIIScanColumns(ClientContext &context, const std::string &table_name,
                                                       const std::vector<std::string> &column_filter) {
     auto qname = QualifiedName::Parse(table_name);
-    auto &catalog = Catalog::GetCatalog(context, qname.catalog);
-    auto &entry =
-        catalog.GetEntry(context, CatalogType::TABLE_ENTRY, qname.schema, qname.name).Cast<TableCatalogEntry>();
+    auto &catalog = Catalog::GetCatalog(context, duckdb_compat::Ident(duckdb_compat::QualifiedCatalog(qname)));
+    auto &entry = catalog
+                      .GetEntry(context, CatalogType::TABLE_ENTRY,
+                                duckdb_compat::Ident(duckdb_compat::QualifiedSchema(qname)),
+                                duckdb_compat::Ident(duckdb_compat::QualifiedLocalName(qname)))
+                      .Cast<TableCatalogEntry>();
 
     std::vector<std::string> columns;
     for (auto &col : entry.GetColumns().Logical()) {
@@ -2612,10 +2617,10 @@ static std::vector<std::string> ResolvePIIScanColumns(ClientContext &context, co
             continue;
         }
         if (!column_filter.empty() &&
-            std::find(column_filter.begin(), column_filter.end(), col.Name()) == column_filter.end()) {
+            std::find(column_filter.begin(), column_filter.end(), duckdb_compat::Str(col.Name())) == column_filter.end()) {
             continue;
         }
-        columns.push_back(col.Name());
+        columns.push_back(duckdb_compat::Str(col.Name()));
     }
     return columns;
 }
@@ -2660,7 +2665,7 @@ unique_ptr<GlobalTableFunctionState> PIIAuditTableInit(ClientContext &, TableFun
 }
 
 unique_ptr<FunctionData> PIIAuditTableBind(ClientContext &context, TableFunctionBindInput &input,
-                                            vector<LogicalType> &return_types, vector<string> &names) {
+                                            vector<LogicalType> &return_types, duckdb_compat::BindNames &names) {
     PostHogTelemetry::Instance().RecordFunctionCall("pii_audit_table");
 
     // Get table name (required)
@@ -2748,7 +2753,7 @@ void PIIAuditTableFunction(ClientContext &context, TableFunctionInput &input, Da
                 // Execute as a streaming query on a dedicated connection
                 // (the connection must outlive the streaming result)
                 state.connection = make_uniq<Connection>(*context.db);
-                auto result = state.connection->SendQuery(query);
+                auto result = StreamQuery(*state.connection, query);
                 if (result->HasError()) {
                     AnofoxTrace(AnofoxLogLevel::Warn, "pii_audit_table: Error querying column " + col_name);
                     state.connection.reset();
@@ -2816,19 +2821,19 @@ void PIIAuditTableFunction(ClientContext &context, TableFunctionInput &input, Da
     // Emit up to STANDARD_VECTOR_SIZE pending match rows
     idx_t remaining = state.pending.size() - state.pending_offset;
     idx_t count = MinValue<idx_t>(remaining, STANDARD_VECTOR_SIZE);
-    output.SetCardinality(count);
+    duckdb_compat::SetChildCardinality(output, count);
     if (count == 0) {
         return;
     }
 
-    auto row_ids = FlatVector::GetData<int64_t>(output.data[0]);
-    auto column_names = FlatVector::GetData<string_t>(output.data[1]);
-    auto pii_types = FlatVector::GetData<string_t>(output.data[2]);
-    auto original_values = FlatVector::GetData<string_t>(output.data[3]);
-    auto masked_values = FlatVector::GetData<string_t>(output.data[4]);
-    auto start_positions = FlatVector::GetData<int64_t>(output.data[5]);
-    auto end_positions = FlatVector::GetData<int64_t>(output.data[6]);
-    auto confidences = FlatVector::GetData<double>(output.data[7]);
+    auto row_ids = duckdb_compat::FlatData<int64_t>(output.data[0]);
+    auto column_names = duckdb_compat::FlatData<string_t>(output.data[1]);
+    auto pii_types = duckdb_compat::FlatData<string_t>(output.data[2]);
+    auto original_values = duckdb_compat::FlatData<string_t>(output.data[3]);
+    auto masked_values = duckdb_compat::FlatData<string_t>(output.data[4]);
+    auto start_positions = duckdb_compat::FlatData<int64_t>(output.data[5]);
+    auto end_positions = duckdb_compat::FlatData<int64_t>(output.data[6]);
+    auto confidences = duckdb_compat::FlatData<double>(output.data[7]);
 
     for (idx_t i = 0; i < count; i++) {
         const auto &res = state.pending[state.pending_offset + i];
@@ -2905,7 +2910,7 @@ unique_ptr<GlobalTableFunctionState> PIIScanTableInit(ClientContext &, TableFunc
 }
 
 unique_ptr<FunctionData> PIIScanTableBind(ClientContext &context, TableFunctionBindInput &input,
-                                           vector<LogicalType> &return_types, vector<string> &names) {
+                                           vector<LogicalType> &return_types, duckdb_compat::BindNames &names) {
     PostHogTelemetry::Instance().RecordFunctionCall("pii_scan_table");
 
     // Get table name (required)
@@ -2982,7 +2987,7 @@ void PIIScanTableFunction(ClientContext &context, TableFunctionInput &input, Dat
 
             // Execute as a streaming query using a new connection
             Connection con(*context.db);
-            auto result = con.SendQuery(query);
+            auto result = StreamQuery(con, query);
             if (result->HasError()) {
                 AnofoxTrace(AnofoxLogLevel::Warn, "pii_scan_table: Error querying column " + col_name);
                 continue;
@@ -3045,7 +3050,7 @@ void PIIScanTableFunction(ClientContext &context, TableFunctionInput &input, Dat
     // Emit pending aggregate rows (at most a handful per column)
     idx_t remaining = state.pending.size() - state.pending_offset;
     idx_t count = MinValue<idx_t>(remaining, STANDARD_VECTOR_SIZE);
-    output.SetCardinality(count);
+    duckdb_compat::SetChildCardinality(output, count);
 
     for (idx_t i = 0; i < count; i++) {
         const auto &res = state.pending[state.pending_offset + i];
@@ -3097,97 +3102,97 @@ TableFunctionSet CreatePIIScanTableFunctionSet() {
 // Telemetry Bind Functions for PII Scalar Functions
 // ============================================================================
 
-unique_ptr<FunctionData> PIIDetectBind(ClientContext &, ScalarFunction &, vector<unique_ptr<Expression>> &) {
+unique_ptr<FunctionData> PIIDetectBind(ClientContext &) {
     PostHogTelemetry::Instance().RecordFunctionCall("pii_detect");
     return nullptr;
 }
 
-unique_ptr<FunctionData> PIIMaskBind(ClientContext &, ScalarFunction &, vector<unique_ptr<Expression>> &) {
+unique_ptr<FunctionData> PIIMaskBind(ClientContext &) {
     PostHogTelemetry::Instance().RecordFunctionCall("pii_mask");
     return nullptr;
 }
 
-unique_ptr<FunctionData> PIIContainsBind(ClientContext &, ScalarFunction &, vector<unique_ptr<Expression>> &) {
+unique_ptr<FunctionData> PIIContainsBind(ClientContext &) {
     PostHogTelemetry::Instance().RecordFunctionCall("pii_contains");
     return nullptr;
 }
 
-unique_ptr<FunctionData> PIICountBind(ClientContext &, ScalarFunction &, vector<unique_ptr<Expression>> &) {
+unique_ptr<FunctionData> PIICountBind(ClientContext &) {
     PostHogTelemetry::Instance().RecordFunctionCall("pii_count");
     return nullptr;
 }
 
-unique_ptr<FunctionData> PIIIsValidSSNBind(ClientContext &, ScalarFunction &, vector<unique_ptr<Expression>> &) {
+unique_ptr<FunctionData> PIIIsValidSSNBind(ClientContext &) {
     PostHogTelemetry::Instance().RecordFunctionCall("pii_is_valid_ssn");
     return nullptr;
 }
 
-unique_ptr<FunctionData> PIIIsValidIBANBind(ClientContext &, ScalarFunction &, vector<unique_ptr<Expression>> &) {
+unique_ptr<FunctionData> PIIIsValidIBANBind(ClientContext &) {
     PostHogTelemetry::Instance().RecordFunctionCall("pii_is_valid_iban");
     return nullptr;
 }
 
-unique_ptr<FunctionData> PIIIsValidCreditCardBind(ClientContext &, ScalarFunction &, vector<unique_ptr<Expression>> &) {
+unique_ptr<FunctionData> PIIIsValidCreditCardBind(ClientContext &) {
     PostHogTelemetry::Instance().RecordFunctionCall("pii_is_valid_credit_card");
     return nullptr;
 }
 
-unique_ptr<FunctionData> PIIIsValidNINOBind(ClientContext &, ScalarFunction &, vector<unique_ptr<Expression>> &) {
+unique_ptr<FunctionData> PIIIsValidNINOBind(ClientContext &) {
     PostHogTelemetry::Instance().RecordFunctionCall("pii_is_valid_nino");
     return nullptr;
 }
 
-unique_ptr<FunctionData> PIIIsValidDETaxIDBind(ClientContext &, ScalarFunction &, vector<unique_ptr<Expression>> &) {
+unique_ptr<FunctionData> PIIIsValidDETaxIDBind(ClientContext &) {
     PostHogTelemetry::Instance().RecordFunctionCall("pii_is_valid_de_tax_id");
     return nullptr;
 }
 
-unique_ptr<FunctionData> PIIIsValidCryptoBind(ClientContext &, ScalarFunction &, vector<unique_ptr<Expression>> &) {
+unique_ptr<FunctionData> PIIIsValidCryptoBind(ClientContext &) {
     PostHogTelemetry::Instance().RecordFunctionCall("pii_is_valid_crypto_address");
     return nullptr;
 }
 
-unique_ptr<FunctionData> PIIDetectEmailsBind(ClientContext &, ScalarFunction &, vector<unique_ptr<Expression>> &) {
+unique_ptr<FunctionData> PIIDetectEmailsBind(ClientContext &) {
     PostHogTelemetry::Instance().RecordFunctionCall("pii_detect_emails");
     return nullptr;
 }
 
-unique_ptr<FunctionData> PIIDetectPhonesBind(ClientContext &, ScalarFunction &, vector<unique_ptr<Expression>> &) {
+unique_ptr<FunctionData> PIIDetectPhonesBind(ClientContext &) {
     PostHogTelemetry::Instance().RecordFunctionCall("pii_detect_phones");
     return nullptr;
 }
 
-unique_ptr<FunctionData> PIIDetectCreditCardsBind(ClientContext &, ScalarFunction &, vector<unique_ptr<Expression>> &) {
+unique_ptr<FunctionData> PIIDetectCreditCardsBind(ClientContext &) {
     PostHogTelemetry::Instance().RecordFunctionCall("pii_detect_credit_cards");
     return nullptr;
 }
 
-unique_ptr<FunctionData> PIIDetectSSNsBind(ClientContext &, ScalarFunction &, vector<unique_ptr<Expression>> &) {
+unique_ptr<FunctionData> PIIDetectSSNsBind(ClientContext &) {
     PostHogTelemetry::Instance().RecordFunctionCall("pii_detect_ssns");
     return nullptr;
 }
 
-unique_ptr<FunctionData> PIIDetectNamesBind(ClientContext &, ScalarFunction &, vector<unique_ptr<Expression>> &) {
+unique_ptr<FunctionData> PIIDetectNamesBind(ClientContext &) {
     PostHogTelemetry::Instance().RecordFunctionCall("pii_detect_names");
     return nullptr;
 }
 
-unique_ptr<FunctionData> PIIDetectIBANsBind(ClientContext &, ScalarFunction &, vector<unique_ptr<Expression>> &) {
+unique_ptr<FunctionData> PIIDetectIBANsBind(ClientContext &) {
     PostHogTelemetry::Instance().RecordFunctionCall("pii_detect_ibans");
     return nullptr;
 }
 
-unique_ptr<FunctionData> PIIDetectBatchBind(ClientContext &, ScalarFunction &, vector<unique_ptr<Expression>> &) {
+unique_ptr<FunctionData> PIIDetectBatchBind(ClientContext &) {
     PostHogTelemetry::Instance().RecordFunctionCall("pii_detect_batch");
     return nullptr;
 }
 
-unique_ptr<FunctionData> PIIMaskColumnBind(ClientContext &, ScalarFunction &, vector<unique_ptr<Expression>> &) {
+unique_ptr<FunctionData> PIIMaskColumnBind(ClientContext &) {
     PostHogTelemetry::Instance().RecordFunctionCall("pii_mask_column");
     return nullptr;
 }
 
-unique_ptr<FunctionData> PIIRedactColumnBind(ClientContext &, ScalarFunction &, vector<unique_ptr<Expression>> &) {
+unique_ptr<FunctionData> PIIRedactColumnBind(ClientContext &) {
     PostHogTelemetry::Instance().RecordFunctionCall("pii_redact_column");
     return nullptr;
 }
@@ -3246,14 +3251,14 @@ struct PIIConfigState : GlobalTableFunctionState {
 };
 
 unique_ptr<FunctionData> PIIConfigBind(ClientContext &, TableFunctionBindInput &,
-                                       vector<LogicalType> &return_types, vector<string> &names) {
+                                       vector<LogicalType> &return_types, duckdb_compat::BindNames &names) {
     return_types.push_back(LogicalType::VARCHAR);  // option_name
     return_types.push_back(LogicalType::VARCHAR);  // option_value
     return_types.push_back(LogicalType::VARCHAR);  // description
 
-    names.push_back("option_name");
-    names.push_back("option_value");
-    names.push_back("description");
+    names.emplace_back("option_name");
+    names.emplace_back("option_value");
+    names.emplace_back("description");
 
     return make_uniq<PIIConfigData>();
 }
@@ -3291,14 +3296,14 @@ void PIIConfigFunction(ClientContext &, TableFunctionInput &input, DataChunk &ou
     };
 
     if (state.current_row >= options.size()) {
-        output.SetCardinality(0);
+        duckdb_compat::SetChildCardinality(output, 0);
         return;
     }
 
     idx_t remaining = options.size() - state.current_row;
     idx_t count = MinValue<idx_t>(remaining, STANDARD_VECTOR_SIZE);
 
-    output.SetCardinality(count);
+    duckdb_compat::SetChildCardinality(output, count);
 
     for (idx_t i = 0; i < count; i++) {
         const auto &opt = options[state.current_row + i];
@@ -3359,7 +3364,7 @@ void RegisterPIIFunctions(ExtensionLoader &loader) {
         desc.examples = {"SELECT pii_detect('Contact John at john@example.com or +1-555-123-4567');"};
         desc.categories = {"pii", "detection"};
         auto pii_detect_func = PIIDetectFunction::GetFunction();
-        pii_detect_func.bind = PIIDetectBind;
+        pii_detect_func.SetBindCallback(&ScalarContextBind<PIIDetectBind>::Bind);
         RegisterScalarFunctionWithAlias(loader, pii_detect_func, "pii_detect", {std::move(desc)});
     }
     // anofox_tab_pii_mask (alias: pii_mask) - with function set for overloads
@@ -3371,10 +3376,10 @@ void RegisterPIIFunctions(ExtensionLoader &loader) {
         desc.categories = {"pii", "masking"};
         ScalarFunctionSet mask_set("anofox_tab_pii_mask");
         auto pii_mask_func = PIIMaskFunction::GetFunction();
-        pii_mask_func.bind = PIIMaskBind;
+        pii_mask_func.SetBindCallback(&ScalarContextBind<PIIMaskBind>::Bind);
         mask_set.AddFunction(pii_mask_func);
         auto pii_mask_default_func = PIIMaskDefaultFunction::GetFunction();
-        pii_mask_default_func.bind = PIIMaskBind;
+        pii_mask_default_func.SetBindCallback(&ScalarContextBind<PIIMaskBind>::Bind);
         mask_set.AddFunction(pii_mask_default_func);
         RegisterScalarFunctionSetWithAlias(loader, mask_set, "pii_mask", {std::move(desc)});
     }
@@ -3387,7 +3392,7 @@ void RegisterPIIFunctions(ExtensionLoader &loader) {
         desc.examples = {"SELECT pii_contains('Contact us at info@company.com', 'email');"};
         desc.categories = {"pii", "detection"};
         auto pii_contains_func = PIIContainsFunction::GetFunction();
-        pii_contains_func.bind = PIIContainsBind;
+        pii_contains_func.SetBindCallback(&ScalarContextBind<PIIContainsBind>::Bind);
         RegisterScalarFunctionWithAlias(loader, pii_contains_func, "pii_contains", {std::move(desc)});
     }
     // anofox_tab_pii_count (alias: pii_count)
@@ -3399,7 +3404,7 @@ void RegisterPIIFunctions(ExtensionLoader &loader) {
         desc.examples = {"SELECT pii_count('John at john@example.com, tel: +1-555-0100');"};
         desc.categories = {"pii", "detection"};
         auto pii_count_func = PIICountFunction::GetFunction();
-        pii_count_func.bind = PIICountBind;
+        pii_count_func.SetBindCallback(&ScalarContextBind<PIICountBind>::Bind);
         RegisterScalarFunctionWithAlias(loader, pii_count_func, "pii_count", {std::move(desc)});
     }
     // Individual validation functions
@@ -3411,7 +3416,7 @@ void RegisterPIIFunctions(ExtensionLoader &loader) {
         desc.examples = {"SELECT pii_is_valid_ssn('123-45-6789');"};
         desc.categories = {"pii", "validation"};
         auto pii_valid_ssn_func = PIIIsValidSSNFunction::GetFunction();
-        pii_valid_ssn_func.bind = PIIIsValidSSNBind;
+        pii_valid_ssn_func.SetBindCallback(&ScalarContextBind<PIIIsValidSSNBind>::Bind);
         RegisterScalarFunctionWithAlias(loader, pii_valid_ssn_func, "pii_is_valid_ssn", {std::move(desc)});
     }
     {
@@ -3422,7 +3427,7 @@ void RegisterPIIFunctions(ExtensionLoader &loader) {
         desc.examples = {"SELECT pii_is_valid_iban('DE89370400440532013000');"};
         desc.categories = {"pii", "validation"};
         auto pii_valid_iban_func = PIIIsValidIBANFunction::GetFunction();
-        pii_valid_iban_func.bind = PIIIsValidIBANBind;
+        pii_valid_iban_func.SetBindCallback(&ScalarContextBind<PIIIsValidIBANBind>::Bind);
         RegisterScalarFunctionWithAlias(loader, pii_valid_iban_func, "pii_is_valid_iban", {std::move(desc)});
     }
     {
@@ -3433,7 +3438,7 @@ void RegisterPIIFunctions(ExtensionLoader &loader) {
         desc.examples = {"SELECT pii_is_valid_credit_card('4111111111111111');"};
         desc.categories = {"pii", "validation"};
         auto pii_valid_cc_func = PIIIsValidCreditCardFunction::GetFunction();
-        pii_valid_cc_func.bind = PIIIsValidCreditCardBind;
+        pii_valid_cc_func.SetBindCallback(&ScalarContextBind<PIIIsValidCreditCardBind>::Bind);
         RegisterScalarFunctionWithAlias(loader, pii_valid_cc_func, "pii_is_valid_credit_card", {std::move(desc)});
     }
     {
@@ -3444,7 +3449,7 @@ void RegisterPIIFunctions(ExtensionLoader &loader) {
         desc.examples = {"SELECT pii_is_valid_nino('AB123456C');"};
         desc.categories = {"pii", "validation"};
         auto pii_valid_nino_func = PIIIsValidNINOFunction::GetFunction();
-        pii_valid_nino_func.bind = PIIIsValidNINOBind;
+        pii_valid_nino_func.SetBindCallback(&ScalarContextBind<PIIIsValidNINOBind>::Bind);
         RegisterScalarFunctionWithAlias(loader, pii_valid_nino_func, "pii_is_valid_nino", {std::move(desc)});
     }
     {
@@ -3455,7 +3460,7 @@ void RegisterPIIFunctions(ExtensionLoader &loader) {
         desc.examples = {"SELECT pii_is_valid_de_tax_id('12345678901');"};
         desc.categories = {"pii", "validation"};
         auto pii_valid_de_tax_func = PIIIsValidDETaxIDFunction::GetFunction();
-        pii_valid_de_tax_func.bind = PIIIsValidDETaxIDBind;
+        pii_valid_de_tax_func.SetBindCallback(&ScalarContextBind<PIIIsValidDETaxIDBind>::Bind);
         RegisterScalarFunctionWithAlias(loader, pii_valid_de_tax_func, "pii_is_valid_de_tax_id", {std::move(desc)});
     }
     {
@@ -3466,7 +3471,7 @@ void RegisterPIIFunctions(ExtensionLoader &loader) {
         desc.examples = {"SELECT pii_is_valid_crypto_address('1A1zP1eP5QGefi2DMPTfTL5SLmv7Divf');"};
         desc.categories = {"pii", "validation"};
         auto pii_valid_crypto_func = PIIIsValidCryptoFunction::GetFunction();
-        pii_valid_crypto_func.bind = PIIIsValidCryptoBind;
+        pii_valid_crypto_func.SetBindCallback(&ScalarContextBind<PIIIsValidCryptoBind>::Bind);
         RegisterScalarFunctionWithAlias(loader, pii_valid_crypto_func, "pii_is_valid_crypto_address", {std::move(desc)});
     }
     // Type-specific detection functions
@@ -3478,7 +3483,7 @@ void RegisterPIIFunctions(ExtensionLoader &loader) {
         desc.examples = {"SELECT pii_detect_emails('Contact jane@example.com or bob@company.org');"};
         desc.categories = {"pii", "detection"};
         auto pii_detect_emails_func = PIIDetectEmailsFunction::GetFunction();
-        pii_detect_emails_func.bind = PIIDetectEmailsBind;
+        pii_detect_emails_func.SetBindCallback(&ScalarContextBind<PIIDetectEmailsBind>::Bind);
         RegisterScalarFunctionWithAlias(loader, pii_detect_emails_func, "pii_detect_emails", {std::move(desc)});
     }
     {
@@ -3489,7 +3494,7 @@ void RegisterPIIFunctions(ExtensionLoader &loader) {
         desc.examples = {"SELECT pii_detect_phones('Call +1-555-0100 or 0800 123 456');"};
         desc.categories = {"pii", "detection"};
         auto pii_detect_phones_func = PIIDetectPhonesFunction::GetFunction();
-        pii_detect_phones_func.bind = PIIDetectPhonesBind;
+        pii_detect_phones_func.SetBindCallback(&ScalarContextBind<PIIDetectPhonesBind>::Bind);
         RegisterScalarFunctionWithAlias(loader, pii_detect_phones_func, "pii_detect_phones", {std::move(desc)});
     }
     {
@@ -3500,7 +3505,7 @@ void RegisterPIIFunctions(ExtensionLoader &loader) {
         desc.examples = {"SELECT pii_detect_credit_cards('Pay with 4111111111111111');"};
         desc.categories = {"pii", "detection"};
         auto pii_detect_cc_func = PIIDetectCreditCardsFunction::GetFunction();
-        pii_detect_cc_func.bind = PIIDetectCreditCardsBind;
+        pii_detect_cc_func.SetBindCallback(&ScalarContextBind<PIIDetectCreditCardsBind>::Bind);
         RegisterScalarFunctionWithAlias(loader, pii_detect_cc_func, "pii_detect_credit_cards", {std::move(desc)});
     }
     {
@@ -3511,7 +3516,7 @@ void RegisterPIIFunctions(ExtensionLoader &loader) {
         desc.examples = {"SELECT pii_detect_ssns('SSN: 123-45-6789');"};
         desc.categories = {"pii", "detection"};
         auto pii_detect_ssns_func = PIIDetectSSNsFunction::GetFunction();
-        pii_detect_ssns_func.bind = PIIDetectSSNsBind;
+        pii_detect_ssns_func.SetBindCallback(&ScalarContextBind<PIIDetectSSNsBind>::Bind);
         RegisterScalarFunctionWithAlias(loader, pii_detect_ssns_func, "pii_detect_ssns", {std::move(desc)});
     }
     {
@@ -3522,7 +3527,7 @@ void RegisterPIIFunctions(ExtensionLoader &loader) {
         desc.examples = {"SELECT pii_detect_names('Signed by John Smith and Jane Doe');"};
         desc.categories = {"pii", "detection"};
         auto pii_detect_names_func = PIIDetectNamesFunction::GetFunction();
-        pii_detect_names_func.bind = PIIDetectNamesBind;
+        pii_detect_names_func.SetBindCallback(&ScalarContextBind<PIIDetectNamesBind>::Bind);
         RegisterScalarFunctionWithAlias(loader, pii_detect_names_func, "pii_detect_names", {std::move(desc)});
     }
     {
@@ -3533,7 +3538,7 @@ void RegisterPIIFunctions(ExtensionLoader &loader) {
         desc.examples = {"SELECT pii_detect_ibans('Bank: DE89370400440532013000');"};
         desc.categories = {"pii", "detection"};
         auto pii_detect_ibans_func = PIIDetectIBANsFunction::GetFunction();
-        pii_detect_ibans_func.bind = PIIDetectIBANsBind;
+        pii_detect_ibans_func.SetBindCallback(&ScalarContextBind<PIIDetectIBANsBind>::Bind);
         RegisterScalarFunctionWithAlias(loader, pii_detect_ibans_func, "pii_detect_ibans", {std::move(desc)});
     }
     // Batch detection function
@@ -3545,7 +3550,7 @@ void RegisterPIIFunctions(ExtensionLoader &loader) {
         desc.examples = {"SELECT pii_detect_batch(['john@example.com', 'SSN: 123-45-6789']);"};
         desc.categories = {"pii", "detection"};
         auto pii_detect_batch_func = PIIDetectBatchFunction::GetFunction();
-        pii_detect_batch_func.bind = PIIDetectBatchBind;
+        pii_detect_batch_func.SetBindCallback(&ScalarContextBind<PIIDetectBatchBind>::Bind);
         RegisterScalarFunctionWithAlias(loader, pii_detect_batch_func, "pii_detect_batch", {std::move(desc)});
     }
     // Advanced masking functions
@@ -3557,7 +3562,7 @@ void RegisterPIIFunctions(ExtensionLoader &loader) {
         desc.examples = {"SELECT pii_mask_column('john@example.com', 'email', 'hash');"};
         desc.categories = {"pii", "masking"};
         auto pii_mask_column_func = PIIMaskColumnFunction::GetFunction();
-        pii_mask_column_func.bind = PIIMaskColumnBind;
+        pii_mask_column_func.SetBindCallback(&ScalarContextBind<PIIMaskColumnBind>::Bind);
         RegisterScalarFunctionWithAlias(loader, pii_mask_column_func, "pii_mask_column", {std::move(desc)});
     }
     // pii_redact_column(value, strategy?) - mask all PII, optional strategy
@@ -3569,10 +3574,10 @@ void RegisterPIIFunctions(ExtensionLoader &loader) {
         desc.categories = {"pii", "masking"};
         ScalarFunctionSet redact_column_set("anofox_tab_pii_redact_column");
         auto pii_redact_column_func = PIIRedactColumnFunction::GetFunction();
-        pii_redact_column_func.bind = PIIRedactColumnBind;
+        pii_redact_column_func.SetBindCallback(&ScalarContextBind<PIIRedactColumnBind>::Bind);
         redact_column_set.AddFunction(pii_redact_column_func);
         auto pii_redact_column_default_func = PIIRedactColumnDefaultFunction::GetFunction();
-        pii_redact_column_default_func.bind = PIIRedactColumnBind;
+        pii_redact_column_default_func.SetBindCallback(&ScalarContextBind<PIIRedactColumnBind>::Bind);
         redact_column_set.AddFunction(pii_redact_column_default_func);
         RegisterScalarFunctionSetWithAlias(loader, redact_column_set, "pii_redact_column", {std::move(desc)});
     }
