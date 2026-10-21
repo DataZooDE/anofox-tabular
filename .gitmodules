@@ -1,14 +1,17 @@
 [submodule "duckdb"]
 	path = duckdb
 	url = https://github.com/duckdb/duckdb
-	branch = v1.5.3
+	branch = v1.5-variegata
 [submodule "extension-ci-tools"]
 	path = extension-ci-tools
 	url = https://github.com/duckdb/extension-ci-tools
-	branch = v1.5.3
+	branch = v1.5-variegata
 [submodule "posthog-telemetry"]
 	path = posthog-telemetry
 	url = https://github.com/DataZooDE/posthog-telemetry.git
 [submodule "datazoo-banner"]
 	path = datazoo-banner
 	url = https://github.com/DataZooDE/duckdb-extension-banner.git
+[submodule "duckdb-compat"]
+	path = duckdb-compat
+	url = https://github.com/DataZooDE/duckdb-compat.git
