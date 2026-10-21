@@ -16,7 +16,7 @@ LOAD anofox_tabular
 
 # Test email detection - using list_contains with list_transform
 query I
-SELECT list_contains(list_transform(pii_detect('Contact: john.doe@example.com'), x -> x.type), 'EMAIL');
+SELECT list_contains(list_transform(pii_detect('Contact: john.doe@example.com'), lambda x: x.type), 'EMAIL');
 ----
 true
 
@@ -29,39 +29,39 @@ EMAIL	john.doe@example.com	9	29	1.0
 
 # Test SSN detection
 query I
-SELECT list_contains(list_transform(pii_detect('SSN: 123-45-6789'), x -> x.type), 'US_SSN');
+SELECT list_contains(list_transform(pii_detect('SSN: 123-45-6789'), lambda x: x.type), 'US_SSN');
 ----
 true
 
 # Test credit card detection
 query I
-SELECT list_contains(list_transform(pii_detect('Card: 4111111111111111'), x -> x.type), 'CREDIT_CARD');
+SELECT list_contains(list_transform(pii_detect('Card: 4111111111111111'), lambda x: x.type), 'CREDIT_CARD');
 ----
 true
 
 # Test IBAN detection
 query I
-SELECT list_contains(list_transform(pii_detect('IBAN: DE89370400440532013000'), x -> x.type), 'IBAN');
+SELECT list_contains(list_transform(pii_detect('IBAN: DE89370400440532013000'), lambda x: x.type), 'IBAN');
 ----
 true
 
 # Test IP address detection
 query I
-SELECT list_contains(list_transform(pii_detect('Server: 192.168.1.100'), x -> x.type), 'IP_ADDRESS');
+SELECT list_contains(list_transform(pii_detect('Server: 192.168.1.100'), lambda x: x.type), 'IP_ADDRESS');
 ----
 true
 
 # Test URL detection
 query I
-SELECT list_contains(list_transform(pii_detect('Visit https://example.com/page'), x -> x.type), 'URL');
+SELECT list_contains(list_transform(pii_detect('Visit https://example.com/page'), lambda x: x.type), 'URL');
 ----
 true
 
 # Test multiple PII types in one string - detect both types
 query II
 SELECT
-    list_contains(list_transform(pii_detect('Email: test@test.com, SSN: 123-45-6789'), x -> x.type), 'EMAIL'),
-    list_contains(list_transform(pii_detect('Email: test@test.com, SSN: 123-45-6789'), x -> x.type), 'US_SSN');
+    list_contains(list_transform(pii_detect('Email: test@test.com, SSN: 123-45-6789'), lambda x: x.type), 'EMAIL'),
+    list_contains(list_transform(pii_detect('Email: test@test.com, SSN: 123-45-6789'), lambda x: x.type), 'US_SSN');
 ----
 true	true
 
@@ -169,31 +169,31 @@ SELECT pii_count('No PII here');
 
 # Visa card (valid format)
 query I
-SELECT list_contains(list_transform(pii_detect('Card: 4111111111111111'), x -> x.type), 'CREDIT_CARD');
+SELECT list_contains(list_transform(pii_detect('Card: 4111111111111111'), lambda x: x.type), 'CREDIT_CARD');
 ----
 true
 
 # Mastercard (valid format)
 query I
-SELECT list_contains(list_transform(pii_detect('Card: 5500000000000004'), x -> x.type), 'CREDIT_CARD');
+SELECT list_contains(list_transform(pii_detect('Card: 5500000000000004'), lambda x: x.type), 'CREDIT_CARD');
 ----
 true
 
 # Amex (valid format)
 query I
-SELECT list_contains(list_transform(pii_detect('Card: 340000000000009'), x -> x.type), 'CREDIT_CARD');
+SELECT list_contains(list_transform(pii_detect('Card: 340000000000009'), lambda x: x.type), 'CREDIT_CARD');
 ----
 true
 
 # Card with spaces
 query I
-SELECT list_contains(list_transform(pii_detect('Card: 4111 1111 1111 1111'), x -> x.type), 'CREDIT_CARD');
+SELECT list_contains(list_transform(pii_detect('Card: 4111 1111 1111 1111'), lambda x: x.type), 'CREDIT_CARD');
 ----
 true
 
 # Card with dashes
 query I
-SELECT list_contains(list_transform(pii_detect('Card: 4111-1111-1111-1111'), x -> x.type), 'CREDIT_CARD');
+SELECT list_contains(list_transform(pii_detect('Card: 4111-1111-1111-1111'), lambda x: x.type), 'CREDIT_CARD');
 ----
 true
 
@@ -203,13 +203,13 @@ true
 
 # German IBAN
 query I
-SELECT list_contains(list_transform(pii_detect('IBAN: DE89370400440532013000'), x -> x.type), 'IBAN');
+SELECT list_contains(list_transform(pii_detect('IBAN: DE89370400440532013000'), lambda x: x.type), 'IBAN');
 ----
 true
 
 # UK IBAN
 query I
-SELECT list_contains(list_transform(pii_detect('IBAN: GB82WEST12345698765432'), x -> x.type), 'IBAN');
+SELECT list_contains(list_transform(pii_detect('IBAN: GB82WEST12345698765432'), lambda x: x.type), 'IBAN');
 ----
 true
 
@@ -231,7 +231,7 @@ SELECT pii_detect('   ');
 
 # Very long text with PII at the end
 query I
-SELECT list_contains(list_transform(pii_detect(repeat('x', 1000) || ' email: test@example.com'), x -> x.type), 'EMAIL');
+SELECT list_contains(list_transform(pii_detect(repeat('x', 1000) || ' email: test@example.com'), lambda x: x.type), 'EMAIL');
 ----
 true
 
@@ -241,25 +241,25 @@ true
 
 # Colon-separated format
 query I
-SELECT list_contains(list_transform(pii_detect('Device MAC: 00:1A:2B:3C:4D:5E'), x -> x.type), 'MAC_ADDRESS');
+SELECT list_contains(list_transform(pii_detect('Device MAC: 00:1A:2B:3C:4D:5E'), lambda x: x.type), 'MAC_ADDRESS');
 ----
 true
 
 # Hyphen-separated format
 query I
-SELECT list_contains(list_transform(pii_detect('NIC: 00-1A-2B-3C-4D-5E'), x -> x.type), 'MAC_ADDRESS');
+SELECT list_contains(list_transform(pii_detect('NIC: 00-1A-2B-3C-4D-5E'), lambda x: x.type), 'MAC_ADDRESS');
 ----
 true
 
 # Dot-separated format (Cisco style)
 query I
-SELECT list_contains(list_transform(pii_detect('Switch: 001A.2B3C.4D5E'), x -> x.type), 'MAC_ADDRESS');
+SELECT list_contains(list_transform(pii_detect('Switch: 001A.2B3C.4D5E'), lambda x: x.type), 'MAC_ADDRESS');
 ----
 true
 
 # No separator format
 query I
-SELECT list_contains(list_transform(pii_detect('MAC 001A2B3C4D5E'), x -> x.type), 'MAC_ADDRESS');
+SELECT list_contains(list_transform(pii_detect('MAC 001A2B3C4D5E'), lambda x: x.type), 'MAC_ADDRESS');
 ----
 true
 
@@ -287,13 +287,13 @@ MAC: *****************
 
 # Standard format without spaces
 query I
-SELECT list_contains(list_transform(pii_detect('NINO: AB123456C'), x -> x.type), 'UK_NINO');
+SELECT list_contains(list_transform(pii_detect('NINO: AB123456C'), lambda x: x.type), 'UK_NINO');
 ----
 true
 
 # Format with spaces
 query I
-SELECT list_contains(list_transform(pii_detect('NI Number: AB 12 34 56 C'), x -> x.type), 'UK_NINO');
+SELECT list_contains(list_transform(pii_detect('NI Number: AB 12 34 56 C'), lambda x: x.type), 'UK_NINO');
 ----
 true
 
@@ -311,13 +311,13 @@ NINO: AB ** ** ** C
 
 # Invalid prefix - should not match (D is forbidden as first char)
 query I
-SELECT list_contains(list_transform(pii_detect('Invalid: DA123456C'), x -> x.type), 'UK_NINO');
+SELECT list_contains(list_transform(pii_detect('Invalid: DA123456C'), lambda x: x.type), 'UK_NINO');
 ----
 false
 
 # Invalid prefix - BG is forbidden
 query I
-SELECT list_contains(list_transform(pii_detect('Invalid: BG123456C'), x -> x.type), 'UK_NINO');
+SELECT list_contains(list_transform(pii_detect('Invalid: BG123456C'), lambda x: x.type), 'UK_NINO');
 ----
 false
 
@@ -328,13 +328,13 @@ false
 # Current format (9 digits). Note: a 9-digit number that also forms a valid
 # SSN is reported as US_SSN by overlap resolution, so use a 9xx number here.
 query I
-SELECT list_contains(list_transform(pii_detect('Passport: 987654321'), x -> x.type), 'US_PASSPORT');
+SELECT list_contains(list_transform(pii_detect('Passport: 987654321'), lambda x: x.type), 'US_PASSPORT');
 ----
 true
 
 # Legacy format (letter + 8 digits)
 query I
-SELECT list_contains(list_transform(pii_detect('Passport: A12345678'), x -> x.type), 'US_PASSPORT');
+SELECT list_contains(list_transform(pii_detect('Passport: A12345678'), lambda x: x.type), 'US_PASSPORT');
 ----
 true
 
@@ -352,7 +352,7 @@ true
 
 # Should NOT match 10 digits (too long for passport)
 query I
-SELECT list_contains(list_transform(pii_detect('Not passport: 1234567890'), x -> x.type), 'US_PASSPORT');
+SELECT list_contains(list_transform(pii_detect('Not passport: 1234567890'), lambda x: x.type), 'US_PASSPORT');
 ----
 false
 
@@ -362,19 +362,19 @@ false
 
 # International format with + prefix
 query I
-SELECT list_contains(list_transform(pii_detect('Call me at +1-555-123-4567 anytime'), x -> x.type), 'PHONE');
+SELECT list_contains(list_transform(pii_detect('Call me at +1-555-123-4567 anytime'), lambda x: x.type), 'PHONE');
 ----
 true
 
 # UK international format
 query I
-SELECT list_contains(list_transform(pii_detect('UK: +44 20 7946 0958 today'), x -> x.type), 'PHONE');
+SELECT list_contains(list_transform(pii_detect('UK: +44 20 7946 0958 today'), lambda x: x.type), 'PHONE');
 ----
 true
 
 # US format with parentheses
 query I
-SELECT list_contains(list_transform(pii_detect('Phone: (555) 123-4567'), x -> x.type), 'PHONE');
+SELECT list_contains(list_transform(pii_detect('Phone: (555) 123-4567'), lambda x: x.type), 'PHONE');
 ----
 true
 
@@ -392,7 +392,7 @@ Phone: ***-***-4567
 
 # SSN should NOT be detected as phone
 query I
-SELECT list_contains(list_transform(pii_detect('SSN: 123-45-6789'), x -> x.type), 'PHONE');
+SELECT list_contains(list_transform(pii_detect('SSN: 123-45-6789'), lambda x: x.type), 'PHONE');
 ----
 false
 
@@ -402,19 +402,19 @@ false
 
 # AWS Access Key ID
 query I
-SELECT list_contains(list_transform(pii_detect('Key: AKIAIOSFODNN7EXAMPLE'), x -> x.type), 'API_KEY');
+SELECT list_contains(list_transform(pii_detect('Key: AKIAIOSFODNN7EXAMPLE'), lambda x: x.type), 'API_KEY');
 ----
 true
 
 # GitHub Personal Access Token
 query I
-SELECT list_contains(list_transform(pii_detect('Token: ghp_1234567890abcdefghijklmnopqrstuvwxyz'), x -> x.type), 'API_KEY');
+SELECT list_contains(list_transform(pii_detect('Token: ghp_1234567890abcdefghijklmnopqrstuvwxyz'), lambda x: x.type), 'API_KEY');
 ----
 true
 
 # GitHub OAuth Token
 query I
-SELECT list_contains(list_transform(pii_detect('OAuth: gho_abcdefghijklmnopqrstuvwxyz012345'), x -> x.type), 'API_KEY');
+SELECT list_contains(list_transform(pii_detect('OAuth: gho_abcdefghijklmnopqrstuvwxyz012345'), lambda x: x.type), 'API_KEY');
 ----
 true
 
@@ -432,7 +432,7 @@ Key: AKIA****************
 
 # Low entropy string should NOT match (repetitive)
 query I
-SELECT list_contains(list_transform(pii_detect('Not a key: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'), x -> x.type), 'API_KEY');
+SELECT list_contains(list_transform(pii_detect('Not a key: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'), lambda x: x.type), 'API_KEY');
 ----
 false
 
@@ -442,8 +442,8 @@ false
 
 # Multiple new types detected
 query I
-SELECT list_contains(list_transform(pii_detect('MAC: 00:1A:2B:3C:4D:5E, Call +44-20-7946-0958 now'), x -> x.type), 'MAC_ADDRESS')
-   AND list_contains(list_transform(pii_detect('MAC: 00:1A:2B:3C:4D:5E, Call +44-20-7946-0958 now'), x -> x.type), 'PHONE');
+SELECT list_contains(list_transform(pii_detect('MAC: 00:1A:2B:3C:4D:5E, Call +44-20-7946-0958 now'), lambda x: x.type), 'MAC_ADDRESS')
+   AND list_contains(list_transform(pii_detect('MAC: 00:1A:2B:3C:4D:5E, Call +44-20-7946-0958 now'), lambda x: x.type), 'PHONE');
 ----
 true
 
@@ -459,37 +459,37 @@ SELECT pii_count('Email: test@test.com, MAC: 00:1A:2B:3C:4D:5E, SSN: 123-45-6789
 
 # Bitcoin legacy (P2PKH) - Genesis block address
 query I
-SELECT list_contains(list_transform(pii_detect('Wallet: 1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa'), x -> x.type), 'CRYPTO_ADDRESS');
+SELECT list_contains(list_transform(pii_detect('Wallet: 1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa'), lambda x: x.type), 'CRYPTO_ADDRESS');
 ----
 true
 
 # Bitcoin P2SH
 query I
-SELECT list_contains(list_transform(pii_detect('Send: 3J98t1WpEZ73CNmQviecrnyiWrnqRhWNLy'), x -> x.type), 'CRYPTO_ADDRESS');
+SELECT list_contains(list_transform(pii_detect('Send: 3J98t1WpEZ73CNmQviecrnyiWrnqRhWNLy'), lambda x: x.type), 'CRYPTO_ADDRESS');
 ----
 true
 
 # Bitcoin SegWit (bech32)
 query I
-SELECT list_contains(list_transform(pii_detect('bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq'), x -> x.type), 'CRYPTO_ADDRESS');
+SELECT list_contains(list_transform(pii_detect('bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq'), lambda x: x.type), 'CRYPTO_ADDRESS');
 ----
 true
 
 # Ethereum address
 query I
-SELECT list_contains(list_transform(pii_detect('0x742d35Cc6634C0532925a3b844Bc454e4438f44e'), x -> x.type), 'CRYPTO_ADDRESS');
+SELECT list_contains(list_transform(pii_detect('0x742d35Cc6634C0532925a3b844Bc454e4438f44e'), lambda x: x.type), 'CRYPTO_ADDRESS');
 ----
 true
 
 # Invalid Bitcoin checksum (last char changed)
 query I
-SELECT list_contains(list_transform(pii_detect('1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNb'), x -> x.type), 'CRYPTO_ADDRESS');
+SELECT list_contains(list_transform(pii_detect('1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNb'), lambda x: x.type), 'CRYPTO_ADDRESS');
 ----
 false
 
 # Invalid Ethereum (wrong length - too short)
 query I
-SELECT list_contains(list_transform(pii_detect('0x742d35Cc6634'), x -> x.type), 'CRYPTO_ADDRESS');
+SELECT list_contains(list_transform(pii_detect('0x742d35Cc6634'), lambda x: x.type), 'CRYPTO_ADDRESS');
 ----
 false
 
@@ -525,13 +525,13 @@ true
 
 # Ethereum lowercase (valid)
 query I
-SELECT list_contains(list_transform(pii_detect('0x742d35cc6634c0532925a3b844bc454e4438f44e'), x -> x.type), 'CRYPTO_ADDRESS');
+SELECT list_contains(list_transform(pii_detect('0x742d35cc6634c0532925a3b844bc454e4438f44e'), lambda x: x.type), 'CRYPTO_ADDRESS');
 ----
 true
 
 # Ethereum uppercase (valid)
 query I
-SELECT list_contains(list_transform(pii_detect('0x742D35CC6634C0532925A3B844BC454E4438F44E'), x -> x.type), 'CRYPTO_ADDRESS');
+SELECT list_contains(list_transform(pii_detect('0x742D35CC6634C0532925A3B844BC454E4438F44E'), lambda x: x.type), 'CRYPTO_ADDRESS');
 ----
 true
 
@@ -672,13 +672,13 @@ DROP TABLE pii_test_data;
 
 # Basic name detection - single name
 query I
-SELECT list_contains(list_transform(pii_detect('Hello John'), x -> x.type), 'NAME');
+SELECT list_contains(list_transform(pii_detect('Hello John'), lambda x: x.type), 'NAME');
 ----
 true
 
 # Basic name detection - full name
 query I
-SELECT list_contains(list_transform(pii_detect('Hello John Smith'), x -> x.type), 'NAME');
+SELECT list_contains(list_transform(pii_detect('Hello John Smith'), lambda x: x.type), 'NAME');
 ----
 true
 
@@ -690,13 +690,13 @@ true
 
 # Single name - Sarah
 query I
-SELECT list_contains(list_transform(pii_detect('Contact: Sarah'), x -> x.type), 'NAME');
+SELECT list_contains(list_transform(pii_detect('Contact: Sarah'), lambda x: x.type), 'NAME');
 ----
 true
 
 # Full name (3 parts) - common name
 query I
-SELECT list_contains(list_transform(pii_detect('Dr. Michael James Brown'), x -> x.type), 'NAME');
+SELECT list_contains(list_transform(pii_detect('Dr. Michael James Brown'), lambda x: x.type), 'NAME');
 ----
 true
 
@@ -759,13 +759,13 @@ true
 # Common first name (dictionary hit) - John
 # Note: Without NER, dictionary-based detection is limited
 query I
-SELECT list_contains(list_transform(pii_detect('Contact John for details'), x -> x.type), 'NAME') OR true;
+SELECT list_contains(list_transform(pii_detect('Contact John for details'), lambda x: x.type), 'NAME') OR true;
 ----
 true
 
 # Common first name (dictionary hit) - Elizabeth
 query I
-SELECT list_contains(list_transform(pii_detect('Ask Elizabeth'), x -> x.type), 'NAME') OR true;
+SELECT list_contains(list_transform(pii_detect('Ask Elizabeth'), lambda x: x.type), 'NAME') OR true;
 ----
 true
 
@@ -773,7 +773,7 @@ true
 # (Xibalba is a Mayan mythological term that the model identifies as a name)
 # Without NER, this won't be detected as a name
 query I
-SELECT list_contains(list_transform(pii_detect('Xibalba visited'), x -> x.type), 'NAME') OR true;
+SELECT list_contains(list_transform(pii_detect('Xibalba visited'), lambda x: x.type), 'NAME') OR true;
 ----
 true
 
@@ -842,13 +842,13 @@ DROP TABLE employee_data;
 
 # Name at end of long text
 query I
-SELECT list_contains(list_transform(pii_detect(repeat('x', 100) || ' John Smith'), x -> x.type), 'NAME');
+SELECT list_contains(list_transform(pii_detect(repeat('x', 100) || ' John Smith'), lambda x: x.type), 'NAME');
 ----
 true
 
 # Name with punctuation - comma
 query I
-SELECT list_contains(list_transform(pii_detect('Mr. John Smith, PhD'), x -> x.type), 'NAME');
+SELECT list_contains(list_transform(pii_detect('Mr. John Smith, PhD'), lambda x: x.type), 'NAME');
 ----
 true
 
