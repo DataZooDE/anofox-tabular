@@ -58,7 +58,7 @@ jobs:
       - uses: actions/cache@v4
         with:
           path: ~/.cache/vcpkg-bin
-          key: vcpkg-next20-osx-${{ env.VCPKG_COMMIT }}-${{ hashFiles('vcpkg.json', 'vcpkg_ports/**') }}
+          key: vcpkg-next20-osx-${{ env.VCPKG_COMMIT }}-${{ hashFiles('vcpkg.json') }}
           restore-keys: vcpkg-next20-osx-${{ env.VCPKG_COMMIT }}-
 
       - uses: actions/cache@v4
