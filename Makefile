@@ -20,7 +20,7 @@ BUILD_ROOT:=build
 
 # Patches applied to the DuckDB submodule before building (see duckdb_patches/).
 # Currently EMPTY: the previous fmt stdext::checked_array_iterator removal
-# (upstream duckdb/duckdb@0c19d698ca) is now included in v1.4.5 and v1.5.4, so
+# (upstream duckdb/duckdb@0c19d698ca) is included upstream since v1.5.4, so
 # no patch is needed. The mechanism is kept for future submodule patches.
 # Idempotent: already-applied patches are detected and skipped; an empty
 # duckdb_patches/ directory is a no-op (the unexpanded glob is skipped).

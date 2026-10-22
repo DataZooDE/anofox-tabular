@@ -59,9 +59,10 @@ vector<string> ParseColumnList(const Value &column_value) {
 	return result;
 }
 
-// DuckDB v1.5 resolves view columns via BindView()/GetColumnInfo(); v1.4 stores
-// the bound names directly on the catalog entry. No version macro is visible to
-// extension builds, so the available API is detected at compile time.
+// DuckDB v1.5 and 2.0 resolve view columns via BindView()/GetColumnInfo(). The
+// fallback overload (bound names stored directly on the catalog entry) served
+// DuckDB v1.4, which is no longer supported; it is only instantiated when
+// GetColumnInfo() is missing. The available API is detected at compile time.
 template <typename T, typename = void>
 struct ViewHasGetColumnInfo : std::false_type {};
 template <typename T>
