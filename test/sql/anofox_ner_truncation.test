@@ -16,7 +16,7 @@ LOAD anofox_tabular
 # Short input baseline: NER detects the organization
 query I
 SELECT list_contains(
-    list_transform(pii_detect('John Smith works at Microsoft in Seattle.'), x -> x.type),
+    list_transform(pii_detect('John Smith works at Microsoft in Seattle.'), lambda x: x.type),
     'ORGANIZATION');
 ----
 true
@@ -28,7 +28,7 @@ SELECT list_contains(
     list_transform(
         pii_detect('John Smith works at Microsoft in Seattle. ' ||
                    repeat('Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore. ', 60)),
-        x -> x.type),
+        lambda x: x.type),
     'ORGANIZATION');
 ----
 true
@@ -36,7 +36,7 @@ true
 # Long input must not break subsequent short inputs (no corrupted state)
 query I
 SELECT list_contains(
-    list_transform(pii_detect('Maria Garcia visited the Eiffel Tower in Paris.'), x -> x.type),
+    list_transform(pii_detect('Maria Garcia visited the Eiffel Tower in Paris.'), lambda x: x.type),
     'LOCATION');
 ----
 true

@@ -19,6 +19,8 @@
 #include "anofox_raii.hpp"
 #include "anofox_trace.hpp"
 #include "duckdb/common/string_util.hpp"
+#include "anofox_duckdb_vectors.hpp"
+#include "duckdb_compat.hpp"
 
 #include <cerrno>
 #include <chrono>
@@ -453,7 +455,7 @@ void PostalParseAddressFunction(DataChunk &args, ExpressionState &state, Vector 
 	auto &input = args.data[0];
 	UnifiedVectorFormat input_data;
 	input.ToUnifiedFormat(args.size(), input_data);
-	auto inputs = reinterpret_cast<string_t *>(input_data.data);
+	auto inputs = UnifiedVectorFormat::GetData<string_t>(input_data);
 
 	result.SetVectorType(VectorType::FLAT_VECTOR);
 	auto &children = StructVector::GetEntries(result);
@@ -466,7 +468,7 @@ void PostalParseAddressFunction(DataChunk &args, ExpressionState &state, Vector 
 	constexpr idx_t COMPONENT_COUNT = 6;
 	string_t *child_data[COMPONENT_COUNT];
 	for (idx_t c = 0; c < COMPONENT_COUNT; c++) {
-		child_data[c] = FlatVector::GetData<string_t>(*children[c]);
+		child_data[c] = duckdb_compat::FlatData<string_t>(anofox::VectorRef(children[c]));
 	}
 
 	// Initialize libpostal lazily on the first non-NULL row so NULL-only
@@ -488,7 +490,7 @@ void PostalParseAddressFunction(DataChunk &args, ExpressionState &state, Vector 
 		}
 
 		for (auto &child : children) {
-			FlatVector::SetNull(*child, i, true);
+			FlatVector::SetNull(anofox::VectorRef(child), i, true);
 		}
 
 		// Write the libpostal component values straight into the child vectors
@@ -498,8 +500,8 @@ void PostalParseAddressFunction(DataChunk &args, ExpressionState &state, Vector 
 			for (size_t component = 0; component < count; component++) {
 				for (idx_t c = 0; c < COMPONENT_COUNT; c++) {
 					if (std::strcmp(labels[component], COMPONENT_LABELS[c]) == 0) {
-						child_data[c][i] = StringVector::AddString(*children[c], values[component]);
-						FlatVector::SetNull(*children[c], i, false);
+						child_data[c][i] = StringVector::AddString(anofox::VectorRef(children[c]), values[component]);
+						FlatVector::SetNull(anofox::VectorRef(children[c]), i, false);
 						break;
 					}
 				}
@@ -519,10 +521,10 @@ void PostalExpandAddressFunction(DataChunk &args, ExpressionState &state, Vector
 	auto &input = args.data[0];
 	UnifiedVectorFormat input_data;
 	input.ToUnifiedFormat(args.size(), input_data);
-	auto inputs = reinterpret_cast<string_t *>(input_data.data);
+	auto inputs = UnifiedVectorFormat::GetData<string_t>(input_data);
 
 	result.SetVectorType(VectorType::FLAT_VECTOR);
-	auto list_entries = FlatVector::GetData<list_entry_t>(result);
+	auto list_entries = duckdb_compat::FlatData<list_entry_t>(result);
 	auto &expansion_child = ListVector::GetEntry(result);
 
 	// Initialize libpostal lazily on the first non-NULL row so NULL-only
@@ -549,7 +551,7 @@ void PostalExpandAddressFunction(DataChunk &args, ExpressionState &state, Vector
 			auto offset = ListVector::GetListSize(result);
 			ListVector::Reserve(result, offset + count);
 			// Re-fetch after Reserve: growing the child may reallocate its data.
-			auto child_data = FlatVector::GetData<string_t>(expansion_child);
+			auto child_data = duckdb_compat::FlatData<string_t>(expansion_child);
 			for (size_t k = 0; k < count; k++) {
 				child_data[offset + k] = StringVector::AddString(expansion_child, expansions[k]);
 			}
@@ -565,7 +567,7 @@ void PostalExpandAddressFunction(DataChunk &args, ExpressionState &state, Vector
 }
 
 ScalarFunction CreateParseFunction(const string &name) {
-	ScalarFunction function(name, {LogicalTypeId::VARCHAR},
+	ScalarFunction function(duckdb_compat::FunctionName(name), {LogicalTypeId::VARCHAR},
 	                        LogicalType::STRUCT({{"house_number", LogicalTypeId::VARCHAR},
 	                                             {"road", LogicalTypeId::VARCHAR},
 	                                             {"city", LogicalTypeId::VARCHAR},
@@ -573,16 +575,16 @@ ScalarFunction CreateParseFunction(const string &name) {
 	                                             {"postcode", LogicalTypeId::VARCHAR},
 	                                             {"country", LogicalTypeId::VARCHAR}}),
 	                        PostalParseAddressFunction);
-	function.null_handling = FunctionNullHandling::SPECIAL_HANDLING;
-	function.stability = FunctionStability::CONSISTENT;
+	duckdb_compat::SetNullHandling(function, FunctionNullHandling::SPECIAL_HANDLING);
+	duckdb_compat::SetStability(function, FunctionStability::CONSISTENT);
 	return function;
 }
 
 ScalarFunction CreateExpandFunction(const string &name) {
-	ScalarFunction function(name, {LogicalTypeId::VARCHAR}, LogicalType::LIST(LogicalTypeId::VARCHAR),
+	ScalarFunction function(duckdb_compat::FunctionName(name), {LogicalTypeId::VARCHAR}, LogicalType::LIST(LogicalTypeId::VARCHAR),
 	                        PostalExpandAddressFunction);
-	function.null_handling = FunctionNullHandling::SPECIAL_HANDLING;
-	function.stability = FunctionStability::CONSISTENT;
+	duckdb_compat::SetNullHandling(function, FunctionNullHandling::SPECIAL_HANDLING);
+	duckdb_compat::SetStability(function, FunctionStability::CONSISTENT);
 	return function;
 }
 
@@ -595,7 +597,7 @@ unique_ptr<GlobalTableFunctionState> PostalStatusInit(ClientContext &, TableFunc
 }
 
 unique_ptr<FunctionData> PostalStatusBind(ClientContext &, TableFunctionBindInput &, vector<LogicalType> &return_types,
-                                          vector<string> &names) {
+                                          duckdb_compat::BindNames &names) {
 	PostHogTelemetry::Instance().RecordFunctionCall("postal_status");
 	names.emplace_back("initialized");
 	return_types.emplace_back(LogicalTypeId::BOOLEAN);
@@ -607,17 +609,17 @@ unique_ptr<FunctionData> PostalStatusBind(ClientContext &, TableFunctionBindInpu
 }
 
 // Telemetry bind functions for scalar functions
-unique_ptr<FunctionData> PostalParseAddressBind(ClientContext &, ScalarFunction &, vector<unique_ptr<Expression>> &) {
+unique_ptr<FunctionData> PostalParseAddressBind(ClientContext &) {
 	PostHogTelemetry::Instance().RecordFunctionCall("postal_parse_address");
 	return nullptr;
 }
 
-unique_ptr<FunctionData> PostalExpandAddressBind(ClientContext &, ScalarFunction &, vector<unique_ptr<Expression>> &) {
+unique_ptr<FunctionData> PostalExpandAddressBind(ClientContext &) {
 	PostHogTelemetry::Instance().RecordFunctionCall("postal_expand_address");
 	return nullptr;
 }
 
-unique_ptr<FunctionData> PostalLoadDataBind(ClientContext &, ScalarFunction &, vector<unique_ptr<Expression>> &) {
+unique_ptr<FunctionData> PostalLoadDataBind(ClientContext &) {
 	PostHogTelemetry::Instance().RecordFunctionCall("postal_load_data");
 	return nullptr;
 }
@@ -629,7 +631,7 @@ void PostalStatusFunction(ClientContext &context, TableFunctionInput &input, Dat
 	}
 
 	auto status = PostalManager::Instance().GetStatus(context);
-	output.SetCardinality(1);
+	duckdb_compat::SetChildCardinality(output, 1);
 	output.SetValue(0, 0, Value::BOOLEAN(status.initialized));
 	output.SetValue(1, 0, Value::BOOLEAN(status.data_present));
 	output.SetValue(2, 0, Value(status.data_dir));
@@ -637,7 +639,7 @@ void PostalStatusFunction(ClientContext &context, TableFunctionInput &input, Dat
 }
 
 TableFunction CreateStatusFunction(const string &name) {
-	return TableFunction(name, {}, DATAZOO_GUARD(ANOFOX_TABULAR_BANNER, PostalStatusFunction), DATAZOO_GUARD(ANOFOX_TABULAR_BANNER, PostalStatusBind), PostalStatusInit);
+	return TableFunction(duckdb_compat::FunctionName(name), {}, DATAZOO_GUARD(ANOFOX_TABULAR_BANNER, PostalStatusFunction), DATAZOO_GUARD(ANOFOX_TABULAR_BANNER, PostalStatusBind), PostalStatusInit);
 }
 
 void PostalLoadDataFunction(DataChunk &, ExpressionState &state, Vector &result) {
@@ -651,8 +653,8 @@ void PostalLoadDataFunction(DataChunk &, ExpressionState &state, Vector &result)
 
 ScalarFunction CreateLoadFunction() {
 	ScalarFunction function("anofox_tab_postal_load_data", {}, LogicalTypeId::BOOLEAN, PostalLoadDataFunction);
-	function.null_handling = FunctionNullHandling::SPECIAL_HANDLING;
-	function.stability = FunctionStability::VOLATILE;
+	duckdb_compat::SetNullHandling(function, FunctionNullHandling::SPECIAL_HANDLING);
+	duckdb_compat::SetStability(function, FunctionStability::VOLATILE);
 	return function;
 }
 
@@ -678,7 +680,7 @@ void RegisterPostalFunctions(ExtensionLoader &loader) {
 		desc.examples = {"SELECT postal_parse_address('123 Main St, Springfield, IL 62701');"};
 		desc.categories = {"postal", "address"};
 		ScalarFunction parse_func = CreateParseFunction("anofox_tab_postal_parse_address");
-		parse_func.bind = PostalParseAddressBind;
+		parse_func.SetBindCallback(&ScalarContextBind<PostalParseAddressBind>::Bind);
 		RegisterScalarFunctionWithAlias(loader, parse_func, "postal_parse_address", {std::move(desc)});
 	}
 
@@ -691,7 +693,7 @@ void RegisterPostalFunctions(ExtensionLoader &loader) {
 		desc.examples = {"SELECT postal_expand_address('123 main st springfield il');"};
 		desc.categories = {"postal", "address"};
 		ScalarFunction expand_func = CreateExpandFunction("anofox_tab_postal_expand_address");
-		expand_func.bind = PostalExpandAddressBind;
+		expand_func.SetBindCallback(&ScalarContextBind<PostalExpandAddressBind>::Bind);
 		RegisterScalarFunctionWithAlias(loader, expand_func, "postal_expand_address", {std::move(desc)});
 	}
 
@@ -713,7 +715,7 @@ void RegisterPostalFunctions(ExtensionLoader &loader) {
 		desc.categories = {"postal", "setup"};
 		ScalarFunction load_func = CreateLoadFunction();
 		load_func.name = "anofox_tab_postal_load_data";
-		load_func.bind = PostalLoadDataBind;
+		load_func.SetBindCallback(&ScalarContextBind<PostalLoadDataBind>::Bind);
 		RegisterScalarFunctionWithAlias(loader, load_func, "postal_load_data", {std::move(desc)});
 	}
 }

@@ -13,6 +13,7 @@
 #include "duckdb/parser/parser.hpp"
 #include "duckdb/parser/tableref/subqueryref.hpp"
 #include "duckdb/parser/statement/select_statement.hpp"
+#include "duckdb_compat.hpp"
 
 #include <algorithm>
 #include "anofox_tabular_banner.hpp"
@@ -109,9 +110,10 @@ static vector<pair<string, string>> IntrospectColumns(Connection &con, const str
 		throw InvalidInputException("Failed to introspect table '%s': %s", table_name, res->GetError());
 	}
 
-	for (idx_t i = 0; i < res->names.size(); i++) {
-		string col_name = res->names[i];
-		string col_type = res->types[i].ToString();
+	auto res_names = duckdb_compat::ResultNames(*res);
+	for (idx_t i = 0; i < res_names.size(); i++) {
+		string col_name = res_names[i];
+		string col_type = duckdb_compat::ResultTypes(*res)[i].ToString();
 
 		if (!filter.empty()) {
 			bool found = std::find(filter.begin(), filter.end(), col_name) != filter.end();
@@ -249,7 +251,7 @@ static unique_ptr<TableRef> ProfileSummaryBindReplace(ClientContext &context,
 	string sql = GenerateSummarySQL(table_name, total_nulls, complex_columns, column_count,
 	                                numeric_columns, string_columns, temporal_columns,
 	                                boolean_columns);
-	return ParseSubquery(sql, context.GetParserOptions(), "Failed to parse profile_summary query");
+	return ParseSubquery(sql, context, "Failed to parse profile_summary query");
 }
 
 //===--------------------------------------------------------------------===//
@@ -283,7 +285,7 @@ static LogicalType GetTopValuesType() {
 static unique_ptr<FunctionData> ProfileTableBind(ClientContext &context,
                                                   TableFunctionBindInput &input,
                                                   vector<LogicalType> &return_types,
-                                                  vector<string> &names) {
+                                                  duckdb_compat::BindNames &names) {
 	PostHogTelemetry::Instance().RecordFunctionCall("profile_table");
 	if (input.inputs.empty()) {
 		throw BinderException("profile_table requires at least 1 argument: table_name");
@@ -609,7 +611,7 @@ static void ProfileTableExecute(ClientContext &context, TableFunctionInput &data
 		state.current_row++;
 		count++;
 	}
-	output.SetCardinality(count);
+	duckdb_compat::SetChildCardinality(output, count);
 }
 
 //===--------------------------------------------------------------------===//
@@ -633,7 +635,7 @@ struct ProfileCorrelationsGlobalState : public GlobalTableFunctionState {
 static unique_ptr<FunctionData> ProfileCorrelationsBind(ClientContext &context,
                                                          TableFunctionBindInput &input,
                                                          vector<LogicalType> &return_types,
-                                                         vector<string> &names) {
+                                                         duckdb_compat::BindNames &names) {
 	PostHogTelemetry::Instance().RecordFunctionCall("profile_correlations");
 	if (input.inputs.empty()) {
 		throw BinderException("profile_correlations requires at least 1 argument: table_name");
@@ -767,7 +769,7 @@ static void ProfileCorrelationsExecute(ClientContext &context, TableFunctionInpu
 		state.current_row++;
 		count++;
 	}
-	output.SetCardinality(count);
+	duckdb_compat::SetChildCardinality(output, count);
 }
 
 } // anonymous namespace

@@ -74,8 +74,14 @@ set(SENTENCEPIECE_FOUND FALSE)
 # In multi-container CI workflows, configure_ci may run in one container and
 # CMake in another, so we fallback to running the install script from CMake.
 
+# ANOFOX_TABULAR_NO_LIBPOSTAL=1 builds without the postal module and skips the
+# search, including the from-source fallback below (a libpostal build downloads
+# ~2 GB of model data). Used by CI jobs that test other parts of the extension.
+if(DEFINED ENV{ANOFOX_TABULAR_NO_LIBPOSTAL} AND "$ENV{ANOFOX_TABULAR_NO_LIBPOSTAL}" STREQUAL "1")
+    message(STATUS "libpostal: skipped (ANOFOX_TABULAR_NO_LIBPOSTAL=1)")
+    set(LIBPOSTAL_FOUND FALSE)
 # Check for source build in /usr/local (standard install location)
-if(EXISTS "/usr/local/lib/libpostal.a" AND EXISTS "/usr/local/include/libpostal/libpostal.h")
+elseif(EXISTS "/usr/local/lib/libpostal.a" AND EXISTS "/usr/local/include/libpostal/libpostal.h")
     message(STATUS "Found libpostal in /usr/local (static library with -fPIC)")
     set(LIBPOSTAL_LDFLAGS "/usr/local/lib/libpostal.a")
     set(LIBPOSTAL_INCLUDE_DIRS "/usr/local/include")
@@ -203,8 +209,22 @@ set(DATAZOO_BANNER_TELEMETRY_INCLUDE_DIR
 add_subdirectory(datazoo-banner)
 include_directories(${CMAKE_CURRENT_SOURCE_DIR}/datazoo-banner/include)
 
+# One source tree for DuckDB v1.5.6 and 2.0: API differences sit behind the
+# header-only duckdb-compat helpers (namespace duckdb_compat, see
+# docs/UPDATING.md). Include path only - never target_link_libraries: DuckDB
+# exports the extension targets, and an interface library outside that export
+# set fails the generate step.
+add_subdirectory(duckdb-compat)
+include_directories(${CMAKE_CURRENT_SOURCE_DIR}/duckdb-compat/include)
+
 build_static_extension(${TARGET_NAME} ${EXTENSION_SOURCES})
 build_loadable_extension(${TARGET_NAME} " " ${EXTENSION_SOURCES})
+
+# The sources and duckdb-compat need C++17. DuckDB sets CMAKE_CXX_STANDARD 11
+# for its own targets; GCC's default happens to be newer, but Apple Clang and
+# Emscripten then compile as C++11.
+target_compile_features(${EXTENSION_NAME} PRIVATE cxx_std_17)
+target_compile_features(${LOADABLE_EXTENSION_NAME} PRIVATE cxx_std_17)
 
 target_sources(${EXTENSION_NAME} PRIVATE $<TARGET_OBJECTS:anofox_trace_obj>)
 target_sources(${LOADABLE_EXTENSION_NAME} PRIVATE $<TARGET_OBJECTS:anofox_trace_obj>)
@@ -291,9 +311,11 @@ target_include_directories(${LOADABLE_EXTENSION_NAME} PRIVATE
 
 # posthog-telemetry reads the machine id from the IORegistry on macOS
 # (IORegistryEntryFromPath et al.), which requires linking IOKit explicitly.
+# DuckDB 2.0's httplib (used by posthog-telemetry) reads the macOS keychain
+# when built with OpenSSL, which needs Security.
 if(APPLE)
-    target_link_libraries(${EXTENSION_NAME} "-framework IOKit" "-framework CoreFoundation")
-    target_link_libraries(${LOADABLE_EXTENSION_NAME} "-framework IOKit" "-framework CoreFoundation")
+    target_link_libraries(${EXTENSION_NAME} "-framework IOKit" "-framework CoreFoundation" "-framework Security")
+    target_link_libraries(${LOADABLE_EXTENSION_NAME} "-framework IOKit" "-framework CoreFoundation" "-framework Security")
 endif()
 
 # Work around GCC 14 COMDAT vs non-COMDAT conflict on Linux for DuckDB v1.5+.
@@ -339,6 +361,13 @@ if(NOT CLANG_TIDY AND NOT EMSCRIPTEN AND CMAKE_VERSION VERSION_GREATER_EQUAL "3.
     function(anofox_tabular_register_cpp_tests)
         if(TARGET unittest)
             target_sources(unittest PRIVATE $<TARGET_OBJECTS:anofox_tabular_unittest_tests>)
+            # The tests call extension internals (DBSCAN, IsolationForest, the
+            # email helpers). DuckDB 2.0 no longer links out-of-tree extensions
+            # into unittest, so link the static extension here; on v1.5.6 it is
+            # already on the link line and the linker takes each archive member
+            # once. (Named literally: this runs deferred in DuckDB's top-level
+            # directory scope, where EXTENSION_NAME is not set.)
+            target_link_libraries(unittest anofox_tabular_extension)
         endif()
     endfunction()
     cmake_language(DEFER DIRECTORY ${CMAKE_SOURCE_DIR} CALL anofox_tabular_register_cpp_tests)

@@ -9,6 +9,7 @@
 #include "duckdb/function/table_function.hpp"
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/main/connection.hpp"
+#include "duckdb_compat.hpp"
 #include "anofox_tabular_banner.hpp"
 #include "yyjson.hpp"
 
@@ -143,20 +144,24 @@ static vector<CheckSpec> ReadCheckSpecs(ClientContext &context, const string &ch
 	}
 
 	vector<CheckSpec> specs;
+	auto rows = duckdb_compat::FetchRows(*result);
+	auto value_at = [&](idx_t row, idx_t col) -> const Value & {
+		return rows[row][col];
+	};
 	auto str_at = [&](idx_t row, idx_t col) {
-		auto val = result->GetValue(col, row);
+		auto &val = value_at(row, col);
 		return val.IsNull() ? string() : val.ToString();
 	};
-	for (idx_t row = 0; row < result->RowCount(); row++) {
+	for (idx_t row = 0; row < rows.size(); row++) {
 		CheckSpec spec;
 		spec.check_name = str_at(row, 0);
 		spec.check_type = str_at(row, 1);
 		std::transform(spec.check_type.begin(), spec.check_type.end(), spec.check_type.begin(), ::tolower);
 		spec.table_name = str_at(row, 2);
 		spec.column_name = str_at(row, 3);
-		spec.lower_threshold = result->GetValue(5, row);
-		spec.upper_threshold = result->GetValue(6, row);
-		spec.monitor_only = !result->GetValue(7, row).IsNull() && result->GetValue(7, row).GetValue<bool>();
+		spec.lower_threshold = value_at(row, 5);
+		spec.upper_threshold = value_at(row, 6);
+		spec.monitor_only = !value_at(row, 7).IsNull() && value_at(row, 7).GetValue<bool>();
 		spec.identifier_column = str_at(row, 8);
 		spec.filter_expr = str_at(row, 9);
 		if (spec.check_name.empty()) {
@@ -182,8 +187,9 @@ static bool TargetTableExists(ClientContext &context, const string &name) {
 		return true;
 	}
 	try {
-		EntryLookupInfo lookup_info(CatalogType::TABLE_ENTRY, name);
-		if (Catalog::GetEntry(context, INVALID_CATALOG, INVALID_SCHEMA, lookup_info, OnEntryNotFound::RETURN_NULL)) {
+		EntryLookupInfo lookup_info(CatalogType::TABLE_ENTRY, duckdb_compat::EntryName(name));
+		if (Catalog::GetEntry(context, duckdb_compat::Ident(INVALID_CATALOG), duckdb_compat::Ident(INVALID_SCHEMA),
+		                      lookup_info, OnEntryNotFound::RETURN_NULL)) {
 			return true;
 		}
 	} catch (...) {
@@ -191,8 +197,9 @@ static bool TargetTableExists(ClientContext &context, const string &name) {
 		return true;
 	}
 	try {
-		EntryLookupInfo temp_lookup(CatalogType::TABLE_ENTRY, name);
-		if (Catalog::GetEntry(context, TEMP_CATALOG, INVALID_SCHEMA, temp_lookup, OnEntryNotFound::RETURN_NULL)) {
+		EntryLookupInfo temp_lookup(CatalogType::TABLE_ENTRY, duckdb_compat::EntryName(name));
+		if (Catalog::GetEntry(context, duckdb_compat::Ident(TEMP_CATALOG), duckdb_compat::Ident(INVALID_SCHEMA),
+		                      temp_lookup, OnEntryNotFound::RETURN_NULL)) {
 			return true;
 		}
 	} catch (...) {
@@ -640,7 +647,7 @@ static unique_ptr<TableRef> RunChecksBindReplace(ClientContext &context, TableFu
 		}
 		sql += "(" + branches[i] + ")";
 	}
-	return ParseSubquery(sql, context.GetParserOptions(), "Failed to parse check suite query");
+	return ParseSubquery(sql, context, "Failed to parse check suite query");
 }
 
 //===--------------------------------------------------------------------===//

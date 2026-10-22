@@ -37,13 +37,47 @@ string BuildQueryTableRef(const string &table_name) {
 	return "query_table('" + EscapeSqlStringLiteral(table_name) + "')";
 }
 
-unique_ptr<SubqueryRef> ParseSubquery(const string &query, const ParserOptions &options, const string &err_msg) {
-	Parser parser(options);
-	parser.ParseQuery(query);
-	if (parser.statements.size() != 1 || parser.statements[0]->type != StatementType::SELECT_STATEMENT) {
+namespace {
+// 2.0: Parser(ClientContext &)
+template <class P = Parser, class CONTEXT>
+auto ParseWith(CONTEXT &context, const string &sql, int) -> decltype(P(context), vector<unique_ptr<SQLStatement>>()) {
+	P parser(context);
+	parser.ParseQuery(sql);
+	return std::move(parser.statements);
+}
+// 1.5.6: Parser(ParserOptions), from the context's settings
+template <class P = Parser, class CONTEXT>
+vector<unique_ptr<SQLStatement>> ParseWith(CONTEXT &context, const string &sql, long) {
+	P parser(context.GetParserOptions());
+	parser.ParseQuery(sql);
+	return std::move(parser.statements);
+}
+// 2.0: Connection::Submit
+template <class CONNECTION>
+auto StreamWith(CONNECTION &con, const string &sql, int) -> decltype(con.Submit(sql)) {
+	return con.Submit(sql);
+}
+// before 2.0: Connection::SendQuery
+template <class CONNECTION>
+auto StreamWith(CONNECTION &con, const string &sql, long) -> decltype(con.SendQuery(sql)) {
+	return con.SendQuery(sql);
+}
+} // namespace
+
+unique_ptr<QueryResult> StreamQuery(Connection &con, const string &sql) {
+	return StreamWith(con, sql, 0);
+}
+
+vector<unique_ptr<SQLStatement>> ParseWithContextSettings(ClientContext &context, const string &sql) {
+	return ParseWith(context, sql, 0);
+}
+
+unique_ptr<SubqueryRef> ParseSubquery(const string &query, ClientContext &context, const string &err_msg) {
+	auto statements = ParseWithContextSettings(context, query);
+	if (statements.size() != 1 || statements[0]->type != StatementType::SELECT_STATEMENT) {
 		throw ParserException(err_msg);
 	}
-	auto select_stmt = unique_ptr_cast<SQLStatement, SelectStatement>(std::move(parser.statements[0]));
+	auto select_stmt = unique_ptr_cast<SQLStatement, SelectStatement>(std::move(statements[0]));
 	return make_uniq<SubqueryRef>(std::move(select_stmt));
 }
 

@@ -1,0 +1,91 @@
+#
+# Runs the SQL suite on the DuckDB 2.0 line on macOS. The distribution jobs
+# cannot: they link a prebuilt DuckDB whose version string differs from the
+# extension's, so every `require anofox_tabular` test is skipped there. Here
+# DuckDB is built from source at the commit community-extensions uses (see
+# docs/UPDATING.md), so the extension loads and the tests run - the setup in
+# which community-extensions' osx_arm64 build caught macOS-only failures in
+# a sibling extension.
+#
+name: DuckDB 2.0 tests (macOS)
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  DUCKDB_COMMIT: d54cbbe3df17e8e5ce68312f483b4155836112aa
+  CI_TOOLS_REF: v2.0-cyanoptera
+  # the vcpkg commit extension-ci-tools v2.0-cyanoptera builds with
+  VCPKG_COMMIT: cd61e1e26a038e82d6550a3ebbe0fbbfe7da78e3
+
+jobs:
+  test:
+    name: osx_arm64, DuckDB 2.0 from source
+    runs-on: macos-15
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Pin DuckDB and extension-ci-tools to the 2.0 line
+        run: |
+          git -C duckdb fetch --quiet origin "$DUCKDB_COMMIT"
+          git -C duckdb checkout --quiet "$DUCKDB_COMMIT"
+          git -C extension-ci-tools fetch --quiet origin "$CI_TOOLS_REF"
+          git -C extension-ci-tools checkout --quiet FETCH_HEAD
+          git -C duckdb log --oneline -1
+
+      - name: Install ninja and ccache
+        run: brew install ninja ccache
+
+      - name: Set up vcpkg
+        run: |
+          git clone --quiet https://github.com/microsoft/vcpkg.git "$RUNNER_TEMP/vcpkg"
+          git -C "$RUNNER_TEMP/vcpkg" checkout --quiet "$VCPKG_COMMIT"
+          "$RUNNER_TEMP/vcpkg/bootstrap-vcpkg.sh" -disableMetrics
+          echo "VCPKG_TOOLCHAIN_PATH=$RUNNER_TEMP/vcpkg/scripts/buildsystems/vcpkg.cmake" >> "$GITHUB_ENV"
+          echo "VCPKG_DEFAULT_BINARY_CACHE=$HOME/.cache/vcpkg-bin" >> "$GITHUB_ENV"
+          mkdir -p "$HOME/.cache/vcpkg-bin"
+
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/vcpkg-bin
+          key: vcpkg-next20-osx-${{ env.VCPKG_COMMIT }}-${{ hashFiles('vcpkg.json') }}
+          restore-keys: vcpkg-next20-osx-${{ env.VCPKG_COMMIT }}-
+
+      - uses: actions/cache@v4
+        with:
+          path: ~/Library/Caches/ccache
+          key: ccache-next20-osx-${{ env.DUCKDB_COMMIT }}-${{ github.sha }}
+          restore-keys: ccache-next20-osx-${{ env.DUCKDB_COMMIT }}-
+
+      - name: Build
+        env:
+          GEN: ninja
+          CMAKE_C_COMPILER_LAUNCHER: ccache
+          CMAKE_CXX_COMPILER_LAUNCHER: ccache
+          # postal is covered by the Linux builds; a libpostal build here would
+          # download ~2 GB of model data
+          ANOFOX_TABULAR_NO_LIBPOSTAL: 1
+        run: make release
+
+      - name: Test
+        # explicit bash = -eo pipefail: unittest's exit code survives the tee
+        shell: bash
+        env:
+          DATAZOO_DISABLE_TELEMETRY: 1
+        run: |
+          ./build/release/test/unittest "test/*" | tee unittest.log
+          # a version mismatch skips every test silently: fail on that
+          if grep -q "require anofox_tabular" unittest.log; then
+            echo "::error::the extension did not load into unittest, tests were skipped"
+            exit 1
+          fi

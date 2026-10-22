@@ -13,6 +13,7 @@
 #include "duckdb/common/types/vector.hpp"
 #include "duckdb/main/connection.hpp"
 #include "duckdb/main/client_context.hpp"
+#include "duckdb_compat.hpp"
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -302,7 +303,7 @@ static unique_ptr<TableRef> MetricVolumeBindReplace(ClientContext &context, Tabl
 	string table_name = input.inputs[0].ToString();
 	string table_ref = BuildQueryTableRef(table_name);
 	string sql = GenerateVolumeSQL(table_ref, input.inputs[1], input.inputs[2]);
-	return ParseSubquery(sql, context.GetParserOptions(), "Failed to parse volume metric query");
+	return ParseSubquery(sql, context, "Failed to parse volume metric query");
 }
 
 static unique_ptr<TableRef> MetricNullRateBindReplace(ClientContext &context, TableFunctionBindInput &input) {
@@ -316,7 +317,7 @@ static unique_ptr<TableRef> MetricNullRateBindReplace(ClientContext &context, Ta
 	ValidateFiniteDouble(input.inputs[2], "null_rate", "max_null_rate");
 	string table_ref = BuildQueryTableRef(table_name);
 	string sql = GenerateNullRateSQL(table_ref, column_name, input.inputs[2]);
-	return ParseSubquery(sql, context.GetParserOptions(), "Failed to parse null rate metric query");
+	return ParseSubquery(sql, context, "Failed to parse null rate metric query");
 }
 
 static unique_ptr<TableRef> MetricDistinctCountBindReplace(ClientContext &context, TableFunctionBindInput &input) {
@@ -329,7 +330,7 @@ static unique_ptr<TableRef> MetricDistinctCountBindReplace(ClientContext &contex
 	string column_name = input.inputs[1].ToString();
 	string table_ref = BuildQueryTableRef(table_name);
 	string sql = GenerateDistinctCountSQL(table_ref, column_name, input.inputs[2], input.inputs[3]);
-	return ParseSubquery(sql, context.GetParserOptions(), "Failed to parse distinct count metric query");
+	return ParseSubquery(sql, context, "Failed to parse distinct count metric query");
 }
 
 static unique_ptr<TableRef> MetricZscoreBindReplace(ClientContext &context, TableFunctionBindInput &input) {
@@ -343,7 +344,7 @@ static unique_ptr<TableRef> MetricZscoreBindReplace(ClientContext &context, Tabl
 	ValidateFiniteDouble(input.inputs[2], "zscore", "threshold");
 	string table_ref = BuildQueryTableRef(table_name);
 	string sql = GenerateZscoreSQL(table_ref, column_name, input.inputs[2]);
-	return ParseSubquery(sql, context.GetParserOptions(), "Failed to parse zscore metric query");
+	return ParseSubquery(sql, context, "Failed to parse zscore metric query");
 }
 
 static unique_ptr<TableRef> MetricIQRBindReplace(ClientContext &context, TableFunctionBindInput &input) {
@@ -357,7 +358,7 @@ static unique_ptr<TableRef> MetricIQRBindReplace(ClientContext &context, TableFu
 	ValidateFiniteDouble(input.inputs[2], "iqr", "iqr_multiplier");
 	string table_ref = BuildQueryTableRef(table_name);
 	string sql = GenerateIQRSQL(table_ref, column_name, input.inputs[2]);
-	return ParseSubquery(sql, context.GetParserOptions(), "Failed to parse IQR metric query");
+	return ParseSubquery(sql, context, "Failed to parse IQR metric query");
 }
 
 static unique_ptr<TableRef> MetricSchemaBindReplace(ClientContext &context, TableFunctionBindInput &input) {
@@ -380,7 +381,7 @@ static unique_ptr<TableRef> MetricSchemaBindReplace(ClientContext &context, Tabl
 	            "metric_schema: table='" + table_name + "', required=" +
 	                std::to_string(required_columns.size()));
 	string sql = GenerateSchemaSQL(table_name, required_columns);
-	return ParseSubquery(sql, context.GetParserOptions(), "Failed to parse schema metric query");
+	return ParseSubquery(sql, context, "Failed to parse schema metric query");
 }
 
 static unique_ptr<TableRef> MetricFreshnessBindReplace(ClientContext &context, TableFunctionBindInput &input) {
@@ -396,7 +397,7 @@ static unique_ptr<TableRef> MetricFreshnessBindReplace(ClientContext &context, T
 
 	string table_ref = BuildQueryTableRef(table_name);
 	string sql = GenerateFreshnessSQL(table_ref, timestamp_column, max_age, reference_time);
-	return ParseSubquery(sql, context.GetParserOptions(), "Failed to parse freshness metric query");
+	return ParseSubquery(sql, context, "Failed to parse freshness metric query");
 }
 
 //===--------------------------------------------------------------------===//
@@ -497,7 +498,7 @@ static void ParseIsolationForestCommonParameters(TableFunctionBindInput &input, 
 
 // Bind function for univariate isolation forest
 static unique_ptr<FunctionData> IsolationForestBind(ClientContext &context, TableFunctionBindInput &input,
-                                                    vector<LogicalType> &return_types, vector<string> &names) {
+                                                    vector<LogicalType> &return_types, duckdb_compat::BindNames &names) {
 	PostHogTelemetry::Instance().RecordFunctionCall("isolation_forest");
 	if (input.inputs.size() < 2) {
 		throw BinderException("isolation_forest requires at least 2 arguments: table_name, column_name");
@@ -550,7 +551,7 @@ static unique_ptr<FunctionData> IsolationForestBind(ClientContext &context, Tabl
 
 // Bind function for multivariate isolation forest
 static unique_ptr<FunctionData> IsolationForestMultivariateBind(ClientContext &context, TableFunctionBindInput &input,
-                                                                 vector<LogicalType> &return_types, vector<string> &names) {
+                                                                 vector<LogicalType> &return_types, duckdb_compat::BindNames &names) {
 	PostHogTelemetry::Instance().RecordFunctionCall("isolation_forest_mv");
 	if (input.inputs.size() < 2) {
 		throw BinderException("isolation_forest_mv requires at least 2 arguments: table_name, column_names");
@@ -701,7 +702,7 @@ static void IsolationForestExecute(ClientContext &context, TableFunctionInput &d
 
 			// Check column types from result schema
 			for (size_t i = 0; i < bind_data.column_names.size(); ++i) {
-				auto col_type = type_result->types[i].id();
+				auto col_type = duckdb_compat::ResultTypes(*type_result)[i].id();
 				// VARCHAR, ENUM, and similar string types are categorical
 				if (col_type == LogicalTypeId::VARCHAR ||
 				    col_type == LogicalTypeId::ENUM) {
@@ -743,7 +744,7 @@ static void IsolationForestExecute(ClientContext &context, TableFunctionInput &d
 		// Stream the input instead of materializing the full result; model
 		// fitting requires the complete dataset, so the feature columns built
 		// below are the only full copy that is kept.
-		auto result = con.SendQuery(query);
+		auto result = StreamQuery(con, query);
 		if (result->HasError()) {
 			throw InvalidInputException("Failed to query source table: %s", result->GetError());
 		}
@@ -930,16 +931,16 @@ static void IsolationForestExecute(ClientContext &context, TableFunctionInput &d
 	if (bind_data.output_mode == "scores") {
 		// Scores mode - return individual rows
 		idx_t count = MinValue<idx_t>(state.scores.size() - state.current_row, STANDARD_VECTOR_SIZE);
-		output.SetCardinality(count);
+		duckdb_compat::SetChildCardinality(output, count);
 
-		auto row_ids = FlatVector::GetData<int64_t>(output.data[0]);
+		auto row_ids = duckdb_compat::FlatData<int64_t>(output.data[0]);
 		idx_t col = 1;
 		double *values = nullptr;
 		if (!bind_data.is_multivariate) {
-			values = FlatVector::GetData<double>(output.data[col++]);
+			values = duckdb_compat::FlatData<double>(output.data[col++]);
 		}
-		auto anomaly_scores = FlatVector::GetData<double>(output.data[col++]);
-		auto is_anomaly = FlatVector::GetData<bool>(output.data[col]);
+		auto anomaly_scores = duckdb_compat::FlatData<double>(output.data[col++]);
+		auto is_anomaly = duckdb_compat::FlatData<bool>(output.data[col]);
 
 		for (idx_t i = 0; i < count; ++i) {
 			idx_t r = state.current_row + i;
@@ -977,10 +978,10 @@ static void IsolationForestExecute(ClientContext &context, TableFunctionInput &d
 				output.SetValue(5, 0, Value::INTEGER(static_cast<int32_t>(bind_data.n_trees)));
 				output.SetValue(6, 0, Value(message));
 			}
-			output.SetCardinality(1);
+			duckdb_compat::SetChildCardinality(output, 1);
 			state.current_row = 1;
 		} else {
-			output.SetCardinality(0);
+			duckdb_compat::SetChildCardinality(output, 0);
 		}
 	}
 }
@@ -1045,7 +1046,7 @@ static void ParseDBSCANParameters(TableFunctionBindInput &input, const string &f
 
 // Shared output schema for both DBSCAN functions
 static void DefineDBSCANSchema(const string &output_mode, bool include_value, bool include_n_columns,
-                               vector<LogicalType> &return_types, vector<string> &names) {
+                               vector<LogicalType> &return_types, duckdb_compat::BindNames &names) {
 	if (output_mode == "clusters") {
 		// Per-row output: one row per non-NULL input row
 		names.emplace_back("row_id");
@@ -1093,7 +1094,7 @@ static void DefineDBSCANSchema(const string &output_mode, bool include_value, bo
 
 // Bind function for univariate DBSCAN
 static unique_ptr<FunctionData> DBSCANBind(ClientContext &context, TableFunctionBindInput &input,
-                                           vector<LogicalType> &return_types, vector<string> &names) {
+                                           vector<LogicalType> &return_types, duckdb_compat::BindNames &names) {
 	PostHogTelemetry::Instance().RecordFunctionCall("metric_dbscan");
 	if (input.inputs.size() < 2) {
 		throw BinderException("dbscan requires at least 2 arguments: table_name, column_name");
@@ -1113,7 +1114,7 @@ static unique_ptr<FunctionData> DBSCANBind(ClientContext &context, TableFunction
 
 // Bind function for multivariate DBSCAN
 static unique_ptr<FunctionData> DBSCANMultivariateBind(ClientContext &context, TableFunctionBindInput &input,
-                                                       vector<LogicalType> &return_types, vector<string> &names) {
+                                                       vector<LogicalType> &return_types, duckdb_compat::BindNames &names) {
 	PostHogTelemetry::Instance().RecordFunctionCall("metric_dbscan_mv");
 	if (input.inputs.size() < 2) {
 		throw BinderException("dbscan_mv requires at least 2 arguments: table_name, column_names");
@@ -1176,7 +1177,7 @@ static void DBSCANExecute(ClientContext &context, TableFunctionInput &data_p, Da
 		// Stream the input instead of materializing the full result; the
 		// clustering algorithm requires the complete dataset, so the feature
 		// matrix built below is the only full copy that is kept.
-		auto result = con.SendQuery(query);
+		auto result = StreamQuery(con, query);
 		if (result->HasError()) {
 			throw InvalidInputException("Failed to query source table: %s", result->GetError());
 		}
@@ -1244,20 +1245,20 @@ static void DBSCANExecute(ClientContext &context, TableFunctionInput &data_p, Da
 	if (bind_data.output_mode == "clusters") {
 		// Clusters mode - return one row per input point
 		idx_t count = MinValue<idx_t>(state.points.size() - state.current_row, STANDARD_VECTOR_SIZE);
-		output.SetCardinality(count);
+		duckdb_compat::SetChildCardinality(output, count);
 
 		idx_t col = 0;
-		auto row_ids = FlatVector::GetData<int64_t>(output.data[col++]);
+		auto row_ids = duckdb_compat::FlatData<int64_t>(output.data[col++]);
 		double *values = nullptr;
 		if (!bind_data.is_multivariate) {
-			values = FlatVector::GetData<double>(output.data[col++]);
+			values = duckdb_compat::FlatData<double>(output.data[col++]);
 		}
-		auto cluster_ids = FlatVector::GetData<int32_t>(output.data[col++]);
+		auto cluster_ids = duckdb_compat::FlatData<int32_t>(output.data[col++]);
 		auto &point_type_vec = output.data[col];
-		auto point_types = FlatVector::GetData<string_t>(output.data[col++]);
-		auto neighbor_counts = FlatVector::GetData<int64_t>(output.data[col++]);
-		auto anomaly_scores = FlatVector::GetData<double>(output.data[col++]);
-		auto is_anomaly = FlatVector::GetData<bool>(output.data[col]);
+		auto point_types = duckdb_compat::FlatData<string_t>(output.data[col++]);
+		auto neighbor_counts = duckdb_compat::FlatData<int64_t>(output.data[col++]);
+		auto anomaly_scores = duckdb_compat::FlatData<double>(output.data[col++]);
+		auto is_anomaly = duckdb_compat::FlatData<bool>(output.data[col]);
 
 		for (idx_t i = 0; i < count; ++i) {
 			idx_t r = state.current_row + i;
@@ -1297,10 +1298,10 @@ static void DBSCANExecute(ClientContext &context, TableFunctionInput &data_p, Da
 				output.SetValue(col++, 0, Value::INTEGER(static_cast<int32_t>(bind_data.column_names.size())));
 			}
 			output.SetValue(col++, 0, Value(message));
-			output.SetCardinality(1);
+			duckdb_compat::SetChildCardinality(output, 1);
 			state.current_row = 1;
 		} else {
-			output.SetCardinality(0);
+			duckdb_compat::SetChildCardinality(output, 0);
 		}
 	}
 }
@@ -1316,7 +1317,7 @@ static void AddPrefixArities(TableFunctionSet &set, const string &name, const ve
                              table_function_init_global_t init_global) {
 	for (idx_t arity = min_arity; arity <= full_args.size(); ++arity) {
 		vector<LogicalType> args(full_args.begin(), full_args.begin() + arity);
-		set.AddFunction(TableFunction(name, std::move(args), function, bind, init_global));
+		set.AddFunction(TableFunction(duckdb_compat::FunctionName(name), std::move(args), function, bind, init_global));
 	}
 }
 
@@ -1433,35 +1434,15 @@ void RegisterMetricFunctions(ExtensionLoader &loader) {
 	freshness_func_full.bind_replace = DATAZOO_GUARD(ANOFOX_TABULAR_BANNER, MetricFreshnessBindReplace);
 	freshness_set.AddFunction(freshness_func_full);
 
-	// Carried out of the block below so the alias can be given the same description.
-	FunctionDescription freshness_alias_desc;
 	{
 		FunctionDescription desc;
 		desc.description = "Returns rows where the most recent value in a timestamp column is older than the specified maximum age interval. Optionally accepts a reference time.";
 		desc.parameter_names = {"table_name", "timestamp_column", "max_age", "reference_time"};
 		desc.examples = {"SELECT * FROM freshness('events', 'created_at', INTERVAL '1 day');"};
 		desc.categories = {"metric", "data-quality"};
-		CreateTableFunctionInfo freshness_info(freshness_set);
-		freshness_info.descriptions = {desc};
-		loader.RegisterFunction(freshness_info);
-		freshness_alias_desc = std::move(desc);
+		// Same description on the alias -- see the note on the outlier_tree alias.
+		RegisterTableFunctionSetWithAlias(loader, std::move(freshness_set), "freshness", {std::move(desc)});
 	}
-
-	// Register alias
-	TableFunctionSet alias_freshness_set("freshness");
-	for (const auto &func : freshness_set.functions) {
-		TableFunction alias_func("freshness", func.arguments, func.function, func.bind, func.init_global, func.init_local);
-		alias_func.init_global = func.init_global;
-		alias_func.init_local = func.init_local;
-		alias_func.bind_replace = func.bind_replace;
-		alias_func.named_parameters = func.named_parameters;
-		alias_freshness_set.AddFunction(alias_func);
-	}
-	CreateTableFunctionInfo alias_freshness_info(alias_freshness_set);
-	alias_freshness_info.alias_of = "anofox_tab_freshness";
-	// Same description on the alias -- see the note on the outlier_tree alias.
-	alias_freshness_info.descriptions = {std::move(freshness_alias_desc)};
-	loader.RegisterFunction(alias_freshness_info);
 
 	// anofox_tab_isolation_forest(table_name, column_name, n_trees=100, sample_size=256, contamination=0.1,
 	//                             output_mode='summary', seed=NULL) (alias: isolation_forest)

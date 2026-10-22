@@ -17,13 +17,13 @@ statement ok
 SET anofox_ner_cache_size = 0;
 
 query I
-SELECT list_contains(list_transform(pii_detect('John works at Microsoft'), x -> x.type), 'ORGANIZATION');
+SELECT list_contains(list_transform(pii_detect('John works at Microsoft'), lambda x: x.type), 'ORGANIZATION');
 ----
 true
 
 # Repeated call with cache disabled re-runs inference and must return the same result
 query I
-SELECT list_contains(list_transform(pii_detect('John works at Microsoft'), x -> x.type), 'ORGANIZATION');
+SELECT list_contains(list_transform(pii_detect('John works at Microsoft'), lambda x: x.type), 'ORGANIZATION');
 ----
 true
 

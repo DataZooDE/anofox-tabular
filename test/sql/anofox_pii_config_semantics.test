@@ -16,7 +16,7 @@ SET anofox_pii_enabled_types = 'EMAIL';
 
 # pii_detect: only EMAIL reported even though the text also contains a phone number
 query I
-SELECT list_transform(pii_detect('Email: a@b.com, Phone: (555) 123-4567'), x -> x.type);
+SELECT list_transform(pii_detect('Email: a@b.com, Phone: (555) 123-4567'), lambda x: x.type);
 ----
 [EMAIL]
 
@@ -114,7 +114,7 @@ true
 
 # An email embedded in a URL: the longer URL match wins, the EMAIL inside is dropped
 query I
-SELECT list_transform(pii_detect('Visit https://user@example.com/path now'), x -> x.type);
+SELECT list_transform(pii_detect('Visit https://user@example.com/path now'), lambda x: x.type);
 ----
 [URL]
 
@@ -127,7 +127,7 @@ Visit [URL] now
 # Identical span matched by two recognizers (bare 9 digits: US_SSN and US_PASSPORT):
 # the checksum-validated US_SSN wins deterministically
 query I
-SELECT list_transform(pii_detect('Ref: 123456789'), x -> x.type);
+SELECT list_transform(pii_detect('Ref: 123456789'), lambda x: x.type);
 ----
 [US_SSN]
 
@@ -138,14 +138,14 @@ Ref: [US_SSN] end
 
 # A 9-digit number that cannot be an SSN (9xx area) is still reported as a passport
 query I
-SELECT list_transform(pii_detect('Ref: 987654321'), x -> x.type);
+SELECT list_transform(pii_detect('Ref: 987654321'), lambda x: x.type);
 ----
 [US_PASSPORT]
 
 # Crypto address also matches the generic API_KEY pattern over the same span:
 # CRYPTO_ADDRESS wins deterministically
 query I
-SELECT list_transform(pii_detect('bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq'), x -> x.type);
+SELECT list_transform(pii_detect('bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq'), lambda x: x.type);
 ----
 [CRYPTO_ADDRESS]
 

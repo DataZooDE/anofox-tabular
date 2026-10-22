@@ -11,6 +11,7 @@
 #include "duckdb/common/operator/subtract.hpp"
 #include "duckdb/function/scalar_function.hpp"
 #include "duckdb/common/string_util.hpp"
+#include "duckdb_compat.hpp"
 
 #include <cmath>
 #include <type_traits>
@@ -152,8 +153,8 @@ static void AnofoxMoneyFunction(DataChunk &args, ExpressionState &state, Vector 
     amount_vec.ToUnifiedFormat(count, amount_data);
     currency_vec.ToUnifiedFormat(count, currency_data);
 
-    auto amount_values = reinterpret_cast<double *>(amount_data.data);
-    auto currency_values = reinterpret_cast<string_t *>(currency_data.data);
+    auto amount_values = UnifiedVectorFormat::GetData<double>(amount_data);
+    auto currency_values = UnifiedVectorFormat::GetData<string_t>(currency_data);
     auto builder = PrepareMoneyResult(result);
 
     auto &registry = CurrencyRegistry::GetInstance();
@@ -188,8 +189,8 @@ static void AnofoxMoneyFromCentsFunction(DataChunk &args, ExpressionState &state
     cents_vec.ToUnifiedFormat(count, cents_data);
     currency_vec.ToUnifiedFormat(count, currency_data);
 
-    auto cents_values = reinterpret_cast<int64_t *>(cents_data.data);
-    auto currency_values = reinterpret_cast<string_t *>(currency_data.data);
+    auto cents_values = UnifiedVectorFormat::GetData<int64_t>(cents_data);
+    auto currency_values = UnifiedVectorFormat::GetData<string_t>(currency_data);
     auto builder = PrepareMoneyResult(result);
 
     auto &registry = CurrencyRegistry::GetInstance();
@@ -219,7 +220,7 @@ static void AnofoxMoneyAmountFunction(DataChunk &args, ExpressionState &state, V
     idx_t count = args.size();
 
     auto data = ExtractMoneyStruct(money_vec, count);
-    auto result_data = FlatVector::GetData<int64_t>(result);
+    auto result_data = duckdb_compat::FlatData<int64_t>(result);
 
     for (idx_t i = 0; i < count; i++) {
         if (!data.RowIsValid(i)) {
@@ -239,7 +240,7 @@ static void AnofoxMoneyCurrencyFunction(DataChunk &args, ExpressionState &state,
     idx_t count = args.size();
 
     auto data = ExtractMoneyStruct(money_vec, count);
-    auto result_data = FlatVector::GetData<string_t>(result);
+    auto result_data = duckdb_compat::FlatData<string_t>(result);
 
     for (idx_t i = 0; i < count; i++) {
         if (!data.RowIsValid(i)) {
@@ -257,7 +258,7 @@ static void AnofoxMoneyCurrencyFunction(DataChunk &args, ExpressionState &state,
 static void AnofoxIsValidCurrencyFunction(DataChunk &args, ExpressionState &state, Vector &result) {
     auto &registry = CurrencyRegistry::GetInstance();
     IterateCurrencyCode(args, result, [&](const std::string& code, idx_t i) {
-        auto result_data = FlatVector::GetData<bool>(result);
+        auto result_data = duckdb_compat::FlatData<bool>(result);
         result_data[i] = registry.CurrencyExists(code);
     });
 }
@@ -270,7 +271,7 @@ static void AnofoxCurrencySymbolFunction(DataChunk &args, ExpressionState &state
     auto &registry = CurrencyRegistry::GetInstance();
     IterateCurrencyCode(args, result, [&](const std::string& code, idx_t i) {
         auto &currency = LookupCurrencyOrThrow(registry, code);
-        auto result_data = FlatVector::GetData<string_t>(result);
+        auto result_data = duckdb_compat::FlatData<string_t>(result);
         result_data[i] = StringVector::AddString(result, currency.symbol);
     });
 }
@@ -348,12 +349,12 @@ static void AnofoxMoneyFormatFunction(DataChunk &args, ExpressionState &state, V
 
     UnifiedVectorFormat style_data;
     style_vec.ToUnifiedFormat(count, style_data);
-    auto style_values = reinterpret_cast<string_t *>(style_data.data);
+    auto style_values = UnifiedVectorFormat::GetData<string_t>(style_data);
 
     auto data = ExtractMoneyStruct(money_vec, count);
 
     auto &registry = CurrencyRegistry::GetInstance();
-    auto result_data = FlatVector::GetData<string_t>(result);
+    auto result_data = duckdb_compat::FlatData<string_t>(result);
 
     for (idx_t i = 0; i < count; i++) {
         auto style_idx = style_data.sel->get_index(i);
@@ -481,7 +482,7 @@ static void AnofoxMoneyMultiplyFunction(DataChunk &args, ExpressionState &state,
 
     UnifiedVectorFormat factor_data;
     factor_vec.ToUnifiedFormat(count, factor_data);
-    auto factor_values = reinterpret_cast<double *>(factor_data.data);
+    auto factor_values = UnifiedVectorFormat::GetData<double>(factor_data);
 
     for (idx_t i = 0; i < count; i++) {
         auto factor_idx = factor_data.sel->get_index(i);
@@ -511,9 +512,9 @@ static void AnofoxMoneyInRangeFunction(DataChunk &args, ExpressionState &state, 
     min_vec.ToUnifiedFormat(count, min_data);
     max_vec.ToUnifiedFormat(count, max_data);
 
-    auto min_values = reinterpret_cast<double *>(min_data.data);
-    auto max_values = reinterpret_cast<double *>(max_data.data);
-    auto result_data = FlatVector::GetData<bool>(result);
+    auto min_values = UnifiedVectorFormat::GetData<double>(min_data);
+    auto max_values = UnifiedVectorFormat::GetData<double>(max_data);
+    auto result_data = duckdb_compat::FlatData<bool>(result);
 
     for (idx_t i = 0; i < count; i++) {
         auto min_idx = min_data.sel->get_index(i);
@@ -542,7 +543,7 @@ static void AnofoxMoneySameCurrencyFunction(DataChunk &args, ExpressionState &st
 
     auto data1 = ExtractMoneyStruct(money1_vec, count);
     auto data2 = ExtractMoneyStruct(money2_vec, count);
-    auto result_data = FlatVector::GetData<bool>(result);
+    auto result_data = duckdb_compat::FlatData<bool>(result);
 
     for (idx_t i = 0; i < count; i++) {
         if (!data1.RowIsValid(i) || !data2.RowIsValid(i)) {
@@ -563,7 +564,7 @@ static void AnofoxCurrencyNameFunction(DataChunk &args, ExpressionState &state, 
     auto &registry = CurrencyRegistry::GetInstance();
     IterateCurrencyCode(args, result, [&](const std::string& code, idx_t i) {
         auto &currency = LookupCurrencyOrThrow(registry, code);
-        auto result_data = FlatVector::GetData<string_t>(result);
+        auto result_data = duckdb_compat::FlatData<string_t>(result);
         result_data[i] = StringVector::AddString(result, currency.name);
     });
 }
@@ -573,87 +574,87 @@ static void AnofoxCurrencyNameFunction(DataChunk &args, ExpressionState &state, 
 //----------------------------------------------------------------------------------------------------------------------
 
 // Telemetry bind functions for scalar functions
-unique_ptr<FunctionData> MoneyBind(ClientContext &, ScalarFunction &, vector<unique_ptr<Expression>> &) {
+unique_ptr<FunctionData> MoneyBind(ClientContext &) {
     PostHogTelemetry::Instance().RecordFunctionCall("money");
     return nullptr;
 }
 
-unique_ptr<FunctionData> MoneyFromCentsBind(ClientContext &, ScalarFunction &, vector<unique_ptr<Expression>> &) {
+unique_ptr<FunctionData> MoneyFromCentsBind(ClientContext &) {
     PostHogTelemetry::Instance().RecordFunctionCall("money_from_cents");
     return nullptr;
 }
 
-unique_ptr<FunctionData> MoneyAmountBind(ClientContext &, ScalarFunction &, vector<unique_ptr<Expression>> &) {
+unique_ptr<FunctionData> MoneyAmountBind(ClientContext &) {
     PostHogTelemetry::Instance().RecordFunctionCall("money_amount");
     return nullptr;
 }
 
-unique_ptr<FunctionData> MoneyCurrencyBind(ClientContext &, ScalarFunction &, vector<unique_ptr<Expression>> &) {
+unique_ptr<FunctionData> MoneyCurrencyBind(ClientContext &) {
     PostHogTelemetry::Instance().RecordFunctionCall("money_currency");
     return nullptr;
 }
 
-unique_ptr<FunctionData> IsValidCurrencyBind(ClientContext &, ScalarFunction &, vector<unique_ptr<Expression>> &) {
+unique_ptr<FunctionData> IsValidCurrencyBind(ClientContext &) {
     PostHogTelemetry::Instance().RecordFunctionCall("is_valid_currency");
     return nullptr;
 }
 
-unique_ptr<FunctionData> CurrencySymbolBind(ClientContext &, ScalarFunction &, vector<unique_ptr<Expression>> &) {
+unique_ptr<FunctionData> CurrencySymbolBind(ClientContext &) {
     PostHogTelemetry::Instance().RecordFunctionCall("currency_symbol");
     return nullptr;
 }
 
-unique_ptr<FunctionData> CurrencyNameBind(ClientContext &, ScalarFunction &, vector<unique_ptr<Expression>> &) {
+unique_ptr<FunctionData> CurrencyNameBind(ClientContext &) {
     PostHogTelemetry::Instance().RecordFunctionCall("currency_name");
     return nullptr;
 }
 
-unique_ptr<FunctionData> MoneyFormatBind(ClientContext &, ScalarFunction &, vector<unique_ptr<Expression>> &) {
+unique_ptr<FunctionData> MoneyFormatBind(ClientContext &) {
     PostHogTelemetry::Instance().RecordFunctionCall("money_format");
     return nullptr;
 }
 
-unique_ptr<FunctionData> MoneyIsPositiveBind(ClientContext &, ScalarFunction &, vector<unique_ptr<Expression>> &) {
+unique_ptr<FunctionData> MoneyIsPositiveBind(ClientContext &) {
     PostHogTelemetry::Instance().RecordFunctionCall("money_is_positive");
     return nullptr;
 }
 
-unique_ptr<FunctionData> MoneyIsNegativeBind(ClientContext &, ScalarFunction &, vector<unique_ptr<Expression>> &) {
+unique_ptr<FunctionData> MoneyIsNegativeBind(ClientContext &) {
     PostHogTelemetry::Instance().RecordFunctionCall("money_is_negative");
     return nullptr;
 }
 
-unique_ptr<FunctionData> MoneyIsZeroBind(ClientContext &, ScalarFunction &, vector<unique_ptr<Expression>> &) {
+unique_ptr<FunctionData> MoneyIsZeroBind(ClientContext &) {
     PostHogTelemetry::Instance().RecordFunctionCall("money_is_zero");
     return nullptr;
 }
 
-unique_ptr<FunctionData> MoneyAbsBind(ClientContext &, ScalarFunction &, vector<unique_ptr<Expression>> &) {
+unique_ptr<FunctionData> MoneyAbsBind(ClientContext &) {
     PostHogTelemetry::Instance().RecordFunctionCall("money_abs");
     return nullptr;
 }
 
-unique_ptr<FunctionData> MoneyAddBind(ClientContext &, ScalarFunction &, vector<unique_ptr<Expression>> &) {
+unique_ptr<FunctionData> MoneyAddBind(ClientContext &) {
     PostHogTelemetry::Instance().RecordFunctionCall("money_add");
     return nullptr;
 }
 
-unique_ptr<FunctionData> MoneySubtractBind(ClientContext &, ScalarFunction &, vector<unique_ptr<Expression>> &) {
+unique_ptr<FunctionData> MoneySubtractBind(ClientContext &) {
     PostHogTelemetry::Instance().RecordFunctionCall("money_subtract");
     return nullptr;
 }
 
-unique_ptr<FunctionData> MoneyMultiplyBind(ClientContext &, ScalarFunction &, vector<unique_ptr<Expression>> &) {
+unique_ptr<FunctionData> MoneyMultiplyBind(ClientContext &) {
     PostHogTelemetry::Instance().RecordFunctionCall("money_multiply");
     return nullptr;
 }
 
-unique_ptr<FunctionData> MoneyInRangeBind(ClientContext &, ScalarFunction &, vector<unique_ptr<Expression>> &) {
+unique_ptr<FunctionData> MoneyInRangeBind(ClientContext &) {
     PostHogTelemetry::Instance().RecordFunctionCall("money_in_range");
     return nullptr;
 }
 
-unique_ptr<FunctionData> MoneySameCurrencyBind(ClientContext &, ScalarFunction &, vector<unique_ptr<Expression>> &) {
+unique_ptr<FunctionData> MoneySameCurrencyBind(ClientContext &) {
     PostHogTelemetry::Instance().RecordFunctionCall("money_same_currency");
     return nullptr;
 }
@@ -671,7 +672,7 @@ void RegisterMoneyFunctions(ExtensionLoader &loader) {
         desc.examples = {"SELECT money(19.99, 'USD');"};
         desc.categories = {"money"};
         ScalarFunction money_func("anofox_tab_money", {LogicalTypeId::DOUBLE, LogicalTypeId::VARCHAR}, GetMoneyType(), AnofoxMoneyFunction);
-        money_func.bind = MoneyBind;
+        money_func.SetBindCallback(&ScalarContextBind<MoneyBind>::Bind);
         SetFallibleCompat(money_func);
         RegisterScalarFunctionWithAlias(loader, money_func, "money", {std::move(desc)});
     }
@@ -683,7 +684,7 @@ void RegisterMoneyFunctions(ExtensionLoader &loader) {
         desc.examples = {"SELECT money_from_cents(1999, 'USD');"};
         desc.categories = {"money"};
         ScalarFunction money_from_cents_func("anofox_tab_money_from_cents", {LogicalTypeId::BIGINT, LogicalTypeId::VARCHAR}, GetMoneyType(), AnofoxMoneyFromCentsFunction);
-        money_from_cents_func.bind = MoneyFromCentsBind;
+        money_from_cents_func.SetBindCallback(&ScalarContextBind<MoneyFromCentsBind>::Bind);
         SetFallibleCompat(money_from_cents_func);
         RegisterScalarFunctionWithAlias(loader, money_from_cents_func, "money_from_cents", {std::move(desc)});
     }
@@ -695,7 +696,7 @@ void RegisterMoneyFunctions(ExtensionLoader &loader) {
         desc.examples = {"SELECT money_amount(money(19.99, 'USD'));"};
         desc.categories = {"money"};
         ScalarFunction money_amount_func("anofox_tab_money_amount", {GetMoneyType()}, GetMoneyAmountType(), AnofoxMoneyAmountFunction);
-        money_amount_func.bind = MoneyAmountBind;
+        money_amount_func.SetBindCallback(&ScalarContextBind<MoneyAmountBind>::Bind);
         SetFallibleCompat(money_amount_func);
         RegisterScalarFunctionWithAlias(loader, money_amount_func, "money_amount", {std::move(desc)});
     }
@@ -707,7 +708,7 @@ void RegisterMoneyFunctions(ExtensionLoader &loader) {
         desc.examples = {"SELECT money_currency(money(19.99, 'USD'));"};
         desc.categories = {"money"};
         ScalarFunction money_currency_func("anofox_tab_money_currency", {GetMoneyType()}, LogicalTypeId::VARCHAR, AnofoxMoneyCurrencyFunction);
-        money_currency_func.bind = MoneyCurrencyBind;
+        money_currency_func.SetBindCallback(&ScalarContextBind<MoneyCurrencyBind>::Bind);
         SetFallibleCompat(money_currency_func);
         RegisterScalarFunctionWithAlias(loader, money_currency_func, "money_currency", {std::move(desc)});
     }
@@ -719,7 +720,7 @@ void RegisterMoneyFunctions(ExtensionLoader &loader) {
         desc.examples = {"SELECT is_valid_currency('USD');"};
         desc.categories = {"money", "validation"};
         ScalarFunction is_valid_currency_func("anofox_tab_is_valid_currency", {LogicalTypeId::VARCHAR}, LogicalTypeId::BOOLEAN, AnofoxIsValidCurrencyFunction);
-        is_valid_currency_func.bind = IsValidCurrencyBind;
+        is_valid_currency_func.SetBindCallback(&ScalarContextBind<IsValidCurrencyBind>::Bind);
         RegisterScalarFunctionWithAlias(loader, is_valid_currency_func, "is_valid_currency", {std::move(desc)});
     }
     {
@@ -730,7 +731,7 @@ void RegisterMoneyFunctions(ExtensionLoader &loader) {
         desc.examples = {"SELECT currency_symbol('EUR');"};
         desc.categories = {"money"};
         ScalarFunction currency_symbol_func("anofox_tab_currency_symbol", {LogicalTypeId::VARCHAR}, LogicalTypeId::VARCHAR, AnofoxCurrencySymbolFunction);
-        currency_symbol_func.bind = CurrencySymbolBind;
+        currency_symbol_func.SetBindCallback(&ScalarContextBind<CurrencySymbolBind>::Bind);
         SetFallibleCompat(currency_symbol_func);
         RegisterScalarFunctionWithAlias(loader, currency_symbol_func, "currency_symbol", {std::move(desc)});
     }
@@ -742,7 +743,7 @@ void RegisterMoneyFunctions(ExtensionLoader &loader) {
         desc.examples = {"SELECT currency_name('EUR');"};
         desc.categories = {"money"};
         ScalarFunction currency_name_func("anofox_tab_currency_name", {LogicalTypeId::VARCHAR}, LogicalTypeId::VARCHAR, AnofoxCurrencyNameFunction);
-        currency_name_func.bind = CurrencyNameBind;
+        currency_name_func.SetBindCallback(&ScalarContextBind<CurrencyNameBind>::Bind);
         SetFallibleCompat(currency_name_func);
         RegisterScalarFunctionWithAlias(loader, currency_name_func, "currency_name", {std::move(desc)});
     }
@@ -754,7 +755,7 @@ void RegisterMoneyFunctions(ExtensionLoader &loader) {
         desc.examples = {"SELECT money_format(money(19.99, 'USD'), 'symbol');"};
         desc.categories = {"money", "formatting"};
         ScalarFunction money_format_func("anofox_tab_money_format", {GetMoneyType(), LogicalTypeId::VARCHAR}, LogicalTypeId::VARCHAR, AnofoxMoneyFormatFunction);
-        money_format_func.bind = MoneyFormatBind;
+        money_format_func.SetBindCallback(&ScalarContextBind<MoneyFormatBind>::Bind);
         SetFallibleCompat(money_format_func);
         RegisterScalarFunctionWithAlias(loader, money_format_func, "money_format", {std::move(desc)});
     }
@@ -766,7 +767,7 @@ void RegisterMoneyFunctions(ExtensionLoader &loader) {
         desc.examples = {"SELECT money_is_positive(money(19.99, 'USD'));"};
         desc.categories = {"money", "validation"};
         ScalarFunction money_is_positive_func("anofox_tab_money_is_positive", {GetMoneyType()}, LogicalTypeId::BOOLEAN, AnofoxMoneyIsPositiveFunction);
-        money_is_positive_func.bind = MoneyIsPositiveBind;
+        money_is_positive_func.SetBindCallback(&ScalarContextBind<MoneyIsPositiveBind>::Bind);
         SetFallibleCompat(money_is_positive_func);
         RegisterScalarFunctionWithAlias(loader, money_is_positive_func, "money_is_positive", {std::move(desc)});
     }
@@ -778,7 +779,7 @@ void RegisterMoneyFunctions(ExtensionLoader &loader) {
         desc.examples = {"SELECT money_is_negative(money(-5.00, 'USD'));"};
         desc.categories = {"money", "validation"};
         ScalarFunction money_is_negative_func("anofox_tab_money_is_negative", {GetMoneyType()}, LogicalTypeId::BOOLEAN, AnofoxMoneyIsNegativeFunction);
-        money_is_negative_func.bind = MoneyIsNegativeBind;
+        money_is_negative_func.SetBindCallback(&ScalarContextBind<MoneyIsNegativeBind>::Bind);
         SetFallibleCompat(money_is_negative_func);
         RegisterScalarFunctionWithAlias(loader, money_is_negative_func, "money_is_negative", {std::move(desc)});
     }
@@ -790,7 +791,7 @@ void RegisterMoneyFunctions(ExtensionLoader &loader) {
         desc.examples = {"SELECT money_is_zero(money(0.00, 'USD'));"};
         desc.categories = {"money", "validation"};
         ScalarFunction money_is_zero_func("anofox_tab_money_is_zero", {GetMoneyType()}, LogicalTypeId::BOOLEAN, AnofoxMoneyIsZeroFunction);
-        money_is_zero_func.bind = MoneyIsZeroBind;
+        money_is_zero_func.SetBindCallback(&ScalarContextBind<MoneyIsZeroBind>::Bind);
         SetFallibleCompat(money_is_zero_func);
         RegisterScalarFunctionWithAlias(loader, money_is_zero_func, "money_is_zero", {std::move(desc)});
     }
@@ -802,7 +803,7 @@ void RegisterMoneyFunctions(ExtensionLoader &loader) {
         desc.examples = {"SELECT money_abs(money(-19.99, 'USD'));"};
         desc.categories = {"money"};
         ScalarFunction money_abs_func("anofox_tab_money_abs", {GetMoneyType()}, GetMoneyType(), AnofoxMoneyAbsFunction);
-        money_abs_func.bind = MoneyAbsBind;
+        money_abs_func.SetBindCallback(&ScalarContextBind<MoneyAbsBind>::Bind);
         SetFallibleCompat(money_abs_func);
         RegisterScalarFunctionWithAlias(loader, money_abs_func, "money_abs", {std::move(desc)});
     }
@@ -814,7 +815,7 @@ void RegisterMoneyFunctions(ExtensionLoader &loader) {
         desc.examples = {"SELECT money_add(money(10.00, 'USD'), money(5.00, 'USD'));"};
         desc.categories = {"money", "arithmetic"};
         ScalarFunction money_add_func("anofox_tab_money_add", {GetMoneyType(), GetMoneyType()}, GetMoneyType(), AnofoxMoneyAddFunction);
-        money_add_func.bind = MoneyAddBind;
+        money_add_func.SetBindCallback(&ScalarContextBind<MoneyAddBind>::Bind);
         SetFallibleCompat(money_add_func);
         RegisterScalarFunctionWithAlias(loader, money_add_func, "money_add", {std::move(desc)});
     }
@@ -826,7 +827,7 @@ void RegisterMoneyFunctions(ExtensionLoader &loader) {
         desc.examples = {"SELECT money_subtract(money(10.00, 'USD'), money(3.00, 'USD'));"};
         desc.categories = {"money", "arithmetic"};
         ScalarFunction money_subtract_func("anofox_tab_money_subtract", {GetMoneyType(), GetMoneyType()}, GetMoneyType(), AnofoxMoneySubtractFunction);
-        money_subtract_func.bind = MoneySubtractBind;
+        money_subtract_func.SetBindCallback(&ScalarContextBind<MoneySubtractBind>::Bind);
         SetFallibleCompat(money_subtract_func);
         RegisterScalarFunctionWithAlias(loader, money_subtract_func, "money_subtract", {std::move(desc)});
     }
@@ -838,7 +839,7 @@ void RegisterMoneyFunctions(ExtensionLoader &loader) {
         desc.examples = {"SELECT money_multiply(money(10.00, 'USD'), 1.5);"};
         desc.categories = {"money", "arithmetic"};
         ScalarFunction money_multiply_func("anofox_tab_money_multiply", {GetMoneyType(), LogicalTypeId::DOUBLE}, GetMoneyType(), AnofoxMoneyMultiplyFunction);
-        money_multiply_func.bind = MoneyMultiplyBind;
+        money_multiply_func.SetBindCallback(&ScalarContextBind<MoneyMultiplyBind>::Bind);
         SetFallibleCompat(money_multiply_func);
         RegisterScalarFunctionWithAlias(loader, money_multiply_func, "money_multiply", {std::move(desc)});
     }
@@ -850,7 +851,7 @@ void RegisterMoneyFunctions(ExtensionLoader &loader) {
         desc.examples = {"SELECT money_in_range(money(15.00, 'USD'), 10.0, 20.0);"};
         desc.categories = {"money", "validation"};
         ScalarFunction money_in_range_func("anofox_tab_money_in_range", {GetMoneyType(), LogicalTypeId::DOUBLE, LogicalTypeId::DOUBLE}, LogicalTypeId::BOOLEAN, AnofoxMoneyInRangeFunction);
-        money_in_range_func.bind = MoneyInRangeBind;
+        money_in_range_func.SetBindCallback(&ScalarContextBind<MoneyInRangeBind>::Bind);
         SetFallibleCompat(money_in_range_func);
         RegisterScalarFunctionWithAlias(loader, money_in_range_func, "money_in_range", {std::move(desc)});
     }
@@ -862,7 +863,7 @@ void RegisterMoneyFunctions(ExtensionLoader &loader) {
         desc.examples = {"SELECT money_same_currency(money(10.00, 'USD'), money(5.00, 'USD'));"};
         desc.categories = {"money", "comparison"};
         ScalarFunction money_same_currency_func("anofox_tab_money_same_currency", {GetMoneyType(), GetMoneyType()}, LogicalTypeId::BOOLEAN, AnofoxMoneySameCurrencyFunction);
-        money_same_currency_func.bind = MoneySameCurrencyBind;
+        money_same_currency_func.SetBindCallback(&ScalarContextBind<MoneySameCurrencyBind>::Bind);
         SetFallibleCompat(money_same_currency_func);
         RegisterScalarFunctionWithAlias(loader, money_same_currency_func, "money_same_currency", {std::move(desc)});
     }

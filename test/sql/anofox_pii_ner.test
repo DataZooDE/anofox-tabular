@@ -18,19 +18,19 @@ LOAD anofox_tabular
 
 # Basic organization detection
 query I
-SELECT list_contains(list_transform(pii_detect('John works at Microsoft'), x -> x.type), 'ORGANIZATION');
+SELECT list_contains(list_transform(pii_detect('John works at Microsoft'), lambda x: x.type), 'ORGANIZATION');
 ----
 true
 
 # Company with Inc suffix
 query I
-SELECT list_contains(list_transform(pii_detect('Contact Apple Inc for details'), x -> x.type), 'ORGANIZATION');
+SELECT list_contains(list_transform(pii_detect('Contact Apple Inc for details'), lambda x: x.type), 'ORGANIZATION');
 ----
 true
 
 # Technology company
 query I
-SELECT list_contains(list_transform(pii_detect('She joined Google last year'), x -> x.type), 'ORGANIZATION');
+SELECT list_contains(list_transform(pii_detect('She joined Google last year'), lambda x: x.type), 'ORGANIZATION');
 ----
 true
 
@@ -64,13 +64,13 @@ true
 
 # City detection
 query I
-SELECT list_contains(list_transform(pii_detect('She moved to London'), x -> x.type), 'LOCATION');
+SELECT list_contains(list_transform(pii_detect('She moved to London'), lambda x: x.type), 'LOCATION');
 ----
 true
 
 # Country detection
 query I
-SELECT list_contains(list_transform(pii_detect('Traveling to Germany next week'), x -> x.type), 'LOCATION');
+SELECT list_contains(list_transform(pii_detect('Traveling to Germany next week'), lambda x: x.type), 'LOCATION');
 ----
 true
 
@@ -104,13 +104,13 @@ true
 
 # Language detection as MISC
 query I
-SELECT list_contains(list_transform(pii_detect('He speaks French fluently'), x -> x.type), 'MISC');
+SELECT list_contains(list_transform(pii_detect('He speaks French fluently'), lambda x: x.type), 'MISC');
 ----
 true
 
 # Nationality as MISC
 query I
-SELECT list_contains(list_transform(pii_detect('She is German'), x -> x.type), 'MISC');
+SELECT list_contains(list_transform(pii_detect('She is German'), lambda x: x.type), 'MISC');
 ----
 true
 
@@ -297,7 +297,7 @@ true
 
 # EMAIL still detected by regex detector even when NER-only types are enabled
 query I
-SELECT list_contains(list_transform(pii_detect('Email: test@test.com'), x -> x.type), 'EMAIL');
+SELECT list_contains(list_transform(pii_detect('Email: test@test.com'), lambda x: x.type), 'EMAIL');
 ----
 true
 
@@ -317,25 +317,25 @@ true
 
 # Name at start of text
 query I
-SELECT list_contains(list_transform(pii_detect('John is here'), x -> x.type), 'NAME');
+SELECT list_contains(list_transform(pii_detect('John is here'), lambda x: x.type), 'NAME');
 ----
 true
 
 # Name at end of text
 query I
-SELECT list_contains(list_transform(pii_detect('Talk to John'), x -> x.type), 'NAME');
+SELECT list_contains(list_transform(pii_detect('Talk to John'), lambda x: x.type), 'NAME');
 ----
 true
 
 # Organization in quotes
 query I
-SELECT list_contains(list_transform(pii_detect('Works at "Microsoft"'), x -> x.type), 'ORGANIZATION');
+SELECT list_contains(list_transform(pii_detect('Works at "Microsoft"'), lambda x: x.type), 'ORGANIZATION');
 ----
 true
 
 # Location with preposition
 query I
-SELECT list_contains(list_transform(pii_detect('Flights to Tokyo'), x -> x.type), 'LOCATION');
+SELECT list_contains(list_transform(pii_detect('Flights to Tokyo'), lambda x: x.type), 'LOCATION');
 ----
 true
 
@@ -364,13 +364,13 @@ statement ok
 SET anofox_ner_device = 'CPU';
 
 query I
-SELECT list_contains(list_transform(pii_detect('John is here'), x -> x.type), 'NAME');
+SELECT list_contains(list_transform(pii_detect('John is here'), lambda x: x.type), 'NAME');
 ----
 true
 
 # 28. SET device to 'CPU', run pii_detect() on an ORG -> ORGANIZATION detected
 query I
-SELECT list_contains(list_transform(pii_detect('She joined Google last year'), x -> x.type), 'ORGANIZATION');
+SELECT list_contains(list_transform(pii_detect('She joined Google last year'), lambda x: x.type), 'ORGANIZATION');
 ----
 true
 
@@ -379,7 +379,7 @@ statement ok
 SET anofox_ner_device = 'AUTO';
 
 query I
-SELECT list_contains(list_transform(pii_detect('She moved to London'), x -> x.type), 'LOCATION');
+SELECT list_contains(list_transform(pii_detect('She moved to London'), lambda x: x.type), 'LOCATION');
 ----
 true
 
@@ -391,7 +391,7 @@ statement ok
 SET anofox_ner_cache_size = 0;
 
 query I
-SELECT list_contains(list_transform(pii_detect('Talk to John'), x -> x.type), 'NAME');
+SELECT list_contains(list_transform(pii_detect('Talk to John'), lambda x: x.type), 'NAME');
 ----
 true
 
@@ -400,12 +400,12 @@ statement ok
 SET anofox_ner_cache_size = 1;
 
 query I
-SELECT list_contains(list_transform(pii_detect('John is here'), x -> x.type), 'NAME');
+SELECT list_contains(list_transform(pii_detect('John is here'), lambda x: x.type), 'NAME');
 ----
 true
 
 query I
-SELECT list_contains(list_transform(pii_detect('John is here'), x -> x.type), 'NAME');
+SELECT list_contains(list_transform(pii_detect('John is here'), lambda x: x.type), 'NAME');
 ----
 true
 

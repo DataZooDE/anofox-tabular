@@ -9,6 +9,7 @@
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/string_util.hpp"
+#include "duckdb_compat.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -822,7 +823,7 @@ static unique_ptr<GlobalTableFunctionState> OutlierTreeInit(ClientContext &, Tab
 
 // Bind function
 static unique_ptr<FunctionData> OutlierTreeBind(ClientContext &context, TableFunctionBindInput &input,
-                                                 vector<LogicalType> &return_types, vector<string> &names) {
+                                                 vector<LogicalType> &return_types, duckdb_compat::BindNames &names) {
     PostHogTelemetry::Instance().RecordFunctionCall("outlier_tree");
 
     if (input.inputs.size() < 2) {
@@ -967,7 +968,7 @@ static void OutlierTreeExecute(ClientContext &context, TableFunctionInput &data_
                 throw InvalidInputException("Failed to query source table: %s", type_result->GetError());
             }
             for (size_t i = 0; i < n_cols; ++i) {
-                auto col_type = type_result->types[i].id();
+                auto col_type = duckdb_compat::ResultTypes(*type_result)[i].id();
                 if (col_type == LogicalTypeId::VARCHAR || col_type == LogicalTypeId::ENUM) {
                     column_info[i].type = FeatureType::CATEGORICAL;
                     data[i].type = FeatureType::CATEGORICAL;
@@ -992,7 +993,7 @@ static void OutlierTreeExecute(ClientContext &context, TableFunctionInput &data_
         // Stream the input instead of materializing the full result; the
         // algorithm itself requires the complete dataset for tree fitting,
         // so this is the only full copy that is kept.
-        auto result = con.SendQuery(query);
+        auto result = StreamQuery(con, query);
         if (result->HasError()) {
             throw InvalidInputException("Failed to query source table: %s", result->GetError());
         }
@@ -1058,20 +1059,20 @@ static void OutlierTreeExecute(ClientContext &context, TableFunctionInput &data_
     // Output results, streamed chunk-wise from the computed explanations
     if (bind_data.output_mode == "outliers") {
         idx_t count = MinValue<idx_t>(state.outliers.size() - state.current_row, STANDARD_VECTOR_SIZE);
-        output.SetCardinality(count);
+        duckdb_compat::SetChildCardinality(output, count);
 
-        auto row_ids = FlatVector::GetData<int64_t>(output.data[0]);
-        auto column_names = FlatVector::GetData<string_t>(output.data[1]);
-        auto outlier_values = FlatVector::GetData<string_t>(output.data[2]);
-        auto cluster_means = FlatVector::GetData<double>(output.data[3]);
-        auto cluster_sds = FlatVector::GetData<double>(output.data[4]);
-        auto cluster_sizes = FlatVector::GetData<int64_t>(output.data[5]);
-        auto z_scores = FlatVector::GetData<double>(output.data[6]);
-        auto lower_bounds = FlatVector::GetData<double>(output.data[7]);
-        auto upper_bounds = FlatVector::GetData<double>(output.data[8]);
-        auto conditions = FlatVector::GetData<string_t>(output.data[9]);
-        auto explanations = FlatVector::GetData<string_t>(output.data[10]);
-        auto outlier_scores = FlatVector::GetData<double>(output.data[11]);
+        auto row_ids = duckdb_compat::FlatData<int64_t>(output.data[0]);
+        auto column_names = duckdb_compat::FlatData<string_t>(output.data[1]);
+        auto outlier_values = duckdb_compat::FlatData<string_t>(output.data[2]);
+        auto cluster_means = duckdb_compat::FlatData<double>(output.data[3]);
+        auto cluster_sds = duckdb_compat::FlatData<double>(output.data[4]);
+        auto cluster_sizes = duckdb_compat::FlatData<int64_t>(output.data[5]);
+        auto z_scores = duckdb_compat::FlatData<double>(output.data[6]);
+        auto lower_bounds = duckdb_compat::FlatData<double>(output.data[7]);
+        auto upper_bounds = duckdb_compat::FlatData<double>(output.data[8]);
+        auto conditions = duckdb_compat::FlatData<string_t>(output.data[9]);
+        auto explanations = duckdb_compat::FlatData<string_t>(output.data[10]);
+        auto outlier_scores = duckdb_compat::FlatData<double>(output.data[11]);
 
         for (idx_t i = 0; i < count; ++i) {
             auto &outlier = state.outliers[state.current_row + i];
@@ -1108,10 +1109,10 @@ static void OutlierTreeExecute(ClientContext &context, TableFunctionInput &data_
             output.SetValue(5, 0, Value::INTEGER(static_cast<int32_t>(state.max_depth_reached)));
             output.SetValue(6, 0, Value(message));
 
-            output.SetCardinality(1);
+            duckdb_compat::SetChildCardinality(output, 1);
             state.current_row = 1;
         } else {
-            output.SetCardinality(0);
+            duckdb_compat::SetChildCardinality(output, 0);
         }
     }
 }
@@ -1150,22 +1151,11 @@ void RegisterOutlierTreeFunctions(ExtensionLoader &loader) {
                                "min_size_categ",    "z_norm",            "z_outlier"};
     ot_desc.examples = {"SELECT * FROM outlier_tree('transactions', 'amount,balance', 'summary');"};
     ot_desc.categories = {"metric", "anomaly-detection"};
-    CreateTableFunctionInfo outlier_tree_info(outlier_tree_set);
-    outlier_tree_info.descriptions = {ot_desc};
-    loader.RegisterFunction(outlier_tree_info);
-
-    // Register alias: outlier_tree
-    TableFunctionSet alias_outlier_tree_set("outlier_tree");
-    alias_outlier_tree_set.AddFunction(outlier_tree_3);
-    alias_outlier_tree_set.AddFunction(outlier_tree_9);
-    CreateTableFunctionInfo alias_outlier_tree_info(alias_outlier_tree_set);
-    alias_outlier_tree_info.alias_of = "anofox_tab_outlier_tree";
     // The alias carries the SAME description, which is what #51 settled and what
-    // anofox_function_alias.hpp does for every other alias in this extension. Without
-    // it an agent handed the short name gets nothing back, and the arguments render as
-    // col0, col1, ... because parameter_names travels on the description.
-    alias_outlier_tree_info.descriptions = {std::move(ot_desc)};
-    loader.RegisterFunction(alias_outlier_tree_info);
+    // anofox_function_alias.hpp does for every alias in this extension. Without it an
+    // agent handed the short name gets nothing back, and the arguments render as
+    // col0, col1, ...
+    RegisterTableFunctionSetWithAlias(loader, std::move(outlier_tree_set), "outlier_tree", {std::move(ot_desc)});
 }
 
 } // namespace anofox
