@@ -23,10 +23,9 @@ namespace anofox {
 // Version compatibility
 //----------------------------------------------------------------------------------------------------------------------
 
-// ScalarFunction::SetFallible() exists only in DuckDB v1.5+. On v1.4.4 the
-// "fallible" concept does not exist (scalar functions may always throw), so
-// marking a function fallible is a no-op there. Detected at compile time so a
-// single source tree builds against both DuckDB versions.
+// ScalarFunction::SetFallible() exists in DuckDB v1.5 and 2.0, the supported
+// lines. The compile-time detection dates from v1.4 support (no "fallible"
+// concept there, so the call was a no-op); it now always calls SetFallible().
 template <typename T, typename = void>
 struct HasSetFallible : std::false_type {};
 template <typename T>
