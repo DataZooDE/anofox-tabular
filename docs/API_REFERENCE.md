@@ -337,7 +337,7 @@ SELECT anofox_tab_phonenumber_is_valid('+1 415-555-1234', 'US');
 
 ---
 
-#### `anofox_tab_phonenumber_is_possible`
+#### `anofox_tab_phonenumber_is_possible` (alias: `phonenumber_is_possible`)
 
 Quick possibility check using length-only analysis.
 
@@ -357,7 +357,7 @@ SELECT anofox_tab_phonenumber_is_possible('4155551234', 'US');
 
 ---
 
-#### `anofox_tab_phonenumber_is_valid_for_region`
+#### `anofox_tab_phonenumber_is_valid_for_region` (alias: `phonenumber_is_valid_for_region`)
 
 Region-specific validation.
 
@@ -371,7 +371,7 @@ anofox_tab_phonenumber_is_valid_for_region(number VARCHAR, region VARCHAR) → B
 
 ---
 
-#### `anofox_tab_phonenumber_match`
+#### `anofox_tab_phonenumber_match` (alias: `phonenumber_match`)
 
 Fuzzy matching between two phone numbers.
 
@@ -391,7 +391,7 @@ SELECT anofox_tab_phonenumber_match('+1 415-555-1234', '4155551234', 'US');
 
 ---
 
-#### `anofox_tab_phonenumber_example`
+#### `anofox_tab_phonenumber_example` (alias: `phonenumber_example`)
 
 Generate example phone number for a region.
 
@@ -411,7 +411,7 @@ SELECT anofox_tab_phonenumber_example('US');
 
 ---
 
-#### `anofox_tab_phonenumber_status`
+#### `anofox_tab_phonenumber_status` (alias: `phonenumber_status`)
 
 Returns library status and default region.
 
@@ -437,7 +437,7 @@ Money amounts are exact `DECIMAL(18,3)` values: arithmetic never drifts, NaN/Inf
 
 ### Basic Operations
 
-#### `anofox_tab_money (alias: money`
+#### `anofox_tab_money` (alias: `money`)
 
 Create a money value from amount and currency code.
 
@@ -454,7 +454,7 @@ SELECT anofox_tab_money (alias: money(100.50, 'USD');
 
 ---
 
-#### `anofox_tab_money (alias: money_from_cents`
+#### `anofox_tab_money_from_cents` (alias: `money_from_cents`)
 
 Create a money value from an integer amount in the currency's smallest unit (e.g. cents). The amount is divided by the currency's `subunit_to_unit` (100 for USD/EUR, 1 for JPY).
 
@@ -471,7 +471,7 @@ SELECT anofox_tab_money (alias: money_from_cents(10050, 'USD');
 
 ---
 
-#### `anofox_tab_money (alias: money_amount`
+#### `anofox_tab_money_amount` (alias: `money_amount`)
 
 Extract amount from money struct.
 
@@ -488,7 +488,7 @@ SELECT anofox_tab_money (alias: money_amount(anofox_tab_money (alias: money(100.
 
 ---
 
-#### `anofox_tab_money (alias: money_currency`
+#### `anofox_tab_money_currency` (alias: `money_currency`)
 
 Extract currency code from money struct.
 
@@ -507,7 +507,7 @@ SELECT anofox_tab_money (alias: money_currency(anofox_tab_money (alias: money(10
 
 ### Currency Information
 
-#### `anofox_tab_is_valid_currency (alias: is_valid_currency`
+#### `anofox_tab_is_valid_currency` (alias: `is_valid_currency`)
 
 Check if currency code is valid.
 
@@ -524,7 +524,7 @@ SELECT anofox_tab_is_valid_currency (alias: is_valid_currency('USD');
 
 ---
 
-#### `anofox_tab_currency_ (alias: currency_symbol`
+#### `anofox_tab_currency_symbol` (alias: `currency_symbol`)
 
 Get currency symbol (e.g., '$', '€').
 
@@ -541,7 +541,7 @@ SELECT anofox_tab_currency_ (alias: currency_symbol('USD');
 
 ---
 
-#### `anofox_tab_currency_ (alias: currency_name`
+#### `anofox_tab_currency_name` (alias: `currency_name`)
 
 Get currency name (e.g., 'United States Dollar').
 
@@ -560,7 +560,7 @@ SELECT anofox_tab_currency_ (alias: currency_name('USD');
 
 ### Formatting
 
-#### `anofox_tab_money (alias: money_format`
+#### `anofox_tab_money_format` (alias: `money_format`)
 
 Format money for display. The number of decimals is derived from the currency's `subunit_to_unit` (JPY has none, USD/EUR have two). The `'symbol'` and `'long'` styles localize the amount with the currency's thousands separator and decimal mark; the `'code'` style stays canonical (dot decimal mark, no grouping).
 
@@ -582,7 +582,7 @@ SELECT anofox_tab_money (alias: money_format(anofox_tab_money (alias: money(150.
 
 ### Validation & Properties
 
-#### `anofox_tab_money (alias: money_is_positive`
+#### `anofox_tab_money_is_positive` (alias: `money_is_positive`)
 
 Check if amount > 0.
 
@@ -593,7 +593,7 @@ anofox_tab_money (alias: money_is_positive(money STRUCT) → BOOLEAN
 
 ---
 
-#### `anofox_tab_money (alias: money_is_negative`
+#### `anofox_tab_money_is_negative` (alias: `money_is_negative`)
 
 Check if amount < 0.
 
@@ -604,7 +604,7 @@ anofox_tab_money (alias: money_is_negative(money STRUCT) → BOOLEAN
 
 ---
 
-#### `anofox_tab_money (alias: money_is_zero`
+#### `anofox_tab_money_is_zero` (alias: `money_is_zero`)
 
 Check if amount == 0.
 
@@ -615,7 +615,7 @@ anofox_tab_money (alias: money_is_zero(money STRUCT) → BOOLEAN
 
 ---
 
-#### `anofox_tab_money (alias: money_abs`
+#### `anofox_tab_money_abs` (alias: `money_abs`)
 
 Get absolute value (sign removed).
 
@@ -628,7 +628,7 @@ anofox_tab_money (alias: money_abs(money STRUCT) → STRUCT(amount DECIMAL(18,3)
 
 ### Arithmetic Operations
 
-#### `anofox_tab_money (alias: money_add`
+#### `anofox_tab_money_add` (alias: `money_add`)
 
 Add two money values (same currency required).
 
@@ -648,7 +648,7 @@ SELECT anofox_tab_money (alias: money_add(
 
 ---
 
-#### `anofox_tab_money (alias: money_subtract`
+#### `anofox_tab_money_subtract` (alias: `money_subtract`)
 
 Subtract money2 from money1 (same currency required).
 
@@ -659,7 +659,7 @@ anofox_tab_money (alias: money_subtract(money1 STRUCT, money2 STRUCT) → STRUCT
 
 ---
 
-#### `anofox_tab_money (alias: money_multiply`
+#### `anofox_tab_money_multiply` (alias: `money_multiply`)
 
 Multiply money by a scalar factor.
 
@@ -672,7 +672,7 @@ anofox_tab_money (alias: money_multiply(money STRUCT, factor DOUBLE) → STRUCT(
 
 ### Quality & Data Validation
 
-#### `anofox_tab_money (alias: money_in_range`
+#### `anofox_tab_money_in_range` (alias: `money_in_range`)
 
 Check if amount is within range.
 
@@ -689,7 +689,7 @@ SELECT anofox_tab_money (alias: money_in_range(anofox_tab_money (alias: money(10
 
 ---
 
-#### `anofox_tab_money (alias: money_same_currency`
+#### `anofox_tab_money_same_currency` (alias: `money_same_currency`)
 
 Check if two money values have same currency.
 
@@ -710,7 +710,7 @@ European VAT number validation for regulatory compliance and data quality.
 
 ### Basic Operations
 
-#### `anofox_tab_vat (alias: vat`
+#### `anofox_tab_vat` (alias: `vat`)
 
 Parse VAT string into country and digits.
 
@@ -727,7 +727,7 @@ SELECT anofox_tab_vat (alias: vat('DE123456789');
 
 ---
 
-#### `anofox_tab_is_valid_vat_country (alias: is_valid_vat_country`
+#### `anofox_tab_is_valid_vat_country` (alias: `is_valid_vat_country`)
 
 Check if country code is valid VAT country. Codes are case-insensitive and the
 VAT aliases `EL` (Greece) and `XI` (Northern Ireland / GB) are accepted.
@@ -745,7 +745,7 @@ SELECT anofox_tab_is_valid_vat_country (alias: is_valid_vat_country('DE');
 
 ---
 
-#### `anofox_tab_vat (alias: vat_normalize`
+#### `anofox_tab_vat_normalize` (alias: `vat_normalize`)
 
 Normalize VAT string (uppercase, remove punctuation).
 
@@ -764,7 +764,7 @@ SELECT anofox_tab_vat (alias: vat_normalize('de 123-456-789');
 
 ### Syntax Validation
 
-#### `anofox_tab_vat (alias: vat_is_valid_syntax`
+#### `anofox_tab_vat_is_valid_syntax` (alias: `vat_is_valid_syntax`)
 
 Validate VAT syntax against country pattern.
 
@@ -775,7 +775,7 @@ anofox_tab_vat (alias: vat_is_valid_syntax(vat_string VARCHAR) → BOOLEAN
 
 ---
 
-#### `anofox_tab_vat (alias: vat_split`
+#### `anofox_tab_vat_split` (alias: `vat_split`)
 
 Parse VAT into country and normalized digits.
 
@@ -786,7 +786,7 @@ anofox_tab_vat (alias: vat_split(vat_string VARCHAR) → STRUCT(country VARCHAR,
 
 ---
 
-#### `anofox_tab_vat (alias: vat_exists`
+#### `anofox_tab_vat_exists` (alias: `vat_exists`)
 
 Check if VAT has valid country prefix.
 
@@ -799,7 +799,7 @@ anofox_tab_vat (alias: vat_exists(vat_string VARCHAR) → BOOLEAN
 
 ### EU Utilities
 
-#### `anofox_tab_vat (alias: vat_is_eu_member`
+#### `anofox_tab_vat_is_eu_member` (alias: `vat_is_eu_member`)
 
 Check if country is EU member. Codes are case-insensitive and the VAT aliases
 `EL`/`XI` are normalized (e.g. `vat_is_eu_member('EL')` is true, `'XI'` is false).
@@ -811,7 +811,7 @@ anofox_tab_vat (alias: vat_is_eu_member(country_code VARCHAR) → BOOLEAN
 
 ---
 
-#### `anofox_tab_vat (alias: vat_country_name`
+#### `anofox_tab_vat_country_name` (alias: `vat_country_name`)
 
 Get full country name.
 
@@ -828,7 +828,7 @@ SELECT anofox_tab_vat (alias: vat_country_name('DE');
 
 ---
 
-#### `anofox_tab_vat (alias: vat_format`
+#### `anofox_tab_vat_format` (alias: `vat_format`)
 
 Format VAT for display. Supported styles (case-insensitive):
 
@@ -855,7 +855,7 @@ SELECT anofox_tab_vat_format('GR123456783', 'plain');
 
 ### Combined Validation
 
-#### `anofox_tab_vat (alias: vat_is_valid`
+#### `anofox_tab_vat_is_valid` (alias: `vat_is_valid`)
 
 Full validation: syntax check plus country check-digit (checksum) validation where implemented.
 
@@ -1213,6 +1213,13 @@ Detect only specific types of PII for targeted scans:
 ```sql
 SELECT pii_detect_emails('Contact: john@example.com and jane@example.com');
 -- Returns only EMAIL matches
+```
+
+`anofox_tab_pii_detect_batch` (alias: `pii_detect_batch`) runs all detectors over a `VARCHAR[]`
+and returns one match list per element:
+
+```sql
+SELECT pii_detect_batch(['john@example.com', 'SSN: 123-45-6789']);
 ```
 
 ---
@@ -1775,116 +1782,102 @@ Industry-grade anomaly detection with [isotree](https://github.com/david-cortes/
 - **Sample Weights** - Weighted sampling for imbalanced datasets
 - **SCiForest** - Information-gain guided splitting with configurable candidates
 
-#### `anofox_tab_metric_isolation_forest` (alias: `metric_isolation_forest`)
+#### `anofox_tab_isolation_forest` (alias: `isolation_forest`)
 
 Univariate Isolation Forest for single column anomaly detection.
 
-**Full Signature:**
+**Signature:**
 ```sql
-metric_isolation_forest(
+isolation_forest(
     table_name VARCHAR,
-    column_name VARCHAR,
-    n_trees BIGINT,           -- 1-500, default 100
-    sample_size BIGINT,       -- 1-10000, default 256
-    contamination DOUBLE,     -- 0.0-0.5, default 0.1
-    output_mode VARCHAR,      -- 'summary' or 'scores'
-    ndim BIGINT,              -- 1-N, default 1 (Extended IF)
-    coef_type VARCHAR,        -- 'uniform' or 'normal'
-    scoring_metric VARCHAR,   -- 'depth', 'density', or 'adj_depth'
-    weight_column VARCHAR,    -- Column for sample weights (NULL = uniform)
-    ntry BIGINT,              -- 1-100, default 1 (SCiForest)
-    prob_pick_avg_gain DOUBLE -- 0.0-1.0, default 0.0
+    column_name VARCHAR
+    [, n_trees BIGINT          -- 1-500, default 100
+    [, sample_size BIGINT      -- 1-10000, default 256
+    [, contamination DOUBLE    -- 0.0-0.5, default 0.1
+    [, output_mode VARCHAR     -- 'summary' (default) or 'scores'
+    [, seed BIGINT ]]]]]       -- fixed seed for reproducible scores; NULL = random
 ) → TABLE
 ```
 
-**Parameters:**
-| Parameter | Range | Default | Description |
-|-----------|-------|---------|-------------|
-| `n_trees` | 1-500 | 100 | Number of isolation trees |
-| `sample_size` | 1-10000 | 256 | Subsample size per tree |
-| `contamination` | 0.0-0.5 | 0.1 | Expected anomaly fraction |
-| `output_mode` | - | 'scores' | `'summary'` or `'scores'` |
-| `ndim` | 1-N | 1 | Hyperplane dimensions (Extended IF) |
-| `coef_type` | - | 'uniform' | `'uniform'` or `'normal'` |
-| `scoring_metric` | - | 'depth' | `'depth'`, `'density'`, `'adj_depth'` |
-| `weight_column` | - | NULL | Sample weight column name |
-| `ntry` | 1-100 | 1 | Split candidates (SCiForest) |
-| `prob_pick_avg_gain` | 0.0-1.0 | 0.0 | Gain-based selection probability |
+Trailing parameters are optional and positional. The Extended IF, SCiForest, weighting and
+scoring options are only available on `isolation_forest_mv` (which also accepts a single column).
 
 **Returns:**
-- `TABLE`: Anomaly detection results with `row_id`, `anomaly_score`, `is_anomaly`
+- `'scores'`: one row per input row: `row_id`, `value`, `anomaly_score`, `is_anomaly`
+- `'summary'`: one row: `status`, `outlier_count`, `total_count`, `avg_value`, `contamination`,
+  `n_trees`, `message`
 
 **Examples:**
 ```sql
--- Basic usage (backward compatible)
-SELECT * FROM metric_isolation_forest(
-    'sales_data', 'amount', 100, 256, 0.1, 'scores'
-) WHERE is_anomaly = true;
+-- Score every row, keep the anomalies
+SELECT * FROM isolation_forest('sales_data', 'amount', 100, 256, 0.1, 'scores')
+WHERE is_anomaly;
 
--- Extended IF with hyperplane splits
-SELECT * FROM metric_isolation_forest(
-    'transactions', 'amount', 100, 256, 0.1, 'scores',
-    3,          -- ndim: 3-dimensional hyperplanes
-    'normal',   -- coef_type: normal distribution
-    'depth'     -- scoring_metric
-);
+-- Reproducible scores
+SELECT * FROM isolation_forest('sales_data', 'amount', 100, 256, 0.1, 'scores', 42);
 
--- SCiForest with gain-based selection
-SELECT * FROM metric_isolation_forest(
-    'events', 'value', 100, 256, 0.05, 'scores',
-    1, 'uniform', 'depth',
-    NULL,       -- weight_column
-    10,         -- ntry: evaluate 10 candidates
-    0.5         -- prob_pick_avg_gain: 50% gain-based
-);
+-- One summary row
+SELECT status, outlier_count, message FROM isolation_forest('sales_data', 'amount');
 ```
 
 ---
 
-#### `anofox_tab_metric_isolation_forest_multivariate` (alias: `metric_isolation_forest_multivariate`)
+#### `anofox_tab_isolation_forest_mv` (alias: `isolation_forest_mv`)
 
-Multivariate Isolation Forest for multiple column anomaly detection.
+Multivariate Isolation Forest over one or more columns, with categorical columns, Extended IF,
+SCiForest, sample weights and alternative scoring.
 
-**Full Signature:**
+**Signature:**
 ```sql
-metric_isolation_forest_multivariate(
+isolation_forest_mv(
     table_name VARCHAR,
-    columns VARCHAR,          -- Comma-separated column names
-    n_trees BIGINT,
-    sample_size BIGINT,
-    contamination DOUBLE,
-    output_mode VARCHAR,
-    ndim BIGINT,
-    coef_type VARCHAR,
-    scoring_metric VARCHAR,
-    weight_column VARCHAR,
-    ntry BIGINT,
-    prob_pick_avg_gain DOUBLE
+    column_names VARCHAR       -- comma-separated, e.g. 'amount, quantity, region'
+    [, n_trees BIGINT          -- 1-500, default 100
+    [, sample_size BIGINT      -- 1-10000, default 256
+    [, contamination DOUBLE    -- 0.0-0.5, default 0.1
+    [, output_mode VARCHAR     -- 'summary' (default) or 'scores'
+    [, seed BIGINT             -- NULL = random
+    [, ndim BIGINT             -- >= 1, default 1; > 1 = Extended IF hyperplane splits
+    [, coef_type VARCHAR       -- 'uniform' (default) or 'normal'
+    [, scoring_metric VARCHAR  -- 'depth' (default), 'density' or 'adj_depth'
+    [, weight_column VARCHAR   -- column of sample weights; NULL = uniform
+    [, ntry BIGINT             -- >= 1, default 1; > 1 = SCiForest split candidates
+    [, prob_pick_avg_gain DOUBLE ]]]]]]]]]]]  -- 0.0-1.0, default 0.0
 ) → TABLE
 ```
 
-**Parameters:**
-- `columns`: Comma-separated column names (e.g., `'amount, quantity, suspicious_amount'`)
-- All other parameters same as univariate version
+Pass `NULL` to keep a default while setting a later parameter.
 
 **Returns:**
-- `TABLE`: Anomaly detection results with `row_id`, `anomaly_score`, `is_anomaly`
+- `'scores'`: one row per input row: `row_id`, `anomaly_score`, `is_anomaly`
+- `'summary'`: one row: `status`, `outlier_count`, `total_count`, `n_columns`, `contamination`,
+  `n_trees`, `message`
 
 **Examples:**
 ```sql
 -- Basic multivariate
-SELECT * FROM metric_isolation_forest_multivariate(
+SELECT * FROM isolation_forest_mv(
     'customer_events', 'purchase_amount, session_duration, page_views',
     100, 256, 0.1, 'scores'
 ) ORDER BY anomaly_score DESC LIMIT 10;
 
 -- Extended IF with density scoring
-SELECT * FROM metric_isolation_forest_multivariate(
+SELECT * FROM isolation_forest_mv(
     'transactions', 'amount, quantity, duration',
     100, 256, 0.05, 'scores',
-    3,          -- ndim
+    NULL,       -- seed
+    3,          -- ndim: 3-dimensional hyperplanes
     'normal',   -- coef_type
-    'density'   -- scoring_metric: density-based scoring
+    'density'   -- scoring_metric
+);
+
+-- SCiForest with gain-based split selection
+SELECT * FROM isolation_forest_mv(
+    'events', 'value', 100, 256, 0.05, 'scores',
+    NULL, 1, 'uniform', 'depth',
+    NULL,       -- weight_column
+    10,         -- ntry: evaluate 10 split candidates
+    0.5         -- prob_pick_avg_gain: 50% gain-based
 );
 ```
 

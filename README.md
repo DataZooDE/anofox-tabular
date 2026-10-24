@@ -24,7 +24,7 @@ SQL-native validation, anomaly detection, and data diffing—all without leaving
 SELECT email_validate('user@example.com', 'dns') as result;
 
 -- Detect outliers using Isolation Forest
-SELECT * FROM metric_isolation_forest('sales', 'amount', 100, 256, 0.1, 'scores');
+SELECT * FROM isolation_forest('sales', 'amount', 100, 256, 0.1, 'scores');
 
 -- Validate European VAT and multi-currency transactions
 SELECT * FROM transactions
@@ -148,7 +148,7 @@ LOAD anofox_tabular;
 SELECT email_is_valid('user@example.com', 'regex') as valid;
 
 -- Detect data anomalies
-SELECT * FROM metric_isolation_forest(
+SELECT * FROM isolation_forest(
     'your_table', 'numeric_column', 100, 256, 0.1, 'scores'
 ) WHERE is_anomaly = true;
 
@@ -519,7 +519,7 @@ Industry-grade anomaly detection with [isotree](https://github.com/david-cortes/
 
 ```sql
 -- Basic univariate detection
-SELECT * FROM metric_isolation_forest(
+SELECT * FROM isolation_forest(
     'sales_data',
     'amount',
     100,        -- n_trees
@@ -529,21 +529,22 @@ SELECT * FROM metric_isolation_forest(
 ) WHERE is_anomaly = true;
 
 -- Extended IF with hyperplane splits (ndim=3)
-SELECT * FROM metric_isolation_forest_multivariate(
+SELECT * FROM isolation_forest_mv(
     'transactions',
     'amount, quantity, duration',
     100, 256, 0.1, 'scores',
+    NULL,       -- seed (NULL = random)
     3,          -- ndim: hyperplane dimensions
     'normal',   -- coef_type: coefficient distribution
     'depth'     -- scoring_metric
 );
 
 -- SCiForest with gain-based split selection
-SELECT * FROM metric_isolation_forest_multivariate(
+SELECT * FROM isolation_forest_mv(
     'customer_events',
     'purchase_amount, session_duration',
     100, 256, 0.05, 'scores',
-    1, 'uniform', 'depth',
+    NULL, 1, 'uniform', 'depth',  -- seed, ndim, coef_type, scoring_metric
     NULL,       -- weight_column
     10,         -- ntry: split candidates
     0.5         -- prob_pick_avg_gain
@@ -556,14 +557,15 @@ SELECT * FROM metric_isolation_forest_multivariate(
 - Detects both global and local anomalies
 - Fast training and prediction (O(n log n))
 
-**New Parameters (v0.2.0):**
+**`isolation_forest_mv` parameters after `output_mode`** (in this order):
 | Parameter | Values | Description |
 |-----------|--------|-------------|
+| `seed` | integer (default: NULL = random) | Fixed seed for reproducible scores (also on `isolation_forest`) |
 | `ndim` | 1-N (default: 1) | Dimensions for hyperplane splits |
 | `coef_type` | 'uniform', 'normal' | Coefficient distribution |
 | `scoring_metric` | 'depth', 'density', 'adj_depth' | Scoring method |
 | `weight_column` | column name | Sample weight column |
-| `ntry` | 1-100 (default: 1) | Split candidates per node |
+| `ntry` | >= 1 (default: 1) | Split candidates per node |
 | `prob_pick_avg_gain` | 0.0-1.0 (default: 0.0) | Gain-based selection probability |
 
 #### DBSCAN Clustering
@@ -791,7 +793,7 @@ SELECT
     if_result.is_anomaly
 FROM transactions t
 JOIN (
-    SELECT * FROM metric_isolation_forest_multivariate(
+    SELECT * FROM isolation_forest_mv(
         'transactions',
         'amount, quantity, suspicious_amount',
         100, 256, 0.05, 'scores'
@@ -1415,13 +1417,13 @@ SET anofox_tab_email_smtp_read_timeout_ms = 10000;
 **Solution**: Use streaming output modes and process in batches:
 ```sql
 -- Use 'summary' mode for large tables
-SELECT * FROM metric_isolation_forest(
+SELECT * FROM isolation_forest(
     'large_table', 'column', 100, 256, 0.1, 'summary'
 );
 
 -- Process in batches
 CREATE TABLE anomalies AS
-SELECT * FROM metric_isolation_forest(
+SELECT * FROM isolation_forest(
     'large_table', 'column', 100, 256, 0.1, 'scores'
 )
 WHERE is_anomaly = true;  -- Filter early
