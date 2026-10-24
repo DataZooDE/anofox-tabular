@@ -14,6 +14,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 from anofox._loader import (
     AnofoxLoader,
+    UnsupportedDuckDBVersionError,
     _detect_duckdb_version,
     _detect_platform,
     _download,
@@ -142,6 +143,46 @@ class TestAnofoxLoader:
         assert _duckdb_tag("1.5.6") == "v1.5.6"
         assert _duckdb_tag("v1.5.6") == "v1.5.6"
 
+    def test_duckdb_2_0_maps_to_its_deploy_path(self):
+        """The DuckDB 2.0 package (``2.0.0``) downloads from ``v2.0.0/<platform>/``."""
+        assert _duckdb_tag("2.0.0") == "v2.0.0"
+        loader = AnofoxLoader(duckdb_version="2.0.0")
+        loader._arch = "linux_amd64"
+        assert loader._candidate_urls() == [
+            "https://community-extensions.duckdb.org/v2.0.0/linux_amd64/anofox_tabular.duckdb_extension.gz",
+            "https://get.erpl.io/v2.0.0/linux_amd64/anofox_tabular.duckdb_extension.gz",
+        ]
+
+    @pytest.mark.parametrize(
+        "version",
+        ["1.5.7.dev42", "2.0.0.dev1", "2.0.0rc1", "2.0.0a1", "2.0.0b2", "1.5.6.post1",
+         "2.0.0.dev7+g1a2b3c", "2.0", "nightly"],
+    )
+    def test_duckdb_tag_rejects_versions_without_a_published_build(self, version):
+        with pytest.raises(UnsupportedDuckDBVersionError) as excinfo:
+            _duckdb_tag(version)
+        message = str(excinfo.value)
+        assert version in message
+        assert "ANOFOX_EXT_PATH" in message
+
+    @pytest.mark.parametrize("version", ["2.0.0.dev1", "2.0.0rc1", "1.5.6.post1"])
+    def test_ensure_extension_rejects_prerelease_before_any_network_request(self, tmp_path, version):
+        with patch("pathlib.Path.home", return_value=tmp_path):
+            loader = AnofoxLoader(duckdb_version=version, allow_insecure_download=True)
+            with patch("urllib.request.urlopen", side_effect=AssertionError("must not hit the network")):
+                with pytest.raises(UnsupportedDuckDBVersionError, match="ANOFOX_EXT_PATH"):
+                    loader.ensure_extension()
+
+    def test_unsupported_version_error_is_a_runtime_error(self):
+        """Callers catching the loader's RuntimeError keep working."""
+        assert issubclass(UnsupportedDuckDBVersionError, RuntimeError)
+
+    def test_prerelease_duckdb_still_loads_a_local_build(self, tmp_path):
+        ext_file = tmp_path / "anofox_tabular.duckdb_extension"
+        ext_file.write_bytes(b"fake")
+        loader = AnofoxLoader(duckdb_version="2.0.0.dev1")
+        assert loader.ensure_extension(local_path=str(ext_file)) == str(ext_file)
+
     def test_ensure_extension_uses_local_path_when_provided(self, tmp_path):
         ext_file = tmp_path / "anofox_tabular.duckdb_extension"
         ext_file.write_bytes(b"fake")
@@ -167,7 +208,7 @@ class TestAnofoxLoader:
                 checksum.unlink(missing_ok=True)
 
     def test_ensure_extension_raises_when_nothing_available(self):
-        loader = AnofoxLoader(duckdb_version="0.0.0-nonexistent")
+        loader = AnofoxLoader(duckdb_version="0.0.0")
         loader._arch = "nonexistent_arch"
         with pytest.raises(RuntimeError, match="Could not find or download"):
             loader.ensure_extension()

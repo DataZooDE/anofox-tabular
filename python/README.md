@@ -139,6 +139,15 @@ The package resolves the extension binary in this order:
 4. Download from the DuckDB community registry, then the S3 mirror
    (`https://get.erpl.io`), both laid out as
    `<base>/v<duckdb version>/<platform>/anofox_tabular.duckdb_extension.gz`
+   (`duckdb` 1.5.6 downloads from `v1.5.6/`, `duckdb` 2.0.0 from `v2.0.0/`)
+
+Downloads exist only for DuckDB releases. With a pre-release, development or
+post-release `duckdb` package (`2.0.0rc1`, `1.5.7.dev42`, `1.5.6.post1`)
+`connect()` raises `anofox.UnsupportedDuckDBVersionError` (a `RuntimeError`)
+before any download is attempted; install a released `duckdb`, or set
+`ANOFOX_EXT_PATH` / `extension_path` to an extension built for that DuckDB.
+The package declares `duckdb>=1.0.0` without an upper bound: the extension is
+published for each supported DuckDB release line (currently 1.5.x and 2.0).
 
 Downloads are verified against a `.sha256` sidecar published next to the
 archive. The S3 mirror publishes sidecars for every build; the community
