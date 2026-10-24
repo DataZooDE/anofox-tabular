@@ -12,7 +12,7 @@ To use a DataFrame, register it first::
 from __future__ import annotations
 
 import json
-from typing import Any, Optional
+from typing import Any, Optional, Union
 
 _MAX_BIGINT = 9223372036854775807
 
@@ -575,7 +575,9 @@ def rel_count_change(
     lower_threshold: Optional[float] = -0.5,
     upper_threshold: Optional[float] = 0.5,
     reference_date: Optional[str] = None,
-) -> dict:
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+) -> Union[dict, list[dict]]:
     """
     Check the daily (distinct) count on a reference date against a rolling baseline.
 
@@ -595,20 +597,29 @@ def rel_count_change(
         Acceptable relative change bounds (defaults -0.5/0.5; ``None`` = unbounded).
     reference_date:
         ISO date string; omit for the latest date present in the data.
+    start_date / end_date:
+        ISO date strings of an inclusive daily range, given together instead of
+        ``reference_date``; the check is evaluated for every day of the range.
 
     Returns
     -------
-    dict
-        ``{"status": "pass"|"fail", "rel_change": float, ...}``
+    dict or list of dict
+        Without a range: ``{"status": "pass"|"fail", "rel_change": float, ...}``.
+        With ``start_date``/``end_date``: one dict per reference date (ordered by
+        date), keyed by the result columns (``status``, ``reference_date``, ...).
     """
     count_sql = "NULL" if count_column is None else f"'{count_column}'"
     lower_sql = "NULL" if lower_threshold is None else str(lower_threshold)
     upper_sql = "NULL" if upper_threshold is None else str(upper_threshold)
     ref_sql = "NULL" if reference_date is None else f"DATE '{reference_date}'"
-    rows = conn.execute(
+    sql = (
         f"SELECT * FROM anofox_tab_rel_count_change("
-        f"'{table_name}', '{date_column}', {count_sql}, {window_days}, {lower_sql}, {upper_sql}, {ref_sql})"
-    ).fetchall()
+        f"'{table_name}', '{date_column}', {count_sql}, {window_days}, {lower_sql}, {upper_sql}, {ref_sql}"
+        f"{_date_range_sql(start_date, end_date)})"
+    )
+    if start_date is not None or end_date is not None:
+        return _fetch_dicts(conn, sql)
+    rows = conn.execute(sql).fetchall()
     return _parse_table_result(
         rows,
         {
@@ -629,7 +640,9 @@ def metric_anomaly_iqr(
     k: float = 1.5,
     mode: str = "both",
     reference_date: Optional[str] = None,
-) -> dict:
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+) -> Union[dict, list[dict]]:
     """
     Flag a reference date whose daily metric falls outside IQR bounds of the trailing window.
 
@@ -651,20 +664,29 @@ def metric_anomaly_iqr(
         ``"both"`` (default), ``"upper"`` or ``"lower"`` — which bound(s) to enforce.
     reference_date:
         ISO date string; omit for the latest date present in the data.
+    start_date / end_date:
+        ISO date strings of an inclusive daily range, given together instead of
+        ``reference_date``; the check is evaluated for every day of the range.
 
     Returns
     -------
-    dict
-        ``{"status": "pass"|"fail", "metric_value": float, ...}``
+    dict or list of dict
+        Without a range: ``{"status": "pass"|"fail", "metric_value": float, ...}``.
+        With ``start_date``/``end_date``: one dict per reference date (ordered by
+        date), keyed by the result columns (``status``, ``reference_date``, ...).
     """
     if mode.lower() not in ("both", "upper", "lower"):
         raise ValueError("mode must be 'both', 'upper' or 'lower'")
     metric_sql = "NULL" if metric_column is None else f"'{metric_column}'"
     ref_sql = "NULL" if reference_date is None else f"DATE '{reference_date}'"
-    rows = conn.execute(
+    sql = (
         f"SELECT * FROM anofox_tab_metric_anomaly_iqr("
-        f"'{table_name}', '{date_column}', {metric_sql}, {window_days}, {k}, '{mode.lower()}', {ref_sql})"
-    ).fetchall()
+        f"'{table_name}', '{date_column}', {metric_sql}, {window_days}, {k}, '{mode.lower()}', {ref_sql}"
+        f"{_date_range_sql(start_date, end_date)})"
+    )
+    if start_date is not None or end_date is not None:
+        return _fetch_dicts(conn, sql)
+    rows = conn.execute(sql).fetchall()
     return _parse_table_result(
         rows,
         {
@@ -687,7 +709,9 @@ def rolling_values_in_set(
     window_days: int = 7,
     min_rate: float = 1.0,
     reference_date: Optional[str] = None,
-) -> dict:
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+) -> Union[dict, list[dict]]:
     """
     Check values-in-set membership over the trailing window ending at the reference date.
 
@@ -709,18 +733,27 @@ def rolling_values_in_set(
         Minimum acceptable in-set rate (default 1.0).
     reference_date:
         ISO date string; omit for the latest date present in the data.
+    start_date / end_date:
+        ISO date strings of an inclusive daily range, given together instead of
+        ``reference_date``; the check is evaluated for every day of the range.
 
     Returns
     -------
-    dict
-        ``{"status": "pass"|"fail", "in_set_rate": float, ...}``
+    dict or list of dict
+        Without a range: ``{"status": "pass"|"fail", "in_set_rate": float, ...}``.
+        With ``start_date``/``end_date``: one dict per reference date (ordered by
+        date), keyed by the result columns (``status``, ``reference_date``, ...).
     """
     values_list = "[" + ", ".join("'" + v.replace("'", "''") + "'" for v in allowed_values) + "]"
     ref_sql = "NULL" if reference_date is None else f"DATE '{reference_date}'"
-    rows = conn.execute(
+    sql = (
         f"SELECT * FROM anofox_tab_rolling_values_in_set("
-        f"'{table_name}', '{column_name}', {values_list}, '{date_column}', {window_days}, {min_rate}, {ref_sql})"
-    ).fetchall()
+        f"'{table_name}', '{column_name}', {values_list}, '{date_column}', {window_days}, {min_rate}, {ref_sql}"
+        f"{_date_range_sql(start_date, end_date)})"
+    )
+    if start_date is not None or end_date is not None:
+        return _fetch_dicts(conn, sql)
+    rows = conn.execute(sql).fetchall()
     return _parse_table_result(
         rows,
         {
@@ -827,6 +860,27 @@ def run_checks(
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
+
+def _date_range_sql(start_date: Optional[str], end_date: Optional[str]) -> str:
+    """Named start_date/end_date arguments of the time-aware checks ('' when absent).
+
+    Validation (both or neither, start <= end, not with reference_date) is left to
+    the extension so the Python and SQL errors are the same.
+    """
+    sql = ""
+    if start_date is not None:
+        sql += f", start_date := DATE '{start_date}'"
+    if end_date is not None:
+        sql += f", end_date := DATE '{end_date}'"
+    return sql
+
+
+def _fetch_dicts(conn: Any, sql: str) -> list[dict]:
+    """Run a query and return every row as a dict keyed by the result column names."""
+    cursor = conn.execute(sql)
+    columns = [d[0] for d in cursor.description]
+    return [dict(zip(columns, row)) for row in cursor.fetchall()]
+
 
 def _parse_table_result(rows: list, extra: dict) -> dict:
     """

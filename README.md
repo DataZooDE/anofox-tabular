@@ -464,6 +464,15 @@ Track essential data quality dimensions:
 | **Metric IQR Anomaly** | Daily metric outside IQR band | `metric_anomaly_iqr('orders', 'order_date', NULL, 30, 1.5, 'both')` |
 | **Rolling Values In Set** | Set membership over a date window | `rolling_values_in_set('orders', 'status', ['completed'], 'order_date', 14)` |
 
+The three time-aware checks evaluate one reference date (default: the latest date in the data), or,
+with `start_date := DATE, end_date := DATE`, every day of that inclusive range — one row per date,
+ordered by date, with the same columns:
+
+```sql
+SELECT reference_date, status, rel_change
+FROM rel_count_change('orders', 'order_date', start_date := DATE '2026-01-01', end_date := DATE '2026-01-31');
+```
+
 **Check suites** — define checks once in a SQL table and run them all with one call:
 
 ```sql
@@ -1035,9 +1044,9 @@ All functions are registered under their canonical `anofox_tab_*` name plus the 
 | `anofox_tab_occurrence` (`occurrence`) | `(table VARCHAR, column VARCHAR, mode VARCHAR, lower BIGINT, upper BIGINT) → TABLE` | Highest (`'max'`) or lowest (`'min'`) frequency of any single value |
 | `anofox_tab_match_rate` (`match_rate`) | `(left VARCHAR, right VARCHAR, left_keys VARCHAR, right_keys VARCHAR [, min_rate DOUBLE = 1.0]) → TABLE` | Share of left rows with a join partner (referential integrity) |
 | `anofox_tab_compliance` (`compliance`) | `(table VARCHAR, expression VARCHAR [, min_rate DOUBLE = 1.0]) → TABLE` | Share of rows satisfying a SQL boolean expression |
-| `anofox_tab_rel_count_change` (`rel_count_change`) | `(table VARCHAR, date_col VARCHAR [, count_col VARCHAR, window_days BIGINT = 7, lower DOUBLE = -0.5, upper DOUBLE = 0.5, reference_date DATE]) → TABLE` | Daily (distinct) count vs rolling baseline average |
-| `anofox_tab_metric_anomaly_iqr` (`metric_anomaly_iqr`) | `(table VARCHAR, date_col VARCHAR [, metric_col VARCHAR, window_days BIGINT = 30, k DOUBLE = 1.5, mode VARCHAR = 'both', reference_date DATE]) → TABLE` | Daily metric outside Q1/Q3 ± k·IQR of the trailing window |
-| `anofox_tab_rolling_values_in_set` (`rolling_values_in_set`) | `(table VARCHAR, column VARCHAR, allowed LIST<VARCHAR>, date_col VARCHAR [, window_days BIGINT = 7, min_rate DOUBLE = 1.0, reference_date DATE]) → TABLE` | Values-in-set rate over a trailing date window |
+| `anofox_tab_rel_count_change` (`rel_count_change`) | `(table VARCHAR, date_col VARCHAR [, count_col VARCHAR, window_days BIGINT = 7, lower DOUBLE = -0.5, upper DOUBLE = 0.5, reference_date DATE] [, start_date := DATE, end_date := DATE]) → TABLE` | Daily (distinct) count vs rolling baseline average; one row per date with a date range |
+| `anofox_tab_metric_anomaly_iqr` (`metric_anomaly_iqr`) | `(table VARCHAR, date_col VARCHAR [, metric_col VARCHAR, window_days BIGINT = 30, k DOUBLE = 1.5, mode VARCHAR = 'both', reference_date DATE] [, start_date := DATE, end_date := DATE]) → TABLE` | Daily metric outside Q1/Q3 ± k·IQR of the trailing window; one row per date with a date range |
+| `anofox_tab_rolling_values_in_set` (`rolling_values_in_set`) | `(table VARCHAR, column VARCHAR, allowed LIST<VARCHAR>, date_col VARCHAR [, window_days BIGINT = 7, min_rate DOUBLE = 1.0, reference_date DATE] [, start_date := DATE, end_date := DATE]) → TABLE` | Values-in-set rate over a trailing date window; one row per date with a date range |
 | `anofox_tab_run_checks` (`run_checks`) | `(checks_table VARCHAR) → TABLE` | Run every check in a checks table; uniform result rows |
 
 > **Security note:** `compliance` executes the caller-supplied expression as SQL with the caller's

@@ -1631,7 +1631,8 @@ around the rolling baseline average.
 ```sql
 rel_count_change(table_name VARCHAR, date_column VARCHAR [, count_column VARCHAR,
                  window_days BIGINT = 7, lower_threshold DOUBLE = -0.5,
-                 upper_threshold DOUBLE = 0.5, reference_date DATE]) → TABLE
+                 upper_threshold DOUBLE = 0.5, reference_date DATE]
+                 [, start_date := DATE, end_date := DATE]) → TABLE
 ```
 
 **Parameters:**
@@ -1644,9 +1645,19 @@ rel_count_change(table_name VARCHAR, date_column VARCHAR [, count_column VARCHAR
 **Trivial pass:** empty input, no baseline days, or a zero baseline pass with an explicit message
 (not enough history is not a failure).
 
+**Date range:** `start_date := DATE, end_date := DATE` (named, both or neither, `start_date <= end_date`)
+evaluates every day of the inclusive range instead of one reference date and returns one row per
+date, ordered by `reference_date`, with the same columns as the single-date form; each row equals the
+single-date call for that date. The range cannot be combined with an explicit (non-NULL)
+`reference_date`.
+
 **Example:**
 ```sql
 SELECT * FROM rel_count_change('orders', 'order_date', NULL, 7, -0.5, 0.5);
+
+-- one row per day of January, e.g. for a status strip or an alarm timeline
+SELECT reference_date, status, rel_change
+FROM rel_count_change('orders', 'order_date', start_date := DATE '2026-01-01', end_date := DATE '2026-01-31');
 ```
 
 ---
@@ -1660,7 +1671,7 @@ trailing window (distinct from the row-level `iqr` check).
 ```sql
 metric_anomaly_iqr(table_name VARCHAR, date_column VARCHAR [, metric_column VARCHAR,
                    window_days BIGINT = 30, k DOUBLE = 1.5, mode VARCHAR = 'both',
-                   reference_date DATE]) → TABLE
+                   reference_date DATE] [, start_date := DATE, end_date := DATE]) → TABLE
 ```
 
 **Parameters:**
@@ -1675,9 +1686,16 @@ metric_anomaly_iqr(table_name VARCHAR, date_column VARCHAR [, metric_column VARC
 **Recipe — anomaly detection on your check history:** point it at a persisted `run_checks`
 result table: `SELECT * FROM metric_anomaly_iqr('dq_results', 'run_ts', 'value', 30, 1.5, 'both');`
 
+**Date range:** `start_date := DATE, end_date := DATE` (named, both or neither, `start_date <= end_date`)
+evaluates every day of the inclusive range instead of one reference date and returns one row per
+date, ordered by `reference_date`, with the same columns as the single-date form; each row equals the
+single-date call for that date. The range cannot be combined with an explicit (non-NULL)
+`reference_date`.
+
 **Example:**
 ```sql
 SELECT * FROM metric_anomaly_iqr('orders', 'order_date', NULL, 30, 1.5, 'both');
+SELECT * FROM metric_anomaly_iqr('orders', 'order_date', start_date := DATE '2026-01-01', end_date := DATE '2026-01-31');
 ```
 
 ---
@@ -1691,14 +1709,24 @@ Assert values-in-set membership over the trailing `window_days` days ending at t
 ```sql
 rolling_values_in_set(table_name VARCHAR, column_name VARCHAR, allowed_values LIST<VARCHAR>,
                       date_column VARCHAR [, window_days BIGINT = 7, min_rate DOUBLE = 1.0,
-                      reference_date DATE]) → TABLE
+                      reference_date DATE] [, start_date := DATE, end_date := DATE]) → TABLE
 ```
 
 **Returns:** `status`, `reference_date`, `in_set_rate`, `in_set_count`, `total_count`, `threshold`, `sample_violations`, `message`
 
+`sample_violations` holds up to 5 distinct values outside the allowed set, sorted.
+
+**Date range:** `start_date := DATE, end_date := DATE` (named, both or neither, `start_date <= end_date`)
+evaluates every day of the inclusive range instead of one reference date and returns one row per
+date, ordered by `reference_date`, with the same columns as the single-date form; each row equals the
+single-date call for that date. The range cannot be combined with an explicit (non-NULL)
+`reference_date`.
+
 **Example:**
 ```sql
 SELECT * FROM rolling_values_in_set('orders', 'status', ['completed', 'pending'], 'order_date', 14);
+SELECT * FROM rolling_values_in_set('orders', 'status', ['completed', 'pending'], 'order_date', 14,
+                                    start_date := DATE '2026-01-01', end_date := DATE '2026-01-31');
 ```
 
 ---

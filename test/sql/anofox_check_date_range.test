@@ -1,0 +1,266 @@
+# name: test/sql/anofox_check_date_range.test
+# description: Date-range form (start_date := ..., end_date := ...) of the time-aware checks
+#              rel_count_change, metric_anomaly_iqr and rolling_values_in_set (#109): one row per
+#              reference date, ordered by date, each row equal to the single-date call for that date.
+# group: [anofox_tabular]
+
+require anofox_tabular
+
+statement ok
+LOAD anofox_tabular
+
+statement ok
+SET anofox_tab_trace_enabled = false
+
+# Same feed as anofox_check_temporal.test: ~10 orders/day from 2026-01-01 to 2026-01-15,
+# a collapse on 2026-01-14 (2 orders), a spike on 2026-01-15 (40 orders) with dirty 'SHIPPED '
+# values, and an amount column for the metric_column variant.
+statement ok
+CREATE TEMP TABLE daily_orders AS
+SELECT
+    ROW_NUMBER() OVER () AS order_id,
+    d::DATE AS order_date,
+    CASE WHEN d = DATE '2026-01-15' AND r % 3 = 0 THEN 'SHIPPED '
+         WHEN r % 2 = 0 THEN 'shipped'
+         ELSE 'open' END AS status,
+    CAST(r * 3 + day(d) AS DOUBLE) AS amount
+FROM (
+    SELECT d, unnest(range(1, CASE
+        WHEN d = DATE '2026-01-14' THEN 3
+        WHEN d = DATE '2026-01-15' THEN 41
+        ELSE 11 END)) AS r
+    FROM (SELECT unnest(generate_series(DATE '2026-01-01', DATE '2026-01-15', INTERVAL '1 day')) AS d)
+)
+
+# ===--------------------------------------------------------------------===
+# rel_count_change
+# ===--------------------------------------------------------------------===
+
+# one row per day, ordered by date; the range runs past both ends of the data
+query TT
+SELECT reference_date, status
+FROM rel_count_change('daily_orders', 'order_date', NULL, 7, -0.5, 0.5, start_date := DATE '2025-12-31', end_date := DATE '2026-01-02')
+----
+2025-12-31	pass
+2026-01-01	pass
+2026-01-02	pass
+
+query TT
+SELECT reference_date, status
+FROM rel_count_change('daily_orders', 'order_date', start_date := DATE '2026-01-13', end_date := DATE '2026-01-16')
+----
+2026-01-13	pass
+2026-01-14	fail
+2026-01-15	fail
+2026-01-16	fail
+
+# every row equals the single-date call for its date (both directions, all columns)
+statement ok
+CREATE TEMP TABLE rcc_range AS
+SELECT * FROM rel_count_change('daily_orders', 'order_date', 'status', 3, -0.5, 0.5,
+    start_date := DATE '2025-12-31', end_date := DATE '2026-01-02')
+UNION ALL
+SELECT * FROM rel_count_change('daily_orders', 'order_date', 'status', 3, -0.5, 0.5,
+    start_date := DATE '2026-01-13', end_date := DATE '2026-01-16')
+
+statement ok
+CREATE TEMP TABLE rcc_single AS
+SELECT * FROM rel_count_change('daily_orders', 'order_date', 'status', 3, -0.5, 0.5, DATE '2025-12-31')
+UNION ALL SELECT * FROM rel_count_change('daily_orders', 'order_date', 'status', 3, -0.5, 0.5, DATE '2026-01-01')
+UNION ALL SELECT * FROM rel_count_change('daily_orders', 'order_date', 'status', 3, -0.5, 0.5, DATE '2026-01-02')
+UNION ALL SELECT * FROM rel_count_change('daily_orders', 'order_date', 'status', 3, -0.5, 0.5, DATE '2026-01-13')
+UNION ALL SELECT * FROM rel_count_change('daily_orders', 'order_date', 'status', 3, -0.5, 0.5, DATE '2026-01-14')
+UNION ALL SELECT * FROM rel_count_change('daily_orders', 'order_date', 'status', 3, -0.5, 0.5, DATE '2026-01-15')
+UNION ALL SELECT * FROM rel_count_change('daily_orders', 'order_date', 'status', 3, -0.5, 0.5, DATE '2026-01-16')
+
+query III
+SELECT (SELECT COUNT(*) FROM rcc_range),
+       (SELECT COUNT(*) FROM (SELECT * FROM rcc_range EXCEPT ALL SELECT * FROM rcc_single)),
+       (SELECT COUNT(*) FROM (SELECT * FROM rcc_single EXCEPT ALL SELECT * FROM rcc_range))
+----
+7	0	0
+
+# same columns (names and types) as the single-date form
+query I
+SELECT COUNT(*) FROM (
+    SELECT column_name, column_type FROM (DESCRIBE SELECT * FROM rcc_range)
+    EXCEPT ALL
+    SELECT column_name, column_type FROM (DESCRIBE SELECT * FROM rel_count_change('daily_orders', 'order_date', 'status', 3, -0.5, 0.5, DATE '2026-01-13'))
+)
+----
+0
+
+# primary name takes the same parameters
+query I
+SELECT COUNT(*) FROM anofox_tab_rel_count_change('daily_orders', 'order_date', start_date := DATE '2026-01-01', end_date := DATE '2026-01-15')
+----
+15
+
+# a one-day range equals the single-date call
+query I
+SELECT COUNT(*) FROM (
+    SELECT * FROM rel_count_change('daily_orders', 'order_date', start_date := DATE '2026-01-14', end_date := DATE '2026-01-14')
+    EXCEPT ALL
+    SELECT * FROM rel_count_change('daily_orders', 'order_date', NULL, 7, -0.5, 0.5, DATE '2026-01-14')
+)
+----
+0
+
+# empty table: one trivially passing row per date
+statement ok
+CREATE TEMP TABLE empty_orders_rcc (order_date DATE)
+
+query TT
+SELECT reference_date, status FROM rel_count_change('empty_orders_rcc', 'order_date', start_date := DATE '2026-01-01', end_date := DATE '2026-01-02')
+----
+2026-01-01	pass
+2026-01-02	pass
+
+# ===--------------------------------------------------------------------===
+# metric_anomaly_iqr
+# ===--------------------------------------------------------------------===
+
+query TT
+SELECT reference_date, status
+FROM metric_anomaly_iqr('daily_orders', 'order_date', NULL, 30, 1.5, 'both', start_date := DATE '2026-01-12', end_date := DATE '2026-01-16')
+----
+2026-01-12	pass
+2026-01-13	pass
+2026-01-14	fail
+2026-01-15	fail
+2026-01-16	pass
+
+statement ok
+CREATE TEMP TABLE iqr_range AS
+SELECT * FROM metric_anomaly_iqr('daily_orders', 'order_date', 'amount', 5, 1.0, 'both',
+    start_date := DATE '2025-12-31', end_date := DATE '2026-01-02')
+UNION ALL
+SELECT * FROM metric_anomaly_iqr('daily_orders', 'order_date', 'amount', 5, 1.0, 'both',
+    start_date := DATE '2026-01-13', end_date := DATE '2026-01-16')
+
+statement ok
+CREATE TEMP TABLE iqr_single AS
+SELECT * FROM metric_anomaly_iqr('daily_orders', 'order_date', 'amount', 5, 1.0, 'both', DATE '2025-12-31')
+UNION ALL SELECT * FROM metric_anomaly_iqr('daily_orders', 'order_date', 'amount', 5, 1.0, 'both', DATE '2026-01-01')
+UNION ALL SELECT * FROM metric_anomaly_iqr('daily_orders', 'order_date', 'amount', 5, 1.0, 'both', DATE '2026-01-02')
+UNION ALL SELECT * FROM metric_anomaly_iqr('daily_orders', 'order_date', 'amount', 5, 1.0, 'both', DATE '2026-01-13')
+UNION ALL SELECT * FROM metric_anomaly_iqr('daily_orders', 'order_date', 'amount', 5, 1.0, 'both', DATE '2026-01-14')
+UNION ALL SELECT * FROM metric_anomaly_iqr('daily_orders', 'order_date', 'amount', 5, 1.0, 'both', DATE '2026-01-15')
+UNION ALL SELECT * FROM metric_anomaly_iqr('daily_orders', 'order_date', 'amount', 5, 1.0, 'both', DATE '2026-01-16')
+
+query III
+SELECT (SELECT COUNT(*) FROM iqr_range),
+       (SELECT COUNT(*) FROM (SELECT * FROM iqr_range EXCEPT ALL SELECT * FROM iqr_single)),
+       (SELECT COUNT(*) FROM (SELECT * FROM iqr_single EXCEPT ALL SELECT * FROM iqr_range))
+----
+7	0	0
+
+query I
+SELECT COUNT(*) FROM (
+    SELECT column_name, column_type FROM (DESCRIBE SELECT * FROM iqr_range)
+    EXCEPT ALL
+    SELECT column_name, column_type FROM (DESCRIBE SELECT * FROM metric_anomaly_iqr('daily_orders', 'order_date', 'amount', 5, 1.0, 'both', DATE '2026-01-13'))
+)
+----
+0
+
+# ===--------------------------------------------------------------------===
+# rolling_values_in_set
+# ===--------------------------------------------------------------------===
+
+query TT
+SELECT reference_date, status
+FROM rolling_values_in_set('daily_orders', 'status', ['shipped', 'open'], 'order_date', 2, 1.0, start_date := DATE '2026-01-14', end_date := DATE '2026-01-17')
+----
+2026-01-14	pass
+2026-01-15	fail
+2026-01-16	fail
+2026-01-17	pass
+
+statement ok
+CREATE TEMP TABLE rvs_range AS
+SELECT * FROM rolling_values_in_set('daily_orders', 'status', ['shipped', 'open'], 'order_date', 3, 0.9,
+    start_date := DATE '2025-12-31', end_date := DATE '2026-01-02')
+UNION ALL
+SELECT * FROM rolling_values_in_set('daily_orders', 'status', ['shipped', 'open'], 'order_date', 3, 0.9,
+    start_date := DATE '2026-01-13', end_date := DATE '2026-01-18')
+
+statement ok
+CREATE TEMP TABLE rvs_single AS
+SELECT * FROM rolling_values_in_set('daily_orders', 'status', ['shipped', 'open'], 'order_date', 3, 0.9, DATE '2025-12-31')
+UNION ALL SELECT * FROM rolling_values_in_set('daily_orders', 'status', ['shipped', 'open'], 'order_date', 3, 0.9, DATE '2026-01-01')
+UNION ALL SELECT * FROM rolling_values_in_set('daily_orders', 'status', ['shipped', 'open'], 'order_date', 3, 0.9, DATE '2026-01-02')
+UNION ALL SELECT * FROM rolling_values_in_set('daily_orders', 'status', ['shipped', 'open'], 'order_date', 3, 0.9, DATE '2026-01-13')
+UNION ALL SELECT * FROM rolling_values_in_set('daily_orders', 'status', ['shipped', 'open'], 'order_date', 3, 0.9, DATE '2026-01-14')
+UNION ALL SELECT * FROM rolling_values_in_set('daily_orders', 'status', ['shipped', 'open'], 'order_date', 3, 0.9, DATE '2026-01-15')
+UNION ALL SELECT * FROM rolling_values_in_set('daily_orders', 'status', ['shipped', 'open'], 'order_date', 3, 0.9, DATE '2026-01-16')
+UNION ALL SELECT * FROM rolling_values_in_set('daily_orders', 'status', ['shipped', 'open'], 'order_date', 3, 0.9, DATE '2026-01-17')
+UNION ALL SELECT * FROM rolling_values_in_set('daily_orders', 'status', ['shipped', 'open'], 'order_date', 3, 0.9, DATE '2026-01-18')
+
+query III
+SELECT (SELECT COUNT(*) FROM rvs_range),
+       (SELECT COUNT(*) FROM (SELECT * FROM rvs_range EXCEPT ALL SELECT * FROM rvs_single)),
+       (SELECT COUNT(*) FROM (SELECT * FROM rvs_single EXCEPT ALL SELECT * FROM rvs_range))
+----
+9	0	0
+
+query I
+SELECT COUNT(*) FROM (
+    SELECT column_name, column_type FROM (DESCRIBE SELECT * FROM rvs_range)
+    EXCEPT ALL
+    SELECT column_name, column_type FROM (DESCRIBE SELECT * FROM rolling_values_in_set('daily_orders', 'status', ['shipped', 'open'], 'order_date', 3, 0.9, DATE '2026-01-13'))
+)
+----
+0
+
+# sample violations are the sorted distinct violating values of the window
+query TT
+SELECT reference_date, sample_violations
+FROM rolling_values_in_set('daily_orders', 'status', ['shipped'], 'order_date', 1, 1.0, start_date := DATE '2026-01-15', end_date := DATE '2026-01-15')
+----
+2026-01-15	['SHIPPED ', open]
+
+# ===--------------------------------------------------------------------===
+# Validation
+# ===--------------------------------------------------------------------===
+
+statement error
+SELECT * FROM rel_count_change('daily_orders', 'order_date', start_date := DATE '2026-01-01')
+----
+start_date and end_date must be given together
+
+statement error
+SELECT * FROM metric_anomaly_iqr('daily_orders', 'order_date', end_date := DATE '2026-01-01')
+----
+start_date and end_date must be given together
+
+statement error
+SELECT * FROM rolling_values_in_set('daily_orders', 'status', ['open'], 'order_date', start_date := DATE '2026-01-05', end_date := DATE '2026-01-01')
+----
+start_date must not be after end_date
+
+statement error
+SELECT * FROM rel_count_change('daily_orders', 'order_date', NULL, 7, -0.5, 0.5, DATE '2026-01-03', start_date := DATE '2026-01-01', end_date := DATE '2026-01-02')
+----
+reference_date cannot be combined with start_date/end_date
+
+statement error
+SELECT * FROM metric_anomaly_iqr('daily_orders', 'order_date', NULL, 30, 1.5, 'both', DATE '2026-01-03', start_date := DATE '2026-01-01', end_date := DATE '2026-01-02')
+----
+reference_date cannot be combined with start_date/end_date
+
+statement error
+SELECT * FROM rolling_values_in_set('daily_orders', 'status', ['open'], 'order_date', 7, 1.0, DATE '2026-01-03', start_date := DATE '2026-01-01', end_date := DATE '2026-01-02')
+----
+reference_date cannot be combined with start_date/end_date
+
+statement error
+SELECT * FROM rel_count_change('daily_orders', 'order_date', start_date := NULL, end_date := DATE '2026-01-02')
+----
+start_date and end_date must not be NULL
+
+# an explicit NULL reference_date is the default, not a conflict
+query I
+SELECT COUNT(*) FROM rel_count_change('daily_orders', 'order_date', NULL, 7, -0.5, 0.5, NULL, start_date := DATE '2026-01-01', end_date := DATE '2026-01-03')
+----
+3
