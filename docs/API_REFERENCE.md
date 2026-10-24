@@ -932,7 +932,7 @@ Detect and mask Personally Identifiable Information (PII) in text data. Supports
 - All four entity types use ML-based NER (Named Entity Recognition) with OpenVINO + DistilBERT
 - Model trained on CoNLL-2003 dataset with 92% F1 score
 - OpenVINO is required and installed via vcpkg with AUTO device selection (CPU/GPU/NPU)
-- Model downloads automatically from HuggingFace on first use (~66 MB quantized ONNX)
+- Model downloads automatically from Hugging Face on first use (~66 MB quantized ONNX) into `~/.duckdb/extensions/anofox/ner/<model>/`; `SET anofox_ner_auto_download = false` turns the download off (NER detection is then skipped, NAME falls back to the dictionary)
 - Use `SELECT * FROM anofox_ner_status()` to check NER availability
 - Confidence threshold: 0.7 (70%) for entity acceptance
 - NAME has dictionary fallback if NER unavailable; ORGANIZATION, LOCATION, MISC require NER
@@ -1097,7 +1097,7 @@ anofox_ner_status() → TABLE(onnx_available, model_status, model_path, model_si
 
 **Returns:**
 - `onnx_available` (BOOLEAN): Whether OpenVINO is compiled in (column name kept for backward compatibility)
-- `model_status` (VARCHAR): NOT_LOADED, DOWNLOADING, LOADED, FAILED, or NOT_AVAILABLE
+- `model_status` (VARCHAR): NOT_LOADED, DOWNLOADING, LOADED, FAILED, NOT_AVAILABLE, or NOT_DOWNLOADED (model not on disk and `anofox_ner_auto_download` is false)
 - `model_path` (VARCHAR): Path to ONNX model file (or "N/A")
 - `model_size_mb` (DOUBLE): Model file size in MB (0 if not loaded)
 - `status_message` (VARCHAR): Human-readable status description
@@ -1113,6 +1113,7 @@ SELECT * FROM anofox_ner_status();
 
 | Option | Default | Description |
 |--------|---------|-------------|
+| `anofox_ner_auto_download` | `true` | Download the NER model from Hugging Face on first use when it is not on disk. `false` never downloads: NER detection is skipped (status `NOT_DOWNLOADED`) and NAME falls back to the dictionary. Setting it back to `true` lets the next NER call download the model. |
 | `anofox_ner_model` | `distilbert-en` | NER model to use. Only models with downloadable assets are accepted; the value cannot be changed after the model has been loaded (restart required). |
 | `anofox_ner_device` | `AUTO` | OpenVINO inference device (`AUTO`, `CPU`, `GPU`, `GPU.0`, ...). Takes effect on next model load. |
 | `anofox_ner_cache_size` | `10000` | LRU cache size for NER results (0 disables caching). |

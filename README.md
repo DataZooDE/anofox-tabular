@@ -407,6 +407,7 @@ Detect and mask Personally Identifiable Information (PII) in text data with 17 s
   - Inputs are truncated at the model's 512-token limit; entities beyond that are not detected
   - The built-in tokenizer is ASCII-focused (English model); non-ASCII punctuation is not treated as a word boundary
   - Model selection via `SET anofox_ner_model` (currently `distilbert-en` only) must happen before the model is first loaded
+  - **Network access:** the first NER-based detection downloads the model (~66 MB) from Hugging Face into `~/.duckdb/extensions/anofox/ner/`. This applies to `pii_detect`, `pii_mask`, `pii_scan_table` and `pii_audit_table` unless `anofox_pii_enabled_types` is limited to pattern-based types. Offline, run `SET anofox_ner_auto_download = false` (see [NER Settings](#ner-settings)): NER detection is then skipped (NAME falls back to the dictionary) and nothing is downloaded
 
 **Masking Strategies:**
 - `REDACT` - Replace with [TYPE] label
@@ -1250,6 +1251,21 @@ SET anofox_tab_phonenumber_default_region = 'US';  -- Default region code
 ```
 
 The default region must be a supported 2-letter ISO region code; unknown codes are rejected.
+
+### NER Settings
+
+NER-based PII detection (NAME, ORGANIZATION, LOCATION, MISC) downloads its model from Hugging Face on first use (~66 MB, cached in `~/.duckdb/extensions/anofox/ner/<model>/`).
+
+```sql
+SET anofox_ner_auto_download = false;  -- Never download; skip NER detection when the model is not on disk (default: true)
+SET anofox_ner_model = 'distilbert-en';  -- Must be set before the model is first loaded
+SET anofox_ner_device = 'AUTO';  -- OpenVINO device: AUTO, CPU, GPU, ...
+SET anofox_ner_cache_size = 10000;  -- LRU cache of NER results (0 disables)
+
+SELECT model_status, status_message FROM anofox_ner_status();  -- NOT_DOWNLOADED when the download was skipped
+```
+
+For offline machines, copy `model_quantized.onnx` and `tokenizer.json` from a machine that has them into the same directory.
 
 ### Tracing
 

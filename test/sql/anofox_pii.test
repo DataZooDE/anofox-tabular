@@ -1785,3 +1785,27 @@ SET anofox_pii_default_mask_strategy = 'redact';
 
 statement ok
 SET anofox_pii_enabled_types = '';
+# ============================================================================
+# The NER model download can be turned off (#110)
+# ============================================================================
+
+query I
+SELECT current_setting('anofox_ner_auto_download');
+----
+true
+
+statement ok
+SET anofox_ner_auto_download = false;
+
+query I
+SELECT current_setting('anofox_ner_auto_download');
+----
+false
+
+statement error
+SET anofox_ner_auto_download = NULL;
+----
+anofox_ner_auto_download cannot be NULL
+
+statement ok
+SET anofox_ner_auto_download = true;

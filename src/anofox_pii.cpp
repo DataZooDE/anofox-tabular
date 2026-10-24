@@ -2601,6 +2601,7 @@ void NERStatusFunction(ClientContext &, TableFunctionInput &input, DataChunk &ou
         case NERStatus::LOADED: status_str = "LOADED"; break;
         case NERStatus::FAILED: status_str = "FAILED"; break;
         case NERStatus::NOT_AVAILABLE: status_str = "NOT_AVAILABLE"; break;
+        case NERStatus::NOT_DOWNLOADED: status_str = "NOT_DOWNLOADED"; break;
         default: status_str = "UNKNOWN"; break;
     }
     output.data[1].SetValue(0, Value(status_str));
