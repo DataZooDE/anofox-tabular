@@ -134,3 +134,57 @@ class TestOutlierTree:
         df = pd.DataFrame({"a": list(range(1, 31)), "b": list(range(1, 31))})
         result = anomaly.outlier_tree(conn, df, ["a", "b"], output_mode="summary")
         assert isinstance(result, dict)
+
+
+@pytest.fixture(scope="module")
+def id_table(conn):
+    """Numeric data with a planted outlier and an id that is not the position."""
+    conn.execute(
+        "CREATE OR REPLACE TABLE _anomaly_ids AS "
+        "SELECT 'K' || (1000 - i) AS key, "
+        "       CASE WHEN i = 37 THEN 10000.0 ELSE (i % 5)::DOUBLE END AS x, "
+        "       CASE WHEN i = 37 THEN 10000.0 ELSE ((i % 5) * 2)::DOUBLE END AS y "
+        "FROM range(1, 61) t(i)"
+    )
+    yield "_anomaly_ids"
+    conn.execute("DROP TABLE IF EXISTS _anomaly_ids")
+
+
+class TestIdColumn:
+    def _assert_id_after_row_id(self, result):
+        assert list(result.columns[:2]) == ["row_id", "key"]
+
+    def test_isolation_forest(self, conn, id_table):
+        from anofox import anomaly
+        result = anomaly.isolation_forest(conn, id_table, "x", output_mode="scores", id_column="key")
+        self._assert_id_after_row_id(result)
+        assert result.sort_values("anomaly_score", ascending=False)["key"].iloc[0] == "K963"
+
+    def test_isolation_forest_mv(self, conn, id_table):
+        from anofox import anomaly
+        result = anomaly.isolation_forest_mv(conn, id_table, ["x", "y"], output_mode="scores", id_column="key")
+        self._assert_id_after_row_id(result)
+        assert result.sort_values("anomaly_score", ascending=False)["key"].iloc[0] == "K963"
+
+    def test_dbscan(self, conn, id_table):
+        from anofox import anomaly
+        result = anomaly.dbscan(conn, id_table, "x", output_mode="scores", id_column="key")
+        self._assert_id_after_row_id(result)
+        assert list(result[result["is_anomaly"]]["key"]) == ["K963"]
+
+    def test_dbscan_mv(self, conn, id_table):
+        from anofox import anomaly
+        result = anomaly.dbscan_mv(conn, id_table, ["x", "y"], output_mode="scores", id_column="key")
+        self._assert_id_after_row_id(result)
+        assert list(result[result["is_anomaly"]]["key"]) == ["K963"]
+
+    def test_outlier_tree(self, conn, id_table):
+        from anofox import anomaly
+        result = anomaly.outlier_tree(conn, id_table, ["x", "y"], output_mode="outliers", id_column="key")
+        self._assert_id_after_row_id(result)
+
+    def test_rejected_in_summary_mode(self, conn, id_table):
+        import duckdb
+        from anofox import anomaly
+        with pytest.raises(duckdb.Error, match="id_column requires output_mode"):
+            anomaly.isolation_forest(conn, id_table, "x", output_mode="summary", id_column="key")

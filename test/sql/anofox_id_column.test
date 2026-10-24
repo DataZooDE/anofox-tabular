@@ -1,0 +1,350 @@
+# name: test/sql/anofox_id_column.test
+# description: id_column passes an identifier column through the row-level outputs (#108)
+# group: [anofox_tabular]
+
+require anofox_tabular
+
+statement ok
+LOAD anofox_tabular
+
+statement ok
+SET anofox_tab_trace_enabled = false
+
+# ===--------------------------------------------------------------------===
+# Fixtures
+# ===--------------------------------------------------------------------===
+# pos       insertion position (1..3000)
+# int_id    a permutation of 1..3000 (3001 is prime), so id order differs
+#           from insertion order
+# order_id  VARCHAR form of int_id
+# nid       int_id with some NULL ids (rows are still analyzed)
+# val/val2  features; every row with pos % 10 = 3 has NULL features and is
+#           skipped, so positional numbering of the analyzed rows drifts
+#           away from pos. Planted outliers: pos 1000 in val (int_id 2362),
+#           pos 2000 in val2 (int_id 1723).
+statement ok
+CREATE TABLE idt AS
+SELECT i AS pos,
+  ((i * 7919) % 3001)::INTEGER AS int_id,
+  'ORD-' || lpad(((i * 7919) % 3001)::VARCHAR, 5, '0') AS order_id,
+  CASE WHEN i % 100 = 7 THEN NULL ELSE ((i * 7919) % 3001)::INTEGER END AS nid,
+  CASE WHEN i % 10 = 3 THEN NULL WHEN i = 1000 THEN 10000.0 ELSE 100.0 + (i % 13) END::DOUBLE AS val,
+  CASE WHEN i % 10 = 3 THEN NULL WHEN i = 2000 THEN 9999.0 ELSE 50.0 + (i % 7) END::DOUBLE AS val2,
+  CASE WHEN i % 3 = 0 THEN 'x' ELSE 'y' END AS cat,
+  1.0 + (i % 2) AS w
+FROM range(1, 3001) t(i);
+
+# Table whose columns collide with output column names
+statement ok
+CREATE TABLE idt_clash AS SELECT pos AS row_id, pos AS anomaly_score, val, val AS value FROM idt;
+
+# ===--------------------------------------------------------------------===
+# isolation_forest ('scores')
+# ===--------------------------------------------------------------------===
+
+# Schema: the id column, with its original type, directly after row_id
+query TT
+SELECT column_name, column_type
+FROM (DESCRIBE SELECT * FROM isolation_forest('idt', 'val', 100, 256, 0.05, 'scores', 42, id_column := 'int_id'))
+----
+row_id	BIGINT
+int_id	INTEGER
+value	DOUBLE
+anomaly_score	DOUBLE
+is_anomaly	BOOLEAN
+
+# Without id_column the schema is unchanged
+query T
+SELECT string_agg(column_name, ',')
+FROM (DESCRIBE SELECT * FROM isolation_forest('idt', 'val', 100, 256, 0.05, 'scores', 42))
+----
+row_id,value,anomaly_score,is_anomaly
+
+# The most anomalous row carries its own id
+query T
+SELECT order_id FROM isolation_forest('idt', 'val', 100, 256, 0.05, 'scores', 42, id_column := 'order_id')
+ORDER BY anomaly_score DESC LIMIT 1
+----
+ORD-02362
+
+# Every row: the id belongs to the row whose value is reported (rows with a
+# NULL feature are skipped without shifting the ids)
+query II
+SELECT count(*), count(*) FILTER (WHERE s.value IS DISTINCT FROM t.val)
+FROM isolation_forest('idt', 'val', 100, 256, 0.05, 'scores', 42, id_column := 'int_id') s
+JOIN idt t USING (int_id)
+----
+2700	0
+
+# row_id keeps its meaning (position among the analyzed rows)
+query I
+SELECT count(*) FILTER (WHERE row_id <> pos - (pos + 7) // 10)
+FROM isolation_forest('idt', 'val', 100, 256, 0.05, 'scores', 42, id_column := 'pos')
+----
+0
+
+# NULL ids are passed through; their rows are still scored
+query II
+SELECT count(*), count(*) FILTER (WHERE nid IS NULL)
+FROM isolation_forest('idt', 'val', 100, 256, 0.05, 'scores', 42, id_column := 'nid')
+----
+2700	30
+
+# The anofox_tab_ name takes the parameter too
+query T
+SELECT order_id FROM anofox_tab_isolation_forest('idt', 'val', 100, 256, 0.05, 'scores', 42, id_column := 'order_id')
+ORDER BY anomaly_score DESC LIMIT 1
+----
+ORD-02362
+
+# ===--------------------------------------------------------------------===
+# isolation_forest_mv ('scores'): numeric, mixed (categorical) and weighted paths
+# ===--------------------------------------------------------------------===
+
+query TT
+SELECT column_name, column_type
+FROM (DESCRIBE SELECT * FROM isolation_forest_mv('idt', 'val,val2', 100, 256, 0.05, 'scores', 42, id_column := 'order_id'))
+----
+row_id	BIGINT
+order_id	VARCHAR
+anomaly_score	DOUBLE
+is_anomaly	BOOLEAN
+
+query T
+SELECT order_id FROM isolation_forest_mv('idt', 'val,val2', 100, 256, 0.05, 'scores', 42, id_column := 'order_id')
+ORDER BY anomaly_score DESC LIMIT 2
+----
+ORD-02362
+ORD-01723
+
+query I
+SELECT count(*) FILTER (WHERE row_id <> pos - (pos + 7) // 10)
+FROM isolation_forest_mv('idt', 'val,val2', 100, 256, 0.05, 'scores', 42, id_column := 'pos')
+----
+0
+
+# Mixed-type path (categorical feature); its ranking ties many rows, so the
+# check is on alignment only: each id carries the score of its own row
+query I
+SELECT count(*)
+FROM isolation_forest_mv('idt', 'val,val2,cat', 100, 256, 0.05, 'scores', 42, id_column := 'pos') a
+JOIN isolation_forest_mv('idt', 'val,val2,cat', 100, 256, 0.05, 'scores', 42) b USING (row_id)
+WHERE a.anomaly_score = b.anomaly_score
+----
+2700
+
+query I
+SELECT count(*) FILTER (WHERE row_id <> pos - (pos + 7) // 10)
+FROM isolation_forest_mv('idt', 'val,val2,cat', 100, 256, 0.05, 'scores', 42, id_column := 'pos')
+----
+0
+
+# Weighted path (the weight column is read in the same query)
+query I
+SELECT count(*) FILTER (WHERE row_id <> pos - (pos + 7) // 10)
+FROM isolation_forest_mv('idt', 'val,val2', 100, 256, 0.05, 'scores', 42, 1, 'uniform', 'depth', 'w', id_column := 'pos')
+----
+0
+
+query T
+SELECT order_id FROM anofox_tab_isolation_forest_mv('idt', 'val,val2', 100, 256, 0.05, 'scores', 42, id_column := 'order_id')
+ORDER BY anomaly_score DESC LIMIT 1
+----
+ORD-02362
+
+# ===--------------------------------------------------------------------===
+# dbscan / dbscan_mv ('clusters')
+# ===--------------------------------------------------------------------===
+
+query TT
+SELECT column_name, column_type
+FROM (DESCRIBE SELECT * FROM dbscan('idt', 'val', 0.5, 5, 'clusters', id_column := 'order_id'))
+----
+row_id	BIGINT
+order_id	VARCHAR
+value	DOUBLE
+cluster_id	INTEGER
+point_type	VARCHAR
+neighbor_count	BIGINT
+anomaly_score	DOUBLE
+is_anomaly	BOOLEAN
+
+query T
+SELECT order_id FROM dbscan('idt', 'val', 0.5, 5, 'clusters', id_column := 'order_id') WHERE is_anomaly
+----
+ORD-02362
+
+query II
+SELECT count(*), count(*) FILTER (WHERE s.value IS DISTINCT FROM t.val)
+FROM dbscan('idt', 'val', 0.5, 5, 'clusters', id_column := 'int_id') s
+JOIN idt t USING (int_id)
+----
+2700	0
+
+query T
+SELECT order_id FROM dbscan_mv('idt', 'val,val2', 0.5, 5, 'clusters', id_column := 'order_id') WHERE is_anomaly
+ORDER BY order_id
+----
+ORD-01723
+ORD-02362
+
+query I
+SELECT count(*) FILTER (WHERE row_id <> pos - (pos + 7) // 10)
+FROM anofox_tab_dbscan_mv('idt', 'val,val2', 0.5, 5, 'clusters', id_column := 'pos')
+----
+0
+
+query T
+SELECT order_id FROM anofox_tab_dbscan('idt', 'val', 0.5, 5, 'clusters', id_column := 'order_id') WHERE is_anomaly
+----
+ORD-02362
+
+# ===--------------------------------------------------------------------===
+# outlier_tree ('outliers')
+# ===--------------------------------------------------------------------===
+
+# pin_ot shape (anofox_streaming_pin.test) plus NULL rows: pos 1500
+# (int_id 542) is an outlier in both columns
+statement ok
+CREATE TABLE idt_ot AS
+SELECT i AS pos,
+  ((i * 7919) % 3001)::INTEGER AS int_id,
+  'ORD-' || lpad(((i * 7919) % 3001)::VARCHAR, 5, '0') AS order_id,
+  CASE WHEN i % 10 = 3 THEN NULL WHEN i % 2 = 0 THEN 'A' ELSE 'B' END AS grp,
+  CASE WHEN i = 1500 THEN 100000.0
+       WHEN i % 2 = 0 THEN 100.0 + (i % 7)
+       ELSE 500.0 + (i % 11) END::DOUBLE AS val
+FROM range(1, 3001) t(i);
+
+query TT
+SELECT column_name, column_type
+FROM (DESCRIBE SELECT * FROM outlier_tree('idt_ot', 'grp,val', 'outliers', id_column := 'int_id'))
+LIMIT 3
+----
+row_id	BIGINT
+int_id	INTEGER
+column_name	VARCHAR
+
+# The planted row carries its own id in both findings
+query ITT
+SELECT row_id, order_id, column_name
+FROM outlier_tree('idt_ot', 'grp,val', 'outliers', id_column := 'order_id')
+WHERE row_id = 1500
+ORDER BY column_name
+----
+1500	ORD-00542	grp
+1500	ORD-00542	val
+
+# Every finding: the id belongs to the reported row (row_id is the source
+# position here, NULL rows included), and the value is that row's value
+query II
+SELECT count(*) > 2, count(*) FILTER (WHERE t.pos <> s.row_id OR (s.column_name = 'val' AND s.outlier_value_num <> t.val))
+FROM outlier_tree('idt_ot', 'grp,val', 'outliers', id_column := 'order_id') s
+JOIN idt_ot t USING (order_id)
+----
+true	0
+
+query II
+SELECT row_id, int_id
+FROM anofox_tab_outlier_tree('idt_ot', 'grp,val', 'outliers', 4, 0.01::DOUBLE, 25, 75, 2.67, 8.0, id_column := 'int_id')
+WHERE column_name = 'val' AND row_id = 1500
+----
+1500	542
+
+# ===--------------------------------------------------------------------===
+# pii_audit_table
+# ===--------------------------------------------------------------------===
+
+statement ok
+CREATE TABLE idt_pii AS
+SELECT i AS pos,
+  ((i * 7919) % 3001)::INTEGER AS int_id,
+  CASE WHEN i % 10 = 3 THEN NULL
+       WHEN i % 50 = 0 THEN 'contact user' || ((i * 7919) % 3001) || '@example.com now'
+       ELSE 'clean text' END AS notes
+FROM range(1, 3001) t(i);
+
+query TT
+SELECT column_name, column_type
+FROM (DESCRIBE SELECT * FROM pii_audit_table('idt_pii', id_column := 'int_id'))
+LIMIT 3
+----
+row_id	BIGINT
+int_id	INTEGER
+column_name	VARCHAR
+
+# Every match carries the id of the row it was found in
+query II
+SELECT count(*), count(*) FILTER (WHERE original_value <> 'contact user' || int_id || '@example.com now')
+FROM pii_audit_table('idt_pii', 'notes', id_column := 'int_id')
+WHERE pii_type = 'EMAIL'
+----
+60	0
+
+query I
+SELECT count(*) FILTER (WHERE row_id <> pos)
+FROM anofox_tab_pii_audit_table('idt_pii', id_column := 'pos')
+----
+0
+
+# ===--------------------------------------------------------------------===
+# Errors
+# ===--------------------------------------------------------------------===
+
+# Unknown column: the error names it
+statement error
+SELECT * FROM isolation_forest('idt', 'val', 100, 256, 0.05, 'scores', 42, id_column := 'no_such_col')
+----
+id_column 'no_such_col' not found
+
+statement error
+SELECT * FROM dbscan_mv('idt', 'val,val2', 0.5, 5, 'clusters', id_column := 'no_such_col')
+----
+id_column 'no_such_col' not found
+
+statement error
+SELECT * FROM outlier_tree('idt_ot', 'grp,val', 'outliers', id_column := 'no_such_col')
+----
+id_column 'no_such_col' not found
+
+statement error
+SELECT * FROM pii_audit_table('idt_pii', id_column := 'no_such_col')
+----
+id_column 'no_such_col' not found
+
+# id_column with a summary output mode
+statement error
+SELECT * FROM isolation_forest('idt', 'val', 100, 256, 0.05, 'summary', 42, id_column := 'int_id')
+----
+id_column requires output_mode 'scores'
+
+statement error
+SELECT * FROM isolation_forest_mv('idt', 'val,val2', id_column := 'int_id')
+----
+id_column requires output_mode 'scores'
+
+statement error
+SELECT * FROM dbscan('idt', 'val', 0.5, 5, 'summary', id_column := 'int_id')
+----
+id_column requires output_mode 'clusters'
+
+statement error
+SELECT * FROM outlier_tree('idt_ot', 'grp,val', 'summary', id_column := 'int_id')
+----
+id_column requires output_mode 'outliers'
+
+# Name collision with an output column
+statement error
+SELECT * FROM isolation_forest('idt_clash', 'val', 100, 256, 0.05, 'scores', 42, id_column := 'row_id')
+----
+collides with output column
+
+statement error
+SELECT * FROM isolation_forest_mv('idt_clash', 'val', 100, 256, 0.05, 'scores', 42, id_column := 'anomaly_score')
+----
+collides with output column
+
+statement error
+SELECT * FROM dbscan('idt_clash', 'val', 0.5, 5, 'clusters', id_column := 'value')
+----
+collides with output column

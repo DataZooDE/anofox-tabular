@@ -117,3 +117,19 @@ class TestPiiScanTable:
         result = pii.pii_scan_table(conn, text_table)
         # Should have some meaningful columns (column_name, pii_type, etc.)
         assert len(result.columns) > 0
+
+
+class TestPiiAuditTable:
+    def test_returns_dataframe(self, conn, text_table):
+        import pandas as pd
+        from anofox import pii
+        result = pii.pii_audit_table(conn, text_table)
+        assert isinstance(result, pd.DataFrame)
+        assert "id" not in result.columns
+
+    def test_id_column_passed_through(self, conn, text_table):
+        from anofox import pii
+        result = pii.pii_audit_table(conn, text_table, columns=["text"], id_column="id")
+        assert list(result.columns[:2]) == ["row_id", "id"]
+        # Only row 1 contains PII
+        assert set(result["id"]) == {1}

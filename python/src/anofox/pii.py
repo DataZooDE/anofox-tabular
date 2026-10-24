@@ -141,6 +141,7 @@ def pii_audit_table(
     conn: Any,
     table_name: str,
     columns: Optional[list[str]] = None,
+    id_column: Optional[str] = None,
 ) -> Any:
     """
     Audit a table for PII, returning row-level detail.
@@ -153,17 +154,21 @@ def pii_audit_table(
         Name of the DuckDB table or view.
     columns:
         Specific columns to audit.
+    id_column:
+        Optional identifier column whose value is added to every audit row,
+        directly after ``row_id``.
 
     Returns
     -------
     pd.DataFrame
         Row-level PII audit with original/masked values.
     """
+    id_arg = f", id_column := '{_escape(id_column)}'" if id_column is not None else ""
     if columns is not None:
         cols_csv = ",".join(columns)
-        query = f"SELECT * FROM anofox_tab_pii_audit_table('{table_name}', '{cols_csv}')"
+        query = f"SELECT * FROM anofox_tab_pii_audit_table('{table_name}', '{cols_csv}'{id_arg})"
     else:
-        query = f"SELECT * FROM anofox_tab_pii_audit_table('{table_name}')"
+        query = f"SELECT * FROM anofox_tab_pii_audit_table('{table_name}'{id_arg})"
 
     rel = conn.native.sql(query)
     return rel.df()

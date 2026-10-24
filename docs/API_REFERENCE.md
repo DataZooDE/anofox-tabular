@@ -1173,16 +1173,18 @@ Row-level PII audit with masking for detailed inspection.
 
 **Signature:**
 ```sql
-pii_audit_table(table_name VARCHAR [, columns VARCHAR])
-  → TABLE(row_id, column_name, pii_type, original_value, masked_value, start_pos, end_pos, confidence)
+pii_audit_table(table_name VARCHAR [, columns VARCHAR] [, id_column := VARCHAR])
+  → TABLE(row_id, [<id_column>,] column_name, pii_type, original_value, masked_value, start_pos, end_pos, confidence)
 ```
 
 **Parameters:**
 - `table_name`: Name of table to audit
 - `columns`: Optional comma-separated column names (audits all VARCHAR if omitted)
+- `id_column` (named, optional): Identifier column passed through to every output row (see [Identifier pass-through](#identifier-pass-through-id_column))
 
 **Returns:**
 - `row_id` (BIGINT): Row number in the table
+- `<id_column>` (the column's own type, only with `id_column`): The row's identifier
 - `column_name` (VARCHAR): Column containing PII
 - `pii_type` (VARCHAR): Type of PII detected
 - `original_value` (VARCHAR): Original text value
@@ -1194,6 +1196,10 @@ pii_audit_table(table_name VARCHAR [, columns VARCHAR])
 **Example:**
 ```sql
 SELECT * FROM pii_audit_table('customer_data') WHERE pii_type = 'US_SSN';
+
+-- Keep the customer key with every finding
+SELECT customer_id, column_name, pii_type
+FROM pii_audit_table('customer_data', id_column := 'customer_id');
 ```
 
 ---
@@ -1897,6 +1903,7 @@ isolation_forest(
     [, contamination DOUBLE    -- 0.0-0.5, default 0.1
     [, output_mode VARCHAR     -- 'summary' (default) or 'scores'
     [, seed BIGINT ]]]]]       -- fixed seed for reproducible scores; NULL = random
+    [, id_column := VARCHAR]   -- named; 'scores' mode only, see Identifier pass-through
 ) → TABLE
 ```
 
@@ -1904,7 +1911,7 @@ Trailing parameters are optional and positional. The Extended IF, SCiForest, wei
 scoring options are only available on `isolation_forest_mv` (which also accepts a single column).
 
 **Returns:**
-- `'scores'`: one row per input row: `row_id`, `value`, `anomaly_score`, `is_anomaly`
+- `'scores'`: one row per input row: `row_id`, [`<id_column>`,] `value`, `anomaly_score`, `is_anomaly`
 - `'summary'`: one row: `status`, `outlier_count`, `total_count`, `avg_value`, `contamination`,
   `n_trees`, `message`
 
@@ -1916,6 +1923,11 @@ WHERE is_anomaly;
 
 -- Reproducible scores
 SELECT * FROM isolation_forest('sales_data', 'amount', 100, 256, 0.1, 'scores', 42);
+
+-- Keep each row's key next to its score
+SELECT order_id, anomaly_score
+FROM isolation_forest('sales_data', 'amount', 100, 256, 0.1, 'scores', id_column := 'order_id')
+WHERE is_anomaly;
 
 -- One summary row
 SELECT status, outlier_count, message FROM isolation_forest('sales_data', 'amount');
@@ -1944,13 +1956,14 @@ isolation_forest_mv(
     [, weight_column VARCHAR   -- column of sample weights; NULL = uniform
     [, ntry BIGINT             -- >= 1, default 1; > 1 = SCiForest split candidates
     [, prob_pick_avg_gain DOUBLE ]]]]]]]]]]]  -- 0.0-1.0, default 0.0
+    [, id_column := VARCHAR]   -- named; 'scores' mode only, see Identifier pass-through
 ) → TABLE
 ```
 
 Pass `NULL` to keep a default while setting a later parameter.
 
 **Returns:**
-- `'scores'`: one row per input row: `row_id`, `anomaly_score`, `is_anomaly`
+- `'scores'`: one row per input row: `row_id`, [`<id_column>`,] `anomaly_score`, `is_anomaly`
 - `'summary'`: one row: `status`, `outlier_count`, `total_count`, `n_columns`, `contamination`,
   `n_trees`, `message`
 
@@ -1998,6 +2011,7 @@ anofox_tab_dbscan(
     eps DOUBLE,          -- optional, default 0.5
     min_pts BIGINT,      -- optional, default 5
     output_mode VARCHAR  -- optional, default 'summary'
+    [, id_column := VARCHAR]  -- named; 'clusters' mode only, see Identifier pass-through
 ) → TABLE
 ```
 
@@ -2010,7 +2024,7 @@ All parameters after `column_name` are optional.
 
 **Returns:**
 - `'summary'`: one row with `status` (`fail` when noise points exist), `cluster_count`, `noise_count`, `total_count`, `noise_rate`, `largest_cluster_size`, `eps`, `min_pts`, `message`
-- `'clusters'`: one row per non-NULL input row with `row_id`, `value`, `cluster_id` (`-1` = noise), `point_type`, `neighbor_count`, `anomaly_score`, `is_anomaly`
+- `'clusters'`: one row per non-NULL input row with `row_id`, [`<id_column>`,] `value`, `cluster_id` (`-1` = noise), `point_type`, `neighbor_count`, `anomaly_score`, `is_anomaly`
 - `point_type`: `'CORE'` (dense region), `'BORDER'` (cluster edge), or `'NOISE'` (outlier)
 
 **Example:**
@@ -2034,6 +2048,7 @@ anofox_tab_dbscan_mv(
     eps DOUBLE,          -- optional, default 0.5
     min_pts BIGINT,      -- optional, default 5
     output_mode VARCHAR  -- optional, default 'summary'
+    [, id_column := VARCHAR]  -- named; 'clusters' mode only, see Identifier pass-through
 ) → TABLE
 ```
 
@@ -2042,7 +2057,40 @@ anofox_tab_dbscan_mv(
 
 **Returns:**
 - `'summary'`: same columns as `anofox_tab_dbscan` plus `n_columns` (no `value` column in `'clusters'` mode)
-- `'clusters'`: one row per non-NULL input row with `row_id`, `cluster_id`, `point_type`, `neighbor_count`, `anomaly_score`, `is_anomaly`
+- `'clusters'`: one row per non-NULL input row with `row_id`, [`<id_column>`,] `cluster_id`, `point_type`, `neighbor_count`, `anomaly_score`, `is_anomaly`
+
+---
+
+### Identifier pass-through (`id_column`)
+
+The row-level outputs identify rows by `row_id`, a position that depends on the input order. The
+optional named parameter `id_column := '<column>'` adds the value of an input column to every
+output row, so results join back to the input by key instead of by position:
+
+| Function | Row-level mode |
+|----------|----------------|
+| `isolation_forest`, `isolation_forest_mv` | `'scores'` |
+| `dbscan`, `dbscan_mv` | `'clusters'` |
+| `outlier_tree` | `'outliers'` |
+| `pii_audit_table` | always |
+
+- The column is inserted directly after `row_id`, under the input column's name and with its type;
+  `row_id` keeps its meaning. Without `id_column` the output schema is unchanged.
+- The id is read in the same pass as the analyzed values, so it always belongs to the row the
+  result describes; rows skipped because a feature is NULL are skipped together with their id.
+- NULL ids are passed through; they never exclude a row.
+- Bind errors: a column the table does not have (`id_column 'x' not found in table 't'`), a
+  non-row-level `output_mode` (`id_column requires output_mode 'scores'`), and a name that collides
+  with an output column (e.g. an input column called `anomaly_score`; alias it in a view first).
+- Both the `anofox_tab_*` names and the short aliases accept it.
+
+```sql
+SELECT s.order_id, s.anomaly_score, o.customer
+FROM isolation_forest_mv('orders', 'amount,quantity', 100, 256, 0.05, 'scores', 42,
+                         id_column := 'order_id') s
+JOIN orders o USING (order_id)
+WHERE s.is_anomaly;
+```
 
 ---
 
@@ -2077,6 +2125,8 @@ outlier_tree(
     z_norm DOUBLE,
     z_outlier DOUBLE
 ) → TABLE
+
+-- Both forms take the named parameter id_column := VARCHAR ('outliers' mode only)
 ```
 
 **Parameters:**
@@ -2091,6 +2141,7 @@ outlier_tree(
 | `min_size_categ` | INTEGER | 75 | Min cluster size for categorical targets |
 | `z_norm` | DOUBLE | 2.67 | Z-threshold for confidence intervals |
 | `z_outlier` | DOUBLE | 8.0 | Z-threshold for outlier flagging |
+| `id_column` (named) | VARCHAR | — | Identifier column passed through after `row_id` (`'outliers'` mode only, see [Identifier pass-through](#identifier-pass-through-id_column)) |
 
 **Summary Mode Returns:**
 | Column | Type | Description |
@@ -2107,6 +2158,7 @@ outlier_tree(
 | Column | Type | Description |
 |--------|------|-------------|
 | `row_id` | BIGINT | Row index (1-indexed) |
+| `<id_column>` | the column's type | The row's identifier (only with `id_column`) |
 | `column_name` | VARCHAR | Column with outlier |
 | `outlier_value` | VARCHAR | The anomalous value, as text (numeric and categorical columns) |
 | `outlier_value_num` | DOUBLE | The anomalous value as a number for numeric columns, without the precision loss of the text form; NULL for categorical columns |

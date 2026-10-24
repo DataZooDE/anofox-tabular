@@ -21,6 +21,7 @@ def isolation_forest(
     n_trees: int = 100,
     sample_size: Optional[int] = None,
     contamination: float = 0.1,
+    id_column: Optional[str] = None,
 ) -> Union[dict, Any]:
     """
     Run Isolation Forest on a single numeric column.
@@ -42,6 +43,10 @@ def isolation_forest(
         Sub-sample size per tree.  When ``None`` the extension default is used.
     contamination:
         Expected fraction of anomalies (default 0.1).
+    id_column:
+        Optional identifier column of the input whose value is added to the
+        per-row output, directly after ``row_id``. Only valid with
+        ``output_mode="scores"``.
 
     Returns
     -------
@@ -52,7 +57,8 @@ def isolation_forest(
         actual_sample_size = sample_size if sample_size is not None else 256
         query = (
             f"SELECT * FROM anofox_tab_isolation_forest("
-            f"'{table_name}', '{column}', {n_trees}, {actual_sample_size}, {contamination}, '{output_mode}')"
+            f"'{table_name}', '{column}', {n_trees}, {actual_sample_size}, {contamination}, '{output_mode}'"
+            f"{_id_column_arg(id_column)})"
         )
         return _execute_anomaly(conn, query, output_mode)
     finally:
@@ -67,6 +73,7 @@ def isolation_forest_mv(
     n_trees: int = 100,
     sample_size: Optional[int] = None,
     contamination: float = 0.1,
+    id_column: Optional[str] = None,
 ) -> Union[dict, Any]:
     """
     Run multivariate Isolation Forest across multiple numeric columns.
@@ -87,6 +94,10 @@ def isolation_forest_mv(
         Sub-sample size per tree.
     contamination:
         Expected fraction of anomalies (default 0.1).
+    id_column:
+        Optional identifier column of the input whose value is added to the
+        per-row output, directly after ``row_id``. Only valid with
+        ``output_mode="scores"``.
     """
     table_name, registered = resolve_table(conn, table_or_df)
     cols_csv = ",".join(columns)
@@ -94,7 +105,8 @@ def isolation_forest_mv(
         actual_sample_size = sample_size if sample_size is not None else 256
         query = (
             f"SELECT * FROM anofox_tab_isolation_forest_mv("
-            f"'{table_name}', '{cols_csv}', {n_trees}, {actual_sample_size}, {contamination}, '{output_mode}')"
+            f"'{table_name}', '{cols_csv}', {n_trees}, {actual_sample_size}, {contamination}, '{output_mode}'"
+            f"{_id_column_arg(id_column)})"
         )
         return _execute_anomaly(conn, query, output_mode)
     finally:
@@ -108,6 +120,7 @@ def dbscan(
     output_mode: str = "summary",
     epsilon: float = 0.5,
     min_points: int = 5,
+    id_column: Optional[str] = None,
 ) -> Union[dict, Any]:
     """
     Run DBSCAN clustering on a single numeric column.
@@ -127,6 +140,10 @@ def dbscan(
         Neighbourhood radius ε (default 0.5).
     min_points:
         Minimum cluster size (default 5).
+    id_column:
+        Optional identifier column of the input whose value is added to the
+        per-row output, directly after ``row_id``. Only valid with
+        ``output_mode="scores"``/``"clusters"``.
     """
     table_name, registered = resolve_table(conn, table_or_df)
     # The extension's per-row DBSCAN mode is named 'clusters'; keep the
@@ -135,7 +152,8 @@ def dbscan(
     try:
         query = (
             f"SELECT * FROM anofox_tab_dbscan("
-            f"'{table_name}', '{column}', {epsilon}, {min_points}, '{sql_mode}')"
+            f"'{table_name}', '{column}', {epsilon}, {min_points}, '{sql_mode}'"
+            f"{_id_column_arg(id_column)})"
         )
         return _execute_anomaly(conn, query, output_mode)
     finally:
@@ -149,6 +167,7 @@ def dbscan_mv(
     output_mode: str = "summary",
     epsilon: float = 0.5,
     min_points: int = 5,
+    id_column: Optional[str] = None,
 ) -> Union[dict, Any]:
     """
     Run multivariate DBSCAN across multiple numeric columns.
@@ -168,6 +187,10 @@ def dbscan_mv(
         Neighbourhood radius ε (default 0.5).
     min_points:
         Minimum cluster size (default 5).
+    id_column:
+        Optional identifier column of the input whose value is added to the
+        per-row output, directly after ``row_id``. Only valid with
+        ``output_mode="scores"``/``"clusters"``.
     """
     table_name, registered = resolve_table(conn, table_or_df)
     cols_csv = ",".join(columns)
@@ -175,7 +198,8 @@ def dbscan_mv(
     try:
         query = (
             f"SELECT * FROM anofox_tab_dbscan_mv("
-            f"'{table_name}', '{cols_csv}', {epsilon}, {min_points}, '{sql_mode}')"
+            f"'{table_name}', '{cols_csv}', {epsilon}, {min_points}, '{sql_mode}'"
+            f"{_id_column_arg(id_column)})"
         )
         return _execute_anomaly(conn, query, output_mode)
     finally:
@@ -193,6 +217,7 @@ def outlier_tree(
     min_size_categ: int = 10,
     z_norm: float = 2.67,
     z_outlier: float = 8.0,
+    id_column: Optional[str] = None,
 ) -> Union[dict, Any]:
     """
     Run Outlier Tree on one or more columns (explainable anomaly detection).
@@ -220,6 +245,10 @@ def outlier_tree(
         Z-score threshold for normal data (default 2.67).
     z_outlier:
         Z-score threshold for outliers (default 8.0).
+    id_column:
+        Optional identifier column of the input whose value is added to the
+        per-row output, directly after ``row_id``. Only valid with
+        ``output_mode="outliers"``.
 
     Returns
     -------
@@ -235,11 +264,20 @@ def outlier_tree(
             f"SELECT * FROM anofox_tab_outlier_tree("
             f"'{table_name}', '{cols_csv}', '{output_mode}', "
             f"{max_depth}, {max_perc_outliers}, {min_size_numeric}, "
-            f"{min_size_categ}, {z_norm}, {z_outlier})"
+            f"{min_size_categ}, {z_norm}, {z_outlier}"
+            f"{_id_column_arg(id_column)})"
         )
         return _execute_anomaly(conn, query, output_mode)
     finally:
         cleanup_table(conn, table_name, registered)
+
+
+def _id_column_arg(id_column: Optional[str]) -> str:
+    """The ``id_column := '...'`` named argument, or ``""`` when not requested."""
+    if id_column is None:
+        return ""
+    escaped = id_column.replace("'", "''")
+    return f", id_column := '{escaped}'"
 
 
 def _execute_anomaly(conn: Any, query: str, output_mode: str) -> Union[dict, Any]:

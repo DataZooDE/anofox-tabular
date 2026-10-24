@@ -653,6 +653,7 @@ FROM outlier_tree('employees', 'job_title,salary,years_exp', 'outliers');
 **Semantics:**
 - Rows containing NULL in any selected column are excluded from the analysis
 - `row_id` is the 1-based position of the row in the source table (NULL rows still count toward the position)
+- `id_column := '<column>'` (`'outliers'` mode) adds that column's value after `row_id`, see [Identifier pass-through](#anomaly-detection-functions)
 - `total_rows` (summary mode) is the number of analyzed rows, i.e. rows that are non-NULL in every selected column
 
 ---
@@ -1043,7 +1044,7 @@ All other countries are validated by syntax only. French VAT keys containing let
 | Function | Signature | Returns | Description |
 |----------|-----------|---------|-------------|
 | `anofox_tab_pii_scan_table` | `(table VARCHAR [, columns VARCHAR])` | TABLE | Scan table columns for PII |
-| `anofox_tab_pii_audit_table` | `(table VARCHAR [, columns VARCHAR])` | TABLE | Row-level PII audit with masking |
+| `anofox_tab_pii_audit_table` | `(table VARCHAR [, columns VARCHAR] [, id_column := VARCHAR])` | TABLE | Row-level PII audit with masking; `id_column` passes an identifier column through |
 | `anofox_tab_pii_status` | `()` | TABLE | List supported PII types and recognizers |
 | `anofox_tab_pii_config` | `()` | TABLE | Current PII configuration |
 
@@ -1170,6 +1171,22 @@ All parameters after `column_name` are optional; `dbscan('orders', 'amount')` us
 **DBSCAN Output:**
 - `'summary'` (one row): `status` (`fail` when noise points exist, else `pass`), `cluster_count`, `noise_count`, `total_count`, `noise_rate`, `largest_cluster_size`, `eps`, `min_pts`, `n_columns` (`dbscan_mv` only), `message`
 - `'clusters'` (one row per non-NULL input row): `row_id`, `value` (univariate only), `cluster_id` (`-1` = noise), `point_type` (`'CORE'`, `'BORDER'`, `'NOISE'`), `neighbor_count`, `anomaly_score` (noise = 1.0), `is_anomaly`
+
+**Identifier pass-through (`id_column`):**
+
+The row-level outputs (`isolation_forest`/`isolation_forest_mv` in `'scores'` mode, `dbscan`/`dbscan_mv` in `'clusters'` mode, `outlier_tree` in `'outliers'` mode, and `pii_audit_table`) take an optional named parameter `id_column := '<column>'`. The value of that column is added to every output row, directly after `row_id`, under the column's own name and type, so results join back to the input without relying on row order. `row_id` is kept unchanged; without `id_column` the output schema is unchanged.
+
+```sql
+-- Score every order and keep its key
+SELECT order_id, anomaly_score
+FROM isolation_forest('orders', 'amount', 100, 256, 0.05, 'scores', id_column := 'order_id')
+WHERE is_anomaly;
+-- row_id | order_id | value | anomaly_score | is_anomaly
+```
+
+- The id is read in the same pass as the analyzed values, so it always belongs to the scored row; rows skipped for NULL features are skipped together with their id
+- NULL ids are passed through (the row is still analyzed)
+- Errors: an unknown column, a non-row-level `output_mode` (e.g. `'summary'`), or a name that collides with an output column (e.g. an input column named `anomaly_score`)
 
 ### Data Diffing Functions
 

@@ -183,6 +183,7 @@ set(EXTENSION_SOURCES
         src/anofox_contract.cpp
         src/anofox_profile.cpp
         src/anofox_sql_utils.cpp
+        src/anofox_id_column.cpp
         src/anofox_isolation_forest.cpp
         src/anofox_dbscan.cpp
         src/anofox_outlier_tree.cpp
