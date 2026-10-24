@@ -1,0 +1,235 @@
+# name: test/sql/anofox_diff_named_params.test
+# description: diff_joindiff / diff_hashdiff named parameters (:=) take effect;
+#              positional values come first, a named value overrides them (issue #113)
+# group: [anofox_tabular]
+
+require anofox_tabular
+
+statement ok
+LOAD anofox_tabular;
+
+statement ok
+CREATE TABLE np_src (id INTEGER, k2 VARCHAR, name VARCHAR, value INTEGER);
+
+statement ok
+CREATE TABLE np_tgt (id INTEGER, k2 VARCHAR, name VARCHAR, value INTEGER);
+
+# A decoy table: overriding a positional table name must switch away from it
+statement ok
+CREATE TABLE np_decoy (id INTEGER, k2 VARCHAR, name VARCHAR, value INTEGER);
+
+statement ok
+INSERT INTO np_src VALUES (1, 'a', 'Alice', 100), (2, 'a', 'Bob', 200), (3, 'a', 'Carol', 300);
+
+statement ok
+INSERT INTO np_tgt VALUES (1, 'a', 'Alice', 100), (2, 'a', 'Bob', 250), (4, 'a', 'David', 400);
+
+statement ok
+INSERT INTO np_decoy VALUES (1, 'a', 'Alice', 100), (2, 'a', 'Bob', 250), (4, 'a', 'David', 400);
+
+#############################
+# diff_joindiff: every parameter by name
+#############################
+
+# All parameters by name, single key
+query II rowsort
+SELECT diff_type, id FROM diff_joindiff(source_table := 'np_src', target_table := 'np_tgt', primary_key := 'id');
+----
+added	4
+changed	2
+removed	3
+
+# All parameters by name, compound key
+query III rowsort
+SELECT diff_type, id, k2 FROM diff_joindiff(source_table := 'np_src', target_table := 'np_tgt',
+                                            primary_keys := ['id', 'k2']);
+----
+added	4	a
+changed	2	a
+removed	3	a
+
+# All five parameters by name
+query II rowsort
+SELECT diff_type, id FROM diff_joindiff(source_table := 'np_src', target_table := 'np_tgt', primary_key := 'id',
+                                        compare_columns := ['name'], include_all := true);
+----
+added	4
+removed	3
+unchanged	1
+unchanged	2
+
+# Tables positional, key by name
+query II rowsort
+SELECT diff_type, id FROM diff_joindiff('np_src', 'np_tgt', primary_key := 'id');
+----
+added	4
+changed	2
+removed	3
+
+# include_all := true adds the unchanged rows ...
+query II rowsort
+SELECT diff_type, id FROM diff_joindiff('np_src', 'np_tgt', 'id', include_all := true);
+----
+added	4
+changed	2
+removed	3
+unchanged	1
+
+# ... include_all := false does not
+query II rowsort
+SELECT diff_type, id FROM diff_joindiff('np_src', 'np_tgt', 'id', include_all := false);
+----
+added	4
+changed	2
+removed	3
+
+# compare_columns := ['name'] ignores the value change of id 2
+query II rowsort
+SELECT diff_type, id FROM diff_joindiff('np_src', 'np_tgt', 'id', compare_columns := ['name']);
+----
+added	4
+removed	3
+
+# compare_columns by name on the compound-key overload
+query III rowsort
+SELECT diff_type, id, k2 FROM diff_joindiff('np_src', 'np_tgt', ['id', 'k2'], compare_columns := ['name'],
+                                            include_all := true);
+----
+added	4	a
+removed	3	a
+unchanged	1	a
+unchanged	2	a
+
+# A named value overrides the positional one
+query II rowsort
+SELECT diff_type, id FROM diff_joindiff('np_decoy', 'np_tgt', 'id', source_table := 'np_src');
+----
+added	4
+changed	2
+removed	3
+
+query II rowsort
+SELECT diff_type, id FROM diff_joindiff('np_src', 'np_decoy', 'id', target_table := 'np_src');
+----
+
+query II rowsort
+SELECT diff_type, id FROM diff_joindiff('np_src', 'np_tgt', 'name', primary_key := 'id');
+----
+added	4
+changed	2
+removed	3
+
+query III rowsort
+SELECT diff_type, id, k2 FROM diff_joindiff('np_src', 'np_tgt', ['name'], primary_keys := ['id', 'k2']);
+----
+added	4	a
+changed	2	a
+removed	3	a
+
+query II rowsort
+SELECT diff_type, id FROM diff_joindiff('np_src', 'np_tgt', 'id', ['value'], compare_columns := ['name']);
+----
+added	4
+removed	3
+
+query II rowsort
+SELECT diff_type, id FROM diff_joindiff('np_src', 'np_tgt', 'id', ['value'], false, include_all := true);
+----
+added	4
+changed	2
+removed	3
+unchanged	1
+
+# Named values are validated like positional ones
+statement error
+SELECT * FROM diff_joindiff('np_src', 'np_tgt', primary_key := 'missing_pk');
+----
+Primary key column 'missing_pk' not found
+
+statement error
+SELECT * FROM diff_joindiff('np_src', 'np_tgt', 'id', compare_columns := ['no_such_col']);
+----
+Compare column 'no_such_col' not found
+
+# Missing required parameters
+statement error
+SELECT * FROM diff_joindiff(target_table := 'np_tgt', primary_key := 'id');
+----
+source_table
+
+statement error
+SELECT * FROM diff_joindiff('np_src', 'np_tgt');
+----
+primary_key
+
+# primary_key and primary_keys are the same parameter: passing both is ambiguous
+statement error
+SELECT * FROM diff_joindiff('np_src', 'np_tgt', primary_key := 'id', primary_keys := ['id', 'k2']);
+----
+primary_key
+
+# Unknown named parameters are binder errors
+statement error
+SELECT * FROM diff_joindiff('np_src', 'np_tgt', 'id', bisection_threshold := 10);
+----
+bisection_threshold
+
+#############################
+# diff_hashdiff: every parameter by name
+#############################
+
+query II rowsort
+SELECT diff_type, id FROM diff_hashdiff(source_table := 'np_src', target_table := 'np_tgt', primary_key := 'id');
+----
+added	4
+changed	2
+removed	3
+
+query III rowsort
+SELECT diff_type, id, k2 FROM diff_hashdiff(source_table := 'np_src', target_table := 'np_tgt',
+                                            primary_keys := ['id', 'k2']);
+----
+added	4	a
+changed	2	a
+removed	3	a
+
+query II rowsort
+SELECT diff_type, id FROM diff_hashdiff('np_decoy', 'np_tgt', 'id', source_table := 'np_src');
+----
+added	4
+changed	2
+removed	3
+
+query II rowsort
+SELECT diff_type, id FROM diff_hashdiff('np_src', 'np_decoy', 'id', target_table := 'np_src');
+----
+
+query II rowsort
+SELECT diff_type, id FROM diff_hashdiff('np_src', 'np_tgt', 'name', primary_key := 'id');
+----
+added	4
+changed	2
+removed	3
+
+# bisection_threshold / bisection_factor are not implemented: rejected by name
+# exactly as they are positionally
+statement error
+SELECT * FROM diff_hashdiff('np_src', 'np_tgt', 'id', bisection_threshold := 1000);
+----
+bisection
+
+statement error
+SELECT * FROM diff_hashdiff('np_src', 'np_tgt', 'id', bisection_factor := 5);
+----
+bisection
+
+# diff_joindiff-only parameters do not exist on diff_hashdiff
+statement error
+SELECT * FROM diff_hashdiff('np_src', 'np_tgt', 'id', compare_columns := ['name']);
+----
+compare_columns
+
+statement error
+SELECT * FROM diff_hashdiff('np_src', 'np_tgt', 'id', include_all := true);
+----
+include_all

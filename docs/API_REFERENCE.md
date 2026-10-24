@@ -2059,8 +2059,8 @@ Detailed row-level diff between two tables or views.
 **Signature:**
 ```sql
 anofox_tab_diff_joindiff(
-    source VARCHAR,
-    target VARCHAR,
+    source_table VARCHAR,
+    target_table VARCHAR,
     primary_key VARCHAR | LIST<VARCHAR>
     [, compare_columns LIST<VARCHAR>]
     [, include_all BOOLEAN]
@@ -2068,12 +2068,25 @@ anofox_tab_diff_joindiff(
 ```
 
 **Parameters:**
-- `source`: Source table or view name
-- `target`: Target table or view name
-- `primary_key`: Primary key column(s) for matching rows (single name or list)
+- `source_table`: Source table or view name
+- `target_table`: Target table or view name
+- `primary_key`: Primary key column(s) for matching rows (single name or list);
+  by name it is `primary_key := 'id'` or `primary_keys := ['id', 'date']`
+  (passing both names is a binder error)
 - `compare_columns`: Optional list of columns to compare (default: all
   non-key columns present in both tables)
 - `include_all`: Include `unchanged` rows in the output (default: `false`)
+
+Every parameter can be passed positionally or by name (`:=`), and the two can
+be mixed: positional values are read first, and a named parameter **overrides**
+the positional value of the same parameter. `source_table`, `target_table` and
+the primary key are required (positionally or by name).
+
+```sql
+SELECT * FROM diff_joindiff('source_tbl', 'target_tbl', 'id', include_all := true);
+SELECT * FROM diff_joindiff(source_table := 'source_tbl', target_table := 'target_tbl',
+                            primary_keys := ['user_id', 'date'], compare_columns := ['amount']);
+```
 
 **Semantics:**
 - Primary keys are matched NULL-safely (`IS NOT DISTINCT FROM`), so rows with
@@ -2108,20 +2121,26 @@ same result as `diff_joindiff` (without `compare_columns`/`include_all`).
 **Signature:**
 ```sql
 anofox_tab_diff_hashdiff(
-    source VARCHAR,
-    target VARCHAR,
+    source_table VARCHAR,
+    target_table VARCHAR,
     primary_key VARCHAR | LIST<VARCHAR>
 ) → TABLE
 ```
 
 **Parameters:**
-- `source`: Source table or view name
-- `target`: Target table or view name
-- `primary_key`: Primary key column(s) for matching rows (single name or list)
+- `source_table`: Source table or view name
+- `target_table`: Target table or view name
+- `primary_key`: Primary key column(s) for matching rows (single name or list);
+  by name it is `primary_key := 'id'` or `primary_keys := ['id', 'sku']`
+
+As for `diff_joindiff`, every parameter can also be passed by name, and a named
+parameter overrides the positional value of the same parameter.
+`compare_columns` and `include_all` do not exist on `diff_hashdiff`; passing
+them by name is a binder error.
 
 **Note:** The `bisection_threshold` and `bisection_factor` parameters of the
-hash/bisection algorithm are **not implemented**. Passing them raises a binder
-error instead of being silently ignored.
+hash/bisection algorithm are **not implemented**. Passing them, positionally or
+by name, raises a binder error instead of being silently ignored.
 
 **Example:**
 ```sql

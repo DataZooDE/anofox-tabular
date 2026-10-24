@@ -195,6 +195,65 @@ vector<string> ResolveCompareColumns(ClientContext &context, const string &funct
 } // anonymous namespace
 
 //===--------------------------------------------------------------------===//
+// Argument resolution
+//===--------------------------------------------------------------------===//
+
+// Every parameter can be passed positionally or by name (`include_all := true`).
+// Positional values are read first; a named value overrides the positional
+// value of the same parameter.
+struct DiffArguments {
+	string source_table;
+	string target_table;
+	vector<string> primary_keys;
+};
+
+// The value of parameter `name` at positional `index`, or nullptr when the call
+// passes it neither by name nor positionally.
+static const Value *ResolveArgument(const TableFunctionBindInput &input, idx_t index, const string &name) {
+	auto named = duckdb_compat::FindNamedParameter(input.named_parameters, name);
+	if (named) {
+		return named;
+	}
+	return index < input.inputs.size() ? &input.inputs[index] : nullptr;
+}
+
+// Resolve source_table, target_table and the primary key, which both diff
+// functions share. The key has two names: primary_key (one column) and
+// primary_keys (a list), both at positional index 2.
+static DiffArguments ResolveDiffArguments(const string &function_name, const TableFunctionBindInput &input) {
+	DiffArguments args;
+	auto source_table = ResolveArgument(input, 0, "source_table");
+	auto target_table = ResolveArgument(input, 1, "target_table");
+	if (!source_table || source_table->IsNull()) {
+		throw BinderException("%s: source_table is required and cannot be NULL", function_name);
+	}
+	if (!target_table || target_table->IsNull()) {
+		throw BinderException("%s: target_table is required and cannot be NULL", function_name);
+	}
+	args.source_table = source_table->ToString();
+	args.target_table = target_table->ToString();
+
+	auto named_key = duckdb_compat::FindNamedParameter(input.named_parameters, "primary_key");
+	auto named_keys = duckdb_compat::FindNamedParameter(input.named_parameters, "primary_keys");
+	if (named_key && named_keys) {
+		throw BinderException("%s: pass either primary_key or primary_keys, not both", function_name);
+	}
+	const Value *primary_key = named_key ? named_key : named_keys;
+	if (!primary_key && input.inputs.size() > 2) {
+		primary_key = &input.inputs[2];
+	}
+	if (!primary_key) {
+		throw BinderException("%s: primary_key is required (a column name, or a list of names as primary_keys)",
+		                      function_name);
+	}
+	args.primary_keys = ParseColumnList(*primary_key);
+	if (args.primary_keys.empty()) {
+		throw BinderException("%s: Primary key(s) cannot be empty", function_name);
+	}
+	return args;
+}
+
+//===--------------------------------------------------------------------===//
 // JoinDiff Bind Replace - Generate SQL Query
 //===--------------------------------------------------------------------===//
 
@@ -274,49 +333,35 @@ static string GenerateJoinDiffSQL(const string &source_table, const string &targ
 
 static unique_ptr<TableRef> JoinDiffBindReplace(ClientContext &context, TableFunctionBindInput &input) {
 	PostHogTelemetry::Instance().RecordFunctionCall("diff_joindiff");
-	// Parameters:
+	// Parameters (positional index, or by name; a named value overrides):
 	// 0: source_table (VARCHAR)
 	// 1: target_table (VARCHAR)
-	// 2: primary_key(s) (VARCHAR or LIST<VARCHAR>)
+	// 2: primary_key (VARCHAR) / primary_keys (LIST<VARCHAR>)
 	// 3: compare_columns (LIST<VARCHAR>, optional)
 	// 4: include_all (BOOLEAN, optional)
+	auto args = ResolveDiffArguments("diff_joindiff", input);
 
-	if (input.inputs.size() < 3) {
-		throw BinderException("diff_joindiff requires at least 3 arguments: source_table, target_table, primary_key(s)");
-	}
-
-	// Parse source and target table names
-	if (input.inputs[0].IsNull() || input.inputs[1].IsNull()) {
-		throw BinderException("source_table and target_table cannot be NULL");
-	}
-
-	string source_table = input.inputs[0].ToString();
-	string target_table = input.inputs[1].ToString();
-
-	// Parse primary keys
-	vector<string> primary_keys = ParseColumnList(input.inputs[2]);
-	if (primary_keys.empty()) {
-		throw BinderException("Primary key(s) cannot be empty");
-	}
-
-	// Parse compare columns (optional)
+	// Parse compare columns (optional, NULL means the default set)
 	vector<string> compare_columns;
-	if (input.inputs.size() > 3 && !input.inputs[3].IsNull()) {
-		compare_columns = ParseColumnList(input.inputs[3]);
+	auto compare_value = ResolveArgument(input, 3, "compare_columns");
+	if (compare_value && !compare_value->IsNull()) {
+		compare_columns = ParseColumnList(*compare_value);
 	}
 
 	// Parse include_all (optional, default false)
 	bool include_all = false;
-	if (input.inputs.size() > 4 && !input.inputs[4].IsNull()) {
-		include_all = input.inputs[4].GetValue<bool>();
+	auto include_all_value = ResolveArgument(input, 4, "include_all");
+	if (include_all_value && !include_all_value->IsNull()) {
+		include_all = include_all_value->GetValue<bool>();
 	}
 
 	// Validate both schemas and resolve the effective compare set
-	compare_columns = ResolveCompareColumns(context, "diff_joindiff", source_table, target_table, primary_keys,
-	                                        compare_columns);
+	compare_columns = ResolveCompareColumns(context, "diff_joindiff", args.source_table, args.target_table,
+	                                        args.primary_keys, compare_columns);
 
 	// Generate SQL query
-	string sql = GenerateJoinDiffSQL(source_table, target_table, primary_keys, compare_columns, include_all);
+	string sql =
+	    GenerateJoinDiffSQL(args.source_table, args.target_table, args.primary_keys, compare_columns, include_all);
 
 	// Parse and return as SubqueryRef
 	auto subquery_ref = ParseSubquery(sql, context,
@@ -330,36 +375,22 @@ static unique_ptr<TableRef> HashDiffBindReplace(ClientContext &context, TableFun
 	// HashDiff currently executes the same NULL-safe full outer join plan as
 	// JoinDiff; it is tracked separately for telemetry purposes.
 
-	if (input.inputs.size() < 3) {
-		throw BinderException("diff_hashdiff requires at least 3 arguments: source_table, target_table, primary_key(s)");
-	}
-
 	// The hash/bisection algorithm behind bisection_threshold/bisection_factor
-	// is not implemented; reject the parameters instead of silently ignoring them
-	if (input.inputs.size() > 3) {
+	// (positional 3 and 4) is not implemented; reject the parameters, passed
+	// positionally or by name, instead of silently ignoring them
+	if (ResolveArgument(input, 3, "bisection_threshold") || ResolveArgument(input, 4, "bisection_factor")) {
 		throw BinderException("diff_hashdiff: the bisection_threshold/bisection_factor parameters are not implemented "
 		                      "yet; remove them (diff_hashdiff currently computes the same full diff as diff_joindiff)");
 	}
 
-	// Parse source and target table names
-	if (input.inputs[0].IsNull() || input.inputs[1].IsNull()) {
-		throw BinderException("source_table and target_table cannot be NULL");
-	}
-
-	string source_table = input.inputs[0].ToString();
-	string target_table = input.inputs[1].ToString();
-
-	// Parse primary keys
-	vector<string> primary_keys = ParseColumnList(input.inputs[2]);
-	if (primary_keys.empty()) {
-		throw BinderException("Primary key(s) cannot be empty");
-	}
+	auto args = ResolveDiffArguments("diff_hashdiff", input);
 
 	// Validate both schemas and resolve the compare set (all shared non-key columns)
-	auto compare_columns = ResolveCompareColumns(context, "diff_hashdiff", source_table, target_table, primary_keys, {});
+	auto compare_columns =
+	    ResolveCompareColumns(context, "diff_hashdiff", args.source_table, args.target_table, args.primary_keys, {});
 
 	// Generate SQL query using same logic as JoinDiff
-	string sql = GenerateJoinDiffSQL(source_table, target_table, primary_keys, compare_columns, false);
+	string sql = GenerateJoinDiffSQL(args.source_table, args.target_table, args.primary_keys, compare_columns, false);
 
 	// Parse and return as SubqueryRef
 	auto subquery_ref = ParseSubquery(sql, context,
@@ -367,91 +398,67 @@ static unique_ptr<TableRef> HashDiffBindReplace(ClientContext &context, TableFun
 	return std::move(subquery_ref);
 }
 
+// Named parameters shared by both diff functions. Every overload declares all
+// of them, so any parameter can be passed by name next to positional ones.
+static void AddCommonDiffNamedParameters(TableFunction &fn) {
+	duckdb_compat::AddNamedParameter(fn, "source_table", LogicalType(LogicalTypeId::VARCHAR));
+	duckdb_compat::AddNamedParameter(fn, "target_table", LogicalType(LogicalTypeId::VARCHAR));
+	duckdb_compat::AddNamedParameter(fn, "primary_key", LogicalType(LogicalTypeId::VARCHAR));
+	duckdb_compat::AddNamedParameter(fn, "primary_keys", LogicalType::LIST(LogicalType(LogicalTypeId::VARCHAR)));
+}
+
+static void AddJoinDiffNamedParameters(TableFunction &fn) {
+	AddCommonDiffNamedParameters(fn);
+	duckdb_compat::AddNamedParameter(fn, "compare_columns", LogicalType::LIST(LogicalType(LogicalTypeId::VARCHAR)));
+	duckdb_compat::AddNamedParameter(fn, "include_all", LogicalType(LogicalTypeId::BOOLEAN));
+}
+
+static void AddHashDiffNamedParameters(TableFunction &fn) {
+	AddCommonDiffNamedParameters(fn);
+	// Declared so they reach the bind, which rejects them as not implemented
+	duckdb_compat::AddNamedParameter(fn, "bisection_threshold", LogicalType(LogicalTypeId::BIGINT));
+	duckdb_compat::AddNamedParameter(fn, "bisection_factor", LogicalType(LogicalTypeId::BIGINT));
+}
+
+// Add one overload per positional signature to `set`, all sharing the same
+// bind_replace and named parameters.
+static void AddDiffOverloads(TableFunctionSet &set, const char *name, decltype(TableFunction::bind_replace) bind_replace,
+                             const vector<vector<LogicalType>> &signatures, void (*add_named_parameters)(TableFunction &)) {
+	for (const auto &arguments : signatures) {
+		TableFunction fn(name, arguments, nullptr, nullptr);
+		fn.bind_replace = bind_replace;
+		add_named_parameters(fn);
+		set.AddFunction(std::move(fn));
+	}
+}
+
 void RegisterDiffFunctions(ExtensionLoader &loader) {
 	// The diff functions are implemented purely as bind_replace SQL rewrites:
 	// they accept table NAMES (VARCHAR) and expand into a FULL OUTER JOIN query
 	// that DuckDB optimizes and executes natively.
 
-	// Register anofox_tab_diff_joindiff with all overloads (alias: diff_joindiff)
+	const LogicalType varchar_type(LogicalTypeId::VARCHAR);
+	const LogicalType list_type = LogicalType::LIST(varchar_type);
+	const LogicalType boolean_type(LogicalTypeId::BOOLEAN);
+	const LogicalType bigint_type(LogicalTypeId::BIGINT);
+
+	// Register anofox_tab_diff_joindiff with all overloads (alias: diff_joindiff).
+	// The overloads with fewer than three positional arguments exist for calls
+	// that pass the remaining parameters by name.
 	TableFunctionSet joindiff_set("anofox_tab_diff_joindiff");
-
-	// Single primary key overload (VARCHAR primary_key)
-	TableFunction joindiff_single("anofox_tab_diff_joindiff",
-	                             {LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::VARCHAR),
-	                              LogicalType(LogicalTypeId::VARCHAR)},
-	                             nullptr, nullptr);
-	joindiff_single.bind_replace = DATAZOO_GUARD(ANOFOX_TABULAR_BANNER, JoinDiffBindReplace);
-	duckdb_compat::AddNamedParameter(joindiff_single, "source_table", LogicalType(LogicalTypeId::VARCHAR));
-	duckdb_compat::AddNamedParameter(joindiff_single, "target_table", LogicalType(LogicalTypeId::VARCHAR));
-	duckdb_compat::AddNamedParameter(joindiff_single, "primary_key", LogicalType(LogicalTypeId::VARCHAR));
-	joindiff_set.AddFunction(joindiff_single);
-
-	// Add optional parameters for single PK overload
-	TableFunction joindiff_single_compare("anofox_tab_diff_joindiff",
-	                                     {LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::VARCHAR),
-	                                      LogicalType(LogicalTypeId::VARCHAR),
-	                                      LogicalType::LIST(LogicalType(LogicalTypeId::VARCHAR))},
-	                                     nullptr, nullptr);
-	joindiff_single_compare.bind_replace = DATAZOO_GUARD(ANOFOX_TABULAR_BANNER, JoinDiffBindReplace);
-	duckdb_compat::AddNamedParameter(joindiff_single_compare, "source_table", LogicalType(LogicalTypeId::VARCHAR));
-	duckdb_compat::AddNamedParameter(joindiff_single_compare, "target_table", LogicalType(LogicalTypeId::VARCHAR));
-	duckdb_compat::AddNamedParameter(joindiff_single_compare, "primary_key", LogicalType(LogicalTypeId::VARCHAR));
-	duckdb_compat::AddNamedParameter(joindiff_single_compare, "compare_columns", LogicalType::LIST(LogicalType(LogicalTypeId::VARCHAR)));
-	joindiff_set.AddFunction(joindiff_single_compare);
-
-	// Full parameters for single PK overload
-	TableFunction joindiff_single_full("anofox_tab_diff_joindiff",
-	                                  {LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::VARCHAR),
-	                                   LogicalType(LogicalTypeId::VARCHAR),
-	                                   LogicalType::LIST(LogicalType(LogicalTypeId::VARCHAR)),
-	                                   LogicalType(LogicalTypeId::BOOLEAN)},
-	                                  nullptr, nullptr);
-	joindiff_single_full.bind_replace = DATAZOO_GUARD(ANOFOX_TABULAR_BANNER, JoinDiffBindReplace);
-	duckdb_compat::AddNamedParameter(joindiff_single_full, "source_table", LogicalType(LogicalTypeId::VARCHAR));
-	duckdb_compat::AddNamedParameter(joindiff_single_full, "target_table", LogicalType(LogicalTypeId::VARCHAR));
-	duckdb_compat::AddNamedParameter(joindiff_single_full, "primary_key", LogicalType(LogicalTypeId::VARCHAR));
-	duckdb_compat::AddNamedParameter(joindiff_single_full, "compare_columns", LogicalType::LIST(LogicalType(LogicalTypeId::VARCHAR)));
-	duckdb_compat::AddNamedParameter(joindiff_single_full, "include_all", LogicalType(LogicalTypeId::BOOLEAN));
-	joindiff_set.AddFunction(joindiff_single_full);
-
-	// Compound primary keys overload (LIST<VARCHAR> primary_keys)
-	TableFunction joindiff_compound("anofox_tab_diff_joindiff",
-	                               {LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::VARCHAR),
-	                                LogicalType::LIST(LogicalType(LogicalTypeId::VARCHAR))},
-	                               nullptr, nullptr);
-	joindiff_compound.bind_replace = DATAZOO_GUARD(ANOFOX_TABULAR_BANNER, JoinDiffBindReplace);
-	duckdb_compat::AddNamedParameter(joindiff_compound, "source_table", LogicalType(LogicalTypeId::VARCHAR));
-	duckdb_compat::AddNamedParameter(joindiff_compound, "target_table", LogicalType(LogicalTypeId::VARCHAR));
-	duckdb_compat::AddNamedParameter(joindiff_compound, "primary_keys", LogicalType::LIST(LogicalType(LogicalTypeId::VARCHAR)));
-	joindiff_set.AddFunction(joindiff_compound);
-
-	// Compound PK with compare_columns
-	TableFunction joindiff_compound_compare("anofox_tab_diff_joindiff",
-	                                       {LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::VARCHAR),
-	                                        LogicalType::LIST(LogicalType(LogicalTypeId::VARCHAR)),
-	                                        LogicalType::LIST(LogicalType(LogicalTypeId::VARCHAR))},
-	                                       nullptr, nullptr);
-	joindiff_compound_compare.bind_replace = DATAZOO_GUARD(ANOFOX_TABULAR_BANNER, JoinDiffBindReplace);
-	duckdb_compat::AddNamedParameter(joindiff_compound_compare, "source_table", LogicalType(LogicalTypeId::VARCHAR));
-	duckdb_compat::AddNamedParameter(joindiff_compound_compare, "target_table", LogicalType(LogicalTypeId::VARCHAR));
-	duckdb_compat::AddNamedParameter(joindiff_compound_compare, "primary_keys", LogicalType::LIST(LogicalType(LogicalTypeId::VARCHAR)));
-	duckdb_compat::AddNamedParameter(joindiff_compound_compare, "compare_columns", LogicalType::LIST(LogicalType(LogicalTypeId::VARCHAR)));
-	joindiff_set.AddFunction(joindiff_compound_compare);
-
-	// Compound PK with all parameters
-	TableFunction joindiff_compound_full("anofox_tab_diff_joindiff",
-	                                    {LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::VARCHAR),
-	                                     LogicalType::LIST(LogicalType(LogicalTypeId::VARCHAR)),
-	                                     LogicalType::LIST(LogicalType(LogicalTypeId::VARCHAR)),
-	                                     LogicalType(LogicalTypeId::BOOLEAN)},
-	                                    nullptr, nullptr);
-	joindiff_compound_full.bind_replace = DATAZOO_GUARD(ANOFOX_TABULAR_BANNER, JoinDiffBindReplace);
-	duckdb_compat::AddNamedParameter(joindiff_compound_full, "source_table", LogicalType(LogicalTypeId::VARCHAR));
-	duckdb_compat::AddNamedParameter(joindiff_compound_full, "target_table", LogicalType(LogicalTypeId::VARCHAR));
-	duckdb_compat::AddNamedParameter(joindiff_compound_full, "primary_keys", LogicalType::LIST(LogicalType(LogicalTypeId::VARCHAR)));
-	duckdb_compat::AddNamedParameter(joindiff_compound_full, "compare_columns", LogicalType::LIST(LogicalType(LogicalTypeId::VARCHAR)));
-	duckdb_compat::AddNamedParameter(joindiff_compound_full, "include_all", LogicalType(LogicalTypeId::BOOLEAN));
-	joindiff_set.AddFunction(joindiff_compound_full);
+	AddDiffOverloads(joindiff_set, "anofox_tab_diff_joindiff", DATAZOO_GUARD(ANOFOX_TABULAR_BANNER, JoinDiffBindReplace),
+	                 {{},
+	                  {varchar_type},
+	                  {varchar_type, varchar_type},
+	                  // Single primary key (VARCHAR primary_key)
+	                  {varchar_type, varchar_type, varchar_type},
+	                  {varchar_type, varchar_type, varchar_type, list_type},
+	                  {varchar_type, varchar_type, varchar_type, list_type, boolean_type},
+	                  // Compound primary keys (LIST<VARCHAR> primary_keys)
+	                  {varchar_type, varchar_type, list_type},
+	                  {varchar_type, varchar_type, list_type, list_type},
+	                  {varchar_type, varchar_type, list_type, list_type, boolean_type}},
+	                 AddJoinDiffNamedParameters);
 
 	{
 		FunctionDescription desc;
@@ -467,61 +474,25 @@ void RegisterDiffFunctions(ExtensionLoader &loader) {
 	//===--------------------------------------------------------------------===//
 	// HashDiff Function Registration
 	// Note: Currently uses the same bind_replace rewrite as JoinDiff. The
-	// bisection_threshold/bisection_factor overloads remain registered so that
-	// callers get a clear "not implemented" binder error instead of a generic
-	// overload-resolution failure or silently ignored parameters.
+	// bisection_threshold/bisection_factor overloads and named parameters
+	// remain registered so that callers get a clear "not implemented" binder
+	// error instead of a generic overload-resolution failure or silently
+	// ignored parameters. compare_columns/include_all are not declared, so
+	// passing them by name is a binder error.
 	//===--------------------------------------------------------------------===//
 
 	// Register anofox_tab_diff_hashdiff with all overloads (alias: diff_hashdiff)
 	TableFunctionSet hashdiff_set("anofox_tab_diff_hashdiff");
-
-	// Single PK, basic
-	TableFunction hashdiff_single("anofox_tab_diff_hashdiff",
-	                             {LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::VARCHAR),
-	                              LogicalType(LogicalTypeId::VARCHAR)},
-	                             nullptr, nullptr);
-	hashdiff_single.bind_replace = DATAZOO_GUARD(ANOFOX_TABULAR_BANNER, HashDiffBindReplace);
-	duckdb_compat::AddNamedParameter(hashdiff_single, "source_table", LogicalType(LogicalTypeId::VARCHAR));
-	duckdb_compat::AddNamedParameter(hashdiff_single, "target_table", LogicalType(LogicalTypeId::VARCHAR));
-	duckdb_compat::AddNamedParameter(hashdiff_single, "primary_key", LogicalType(LogicalTypeId::VARCHAR));
-	hashdiff_set.AddFunction(hashdiff_single);
-
-	// Single PK with bisection_threshold (rejected as not implemented)
-	TableFunction hashdiff_single_threshold("anofox_tab_diff_hashdiff",
-	                                       {LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::VARCHAR),
-	                                        LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::BIGINT)},
-	                                       nullptr, nullptr);
-	hashdiff_single_threshold.bind_replace = DATAZOO_GUARD(ANOFOX_TABULAR_BANNER, HashDiffBindReplace);
-	duckdb_compat::AddNamedParameter(hashdiff_single_threshold, "source_table", LogicalType(LogicalTypeId::VARCHAR));
-	duckdb_compat::AddNamedParameter(hashdiff_single_threshold, "target_table", LogicalType(LogicalTypeId::VARCHAR));
-	duckdb_compat::AddNamedParameter(hashdiff_single_threshold, "primary_key", LogicalType(LogicalTypeId::VARCHAR));
-	duckdb_compat::AddNamedParameter(hashdiff_single_threshold, "bisection_threshold", LogicalType(LogicalTypeId::BIGINT));
-	hashdiff_set.AddFunction(hashdiff_single_threshold);
-
-	// Single PK with bisection_threshold and bisection_factor (rejected as not implemented)
-	TableFunction hashdiff_single_full("anofox_tab_diff_hashdiff",
-	                                  {LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::VARCHAR),
-	                                   LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::BIGINT),
-	                                   LogicalType(LogicalTypeId::BIGINT)},
-	                                  nullptr, nullptr);
-	hashdiff_single_full.bind_replace = DATAZOO_GUARD(ANOFOX_TABULAR_BANNER, HashDiffBindReplace);
-	duckdb_compat::AddNamedParameter(hashdiff_single_full, "source_table", LogicalType(LogicalTypeId::VARCHAR));
-	duckdb_compat::AddNamedParameter(hashdiff_single_full, "target_table", LogicalType(LogicalTypeId::VARCHAR));
-	duckdb_compat::AddNamedParameter(hashdiff_single_full, "primary_key", LogicalType(LogicalTypeId::VARCHAR));
-	duckdb_compat::AddNamedParameter(hashdiff_single_full, "bisection_threshold", LogicalType(LogicalTypeId::BIGINT));
-	duckdb_compat::AddNamedParameter(hashdiff_single_full, "bisection_factor", LogicalType(LogicalTypeId::BIGINT));
-	hashdiff_set.AddFunction(hashdiff_single_full);
-
-	// Compound PK, basic
-	TableFunction hashdiff_compound("anofox_tab_diff_hashdiff",
-	                               {LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::VARCHAR),
-	                                LogicalType::LIST(LogicalType(LogicalTypeId::VARCHAR))},
-	                               nullptr, nullptr);
-	hashdiff_compound.bind_replace = DATAZOO_GUARD(ANOFOX_TABULAR_BANNER, HashDiffBindReplace);
-	duckdb_compat::AddNamedParameter(hashdiff_compound, "source_table", LogicalType(LogicalTypeId::VARCHAR));
-	duckdb_compat::AddNamedParameter(hashdiff_compound, "target_table", LogicalType(LogicalTypeId::VARCHAR));
-	duckdb_compat::AddNamedParameter(hashdiff_compound, "primary_keys", LogicalType::LIST(LogicalType(LogicalTypeId::VARCHAR)));
-	hashdiff_set.AddFunction(hashdiff_compound);
+	AddDiffOverloads(hashdiff_set, "anofox_tab_diff_hashdiff", DATAZOO_GUARD(ANOFOX_TABULAR_BANNER, HashDiffBindReplace),
+	                 {{},
+	                  {varchar_type},
+	                  {varchar_type, varchar_type},
+	                  {varchar_type, varchar_type, varchar_type},
+	                  // bisection_threshold / bisection_factor (rejected as not implemented)
+	                  {varchar_type, varchar_type, varchar_type, bigint_type},
+	                  {varchar_type, varchar_type, varchar_type, bigint_type, bigint_type},
+	                  {varchar_type, varchar_type, list_type}},
+	                 AddHashDiffNamedParameters);
 
 	{
 		FunctionDescription desc;

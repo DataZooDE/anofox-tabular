@@ -635,6 +635,12 @@ SELECT * FROM diff_joindiff('source_tbl', 'target_tbl', ['user_id', 'date'])
 WHERE diff_type IN ('added', 'changed')
 LIMIT 100;
 
+-- Every parameter can also be passed by name; a named value overrides the
+-- positional one
+SELECT * FROM diff_joindiff('source_tbl', 'target_tbl', 'id', include_all := true);
+SELECT * FROM diff_joindiff(source_table := 'source_tbl', target_table := 'target_tbl',
+                            primary_keys := ['user_id', 'date'], compare_columns := ['amount']);
+
 -- diff_hashdiff currently computes the same row-level diff as diff_joindiff.
 -- Its bisection_threshold/bisection_factor parameters are not implemented and
 -- are rejected with a binder error.
@@ -1133,8 +1139,8 @@ All parameters after `column_name` are optional; `dbscan('orders', 'amount')` us
 
 | Function | Signature | Description |
 |----------|-----------|-------------|
-| `anofox_tab_diff_hashdiff` | `(source VARCHAR, target VARCHAR, pk VARCHAR\|LIST<VARCHAR>) → TABLE` | Row-level diff (currently identical to joindiff; `bisection_threshold`/`bisection_factor` are not implemented and rejected) |
-| `anofox_tab_diff_joindiff` | `(source VARCHAR, target VARCHAR, pk VARCHAR\|LIST<VARCHAR> [, compare_cols LIST<VARCHAR> [, include_all BOOLEAN]]) → TABLE` | Detailed row-level diff with target data |
+| `anofox_tab_diff_hashdiff` | `(source_table VARCHAR, target_table VARCHAR, primary_key VARCHAR\|LIST<VARCHAR>) → TABLE` | Row-level diff (currently identical to joindiff; `bisection_threshold`/`bisection_factor` are not implemented and rejected). Parameters also by name (`primary_keys :=` for a list); named values override positional ones |
+| `anofox_tab_diff_joindiff` | `(source_table VARCHAR, target_table VARCHAR, primary_key VARCHAR\|LIST<VARCHAR> [, compare_columns LIST<VARCHAR> [, include_all BOOLEAN]]) → TABLE` | Detailed row-level diff with target data. Parameters also by name (`primary_keys :=` for a list); named values override positional ones |
 
 ### Data Profiling Functions
 
