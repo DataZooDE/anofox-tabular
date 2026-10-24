@@ -648,7 +648,7 @@ FROM outlier_tree('employees', 'job_title,salary,years_exp', 'outliers');
 
 **Output Modes:**
 - `'summary'`: Single row with pass/fail status and outlier count
-- `'outliers'`: Per-outlier rows with z-scores, bounds, and explanations
+- `'outliers'`: Per-outlier rows with z-scores, bounds, and explanations. The value is returned as text in `outlier_value` and, for numeric columns, as a DOUBLE in `outlier_value_num` (NULL for categorical columns), so it can be compared with `lower_bound`/`upper_bound` directly
 
 **Semantics:**
 - Rows containing NULL in any selected column are excluded from the analysis

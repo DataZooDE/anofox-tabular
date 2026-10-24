@@ -2108,7 +2108,8 @@ outlier_tree(
 |--------|------|-------------|
 | `row_id` | BIGINT | Row index (1-indexed) |
 | `column_name` | VARCHAR | Column with outlier |
-| `outlier_value` | VARCHAR | The anomalous value |
+| `outlier_value` | VARCHAR | The anomalous value, as text (numeric and categorical columns) |
+| `outlier_value_num` | DOUBLE | The anomalous value as a number for numeric columns, without the precision loss of the text form; NULL for categorical columns |
 | `cluster_mean` | DOUBLE | Mean in cluster |
 | `cluster_sd` | DOUBLE | SD in cluster |
 | `cluster_size` | BIGINT | Rows in cluster |
@@ -2131,6 +2132,11 @@ FROM outlier_tree('employees', 'department,salary,years_exp', 'outliers');
 -- Returns explanations like:
 -- "Value 150000 for column 'salary' is unusually high (expected: 52333 ± 7413)
 --  when job_title = 'Junior Developer'"
+
+-- Numeric outliers against their cluster's normal range (no TRY_CAST needed)
+SELECT row_id, column_name, outlier_value_num, lower_bound, upper_bound
+FROM outlier_tree('employees', 'department,salary,years_exp', 'outliers')
+WHERE outlier_value_num IS NOT NULL;
 
 -- With custom parameters for small datasets
 SELECT * FROM outlier_tree(

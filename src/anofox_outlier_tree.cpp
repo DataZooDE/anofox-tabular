@@ -899,6 +899,10 @@ static unique_ptr<FunctionData> OutlierTreeBind(ClientContext &context, TableFun
         return_types.emplace_back(LogicalType(LogicalTypeId::VARCHAR));
         names.emplace_back("outlier_value");
         return_types.emplace_back(LogicalType(LogicalTypeId::VARCHAR));
+        // The value as a number for numeric columns (NULL for categorical
+        // ones), without the precision loss of the VARCHAR rendering (#111)
+        names.emplace_back("outlier_value_num");
+        return_types.emplace_back(LogicalType(LogicalTypeId::DOUBLE));
         names.emplace_back("cluster_mean");
         return_types.emplace_back(LogicalType(LogicalTypeId::DOUBLE));
         names.emplace_back("cluster_sd");
@@ -1064,15 +1068,17 @@ static void OutlierTreeExecute(ClientContext &context, TableFunctionInput &data_
         auto row_ids = duckdb_compat::FlatData<int64_t>(output.data[0]);
         auto column_names = duckdb_compat::FlatData<string_t>(output.data[1]);
         auto outlier_values = duckdb_compat::FlatData<string_t>(output.data[2]);
-        auto cluster_means = duckdb_compat::FlatData<double>(output.data[3]);
-        auto cluster_sds = duckdb_compat::FlatData<double>(output.data[4]);
-        auto cluster_sizes = duckdb_compat::FlatData<int64_t>(output.data[5]);
-        auto z_scores = duckdb_compat::FlatData<double>(output.data[6]);
-        auto lower_bounds = duckdb_compat::FlatData<double>(output.data[7]);
-        auto upper_bounds = duckdb_compat::FlatData<double>(output.data[8]);
-        auto conditions = duckdb_compat::FlatData<string_t>(output.data[9]);
-        auto explanations = duckdb_compat::FlatData<string_t>(output.data[10]);
-        auto outlier_scores = duckdb_compat::FlatData<double>(output.data[11]);
+        auto &outlier_value_num_vec = output.data[3];
+        auto outlier_value_nums = duckdb_compat::FlatData<double>(outlier_value_num_vec);
+        auto cluster_means = duckdb_compat::FlatData<double>(output.data[4]);
+        auto cluster_sds = duckdb_compat::FlatData<double>(output.data[5]);
+        auto cluster_sizes = duckdb_compat::FlatData<int64_t>(output.data[6]);
+        auto z_scores = duckdb_compat::FlatData<double>(output.data[7]);
+        auto lower_bounds = duckdb_compat::FlatData<double>(output.data[8]);
+        auto upper_bounds = duckdb_compat::FlatData<double>(output.data[9]);
+        auto conditions = duckdb_compat::FlatData<string_t>(output.data[10]);
+        auto explanations = duckdb_compat::FlatData<string_t>(output.data[11]);
+        auto outlier_scores = duckdb_compat::FlatData<double>(output.data[12]);
 
         for (idx_t i = 0; i < count; ++i) {
             auto &outlier = state.outliers[state.current_row + i];
@@ -1082,14 +1088,19 @@ static void OutlierTreeExecute(ClientContext &context, TableFunctionInput &data_
             row_ids[i] = state.source_row_ids[outlier.row_idx];
             column_names[i] = StringVector::AddString(output.data[1], outlier.target_column_name);
             outlier_values[i] = StringVector::AddString(output.data[2], outlier.GetOutlierValueString());
+            if (std::holds_alternative<double>(outlier.outlier_value)) {
+                outlier_value_nums[i] = std::get<double>(outlier.outlier_value);
+            } else {
+                FlatVector::SetNull(outlier_value_num_vec, i, true);
+            }
             cluster_means[i] = outlier.cluster_mean;
             cluster_sds[i] = outlier.cluster_sd;
             cluster_sizes[i] = static_cast<int64_t>(outlier.cluster_size);
             z_scores[i] = outlier.z_score;
             lower_bounds[i] = outlier.lower_bound;
             upper_bounds[i] = outlier.upper_bound;
-            conditions[i] = StringVector::AddString(output.data[9], outlier.GetConditionsJSON());
-            explanations[i] = StringVector::AddString(output.data[10], outlier.explanation);
+            conditions[i] = StringVector::AddString(output.data[10], outlier.GetConditionsJSON());
+            explanations[i] = StringVector::AddString(output.data[11], outlier.explanation);
             outlier_scores[i] = outlier.outlier_score;
         }
         state.current_row += count;

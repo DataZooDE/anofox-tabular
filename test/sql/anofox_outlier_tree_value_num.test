@@ -1,0 +1,60 @@
+# name: test/sql/anofox_outlier_tree_value_num.test
+# description: outlier_tree 'outliers' mode carries a numeric outlier_value_num column (#111)
+# group: [anofox_tabular]
+
+require anofox_tabular
+
+statement ok
+LOAD anofox_tabular
+
+statement ok
+SET anofox_tab_trace_enabled = false
+
+# Same shape as the pin_ot fixture (anofox_streaming_pin.test): row 1500 is
+# both a numeric outlier in 'val' and a categorical outlier in 'grp'. The
+# outlier value carries more digits than the VARCHAR rendering keeps.
+statement ok
+CREATE TABLE ot_num AS
+SELECT i AS id,
+  CASE WHEN i % 2 = 0 THEN 'A' ELSE 'B' END AS grp,
+  CASE WHEN i = 1500 THEN 100000.123456789
+       WHEN i % 2 = 0 THEN 100.0 + (i % 7)
+       ELSE 500.0 + (i % 11) END::DOUBLE AS val
+FROM range(1, 3001) t(i);
+
+# outlier_value_num (DOUBLE) sits directly after the VARCHAR outlier_value
+query TT
+SELECT column_name, column_type
+FROM (DESCRIBE SELECT * FROM outlier_tree('ot_num', 'grp,val', 'outliers'))
+----
+row_id	BIGINT
+column_name	VARCHAR
+outlier_value	VARCHAR
+outlier_value_num	DOUBLE
+cluster_mean	DOUBLE
+cluster_sd	DOUBLE
+cluster_size	BIGINT
+z_score	DOUBLE
+lower_bound	DOUBLE
+upper_bound	DOUBLE
+conditions	VARCHAR
+explanation	VARCHAR
+outlier_score	DOUBLE
+
+# Numeric column: the exact value, without the precision loss of the VARCHAR
+# rendering; categorical column: NULL
+query ITTTT
+SELECT row_id, column_name, outlier_value, outlier_value_num IS NULL, outlier_value_num = 100000.123456789
+FROM outlier_tree('ot_num', 'grp,val', 'outliers')
+ORDER BY row_id, column_name
+----
+1500	grp	A	true	NULL
+1500	val	100000	false	true
+
+# The value is plottable against the cluster's normal range without TRY_CAST
+query T
+SELECT outlier_value_num > upper_bound
+FROM anofox_tab_outlier_tree('ot_num', 'grp,val', 'outliers')
+WHERE column_name = 'val'
+----
+true
