@@ -1289,6 +1289,9 @@ make test
 
 # Debug mode tests
 make test_debug
+
+# NER tests (OpenVINO build; downloads the NER model on first run)
+make test_ner
 ```
 
 **Test Files:**

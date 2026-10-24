@@ -1,0 +1,92 @@
+#
+# Runs the NER sqllogictests (`make test_ner`). The distribution jobs skip
+# them: they guard on OPENVINO_AVAILABLE, and they download the NER model from
+# Hugging Face on first use, which the release pipeline must not depend on.
+# Here the extension is built with OpenVINO on linux_amd64 against the
+# submodule's DuckDB (v1.5.6), and the model directory is cached between runs.
+#
+name: NER tests (linux_amd64)
+on:
+  push:
+    branches: [main]
+  pull_request:
+    paths:
+      - 'src/anofox_ner*.cpp'
+      - 'src/anofox_pii*.cpp'
+      - 'src/include/anofox_ner*.hpp'
+      - 'src/include/anofox_pii*.hpp'
+      - 'test/sql/*ner*.test'
+      - 'test/sql/*pii*.test'
+      - 'CMakeLists.txt'
+      - 'vcpkg.json'
+      - 'Makefile'
+      - '.github/workflows/NERTests.yml'
+  schedule:
+    # weekly: catches a moved or changed model on Hugging Face
+    - cron: '17 4 * * 1'
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # the vcpkg commit extension-ci-tools v1.5-variegata builds with
+  VCPKG_COMMIT: 84bab45d415d22042bd0b9081aea57f362da3f35
+
+jobs:
+  test:
+    name: linux_amd64, DuckDB v1.5.6, OpenVINO
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Install build tools
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq ninja-build ccache
+
+      - name: Set up vcpkg
+        run: |
+          git clone --quiet https://github.com/microsoft/vcpkg.git "$RUNNER_TEMP/vcpkg"
+          git -C "$RUNNER_TEMP/vcpkg" checkout --quiet "$VCPKG_COMMIT"
+          "$RUNNER_TEMP/vcpkg/bootstrap-vcpkg.sh" -disableMetrics
+          echo "VCPKG_TOOLCHAIN_PATH=$RUNNER_TEMP/vcpkg/scripts/buildsystems/vcpkg.cmake" >> "$GITHUB_ENV"
+          echo "VCPKG_DEFAULT_BINARY_CACHE=$HOME/.cache/vcpkg-bin" >> "$GITHUB_ENV"
+          echo "CCACHE_DIR=$HOME/.cache/ccache" >> "$GITHUB_ENV"
+          mkdir -p "$HOME/.cache/vcpkg-bin"
+
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/vcpkg-bin
+          key: vcpkg-ner-linux-${{ env.VCPKG_COMMIT }}-${{ hashFiles('vcpkg.json') }}
+          restore-keys: vcpkg-ner-linux-${{ env.VCPKG_COMMIT }}-
+
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/ccache
+          key: ccache-ner-linux-${{ github.sha }}
+          restore-keys: ccache-ner-linux-
+
+      # The model files are immutable per model name; the key changes when
+      # the model registry in anofox_ner.cpp does
+      - uses: actions/cache@v4
+        with:
+          path: ~/.duckdb/extensions/anofox/ner
+          key: ner-model-${{ hashFiles('src/anofox_ner.cpp') }}
+          restore-keys: ner-model-
+
+      - name: Build
+        env:
+          GEN: ninja
+          CMAKE_C_COMPILER_LAUNCHER: ccache
+          CMAKE_CXX_COMPILER_LAUNCHER: ccache
+          # postal is covered by the distribution jobs; a libpostal build here
+          # would download ~2 GB of model data
+          ANOFOX_TABULAR_NO_LIBPOSTAL: 1
+        run: make release
+
+      - name: Test
+        run: make test_ner

@@ -289,17 +289,17 @@ DROP TABLE ner_audit_test;
 statement ok
 SET anofox_pii_enabled_types = 'NAME,ORGANIZATION,LOCATION,MISC';
 
-# Only NER types detected
+# Only NER types detected: the email is not reported
 query I
-SELECT pii_count('John at Google (john@google.com)') >= 2;
+SELECT list_transform(pii_detect('John works at Microsoft (john@microsoft.com)'), lambda x: x.type);
 ----
-true
+[NAME, ORGANIZATION]
 
-# EMAIL still detected by regex detector even when NER-only types are enabled
+# Pattern types are filtered too (enabled_types is honored, #49)
 query I
 SELECT list_contains(list_transform(pii_detect('Email: test@test.com'), lambda x: x.type), 'EMAIL');
 ----
-true
+false
 
 # Reset
 statement ok
