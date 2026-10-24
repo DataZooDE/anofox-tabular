@@ -384,6 +384,34 @@ SELECT pii_mask('Call +1-555-123-4567 now', 'redact') LIKE '%[PHONE]%';
 ----
 true
 
+# The whitespace around an international number is not part of the match (#117)
+query I
+SELECT pii_mask('Mail jane@corp.com or call +49 170 1234567 today', 'redact');
+----
+Mail [EMAIL] or call [PHONE] today
+
+query II
+SELECT (pii_detect('call +49 170 1234567 today')[1]).text, (pii_detect('call +49 170 1234567 today')[1]).start_pos;
+----
++49 170 1234567	5
+
+# Two numbers separated by a single space are both found
+query I
+SELECT pii_mask('+49 170 1234567 +44 20 7946 0958', 'redact');
+----
+[PHONE] [PHONE]
+
+# A number at the end of a sentence or before a comma
+query I
+SELECT pii_mask('Call +49 170 1234567, or +44 20 7946 0958.', 'redact');
+----
+Call [PHONE], or [PHONE].
+
+query I
+SELECT pii_mask('Call +1-555-123-4567 now', 'partial');
+----
+Call +***-***-4567 now
+
 # Phone masking - PARTIAL (shows last 4 digits)
 query I
 SELECT pii_mask('Phone: (555) 123-4567', 'partial');

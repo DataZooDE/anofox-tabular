@@ -22,6 +22,7 @@
 
 #include <algorithm>
 #include <array>
+#include <unordered_set>
 #include <sstream>
 #include <iomanip>
 #include <cctype>
@@ -38,6 +39,31 @@ namespace {
 // The user-configured anofox_pii_min_confidence threshold is applied
 // centrally in PIIEngine::Detect() on top of this floor.
 constexpr double NER_MIN_ENTITY_CONFIDENCE = 0.7;
+
+bool IsNERType(PIIType type) {
+    return type == PIIType::NAME || type == PIIType::ORGANIZATION || type == PIIType::LOCATION ||
+           type == PIIType::MISC;
+}
+
+// Words that label a PII field ("IBAN DE89...", "SSN: 123-...") rather than
+// name an entity. The NER model tags some of them as ORG or LOC (#118).
+bool IsFieldLabel(const std::string &text) {
+    static const std::unordered_set<std::string> labels = {
+        "IBAN", "BIC", "SWIFT", "SSN", "VAT", "VAT ID", "USTID", "UST-IDNR", "TIN", "NINO", "EIN",
+        "ITIN", "PIN", "CVV", "CVC", "DOB", "ID", "EMAIL", "E-MAIL", "PHONE", "TEL", "FAX", "MOBILE",
+        "URL", "IP", "MAC", "PASSPORT", "API KEY"};
+    std::string upper;
+    for (char c : text) {
+        if (c == ':' || c == '.' || c == '#') {
+            continue;
+        }
+        upper += static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+    }
+    while (!upper.empty() && std::isspace(static_cast<unsigned char>(upper.back()))) {
+        upper.pop_back();
+    }
+    return labels.count(upper) > 0;
+}
 } // anonymous namespace
 
 // ============================================================================
@@ -298,15 +324,26 @@ std::vector<PIIMatch> RegexRecognizer::FindMatches(const std::string &text) cons
 
     while (iter != end) {
         std::smatch match = *iter;
-        std::string matched_text = match.str();
+        // Patterns that anchor on whitespace (ECMAScript has no lookbehind)
+        // consume it; no PII value starts or ends with whitespace, so it is
+        // not part of the match and must survive masking.
+        auto start = static_cast<size_t>(match.position());
+        auto stop = start + static_cast<size_t>(match.length());
+        while (start < stop && std::isspace(static_cast<unsigned char>(text[start]))) {
+            start++;
+        }
+        while (stop > start && std::isspace(static_cast<unsigned char>(text[stop - 1]))) {
+            stop--;
+        }
+        std::string matched_text = text.substr(start, stop - start);
 
         // Validate the match (e.g., checksum for credit cards)
-        if (Validate(matched_text)) {
+        if (!matched_text.empty() && Validate(matched_text)) {
             PIIMatch pii_match(
                 type_,
                 matched_text,
-                static_cast<size_t>(match.position()),
-                static_cast<size_t>(match.position() + match.length()),
+                start,
+                stop,
                 1.0  // Full confidence for valid matches
             );
             matches.push_back(pii_match);
@@ -840,8 +877,10 @@ PhoneRecognizer::PhoneRecognizer()
         // Matches phone formats requiring distinctive features to avoid SSN overlap:
         // - International prefix (+1, +44, etc.) with 7+ digits following
         // - US with parentheses: (555) 123-4567
-        // Note: No leading \b for international since + is not a word char
-        R"((?:^|[\s])(\+\d{1,4}[\s\-\.]?\(?\d{1,4}\)?[\s\-\.]?\d{1,4}[\s\-\.]?\d{2,4}[\s\-\.]?\d{2,4})(?:$|[\s])|(\(\d{3}\)[\s\-\.]?\d{3}[\s\-\.]?\d{4}))"
+        // Note: No leading \b for international since + is not a word char.
+        // The trailing boundary is a lookahead, so a following number can
+        // still claim the separating space; punctuation may end a number.
+        R"((?:^|[\s])(\+\d{1,4}[\s\-\.]?\(?\d{1,4}\)?[\s\-\.]?\d{1,4}[\s\-\.]?\d{2,4}[\s\-\.]?\d{2,4})(?=$|[\s,;:.!?)])|(\(\d{3}\)[\s\-\.]?\d{3}[\s\-\.]?\d{4}))"
     ) {}
 
 PhoneRecognizer::~PhoneRecognizer() {
@@ -1702,6 +1741,9 @@ std::vector<PIIMatch> PIIEngine::Detect(
         for (auto &match : matches) {
             // Apply the configured minimum confidence threshold centrally
             if (match.confidence < config.min_confidence) {
+                continue;
+            }
+            if (IsNERType(match.type) && IsFieldLabel(match.matched_text)) {
                 continue;
             }
             all_matches.push_back(std::move(match));

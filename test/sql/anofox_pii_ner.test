@@ -425,3 +425,25 @@ query T
 SELECT current_setting('anofox_ner_cache_size');
 ----
 10000
+
+# ============================================================================
+# Field labels are not entities (#118)
+# ============================================================================
+
+# The NER model tags label words like 'IBAN' (ORG) or 'SSN' (LOC); they are not PII
+query I
+SELECT pii_mask('Contact: jane@corp.com, IBAN DE89370400440532013000', 'redact');
+----
+Contact: [EMAIL], IBAN [IBAN]
+
+query I
+SELECT list_transform(pii_detect('SSN 123-45-6789, VAT DE136695976, BIC COBADEFFXXX'), lambda x: x.type);
+----
+[US_SSN]
+
+# A real organization next to a label is still found
+query I
+SELECT pii_mask('IBAN DE89370400440532013000 at Deutsche Bank', 'redact');
+----
+IBAN [IBAN] at [ORGANIZATION]
+
