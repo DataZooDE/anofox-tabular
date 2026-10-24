@@ -1552,3 +1552,32 @@ statement error
 SELECT * FROM isolation_forest_mv('iso_with_nulls', 'id,value', 100, 256, 0.1, 'bogus')
 ----
 output_mode must be
+
+# ===--------------------------------------------------------------------===
+# The calling forms docs/API_REFERENCE.md documents (#116)
+# ===--------------------------------------------------------------------===
+
+# Univariate with a seed: scores are reproducible
+query I
+SELECT (SELECT list(anomaly_score ORDER BY row_id) FROM isolation_forest('iso_normal_data', 'value', 100, 256, 0.1, 'scores', 42))
+     = (SELECT list(anomaly_score ORDER BY row_id) FROM isolation_forest('iso_normal_data', 'value', 100, 256, 0.1, 'scores', 42));
+----
+true
+
+# Summary is the default output mode
+query I
+SELECT count(*) FROM isolation_forest('iso_normal_data', 'value') WHERE status IS NOT NULL AND total_count = 6;
+----
+1
+
+# Extended IF: seed is the 7th argument, ndim/coef_type/scoring_metric follow
+query I
+SELECT count(*) FROM isolation_forest_mv('iso_normal_data', 'id, value', 100, 256, 0.1, 'scores', NULL, 2, 'normal', 'density');
+----
+6
+
+# SCiForest: weight_column, ntry and prob_pick_avg_gain after seed and the Extended IF options
+query I
+SELECT count(*) FROM isolation_forest_mv('iso_normal_data', 'value', 100, 256, 0.05, 'scores', NULL, 1, 'uniform', 'depth', NULL, 10, 0.5);
+----
+6

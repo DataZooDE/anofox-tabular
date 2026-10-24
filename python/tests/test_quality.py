@@ -377,6 +377,53 @@ class TestRollingValuesInSet:
         assert result["status"] == "fail"
 
 
+class TestTimeAwareDateRange:
+    """start_date/end_date return one dict per reference date (#109)."""
+
+    def test_rel_count_change_range_rows_match_single_dates(self, conn, daily_table):
+        from anofox import quality
+        rows = quality.rel_count_change(
+            conn, daily_table, "event_date", start_date="2026-03-12", end_date="2026-03-14"
+        )
+        assert [str(r["reference_date"]) for r in rows] == ["2026-03-12", "2026-03-13", "2026-03-14"]
+        assert [r["status"] for r in rows] == ["pass", "pass", "fail"]
+        single = quality.rel_count_change(conn, daily_table, "event_date", reference_date="2026-03-14")
+        assert single["status"] == rows[-1]["status"]
+        assert single["_raw"] == list(rows[-1].values())
+
+    def test_metric_anomaly_iqr_range(self, conn, daily_table):
+        from anofox import quality
+        rows = quality.metric_anomaly_iqr(
+            conn, daily_table, "event_date", start_date="2026-03-13", end_date="2026-03-14"
+        )
+        assert [r["status"] for r in rows] == ["pass", "fail"]
+        assert rows[1]["metric_value"] == 1.0
+
+    def test_rolling_values_in_set_range(self, conn, daily_table):
+        from anofox import quality
+        rows = quality.rolling_values_in_set(
+            conn, daily_table, "status", ["ok"], "event_date",
+            start_date="2026-03-01", end_date="2026-03-03",
+        )
+        assert len(rows) == 3
+        assert all(r["status"] == "pass" for r in rows)
+
+    def test_range_requires_both_bounds(self, conn, daily_table):
+        import duckdb
+        from anofox import quality
+        with pytest.raises(duckdb.Error, match="start_date and end_date must be given together"):
+            quality.rel_count_change(conn, daily_table, "event_date", start_date="2026-03-01")
+
+    def test_range_excludes_reference_date(self, conn, daily_table):
+        import duckdb
+        from anofox import quality
+        with pytest.raises(duckdb.Error, match="reference_date cannot be combined"):
+            quality.metric_anomaly_iqr(
+                conn, daily_table, "event_date", reference_date="2026-03-05",
+                start_date="2026-03-01", end_date="2026-03-02",
+            )
+
+
 class TestCheckSuite:
     @pytest.fixture(scope="class", autouse=True)
     def suite_tables(self, conn):

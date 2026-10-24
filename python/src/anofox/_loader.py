@@ -22,6 +22,14 @@ from typing import Optional
 _COMMUNITY_REGISTRY_BASE = "https://community-extensions.duckdb.org"
 _DEFAULT_S3_BASE = "https://get.erpl.io"
 _SHA256_PATTERN = re.compile(r"\b([0-9a-fA-F]{64})\b")
+# Extension builds are published per DuckDB release only, under the release
+# tag: "1.5.6" -> v1.5.6, "2.0.0" -> v2.0.0. Pre-, dev- and post-releases
+# (2.0.0rc1, 1.5.7.dev42, 1.5.6.post1, local "+..." builds) have no build.
+_RELEASE_VERSION_PATTERN = re.compile(r"^v?(\d+)\.(\d+)\.(\d+)$")
+
+
+class UnsupportedDuckDBVersionError(RuntimeError):
+    """The installed DuckDB version has no published extension build."""
 
 
 class AnofoxLoader:
@@ -65,6 +73,11 @@ class AnofoxLoader:
         """
         Return an absolute path to the extension binary, downloading if needed.
 
+        Downloads exist only for DuckDB releases (``1.5.6``, ``2.0.0``); a
+        pre-, dev- or post-release ``duckdb`` raises
+        :class:`UnsupportedDuckDBVersionError` before any network request.
+        *local_path* (``ANOFOX_EXT_PATH``) works with every version.
+
         Resolution order:
         1. *local_path* (if provided and the file exists)
         2. Cached path under ``~/.anofox/``
@@ -88,10 +101,14 @@ class AnofoxLoader:
             # Existing cache without a checksum is treated as untrusted.
             cached.unlink(missing_ok=True)
 
+        # Resolve the URLs first: a DuckDB version without published builds
+        # fails here with an actionable error, before any network request.
+        urls = self._candidate_urls()
+
         # Try to download
         cached.parent.mkdir(parents=True, exist_ok=True)
         errors: list[str] = []
-        for url in self._candidate_urls():
+        for url in urls:
             expected_sha = None
             if not self._allow_insecure_download:
                 # The sidecar holds the digest of the compressed archive as
@@ -174,8 +191,24 @@ class AnofoxLoader:
 # ---------------------------------------------------------------------------
 
 def _duckdb_tag(version: str) -> str:
-    """Map a DuckDB version (``"1.5.6"``) to its repository tag (``"v1.5.6"``)."""
-    return version if version.startswith("v") else f"v{version}"
+    """
+    Map a DuckDB release version (``"1.5.6"``, ``"2.0.0"``) to its repository
+    tag (``"v1.5.6"``, ``"v2.0.0"``).
+
+    Raises :class:`UnsupportedDuckDBVersionError` for any other version
+    string, e.g. ``"2.0.0rc1"``, ``"1.5.7.dev42"`` or ``"1.5.6.post1"``:
+    extensions are only published for DuckDB releases.
+    """
+    match = _RELEASE_VERSION_PATTERN.match(version.strip())
+    if not match:
+        raise UnsupportedDuckDBVersionError(
+            f"duckdb {version!r} is not a DuckDB release, and extension binaries are "
+            "only published for releases (e.g. 1.5.6 or 2.0.0). Install a released "
+            "duckdb package, or point ANOFOX_EXT_PATH (or connect(extension_path=...)) "
+            "at an extension built for this DuckDB version."
+        )
+    major, minor, patch = match.groups()
+    return f"v{major}.{minor}.{patch}"
 
 
 def _detect_duckdb_version() -> str:

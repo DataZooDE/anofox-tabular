@@ -232,8 +232,8 @@ distilbert-en
 # Global option count
 # ============================================================================
 
-# 26. Exactly 3 anofox_ner% options registered in duckdb_settings()
+# 26. Exactly 4 anofox_ner% options registered in duckdb_settings()
 query I
 SELECT COUNT(*) FROM duckdb_settings() WHERE name LIKE 'anofox_ner%';
 ----
-3
+4

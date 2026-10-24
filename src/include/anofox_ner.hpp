@@ -165,7 +165,8 @@ enum class NERStatus {
     DOWNLOADING,         // Download in progress
     LOADED,              // Ready for inference
     FAILED,              // Download/load failed
-    NOT_AVAILABLE        // OpenVINO not compiled in
+    NOT_AVAILABLE,       // OpenVINO not compiled in
+    NOT_DOWNLOADED       // Assets missing and anofox_ner_auto_download is off
 };
 
 /**
@@ -479,6 +480,12 @@ public:
     std::string GetDevice() const;
 
     /**
+     * Allow or forbid downloading missing model assets from Hugging Face.
+     * Turning it back on lets the next NER call retry a skipped download.
+     */
+    void SetAutoDownload(bool enabled);
+
+    /**
      * Get list of devices available to OpenVINO at runtime
      */
     std::vector<std::string> GetAvailableDevices() const;
@@ -549,6 +556,7 @@ private:
     static std::string DefaultModelPath();
 
     std::atomic<NERStatus> status_{NERStatus::NOT_LOADED};
+    std::atomic<bool> auto_download_{true};
     std::mutex init_lock_;
 
     // Guards status_message_, model_path_, current_model_name_ and

@@ -1,6 +1,8 @@
 #pragma once
 
 #include "duckdb/main/extension/extension_loader.hpp"
+#include "duckdb/catalog/catalog_entry.hpp"
+#include "duckdb/common/exception.hpp"
 #include "duckdb/function/scalar_function.hpp"
 #include "duckdb/function/table_function.hpp"
 #include "duckdb/parser/parsed_data/create_scalar_function_info.hpp"
@@ -146,6 +148,33 @@ inline void RegisterTableFunctionSetWithAlias(ExtensionLoader &loader, TableFunc
 	CreateTableFunctionInfo alias_info(std::move(alias_set));
 	alias_info.alias_of = func_set.name;
 	detail::RegisterWithAlias(loader, std::move(primary_info), std::move(alias_info), descriptions);
+}
+
+// Helper to register a scalar function that has no alias (e.g. the anofox-wide
+// anofox_contract_version()), with the same 2.0 handling as the alias helpers.
+inline void RegisterScalarFunction(ExtensionLoader &loader, ScalarFunction func,
+                                   vector<FunctionDescription> descriptions = {}) {
+	duckdb_compat::SetFallible(func);
+	CreateScalarFunctionInfo info(std::move(func));
+	info.descriptions = std::move(descriptions);
+	detail::NameParameters(info);
+	loader.RegisterFunction(std::move(info));
+}
+
+// Set duckdb_functions().tags on a registered table function (all overloads share
+// one catalog entry). CreateInfo::tags is not copied into function catalog entries
+// on either DuckDB line, so the entry is tagged after registration. The lookup works
+// on both lines: TryGetTableFunction takes a string on 1.5.6 and an Identifier on
+// 2.0, and duckdb_compat::FunctionName builds whichever the line takes.
+inline void SetTableFunctionTags(ExtensionLoader &loader, const std::string &name,
+                                 const vector<std::pair<std::string, std::string>> &tags) {
+	auto entry = loader.TryGetTableFunction(duckdb_compat::FunctionName(name));
+	if (!entry) {
+		throw InternalException("SetTableFunctionTags: table function '%s' is not registered", name);
+	}
+	for (auto &tag : tags) {
+		entry->tags[tag.first] = tag.second;
+	}
 }
 
 } // namespace anofox

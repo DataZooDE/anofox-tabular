@@ -1,5 +1,6 @@
 #include "include/anofox_outlier_tree.hpp"
 #include "include/anofox_function_alias.hpp"
+#include "include/anofox_id_column.hpp"
 #include "anofox_sql_utils.hpp"
 #include "telemetry.hpp"
 #include "anofox_trace.hpp"
@@ -793,6 +794,7 @@ struct OutlierTreeBindData : public TableFunctionData {
     std::vector<std::string> column_names;
     std::string output_mode;  // "summary" or "outliers"
     OutlierTreeParams params;
+    IdColumn id_column;       // optional pass-through identifier ('outliers' mode)
 
     OutlierTreeBindData(std::string tbl, std::vector<std::string> cols,
                         std::string mode, OutlierTreeParams p)
@@ -810,6 +812,8 @@ struct OutlierTreeGlobalState : public GlobalTableFunctionState {
     // Maps a compacted (NULL-filtered) row index back to its 1-based
     // position in the source table, so reported row ids match the source.
     std::vector<int64_t> source_row_ids;
+    // id_column values, indexed like source_row_ids (empty without id_column)
+    std::vector<Value> id_values;
     int64_t total_rows = 0;
     int64_t columns_analyzed = 0;
     int64_t clusters_evaluated = 0;
@@ -899,6 +903,10 @@ static unique_ptr<FunctionData> OutlierTreeBind(ClientContext &context, TableFun
         return_types.emplace_back(LogicalType(LogicalTypeId::VARCHAR));
         names.emplace_back("outlier_value");
         return_types.emplace_back(LogicalType(LogicalTypeId::VARCHAR));
+        // The value as a number for numeric columns (NULL for categorical
+        // ones), without the precision loss of the VARCHAR rendering (#111)
+        names.emplace_back("outlier_value_num");
+        return_types.emplace_back(LogicalType(LogicalTypeId::DOUBLE));
         names.emplace_back("cluster_mean");
         return_types.emplace_back(LogicalType(LogicalTypeId::DOUBLE));
         names.emplace_back("cluster_sd");
@@ -935,7 +943,12 @@ static unique_ptr<FunctionData> OutlierTreeBind(ClientContext &context, TableFun
         return_types.emplace_back(LogicalType(LogicalTypeId::VARCHAR));
     }
 
-    return make_uniq<OutlierTreeBindData>(table_name, column_names, output_mode, params);
+    auto id_column = BindIdColumn(context, input, "outlier_tree", table_name, output_mode == "outliers", "outliers");
+    InsertIdColumn(id_column, "outlier_tree", return_types, names);
+
+    auto bind_data = make_uniq<OutlierTreeBindData>(table_name, column_names, output_mode, params);
+    bind_data->id_column = std::move(id_column);
+    return std::move(bind_data);
 }
 
 // Execute function
@@ -988,6 +1001,9 @@ static void OutlierTreeExecute(ClientContext &context, TableFunctionInput &data_
             column_list += "CAST(" + QuoteSqlIdentifier(bind_data.column_names[i]) +
                            (column_info[i].type == FeatureType::CATEGORICAL ? " AS VARCHAR)" : " AS DOUBLE)");
         }
+        // The id column (if any) is read in the same query, after the
+        // features, so each id stays with its own row
+        column_list += bind_data.id_column.SelectSuffix();
         std::string query = "SELECT " + column_list + " FROM " + BuildQueryTableRef(bind_data.table_name);
 
         // Stream the input instead of materializing the full result; the
@@ -1024,6 +1040,9 @@ static void OutlierTreeExecute(ClientContext &context, TableFunctionInput &data_
                 if (!valid_row) continue;
 
                 state.source_row_ids.push_back(source_row);
+                if (bind_data.id_column.Enabled()) {
+                    state.id_values.push_back(chunk->data[n_cols].GetValue(row));
+                }
 
                 // Add values to data structures
                 for (idx_t col = 0; col < n_cols; ++col) {
@@ -1061,18 +1080,27 @@ static void OutlierTreeExecute(ClientContext &context, TableFunctionInput &data_
         idx_t count = MinValue<idx_t>(state.outliers.size() - state.current_row, STANDARD_VECTOR_SIZE);
         duckdb_compat::SetChildCardinality(output, count);
 
+        // With id_column the id sits at index 1 and shifts the rest by one
+        const idx_t id_col = bind_data.id_column.Enabled() ? 1 : 0;
+        const idx_t base = 1 + id_col;
         auto row_ids = duckdb_compat::FlatData<int64_t>(output.data[0]);
-        auto column_names = duckdb_compat::FlatData<string_t>(output.data[1]);
-        auto outlier_values = duckdb_compat::FlatData<string_t>(output.data[2]);
-        auto cluster_means = duckdb_compat::FlatData<double>(output.data[3]);
-        auto cluster_sds = duckdb_compat::FlatData<double>(output.data[4]);
-        auto cluster_sizes = duckdb_compat::FlatData<int64_t>(output.data[5]);
-        auto z_scores = duckdb_compat::FlatData<double>(output.data[6]);
-        auto lower_bounds = duckdb_compat::FlatData<double>(output.data[7]);
-        auto upper_bounds = duckdb_compat::FlatData<double>(output.data[8]);
-        auto conditions = duckdb_compat::FlatData<string_t>(output.data[9]);
-        auto explanations = duckdb_compat::FlatData<string_t>(output.data[10]);
-        auto outlier_scores = duckdb_compat::FlatData<double>(output.data[11]);
+        auto &column_name_vec = output.data[base];
+        auto column_names = duckdb_compat::FlatData<string_t>(column_name_vec);
+        auto &outlier_value_vec = output.data[base + 1];
+        auto outlier_values = duckdb_compat::FlatData<string_t>(outlier_value_vec);
+        auto &outlier_value_num_vec = output.data[base + 2];
+        auto outlier_value_nums = duckdb_compat::FlatData<double>(outlier_value_num_vec);
+        auto cluster_means = duckdb_compat::FlatData<double>(output.data[base + 3]);
+        auto cluster_sds = duckdb_compat::FlatData<double>(output.data[base + 4]);
+        auto cluster_sizes = duckdb_compat::FlatData<int64_t>(output.data[base + 5]);
+        auto z_scores = duckdb_compat::FlatData<double>(output.data[base + 6]);
+        auto lower_bounds = duckdb_compat::FlatData<double>(output.data[base + 7]);
+        auto upper_bounds = duckdb_compat::FlatData<double>(output.data[base + 8]);
+        auto &conditions_vec = output.data[base + 9];
+        auto conditions = duckdb_compat::FlatData<string_t>(conditions_vec);
+        auto &explanation_vec = output.data[base + 10];
+        auto explanations = duckdb_compat::FlatData<string_t>(explanation_vec);
+        auto outlier_scores = duckdb_compat::FlatData<double>(output.data[base + 11]);
 
         for (idx_t i = 0; i < count; ++i) {
             auto &outlier = state.outliers[state.current_row + i];
@@ -1080,16 +1108,25 @@ static void OutlierTreeExecute(ClientContext &context, TableFunctionInput &data_
             // Report the 1-based source table position, not the index in the
             // NULL-compacted working dataset
             row_ids[i] = state.source_row_ids[outlier.row_idx];
-            column_names[i] = StringVector::AddString(output.data[1], outlier.target_column_name);
-            outlier_values[i] = StringVector::AddString(output.data[2], outlier.GetOutlierValueString());
+            if (id_col) {
+                // Same compacted index as source_row_ids: the id of this row
+                output.data[id_col].SetValue(i, state.id_values[outlier.row_idx]);
+            }
+            column_names[i] = StringVector::AddString(column_name_vec, outlier.target_column_name);
+            outlier_values[i] = StringVector::AddString(outlier_value_vec, outlier.GetOutlierValueString());
+            if (std::holds_alternative<double>(outlier.outlier_value)) {
+                outlier_value_nums[i] = std::get<double>(outlier.outlier_value);
+            } else {
+                FlatVector::SetNull(outlier_value_num_vec, i, true);
+            }
             cluster_means[i] = outlier.cluster_mean;
             cluster_sds[i] = outlier.cluster_sd;
             cluster_sizes[i] = static_cast<int64_t>(outlier.cluster_size);
             z_scores[i] = outlier.z_score;
             lower_bounds[i] = outlier.lower_bound;
             upper_bounds[i] = outlier.upper_bound;
-            conditions[i] = StringVector::AddString(output.data[9], outlier.GetConditionsJSON());
-            explanations[i] = StringVector::AddString(output.data[10], outlier.explanation);
+            conditions[i] = StringVector::AddString(conditions_vec, outlier.GetConditionsJSON());
+            explanations[i] = StringVector::AddString(explanation_vec, outlier.explanation);
             outlier_scores[i] = outlier.outlier_score;
         }
         state.current_row += count;
@@ -1129,6 +1166,7 @@ void RegisterOutlierTreeFunctions(ExtensionLoader &loader) {
     TableFunction outlier_tree_3("anofox_tab_outlier_tree",
         {LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::VARCHAR)},
         DATAZOO_GUARD(ANOFOX_TABULAR_BANNER, OutlierTreeExecute), DATAZOO_GUARD(ANOFOX_TABULAR_BANNER, OutlierTreeBind), OutlierTreeInit);
+    AddIdColumnParameter(outlier_tree_3);
     outlier_tree_set.AddFunction(outlier_tree_3);
 
     // 9-parameter version (all parameters)
@@ -1137,6 +1175,7 @@ void RegisterOutlierTreeFunctions(ExtensionLoader &loader) {
          LogicalType(LogicalTypeId::INTEGER), LogicalType(LogicalTypeId::DOUBLE), LogicalType(LogicalTypeId::INTEGER),
          LogicalType(LogicalTypeId::INTEGER), LogicalType(LogicalTypeId::DOUBLE), LogicalType(LogicalTypeId::DOUBLE)},
         DATAZOO_GUARD(ANOFOX_TABULAR_BANNER, OutlierTreeExecute), DATAZOO_GUARD(ANOFOX_TABULAR_BANNER, OutlierTreeBind), OutlierTreeInit);
+    AddIdColumnParameter(outlier_tree_9);
     outlier_tree_set.AddFunction(outlier_tree_9);
 
     FunctionDescription ot_desc;

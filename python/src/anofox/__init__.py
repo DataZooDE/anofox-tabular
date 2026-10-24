@@ -21,10 +21,10 @@ import os
 from typing import Optional
 
 from ._connection import AnofoxConnection
-from ._loader import _DEFAULT_S3_BASE
+from ._loader import _DEFAULT_S3_BASE, UnsupportedDuckDBVersionError
 from . import profile
 
-__all__ = ["connect", "AnofoxConnection", "profile"]
+__all__ = ["connect", "AnofoxConnection", "UnsupportedDuckDBVersionError", "profile"]
 
 
 def connect(

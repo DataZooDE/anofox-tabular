@@ -24,7 +24,7 @@ SQL-native validation, anomaly detection, and data diffing—all without leaving
 SELECT email_validate('user@example.com', 'dns') as result;
 
 -- Detect outliers using Isolation Forest
-SELECT * FROM metric_isolation_forest('sales', 'amount', 100, 256, 0.1, 'scores');
+SELECT * FROM isolation_forest('sales', 'amount', 100, 256, 0.1, 'scores');
 
 -- Validate European VAT and multi-currency transactions
 SELECT * FROM transactions
@@ -148,7 +148,7 @@ LOAD anofox_tabular;
 SELECT email_is_valid('user@example.com', 'regex') as valid;
 
 -- Detect data anomalies
-SELECT * FROM metric_isolation_forest(
+SELECT * FROM isolation_forest(
     'your_table', 'numeric_column', 100, 256, 0.1, 'scores'
 ) WHERE is_anomaly = true;
 
@@ -407,6 +407,7 @@ Detect and mask Personally Identifiable Information (PII) in text data with 17 s
   - Inputs are truncated at the model's 512-token limit; entities beyond that are not detected
   - The built-in tokenizer is ASCII-focused (English model); non-ASCII punctuation is not treated as a word boundary
   - Model selection via `SET anofox_ner_model` (currently `distilbert-en` only) must happen before the model is first loaded
+  - **Network access:** the first NER-based detection downloads the model (~66 MB) from Hugging Face into `~/.duckdb/extensions/anofox/ner/`. This applies to `pii_detect`, `pii_mask`, `pii_scan_table` and `pii_audit_table` unless `anofox_pii_enabled_types` is limited to pattern-based types. Offline, run `SET anofox_ner_auto_download = false` (see [NER Settings](#ner-settings)): NER detection is then skipped (NAME falls back to the dictionary) and nothing is downloaded
 
 **Masking Strategies:**
 - `REDACT` - Replace with [TYPE] label
@@ -462,6 +463,38 @@ Track essential data quality dimensions:
 | **Rel. Count Change** | Daily count vs rolling baseline | `rel_count_change('orders', 'order_date', NULL, 7, -0.5, 0.5)` |
 | **Metric IQR Anomaly** | Daily metric outside IQR band | `metric_anomaly_iqr('orders', 'order_date', NULL, 30, 1.5, 'both')` |
 | **Rolling Values In Set** | Set membership over a date window | `rolling_values_in_set('orders', 'status', ['completed'], 'order_date', 14)` |
+
+The three time-aware checks evaluate one reference date (default: the latest date in the data), or,
+with `start_date := DATE, end_date := DATE`, every day of that inclusive range — one row per date,
+ordered by date, with the same columns:
+
+```sql
+SELECT reference_date, status, rel_change
+FROM rel_count_change('orders', 'order_date', start_date := DATE '2026-01-01', end_date := DATE '2026-01-31');
+```
+
+Their `_events` companions (`rel_count_change_events`, `metric_anomaly_iqr_events`,
+`rolling_values_in_set_events`, same arguments) return only the failing/warning dates in the anofox
+contract's `events` shape (`ds, kind, label, severity, value, threshold, series`), ready for an
+alarm timeline in anofox-visualization:
+
+```sql
+SELECT * FROM rel_count_change_events('orders', 'order_date', start_date := DATE '2026-01-01', end_date := DATE '2026-01-31');
+```
+
+**anofox integration contract:** contract producers carry the `duckdb_functions()` tags
+`{'anofox.output': '<schema>', 'anofox.contract': '1'}` and `anofox_contract_version()` returns
+`'1'`, so anofox-visualization plots them without adapter SQL:
+
+| Producer (primary `anofox_tab_*` name and alias) | Schema |
+|----------|--------|
+| `run_checks` | `check` |
+| `profile_correlations` | `matrix` |
+| `rel_count_change_events`, `metric_anomaly_iqr_events`, `rolling_values_in_set_events` | `events` |
+
+The one-row checks (including `agg_check`) keep their own columns and are not tagged; `run_checks`
+is the contract-shaped `check` producer for them (14 check types; not `zscore`, `iqr`,
+`schema_check`). See [docs/API_REFERENCE.md](docs/API_REFERENCE.md#anofox-integration-contract).
 
 **Check suites** — define checks once in a SQL table and run them all with one call:
 
@@ -519,7 +552,7 @@ Industry-grade anomaly detection with [isotree](https://github.com/david-cortes/
 
 ```sql
 -- Basic univariate detection
-SELECT * FROM metric_isolation_forest(
+SELECT * FROM isolation_forest(
     'sales_data',
     'amount',
     100,        -- n_trees
@@ -529,21 +562,22 @@ SELECT * FROM metric_isolation_forest(
 ) WHERE is_anomaly = true;
 
 -- Extended IF with hyperplane splits (ndim=3)
-SELECT * FROM metric_isolation_forest_multivariate(
+SELECT * FROM isolation_forest_mv(
     'transactions',
     'amount, quantity, duration',
     100, 256, 0.1, 'scores',
+    NULL,       -- seed (NULL = random)
     3,          -- ndim: hyperplane dimensions
     'normal',   -- coef_type: coefficient distribution
     'depth'     -- scoring_metric
 );
 
 -- SCiForest with gain-based split selection
-SELECT * FROM metric_isolation_forest_multivariate(
+SELECT * FROM isolation_forest_mv(
     'customer_events',
     'purchase_amount, session_duration',
     100, 256, 0.05, 'scores',
-    1, 'uniform', 'depth',
+    NULL, 1, 'uniform', 'depth',  -- seed, ndim, coef_type, scoring_metric
     NULL,       -- weight_column
     10,         -- ntry: split candidates
     0.5         -- prob_pick_avg_gain
@@ -556,14 +590,15 @@ SELECT * FROM metric_isolation_forest_multivariate(
 - Detects both global and local anomalies
 - Fast training and prediction (O(n log n))
 
-**New Parameters (v0.2.0):**
+**`isolation_forest_mv` parameters after `output_mode`** (in this order):
 | Parameter | Values | Description |
 |-----------|--------|-------------|
+| `seed` | integer (default: NULL = random) | Fixed seed for reproducible scores (also on `isolation_forest`) |
 | `ndim` | 1-N (default: 1) | Dimensions for hyperplane splits |
 | `coef_type` | 'uniform', 'normal' | Coefficient distribution |
 | `scoring_metric` | 'depth', 'density', 'adj_depth' | Scoring method |
 | `weight_column` | column name | Sample weight column |
-| `ntry` | 1-100 (default: 1) | Split candidates per node |
+| `ntry` | >= 1 (default: 1) | Split candidates per node |
 | `prob_pick_avg_gain` | 0.0-1.0 (default: 0.0) | Gain-based selection probability |
 
 #### DBSCAN Clustering
@@ -613,11 +648,12 @@ FROM outlier_tree('employees', 'job_title,salary,years_exp', 'outliers');
 
 **Output Modes:**
 - `'summary'`: Single row with pass/fail status and outlier count
-- `'outliers'`: Per-outlier rows with z-scores, bounds, and explanations
+- `'outliers'`: Per-outlier rows with z-scores, bounds, and explanations. The value is returned as text in `outlier_value` and, for numeric columns, as a DOUBLE in `outlier_value_num` (NULL for categorical columns), so it can be compared with `lower_bound`/`upper_bound` directly
 
 **Semantics:**
 - Rows containing NULL in any selected column are excluded from the analysis
 - `row_id` is the 1-based position of the row in the source table (NULL rows still count toward the position)
+- `id_column := '<column>'` (`'outliers'` mode) adds that column's value after `row_id`, see [Identifier pass-through](#anomaly-detection-functions)
 - `total_rows` (summary mode) is the number of analyzed rows, i.e. rows that are non-NULL in every selected column
 
 ---
@@ -631,6 +667,12 @@ Compare tables and identify changes:
 SELECT * FROM diff_joindiff('source_tbl', 'target_tbl', ['user_id', 'date'])
 WHERE diff_type IN ('added', 'changed')
 LIMIT 100;
+
+-- Every parameter can also be passed by name; a named value overrides the
+-- positional one
+SELECT * FROM diff_joindiff('source_tbl', 'target_tbl', 'id', include_all := true);
+SELECT * FROM diff_joindiff(source_table := 'source_tbl', target_table := 'target_tbl',
+                            primary_keys := ['user_id', 'date'], compare_columns := ['amount']);
 
 -- diff_hashdiff currently computes the same row-level diff as diff_joindiff.
 -- Its bisection_threshold/bisection_factor parameters are not implemented and
@@ -791,7 +833,7 @@ SELECT
     if_result.is_anomaly
 FROM transactions t
 JOIN (
-    SELECT * FROM metric_isolation_forest_multivariate(
+    SELECT * FROM isolation_forest_mv(
         'transactions',
         'amount, quantity, suspicious_amount',
         100, 256, 0.05, 'scores'
@@ -1002,7 +1044,7 @@ All other countries are validated by syntax only. French VAT keys containing let
 | Function | Signature | Returns | Description |
 |----------|-----------|---------|-------------|
 | `anofox_tab_pii_scan_table` | `(table VARCHAR [, columns VARCHAR])` | TABLE | Scan table columns for PII |
-| `anofox_tab_pii_audit_table` | `(table VARCHAR [, columns VARCHAR])` | TABLE | Row-level PII audit with masking |
+| `anofox_tab_pii_audit_table` | `(table VARCHAR [, columns VARCHAR] [, id_column := VARCHAR])` | TABLE | Row-level PII audit with masking; `id_column` passes an identifier column through |
 | `anofox_tab_pii_status` | `()` | TABLE | List supported PII types and recognizers |
 | `anofox_tab_pii_config` | `()` | TABLE | Current PII configuration |
 
@@ -1026,10 +1068,14 @@ All functions are registered under their canonical `anofox_tab_*` name plus the 
 | `anofox_tab_occurrence` (`occurrence`) | `(table VARCHAR, column VARCHAR, mode VARCHAR, lower BIGINT, upper BIGINT) → TABLE` | Highest (`'max'`) or lowest (`'min'`) frequency of any single value |
 | `anofox_tab_match_rate` (`match_rate`) | `(left VARCHAR, right VARCHAR, left_keys VARCHAR, right_keys VARCHAR [, min_rate DOUBLE = 1.0]) → TABLE` | Share of left rows with a join partner (referential integrity) |
 | `anofox_tab_compliance` (`compliance`) | `(table VARCHAR, expression VARCHAR [, min_rate DOUBLE = 1.0]) → TABLE` | Share of rows satisfying a SQL boolean expression |
-| `anofox_tab_rel_count_change` (`rel_count_change`) | `(table VARCHAR, date_col VARCHAR [, count_col VARCHAR, window_days BIGINT = 7, lower DOUBLE = -0.5, upper DOUBLE = 0.5, reference_date DATE]) → TABLE` | Daily (distinct) count vs rolling baseline average |
-| `anofox_tab_metric_anomaly_iqr` (`metric_anomaly_iqr`) | `(table VARCHAR, date_col VARCHAR [, metric_col VARCHAR, window_days BIGINT = 30, k DOUBLE = 1.5, mode VARCHAR = 'both', reference_date DATE]) → TABLE` | Daily metric outside Q1/Q3 ± k·IQR of the trailing window |
-| `anofox_tab_rolling_values_in_set` (`rolling_values_in_set`) | `(table VARCHAR, column VARCHAR, allowed LIST<VARCHAR>, date_col VARCHAR [, window_days BIGINT = 7, min_rate DOUBLE = 1.0, reference_date DATE]) → TABLE` | Values-in-set rate over a trailing date window |
-| `anofox_tab_run_checks` (`run_checks`) | `(checks_table VARCHAR) → TABLE` | Run every check in a checks table; uniform result rows |
+| `anofox_tab_rel_count_change` (`rel_count_change`) | `(table VARCHAR, date_col VARCHAR [, count_col VARCHAR, window_days BIGINT = 7, lower DOUBLE = -0.5, upper DOUBLE = 0.5, reference_date DATE] [, start_date := DATE, end_date := DATE]) → TABLE` | Daily (distinct) count vs rolling baseline average; one row per date with a date range |
+| `anofox_tab_metric_anomaly_iqr` (`metric_anomaly_iqr`) | `(table VARCHAR, date_col VARCHAR [, metric_col VARCHAR, window_days BIGINT = 30, k DOUBLE = 1.5, mode VARCHAR = 'both', reference_date DATE] [, start_date := DATE, end_date := DATE]) → TABLE` | Daily metric outside Q1/Q3 ± k·IQR of the trailing window; one row per date with a date range |
+| `anofox_tab_rolling_values_in_set` (`rolling_values_in_set`) | `(table VARCHAR, column VARCHAR, allowed LIST<VARCHAR>, date_col VARCHAR [, window_days BIGINT = 7, min_rate DOUBLE = 1.0, reference_date DATE] [, start_date := DATE, end_date := DATE]) → TABLE` | Values-in-set rate over a trailing date window; one row per date with a date range |
+| `anofox_tab_rel_count_change_events` (`rel_count_change_events`) | same arguments as `rel_count_change` → `TABLE(ds, kind, label, severity, value, threshold, series)` | Contract `events`: one row per failing/warning reference date |
+| `anofox_tab_metric_anomaly_iqr_events` (`metric_anomaly_iqr_events`) | same arguments as `metric_anomaly_iqr` → `TABLE(ds, kind, label, severity, value, threshold, series)` | Contract `events`: one row per anomalous reference date |
+| `anofox_tab_rolling_values_in_set_events` (`rolling_values_in_set_events`) | same arguments as `rolling_values_in_set` → `TABLE(ds, kind, label, severity, value, threshold, series)` | Contract `events`: one row per failing/warning reference date |
+| `anofox_tab_run_checks` (`run_checks`) | `(checks_table VARCHAR) → TABLE` | Run every check in a checks table; uniform result rows (contract `check` schema) |
+| `anofox_contract_version` | `() → VARCHAR` | anofox integration contract version (`'1'`) |
 
 > **Security note:** `compliance` executes the caller-supplied expression as SQL with the caller's
 > privileges. The expression is validated at bind time to be a single boolean expression
@@ -1126,12 +1172,28 @@ All parameters after `column_name` are optional; `dbscan('orders', 'amount')` us
 - `'summary'` (one row): `status` (`fail` when noise points exist, else `pass`), `cluster_count`, `noise_count`, `total_count`, `noise_rate`, `largest_cluster_size`, `eps`, `min_pts`, `n_columns` (`dbscan_mv` only), `message`
 - `'clusters'` (one row per non-NULL input row): `row_id`, `value` (univariate only), `cluster_id` (`-1` = noise), `point_type` (`'CORE'`, `'BORDER'`, `'NOISE'`), `neighbor_count`, `anomaly_score` (noise = 1.0), `is_anomaly`
 
+**Identifier pass-through (`id_column`):**
+
+The row-level outputs (`isolation_forest`/`isolation_forest_mv` in `'scores'` mode, `dbscan`/`dbscan_mv` in `'clusters'` mode, `outlier_tree` in `'outliers'` mode, and `pii_audit_table`) take an optional named parameter `id_column := '<column>'`. The value of that column is added to every output row, directly after `row_id`, under the column's own name and type, so results join back to the input without relying on row order. `row_id` is kept unchanged; without `id_column` the output schema is unchanged.
+
+```sql
+-- Score every order and keep its key
+SELECT order_id, anomaly_score
+FROM isolation_forest('orders', 'amount', 100, 256, 0.05, 'scores', id_column := 'order_id')
+WHERE is_anomaly;
+-- row_id | order_id | value | anomaly_score | is_anomaly
+```
+
+- The id is read in the same pass as the analyzed values, so it always belongs to the scored row; rows skipped for NULL features are skipped together with their id
+- NULL ids are passed through (the row is still analyzed)
+- Errors: an unknown column, a non-row-level `output_mode` (e.g. `'summary'`), or a name that collides with an output column (e.g. an input column named `anomaly_score`)
+
 ### Data Diffing Functions
 
 | Function | Signature | Description |
 |----------|-----------|-------------|
-| `anofox_tab_diff_hashdiff` | `(source VARCHAR, target VARCHAR, pk VARCHAR\|LIST<VARCHAR>) → TABLE` | Row-level diff (currently identical to joindiff; `bisection_threshold`/`bisection_factor` are not implemented and rejected) |
-| `anofox_tab_diff_joindiff` | `(source VARCHAR, target VARCHAR, pk VARCHAR\|LIST<VARCHAR> [, compare_cols LIST<VARCHAR> [, include_all BOOLEAN]]) → TABLE` | Detailed row-level diff with target data |
+| `anofox_tab_diff_hashdiff` | `(source_table VARCHAR, target_table VARCHAR, primary_key VARCHAR\|LIST<VARCHAR>) → TABLE` | Row-level diff (currently identical to joindiff; `bisection_threshold`/`bisection_factor` are not implemented and rejected). Parameters also by name (`primary_keys :=` for a list); named values override positional ones |
+| `anofox_tab_diff_joindiff` | `(source_table VARCHAR, target_table VARCHAR, primary_key VARCHAR\|LIST<VARCHAR> [, compare_columns LIST<VARCHAR> [, include_all BOOLEAN]]) → TABLE` | Detailed row-level diff with target data. Parameters also by name (`primary_keys :=` for a list); named values override positional ones |
 
 ### Data Profiling Functions
 
@@ -1249,6 +1311,21 @@ SET anofox_tab_phonenumber_default_region = 'US';  -- Default region code
 
 The default region must be a supported 2-letter ISO region code; unknown codes are rejected.
 
+### NER Settings
+
+NER-based PII detection (NAME, ORGANIZATION, LOCATION, MISC) downloads its model from Hugging Face on first use (~66 MB, cached in `~/.duckdb/extensions/anofox/ner/<model>/`).
+
+```sql
+SET anofox_ner_auto_download = false;  -- Never download; skip NER detection when the model is not on disk (default: true)
+SET anofox_ner_model = 'distilbert-en';  -- Must be set before the model is first loaded
+SET anofox_ner_device = 'AUTO';  -- OpenVINO device: AUTO, CPU, GPU, ...
+SET anofox_ner_cache_size = 10000;  -- LRU cache of NER results (0 disables)
+
+SELECT model_status, status_message FROM anofox_ner_status();  -- NOT_DOWNLOADED when the download was skipped
+```
+
+For offline machines, copy `model_quantized.onnx` and `tokenizer.json` from a machine that has them into the same directory.
+
 ### Tracing
 
 ```sql
@@ -1271,6 +1348,9 @@ make test
 
 # Debug mode tests
 make test_debug
+
+# NER tests (OpenVINO build; downloads the NER model on first run)
+make test_ner
 ```
 
 **Test Files:**
@@ -1415,13 +1495,13 @@ SET anofox_tab_email_smtp_read_timeout_ms = 10000;
 **Solution**: Use streaming output modes and process in batches:
 ```sql
 -- Use 'summary' mode for large tables
-SELECT * FROM metric_isolation_forest(
+SELECT * FROM isolation_forest(
     'large_table', 'column', 100, 256, 0.1, 'summary'
 );
 
 -- Process in batches
 CREATE TABLE anomalies AS
-SELECT * FROM metric_isolation_forest(
+SELECT * FROM isolation_forest(
     'large_table', 'column', 100, 256, 0.1, 'scores'
 )
 WHERE is_anomaly = true;  -- Filter early

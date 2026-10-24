@@ -2,6 +2,7 @@
 #include "anofox_isolation_forest.hpp"
 #include "anofox_dbscan.hpp"
 #include "anofox_function_alias.hpp"
+#include "anofox_id_column.hpp"
 #include "anofox_sql_utils.hpp"
 #include "anofox_trace.hpp"
 #include "telemetry.hpp"
@@ -422,6 +423,7 @@ struct IsolationForestBindData : public TableFunctionData {
 	bool has_weight_column;
 	size_t ntry;                              // SCiForest: number of split candidates to evaluate (1=random IF)
 	double prob_pick_avg_gain;                // SCiForest: probability of selecting best-gain split (0=random, 1=always best)
+	IdColumn id_column;                       // Optional pass-through identifier ('scores' mode)
 
 	IsolationForestBindData(string tbl, vector<string> cols, size_t trees, size_t sample,
 	                        double contam, string mode, uint64_t s, bool has_s, bool force_multivariate = false,
@@ -449,6 +451,7 @@ struct IsolationForestGlobalState : public GlobalTableFunctionState {
 	// instead of buffering a duplicate per-row result vector.
 	std::vector<double> scores;
 	std::vector<double> first_column_values;  // univariate numeric path only ("value" output column)
+	std::vector<Value> id_values;              // id_column value per scored row (empty without id_column)
 	double threshold = 0.0;
 	int64_t total_count = 0;
 	int64_t outlier_count = 0;
@@ -545,8 +548,13 @@ static unique_ptr<FunctionData> IsolationForestBind(ClientContext &context, Tabl
 		return_types.emplace_back(LogicalType(LogicalTypeId::VARCHAR));
 	}
 
-	return make_uniq<IsolationForestBindData>(table_name, column_names, n_trees, sample_size,
-	                                          contamination, output_mode, seed, has_seed);
+	auto id_column = BindIdColumn(context, input, "isolation_forest", table_name, output_mode == "scores", "scores");
+	InsertIdColumn(id_column, "isolation_forest", return_types, names);
+
+	auto bind_data = make_uniq<IsolationForestBindData>(table_name, column_names, n_trees, sample_size,
+	                                                    contamination, output_mode, seed, has_seed);
+	bind_data->id_column = std::move(id_column);
+	return std::move(bind_data);
 }
 
 // Bind function for multivariate isolation forest
@@ -664,11 +672,17 @@ static unique_ptr<FunctionData> IsolationForestMultivariateBind(ClientContext &c
 		return_types.emplace_back(LogicalType(LogicalTypeId::VARCHAR));
 	}
 
+	auto id_column =
+	    BindIdColumn(context, input, "isolation_forest_mv", table_name, output_mode == "scores", "scores");
+	InsertIdColumn(id_column, "isolation_forest_mv", return_types, names);
+
 	// Force multivariate mode for this function (3-column output schema)
-	return make_uniq<IsolationForestBindData>(table_name, column_names, n_trees, sample_size,
-	                                          contamination, output_mode, seed, has_seed, true, ndim, coef_type,
-	                                          scoring_metric, weight_column, has_weight_column,
-	                                          ntry, prob_pick_avg_gain);
+	auto bind_data = make_uniq<IsolationForestBindData>(table_name, column_names, n_trees, sample_size,
+	                                                    contamination, output_mode, seed, has_seed, true, ndim,
+	                                                    coef_type, scoring_metric, weight_column, has_weight_column,
+	                                                    ntry, prob_pick_avg_gain);
+	bind_data->id_column = std::move(id_column);
+	return std::move(bind_data);
 }
 
 // Execute isolation forest algorithm
@@ -728,6 +742,13 @@ static void IsolationForestExecute(ClientContext &context, TableFunctionInput &d
 		if (bind_data.has_weight_column) {
 			column_list += ", CAST(" + QuoteSqlIdentifier(bind_data.weight_column) + " AS DOUBLE)";
 		}
+		// Feature (+ weight) columns: the ones that must be non-NULL for a row
+		// to be scored. The id column (if any) is read last in the same query,
+		// so each id stays with its own row; it is never a filter (NULL ids
+		// are passed through).
+		const idx_t n_checked_cols = bind_data.column_names.size() + (bind_data.has_weight_column ? 1 : 0);
+		const idx_t id_col_idx = n_checked_cols;
+		column_list += bind_data.id_column.SelectSuffix();
 
 		string null_checks;
 		for (size_t i = 0; i < bind_data.column_names.size(); ++i) {
@@ -802,13 +823,17 @@ static void IsolationForestExecute(ClientContext &context, TableFunctionInput &d
 
 				for (idx_t row = 0; row < chunk->size(); ++row) {
 					bool valid_row = true;
-					for (idx_t col = 0; col < chunk_cols; ++col) {
+					for (idx_t col = 0; col < n_checked_cols; ++col) {
 						if (!formats[col].validity.RowIsValid(formats[col].sel->get_index(row))) {
 							valid_row = false;
 							break;
 						}
 					}
 					if (!valid_row) continue;
+
+					if (bind_data.id_column.Enabled()) {
+						state.id_values.push_back(chunk->data[id_col_idx].GetValue(row));
+					}
 
 					// Process feature columns (not including weight column)
 					for (idx_t col = 0; col < bind_data.column_names.size(); ++col) {
@@ -879,7 +904,7 @@ static void IsolationForestExecute(ClientContext &context, TableFunctionInput &d
 
 				for (idx_t row = 0; row < chunk->size(); ++row) {
 					bool valid_row = true;
-					for (idx_t col = 0; col < chunk_cols; ++col) {
+					for (idx_t col = 0; col < n_checked_cols; ++col) {
 						if (!formats[col].validity.RowIsValid(formats[col].sel->get_index(row))) {
 							valid_row = false;
 							break;
@@ -887,8 +912,13 @@ static void IsolationForestExecute(ClientContext &context, TableFunctionInput &d
 					}
 					if (!valid_row) continue;
 
-					std::vector<double> point(chunk_cols);
-					for (idx_t col = 0; col < chunk_cols; ++col) {
+					if (bind_data.id_column.Enabled()) {
+						state.id_values.push_back(chunk->data[id_col_idx].GetValue(row));
+					}
+
+					// The numeric path has no weight column: every checked column is a feature
+					std::vector<double> point(n_checked_cols);
+					for (idx_t col = 0; col < n_checked_cols; ++col) {
 						point[col] = UnifiedVectorFormat::GetData<double>(formats[col])[formats[col].sel->get_index(row)];
 					}
 					if (!bind_data.is_multivariate) {
@@ -935,6 +965,10 @@ static void IsolationForestExecute(ClientContext &context, TableFunctionInput &d
 
 		auto row_ids = duckdb_compat::FlatData<int64_t>(output.data[0]);
 		idx_t col = 1;
+		Vector *id_vec = nullptr;
+		if (bind_data.id_column.Enabled()) {
+			id_vec = &output.data[col++];
+		}
 		double *values = nullptr;
 		if (!bind_data.is_multivariate) {
 			values = duckdb_compat::FlatData<double>(output.data[col++]);
@@ -945,6 +979,10 @@ static void IsolationForestExecute(ClientContext &context, TableFunctionInput &d
 		for (idx_t i = 0; i < count; ++i) {
 			idx_t r = state.current_row + i;
 			row_ids[i] = static_cast<int64_t>(r + 1);  // 1-indexed
+			if (id_vec) {
+				// Scores are in scan order, like the ids captured with them
+				id_vec->SetValue(i, state.id_values[r]);
+			}
 			if (values) {
 				// Mixed-type univariate input has no numeric first column; it reports 0.0
 				values[i] = r < state.first_column_values.size() ? state.first_column_values[r] : 0.0;
@@ -998,6 +1036,7 @@ struct DBSCANBindData : public TableFunctionData {
 	int64_t min_pts;
 	string output_mode; // "summary" or "clusters"
 	bool is_multivariate;
+	IdColumn id_column; // Optional pass-through identifier ('clusters' mode)
 
 	DBSCANBindData(string tbl, vector<string> cols, double eps_val, int64_t min_pts_val, string mode,
 	               bool force_multivariate)
@@ -1015,6 +1054,7 @@ struct DBSCANGlobalState : public GlobalTableFunctionState {
 	std::vector<DBSCANPoint> points;
 	std::vector<double> anomaly_scores;
 	std::vector<double> first_column_values; // univariate only
+	std::vector<Value> id_values;            // id_column value per point (empty without id_column)
 	int64_t total_count = 0;
 	int64_t cluster_count = 0;
 	int64_t noise_count = 0;
@@ -1109,7 +1149,12 @@ static unique_ptr<FunctionData> DBSCANBind(ClientContext &context, TableFunction
 	ParseDBSCANParameters(input, "dbscan", eps, min_pts, output_mode);
 
 	DefineDBSCANSchema(output_mode, /*include_value=*/true, /*include_n_columns=*/false, return_types, names);
-	return make_uniq<DBSCANBindData>(table_name, std::move(column_names), eps, min_pts, output_mode, false);
+	auto id_column = BindIdColumn(context, input, "dbscan", table_name, output_mode == "clusters", "clusters");
+	InsertIdColumn(id_column, "dbscan", return_types, names);
+
+	auto bind_data = make_uniq<DBSCANBindData>(table_name, std::move(column_names), eps, min_pts, output_mode, false);
+	bind_data->id_column = std::move(id_column);
+	return std::move(bind_data);
 }
 
 // Bind function for multivariate DBSCAN
@@ -1132,7 +1177,12 @@ static unique_ptr<FunctionData> DBSCANMultivariateBind(ClientContext &context, T
 	ParseDBSCANParameters(input, "dbscan_mv", eps, min_pts, output_mode);
 
 	DefineDBSCANSchema(output_mode, /*include_value=*/false, /*include_n_columns=*/true, return_types, names);
-	return make_uniq<DBSCANBindData>(table_name, std::move(column_names), eps, min_pts, output_mode, true);
+	auto id_column = BindIdColumn(context, input, "dbscan_mv", table_name, output_mode == "clusters", "clusters");
+	InsertIdColumn(id_column, "dbscan_mv", return_types, names);
+
+	auto bind_data = make_uniq<DBSCANBindData>(table_name, std::move(column_names), eps, min_pts, output_mode, true);
+	bind_data->id_column = std::move(id_column);
+	return std::move(bind_data);
 }
 
 static const char *DBSCANPointTypeToString(PointType type) {
@@ -1171,6 +1221,10 @@ static void DBSCANExecute(ClientContext &context, TableFunctionInput &data_p, Da
 			column_list += "CAST(" + QuoteSqlIdentifier(bind_data.column_names[i]) + " AS DOUBLE)";
 			null_checks += QuoteSqlIdentifier(bind_data.column_names[i]) + " IS NOT NULL";
 		}
+		// The id column (if any) is read last in the same query, so each id
+		// stays with its own point; it is never a filter (NULL ids pass through)
+		const idx_t n_features = bind_data.column_names.size();
+		column_list += bind_data.id_column.SelectSuffix();
 		string query = "SELECT " + column_list + " FROM " + BuildQueryTableRef(bind_data.table_name) + " WHERE " +
 		               null_checks;
 
@@ -1198,7 +1252,7 @@ static void DBSCANExecute(ClientContext &context, TableFunctionInput &data_p, Da
 
 			for (idx_t row = 0; row < chunk->size(); ++row) {
 				bool valid_row = true;
-				for (idx_t col = 0; col < chunk_cols; ++col) {
+				for (idx_t col = 0; col < n_features; ++col) {
 					if (!formats[col].validity.RowIsValid(formats[col].sel->get_index(row))) {
 						valid_row = false;
 						break;
@@ -1208,8 +1262,11 @@ static void DBSCANExecute(ClientContext &context, TableFunctionInput &data_p, Da
 					continue;
 				}
 
-				std::vector<double> point(chunk_cols);
-				for (idx_t col = 0; col < chunk_cols; ++col) {
+				if (bind_data.id_column.Enabled()) {
+					state.id_values.push_back(chunk->data[n_features].GetValue(row));
+				}
+				std::vector<double> point(n_features);
+				for (idx_t col = 0; col < n_features; ++col) {
 					point[col] = UnifiedVectorFormat::GetData<double>(formats[col])[formats[col].sel->get_index(row)];
 				}
 				if (!bind_data.is_multivariate) {
@@ -1249,6 +1306,10 @@ static void DBSCANExecute(ClientContext &context, TableFunctionInput &data_p, Da
 
 		idx_t col = 0;
 		auto row_ids = duckdb_compat::FlatData<int64_t>(output.data[col++]);
+		Vector *id_vec = nullptr;
+		if (bind_data.id_column.Enabled()) {
+			id_vec = &output.data[col++];
+		}
 		double *values = nullptr;
 		if (!bind_data.is_multivariate) {
 			values = duckdb_compat::FlatData<double>(output.data[col++]);
@@ -1264,6 +1325,10 @@ static void DBSCANExecute(ClientContext &context, TableFunctionInput &data_p, Da
 			idx_t r = state.current_row + i;
 			auto &pt = state.points[r];
 			row_ids[i] = static_cast<int64_t>(r + 1);  // 1-indexed
+			if (id_vec) {
+				// Points are in scan order, like the ids captured with them
+				id_vec->SetValue(i, state.id_values[r]);
+			}
 			if (values) {
 				values[i] = state.first_column_values[r];
 			}
@@ -1312,12 +1377,15 @@ static void DBSCANExecute(ClientContext &context, TableFunctionInput &data_p, Da
 
 // Helper: register every prefix arity of full_args (from min_arity up) in a function set,
 // so that all trailing parameters with bind-time defaults are optional.
+// Every overload takes the optional `id_column` named parameter (#108).
 static void AddPrefixArities(TableFunctionSet &set, const string &name, const vector<LogicalType> &full_args,
                              idx_t min_arity, table_function_t function, table_function_bind_t bind,
                              table_function_init_global_t init_global) {
 	for (idx_t arity = min_arity; arity <= full_args.size(); ++arity) {
 		vector<LogicalType> args(full_args.begin(), full_args.begin() + arity);
-		set.AddFunction(TableFunction(duckdb_compat::FunctionName(name), std::move(args), function, bind, init_global));
+		TableFunction fn(duckdb_compat::FunctionName(name), std::move(args), function, bind, init_global);
+		AddIdColumnParameter(fn);
+		set.AddFunction(std::move(fn));
 	}
 }
 

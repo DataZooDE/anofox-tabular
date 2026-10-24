@@ -3,6 +3,7 @@
 #include "anofox_sql_utils.hpp"
 #include "anofox_trace.hpp"
 #include "anofox_function_alias.hpp"
+#include "anofox_id_column.hpp"
 #include "anofox_phonenumber.hpp"
 #include "telemetry.hpp"
 
@@ -22,6 +23,7 @@
 
 #include <algorithm>
 #include <array>
+#include <unordered_set>
 #include <sstream>
 #include <iomanip>
 #include <cctype>
@@ -38,6 +40,31 @@ namespace {
 // The user-configured anofox_pii_min_confidence threshold is applied
 // centrally in PIIEngine::Detect() on top of this floor.
 constexpr double NER_MIN_ENTITY_CONFIDENCE = 0.7;
+
+bool IsNERType(PIIType type) {
+    return type == PIIType::NAME || type == PIIType::ORGANIZATION || type == PIIType::LOCATION ||
+           type == PIIType::MISC;
+}
+
+// Words that label a PII field ("IBAN DE89...", "SSN: 123-...") rather than
+// name an entity. The NER model tags some of them as ORG or LOC (#118).
+bool IsFieldLabel(const std::string &text) {
+    static const std::unordered_set<std::string> labels = {
+        "IBAN", "BIC", "SWIFT", "SSN", "VAT", "VAT ID", "USTID", "UST-IDNR", "TIN", "NINO", "EIN",
+        "ITIN", "PIN", "CVV", "CVC", "DOB", "ID", "EMAIL", "E-MAIL", "PHONE", "TEL", "FAX", "MOBILE",
+        "URL", "IP", "MAC", "PASSPORT", "API KEY"};
+    std::string upper;
+    for (char c : text) {
+        if (c == ':' || c == '.' || c == '#') {
+            continue;
+        }
+        upper += static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+    }
+    while (!upper.empty() && std::isspace(static_cast<unsigned char>(upper.back()))) {
+        upper.pop_back();
+    }
+    return labels.count(upper) > 0;
+}
 } // anonymous namespace
 
 // ============================================================================
@@ -298,15 +325,26 @@ std::vector<PIIMatch> RegexRecognizer::FindMatches(const std::string &text) cons
 
     while (iter != end) {
         std::smatch match = *iter;
-        std::string matched_text = match.str();
+        // Patterns that anchor on whitespace (ECMAScript has no lookbehind)
+        // consume it; no PII value starts or ends with whitespace, so it is
+        // not part of the match and must survive masking.
+        auto start = static_cast<size_t>(match.position());
+        auto stop = start + static_cast<size_t>(match.length());
+        while (start < stop && std::isspace(static_cast<unsigned char>(text[start]))) {
+            start++;
+        }
+        while (stop > start && std::isspace(static_cast<unsigned char>(text[stop - 1]))) {
+            stop--;
+        }
+        std::string matched_text = text.substr(start, stop - start);
 
         // Validate the match (e.g., checksum for credit cards)
-        if (Validate(matched_text)) {
+        if (!matched_text.empty() && Validate(matched_text)) {
             PIIMatch pii_match(
                 type_,
                 matched_text,
-                static_cast<size_t>(match.position()),
-                static_cast<size_t>(match.position() + match.length()),
+                start,
+                stop,
                 1.0  // Full confidence for valid matches
             );
             matches.push_back(pii_match);
@@ -840,8 +878,10 @@ PhoneRecognizer::PhoneRecognizer()
         // Matches phone formats requiring distinctive features to avoid SSN overlap:
         // - International prefix (+1, +44, etc.) with 7+ digits following
         // - US with parentheses: (555) 123-4567
-        // Note: No leading \b for international since + is not a word char
-        R"((?:^|[\s])(\+\d{1,4}[\s\-\.]?\(?\d{1,4}\)?[\s\-\.]?\d{1,4}[\s\-\.]?\d{2,4}[\s\-\.]?\d{2,4})(?:$|[\s])|(\(\d{3}\)[\s\-\.]?\d{3}[\s\-\.]?\d{4}))"
+        // Note: No leading \b for international since + is not a word char.
+        // The trailing boundary is a lookahead, so a following number can
+        // still claim the separating space; punctuation may end a number.
+        R"((?:^|[\s])(\+\d{1,4}[\s\-\.]?\(?\d{1,4}\)?[\s\-\.]?\d{1,4}[\s\-\.]?\d{2,4}[\s\-\.]?\d{2,4})(?=$|[\s,;:.!?)])|(\(\d{3}\)[\s\-\.]?\d{3}[\s\-\.]?\d{4}))"
     ) {}
 
 PhoneRecognizer::~PhoneRecognizer() {
@@ -1704,6 +1744,9 @@ std::vector<PIIMatch> PIIEngine::Detect(
             if (match.confidence < config.min_confidence) {
                 continue;
             }
+            if (IsNERType(match.type) && IsFieldLabel(match.matched_text)) {
+                continue;
+            }
             all_matches.push_back(std::move(match));
         }
     }
@@ -2559,6 +2602,7 @@ void NERStatusFunction(ClientContext &, TableFunctionInput &input, DataChunk &ou
         case NERStatus::LOADED: status_str = "LOADED"; break;
         case NERStatus::FAILED: status_str = "FAILED"; break;
         case NERStatus::NOT_AVAILABLE: status_str = "NOT_AVAILABLE"; break;
+        case NERStatus::NOT_DOWNLOADED: status_str = "NOT_DOWNLOADED"; break;
         default: status_str = "UNKNOWN"; break;
     }
     output.data[1].SetValue(0, Value(status_str));
@@ -2594,6 +2638,7 @@ TableFunction CreateNERStatusFunction() {
 struct PIIAuditTableBindData : public TableFunctionData {
     std::string table_name;
     std::vector<std::string> column_filter;  // Empty = all VARCHAR columns
+    IdColumn id_column;                      // Optional pass-through identifier (#108)
 
     PIIAuditTableBindData(const std::string &table, const std::vector<std::string> &cols)
         : table_name(table), column_filter(cols) {}
@@ -2634,6 +2679,7 @@ struct PIIAuditTableResult {
     int64_t start_pos;
     int64_t end_pos;
     double confidence;
+    Value id_value;  // id_column value of the row (unused without id_column)
 
     PIIAuditTableResult() : row_id(0), pii_type(PIIType::UNKNOWN),
                             start_pos(0), end_pos(0), confidence(0.0) {}
@@ -2716,7 +2762,13 @@ unique_ptr<FunctionData> PIIAuditTableBind(ClientContext &context, TableFunction
     names.emplace_back("confidence");
     return_types.emplace_back(LogicalTypeId::DOUBLE);
 
-    return make_uniq<PIIAuditTableBindData>(table_name, column_filter);
+    // Every output row is row-level, so id_column is valid in any call
+    auto id_column = BindIdColumn(context, input, "pii_audit_table", table_name, true, "");
+    InsertIdColumn(id_column, "pii_audit_table", return_types, names);
+
+    auto bind_data = make_uniq<PIIAuditTableBindData>(table_name, column_filter);
+    bind_data->id_column = std::move(id_column);
+    return std::move(bind_data);
 }
 
 void PIIAuditTableFunction(ClientContext &context, TableFunctionInput &input, DataChunk &output) {
@@ -2747,8 +2799,10 @@ void PIIAuditTableFunction(ClientContext &context, TableFunctionInput &input, Da
                     break;  // All columns audited
                 }
                 const auto &col_name = state.columns_to_scan[state.column_idx];
-                std::string query =
-                    "SELECT " + QuoteSqlIdentifier(col_name) + " FROM " + BuildQueryTableRef(bind_data.table_name);
+                // The id column (if any) is read in the same query as the
+                // audited column, so each id stays with its own row
+                std::string query = "SELECT " + QuoteSqlIdentifier(col_name) + bind_data.id_column.SelectSuffix() +
+                                    " FROM " + BuildQueryTableRef(bind_data.table_name);
 
                 // Execute as a streaming query on a dedicated connection
                 // (the connection must outlive the streaming result)
@@ -2798,6 +2852,7 @@ void PIIAuditTableFunction(ClientContext &context, TableFunctionInput &input, Da
                 // Mask covers the whole value, so it is identical for every
                 // match of this row; compute it once
                 std::string masked = engine.Mask(text, state.mask_strategy, {}, state.config);
+                Value id_value = bind_data.id_column.Enabled() ? chunk->data[1].GetValue(row) : Value();
 
                 for (const auto &match : matches) {
                     PIIAuditTableResult res;
@@ -2809,6 +2864,7 @@ void PIIAuditTableFunction(ClientContext &context, TableFunctionInput &input, Da
                     res.start_pos = static_cast<int64_t>(match.start_pos);
                     res.end_pos = static_cast<int64_t>(match.end_pos);
                     res.confidence = match.confidence;
+                    res.id_value = id_value;
 
                     state.pending.push_back(std::move(res));
                 }
@@ -2826,22 +2882,32 @@ void PIIAuditTableFunction(ClientContext &context, TableFunctionInput &input, Da
         return;
     }
 
+    // With id_column the id sits at index 1 and shifts the rest by one
+    const idx_t id_col = bind_data.id_column.Enabled() ? 1 : 0;
+    const idx_t base = 1 + id_col;
+    auto &column_name_vec = output.data[base];
+    auto &pii_type_vec = output.data[base + 1];
+    auto &original_value_vec = output.data[base + 2];
+    auto &masked_value_vec = output.data[base + 3];
     auto row_ids = duckdb_compat::FlatData<int64_t>(output.data[0]);
-    auto column_names = duckdb_compat::FlatData<string_t>(output.data[1]);
-    auto pii_types = duckdb_compat::FlatData<string_t>(output.data[2]);
-    auto original_values = duckdb_compat::FlatData<string_t>(output.data[3]);
-    auto masked_values = duckdb_compat::FlatData<string_t>(output.data[4]);
-    auto start_positions = duckdb_compat::FlatData<int64_t>(output.data[5]);
-    auto end_positions = duckdb_compat::FlatData<int64_t>(output.data[6]);
-    auto confidences = duckdb_compat::FlatData<double>(output.data[7]);
+    auto column_names = duckdb_compat::FlatData<string_t>(column_name_vec);
+    auto pii_types = duckdb_compat::FlatData<string_t>(pii_type_vec);
+    auto original_values = duckdb_compat::FlatData<string_t>(original_value_vec);
+    auto masked_values = duckdb_compat::FlatData<string_t>(masked_value_vec);
+    auto start_positions = duckdb_compat::FlatData<int64_t>(output.data[base + 4]);
+    auto end_positions = duckdb_compat::FlatData<int64_t>(output.data[base + 5]);
+    auto confidences = duckdb_compat::FlatData<double>(output.data[base + 6]);
 
     for (idx_t i = 0; i < count; i++) {
         const auto &res = state.pending[state.pending_offset + i];
         row_ids[i] = res.row_id;
-        column_names[i] = StringVector::AddString(output.data[1], res.column_name);
-        pii_types[i] = StringVector::AddString(output.data[2], PIITypeToString(res.pii_type));
-        original_values[i] = StringVector::AddString(output.data[3], res.original_value);
-        masked_values[i] = StringVector::AddString(output.data[4], res.masked_value);
+        if (id_col) {
+            output.data[id_col].SetValue(i, res.id_value);
+        }
+        column_names[i] = StringVector::AddString(column_name_vec, res.column_name);
+        pii_types[i] = StringVector::AddString(pii_type_vec, PIITypeToString(res.pii_type));
+        original_values[i] = StringVector::AddString(original_value_vec, res.original_value);
+        masked_values[i] = StringVector::AddString(masked_value_vec, res.masked_value);
         start_positions[i] = res.start_pos;
         end_positions[i] = res.end_pos;
         confidences[i] = res.confidence;
@@ -2857,12 +2923,14 @@ TableFunctionSet CreatePIIAuditTableFunctionSet() {
     TableFunction func1("anofox_tab_pii_audit_table",
                         {LogicalType::VARCHAR},
                         DATAZOO_GUARD(ANOFOX_TABULAR_BANNER, PIIAuditTableFunction), DATAZOO_GUARD(ANOFOX_TABULAR_BANNER, PIIAuditTableBind), PIIAuditTableInit);
+    AddIdColumnParameter(func1);
     set.AddFunction(func1);
 
     // Version 2: table_name + column filter
     TableFunction func2("anofox_tab_pii_audit_table",
                         {LogicalType::VARCHAR, LogicalType::VARCHAR},
                         DATAZOO_GUARD(ANOFOX_TABULAR_BANNER, PIIAuditTableFunction), DATAZOO_GUARD(ANOFOX_TABULAR_BANNER, PIIAuditTableBind), PIIAuditTableInit);
+    AddIdColumnParameter(func2);
     set.AddFunction(func2);
 
     return set;

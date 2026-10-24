@@ -68,3 +68,18 @@ test_debug_internal:
 
 test_reldebug_internal:
 	DATAZOO_DISABLE_TELEMETRY=1 DNNL_MAX_CPU_ISA=AVX2 $(POSTAL_TEST_ENV) ./build/reldebug/test/unittest "test/*"
+
+# The NER sqllogictests guard on OPENVINO_AVAILABLE because they need an
+# OpenVINO build and download the NER model from Hugging Face on first use
+# (~66 MB, cached in ~/.duckdb/extensions/anofox/ner). The regular test
+# targets skip them; this target runs them, and fails if the extension was
+# built without OpenVINO rather than letting every NER assertion degrade.
+NER_TESTS := test/sql/anofox_pii_ner.test test/sql/anofox_ner_cache_zero.test test/sql/anofox_ner_truncation.test
+test_ner: release
+	@./build/release/duckdb -noheader -list -c "SELECT onnx_available FROM anofox_ner_status()" | grep -qx true \
+		|| { echo "test_ner: the extension was built without OpenVINO"; exit 1; }
+	@for t in $(NER_TESTS); do \
+		DATAZOO_DISABLE_TELEMETRY=1 DNNL_MAX_CPU_ISA=AVX2 OPENVINO_AVAILABLE=1 ./build/release/test/unittest "$$t" || exit 1; \
+	done
+
+.PHONY: test_ner

@@ -56,11 +56,12 @@ All functions have aliases without the `anofox_tab_` prefix. For example:
 6. [PII Detection](#pii-detection)
 7. [Data Quality Metrics](#data-quality-metrics)
 8. [Check Suites](#check-suites)
-9. [Anomaly Detection](#anomaly-detection)
-10. [Data Diffing](#data-diffing)
-11. [Configuration](#configuration)
-12. [Function Coverage Matrix](#function-coverage-matrix)
-13. [Notes](#notes)
+9. [anofox Integration Contract](#anofox-integration-contract)
+10. [Anomaly Detection](#anomaly-detection)
+11. [Data Diffing](#data-diffing)
+12. [Configuration](#configuration)
+13. [Function Coverage Matrix](#function-coverage-matrix)
+14. [Notes](#notes)
 
 ---
 
@@ -337,7 +338,7 @@ SELECT anofox_tab_phonenumber_is_valid('+1 415-555-1234', 'US');
 
 ---
 
-#### `anofox_tab_phonenumber_is_possible`
+#### `anofox_tab_phonenumber_is_possible` (alias: `phonenumber_is_possible`)
 
 Quick possibility check using length-only analysis.
 
@@ -357,7 +358,7 @@ SELECT anofox_tab_phonenumber_is_possible('4155551234', 'US');
 
 ---
 
-#### `anofox_tab_phonenumber_is_valid_for_region`
+#### `anofox_tab_phonenumber_is_valid_for_region` (alias: `phonenumber_is_valid_for_region`)
 
 Region-specific validation.
 
@@ -371,7 +372,7 @@ anofox_tab_phonenumber_is_valid_for_region(number VARCHAR, region VARCHAR) → B
 
 ---
 
-#### `anofox_tab_phonenumber_match`
+#### `anofox_tab_phonenumber_match` (alias: `phonenumber_match`)
 
 Fuzzy matching between two phone numbers.
 
@@ -391,7 +392,7 @@ SELECT anofox_tab_phonenumber_match('+1 415-555-1234', '4155551234', 'US');
 
 ---
 
-#### `anofox_tab_phonenumber_example`
+#### `anofox_tab_phonenumber_example` (alias: `phonenumber_example`)
 
 Generate example phone number for a region.
 
@@ -411,7 +412,7 @@ SELECT anofox_tab_phonenumber_example('US');
 
 ---
 
-#### `anofox_tab_phonenumber_status`
+#### `anofox_tab_phonenumber_status` (alias: `phonenumber_status`)
 
 Returns library status and default region.
 
@@ -437,7 +438,7 @@ Money amounts are exact `DECIMAL(18,3)` values: arithmetic never drifts, NaN/Inf
 
 ### Basic Operations
 
-#### `anofox_tab_money (alias: money`
+#### `anofox_tab_money` (alias: `money`)
 
 Create a money value from amount and currency code.
 
@@ -454,7 +455,7 @@ SELECT anofox_tab_money (alias: money(100.50, 'USD');
 
 ---
 
-#### `anofox_tab_money (alias: money_from_cents`
+#### `anofox_tab_money_from_cents` (alias: `money_from_cents`)
 
 Create a money value from an integer amount in the currency's smallest unit (e.g. cents). The amount is divided by the currency's `subunit_to_unit` (100 for USD/EUR, 1 for JPY).
 
@@ -471,7 +472,7 @@ SELECT anofox_tab_money (alias: money_from_cents(10050, 'USD');
 
 ---
 
-#### `anofox_tab_money (alias: money_amount`
+#### `anofox_tab_money_amount` (alias: `money_amount`)
 
 Extract amount from money struct.
 
@@ -488,7 +489,7 @@ SELECT anofox_tab_money (alias: money_amount(anofox_tab_money (alias: money(100.
 
 ---
 
-#### `anofox_tab_money (alias: money_currency`
+#### `anofox_tab_money_currency` (alias: `money_currency`)
 
 Extract currency code from money struct.
 
@@ -507,7 +508,7 @@ SELECT anofox_tab_money (alias: money_currency(anofox_tab_money (alias: money(10
 
 ### Currency Information
 
-#### `anofox_tab_is_valid_currency (alias: is_valid_currency`
+#### `anofox_tab_is_valid_currency` (alias: `is_valid_currency`)
 
 Check if currency code is valid.
 
@@ -524,7 +525,7 @@ SELECT anofox_tab_is_valid_currency (alias: is_valid_currency('USD');
 
 ---
 
-#### `anofox_tab_currency_ (alias: currency_symbol`
+#### `anofox_tab_currency_symbol` (alias: `currency_symbol`)
 
 Get currency symbol (e.g., '$', '€').
 
@@ -541,7 +542,7 @@ SELECT anofox_tab_currency_ (alias: currency_symbol('USD');
 
 ---
 
-#### `anofox_tab_currency_ (alias: currency_name`
+#### `anofox_tab_currency_name` (alias: `currency_name`)
 
 Get currency name (e.g., 'United States Dollar').
 
@@ -560,7 +561,7 @@ SELECT anofox_tab_currency_ (alias: currency_name('USD');
 
 ### Formatting
 
-#### `anofox_tab_money (alias: money_format`
+#### `anofox_tab_money_format` (alias: `money_format`)
 
 Format money for display. The number of decimals is derived from the currency's `subunit_to_unit` (JPY has none, USD/EUR have two). The `'symbol'` and `'long'` styles localize the amount with the currency's thousands separator and decimal mark; the `'code'` style stays canonical (dot decimal mark, no grouping).
 
@@ -582,7 +583,7 @@ SELECT anofox_tab_money (alias: money_format(anofox_tab_money (alias: money(150.
 
 ### Validation & Properties
 
-#### `anofox_tab_money (alias: money_is_positive`
+#### `anofox_tab_money_is_positive` (alias: `money_is_positive`)
 
 Check if amount > 0.
 
@@ -593,7 +594,7 @@ anofox_tab_money (alias: money_is_positive(money STRUCT) → BOOLEAN
 
 ---
 
-#### `anofox_tab_money (alias: money_is_negative`
+#### `anofox_tab_money_is_negative` (alias: `money_is_negative`)
 
 Check if amount < 0.
 
@@ -604,7 +605,7 @@ anofox_tab_money (alias: money_is_negative(money STRUCT) → BOOLEAN
 
 ---
 
-#### `anofox_tab_money (alias: money_is_zero`
+#### `anofox_tab_money_is_zero` (alias: `money_is_zero`)
 
 Check if amount == 0.
 
@@ -615,7 +616,7 @@ anofox_tab_money (alias: money_is_zero(money STRUCT) → BOOLEAN
 
 ---
 
-#### `anofox_tab_money (alias: money_abs`
+#### `anofox_tab_money_abs` (alias: `money_abs`)
 
 Get absolute value (sign removed).
 
@@ -628,7 +629,7 @@ anofox_tab_money (alias: money_abs(money STRUCT) → STRUCT(amount DECIMAL(18,3)
 
 ### Arithmetic Operations
 
-#### `anofox_tab_money (alias: money_add`
+#### `anofox_tab_money_add` (alias: `money_add`)
 
 Add two money values (same currency required).
 
@@ -648,7 +649,7 @@ SELECT anofox_tab_money (alias: money_add(
 
 ---
 
-#### `anofox_tab_money (alias: money_subtract`
+#### `anofox_tab_money_subtract` (alias: `money_subtract`)
 
 Subtract money2 from money1 (same currency required).
 
@@ -659,7 +660,7 @@ anofox_tab_money (alias: money_subtract(money1 STRUCT, money2 STRUCT) → STRUCT
 
 ---
 
-#### `anofox_tab_money (alias: money_multiply`
+#### `anofox_tab_money_multiply` (alias: `money_multiply`)
 
 Multiply money by a scalar factor.
 
@@ -672,7 +673,7 @@ anofox_tab_money (alias: money_multiply(money STRUCT, factor DOUBLE) → STRUCT(
 
 ### Quality & Data Validation
 
-#### `anofox_tab_money (alias: money_in_range`
+#### `anofox_tab_money_in_range` (alias: `money_in_range`)
 
 Check if amount is within range.
 
@@ -689,7 +690,7 @@ SELECT anofox_tab_money (alias: money_in_range(anofox_tab_money (alias: money(10
 
 ---
 
-#### `anofox_tab_money (alias: money_same_currency`
+#### `anofox_tab_money_same_currency` (alias: `money_same_currency`)
 
 Check if two money values have same currency.
 
@@ -710,7 +711,7 @@ European VAT number validation for regulatory compliance and data quality.
 
 ### Basic Operations
 
-#### `anofox_tab_vat (alias: vat`
+#### `anofox_tab_vat` (alias: `vat`)
 
 Parse VAT string into country and digits.
 
@@ -727,7 +728,7 @@ SELECT anofox_tab_vat (alias: vat('DE123456789');
 
 ---
 
-#### `anofox_tab_is_valid_vat_country (alias: is_valid_vat_country`
+#### `anofox_tab_is_valid_vat_country` (alias: `is_valid_vat_country`)
 
 Check if country code is valid VAT country. Codes are case-insensitive and the
 VAT aliases `EL` (Greece) and `XI` (Northern Ireland / GB) are accepted.
@@ -745,7 +746,7 @@ SELECT anofox_tab_is_valid_vat_country (alias: is_valid_vat_country('DE');
 
 ---
 
-#### `anofox_tab_vat (alias: vat_normalize`
+#### `anofox_tab_vat_normalize` (alias: `vat_normalize`)
 
 Normalize VAT string (uppercase, remove punctuation).
 
@@ -764,7 +765,7 @@ SELECT anofox_tab_vat (alias: vat_normalize('de 123-456-789');
 
 ### Syntax Validation
 
-#### `anofox_tab_vat (alias: vat_is_valid_syntax`
+#### `anofox_tab_vat_is_valid_syntax` (alias: `vat_is_valid_syntax`)
 
 Validate VAT syntax against country pattern.
 
@@ -775,7 +776,7 @@ anofox_tab_vat (alias: vat_is_valid_syntax(vat_string VARCHAR) → BOOLEAN
 
 ---
 
-#### `anofox_tab_vat (alias: vat_split`
+#### `anofox_tab_vat_split` (alias: `vat_split`)
 
 Parse VAT into country and normalized digits.
 
@@ -786,7 +787,7 @@ anofox_tab_vat (alias: vat_split(vat_string VARCHAR) → STRUCT(country VARCHAR,
 
 ---
 
-#### `anofox_tab_vat (alias: vat_exists`
+#### `anofox_tab_vat_exists` (alias: `vat_exists`)
 
 Check if VAT has valid country prefix.
 
@@ -799,7 +800,7 @@ anofox_tab_vat (alias: vat_exists(vat_string VARCHAR) → BOOLEAN
 
 ### EU Utilities
 
-#### `anofox_tab_vat (alias: vat_is_eu_member`
+#### `anofox_tab_vat_is_eu_member` (alias: `vat_is_eu_member`)
 
 Check if country is EU member. Codes are case-insensitive and the VAT aliases
 `EL`/`XI` are normalized (e.g. `vat_is_eu_member('EL')` is true, `'XI'` is false).
@@ -811,7 +812,7 @@ anofox_tab_vat (alias: vat_is_eu_member(country_code VARCHAR) → BOOLEAN
 
 ---
 
-#### `anofox_tab_vat (alias: vat_country_name`
+#### `anofox_tab_vat_country_name` (alias: `vat_country_name`)
 
 Get full country name.
 
@@ -828,7 +829,7 @@ SELECT anofox_tab_vat (alias: vat_country_name('DE');
 
 ---
 
-#### `anofox_tab_vat (alias: vat_format`
+#### `anofox_tab_vat_format` (alias: `vat_format`)
 
 Format VAT for display. Supported styles (case-insensitive):
 
@@ -855,7 +856,7 @@ SELECT anofox_tab_vat_format('GR123456783', 'plain');
 
 ### Combined Validation
 
-#### `anofox_tab_vat (alias: vat_is_valid`
+#### `anofox_tab_vat_is_valid` (alias: `vat_is_valid`)
 
 Full validation: syntax check plus country check-digit (checksum) validation where implemented.
 
@@ -932,7 +933,7 @@ Detect and mask Personally Identifiable Information (PII) in text data. Supports
 - All four entity types use ML-based NER (Named Entity Recognition) with OpenVINO + DistilBERT
 - Model trained on CoNLL-2003 dataset with 92% F1 score
 - OpenVINO is required and installed via vcpkg with AUTO device selection (CPU/GPU/NPU)
-- Model downloads automatically from HuggingFace on first use (~66 MB quantized ONNX)
+- Model downloads automatically from Hugging Face on first use (~66 MB quantized ONNX) into `~/.duckdb/extensions/anofox/ner/<model>/`; `SET anofox_ner_auto_download = false` turns the download off (NER detection is then skipped, NAME falls back to the dictionary)
 - Use `SELECT * FROM anofox_ner_status()` to check NER availability
 - Confidence threshold: 0.7 (70%) for entity acceptance
 - NAME has dictionary fallback if NER unavailable; ORGANIZATION, LOCATION, MISC require NER
@@ -1097,7 +1098,7 @@ anofox_ner_status() → TABLE(onnx_available, model_status, model_path, model_si
 
 **Returns:**
 - `onnx_available` (BOOLEAN): Whether OpenVINO is compiled in (column name kept for backward compatibility)
-- `model_status` (VARCHAR): NOT_LOADED, DOWNLOADING, LOADED, FAILED, or NOT_AVAILABLE
+- `model_status` (VARCHAR): NOT_LOADED, DOWNLOADING, LOADED, FAILED, NOT_AVAILABLE, or NOT_DOWNLOADED (model not on disk and `anofox_ner_auto_download` is false)
 - `model_path` (VARCHAR): Path to ONNX model file (or "N/A")
 - `model_size_mb` (DOUBLE): Model file size in MB (0 if not loaded)
 - `status_message` (VARCHAR): Human-readable status description
@@ -1113,6 +1114,7 @@ SELECT * FROM anofox_ner_status();
 
 | Option | Default | Description |
 |--------|---------|-------------|
+| `anofox_ner_auto_download` | `true` | Download the NER model from Hugging Face on first use when it is not on disk. `false` never downloads: NER detection is skipped (status `NOT_DOWNLOADED`) and NAME falls back to the dictionary. Setting it back to `true` lets the next NER call download the model. |
 | `anofox_ner_model` | `distilbert-en` | NER model to use. Only models with downloadable assets are accepted; the value cannot be changed after the model has been loaded (restart required). |
 | `anofox_ner_device` | `AUTO` | OpenVINO inference device (`AUTO`, `CPU`, `GPU`, `GPU.0`, ...). Takes effect on next model load. |
 | `anofox_ner_cache_size` | `10000` | LRU cache size for NER results (0 disables caching). |
@@ -1171,16 +1173,18 @@ Row-level PII audit with masking for detailed inspection.
 
 **Signature:**
 ```sql
-pii_audit_table(table_name VARCHAR [, columns VARCHAR])
-  → TABLE(row_id, column_name, pii_type, original_value, masked_value, start_pos, end_pos, confidence)
+pii_audit_table(table_name VARCHAR [, columns VARCHAR] [, id_column := VARCHAR])
+  → TABLE(row_id, [<id_column>,] column_name, pii_type, original_value, masked_value, start_pos, end_pos, confidence)
 ```
 
 **Parameters:**
 - `table_name`: Name of table to audit
 - `columns`: Optional comma-separated column names (audits all VARCHAR if omitted)
+- `id_column` (named, optional): Identifier column passed through to every output row (see [Identifier pass-through](#identifier-pass-through-id_column))
 
 **Returns:**
 - `row_id` (BIGINT): Row number in the table
+- `<id_column>` (the column's own type, only with `id_column`): The row's identifier
 - `column_name` (VARCHAR): Column containing PII
 - `pii_type` (VARCHAR): Type of PII detected
 - `original_value` (VARCHAR): Original text value
@@ -1192,6 +1196,10 @@ pii_audit_table(table_name VARCHAR [, columns VARCHAR])
 **Example:**
 ```sql
 SELECT * FROM pii_audit_table('customer_data') WHERE pii_type = 'US_SSN';
+
+-- Keep the customer key with every finding
+SELECT customer_id, column_name, pii_type
+FROM pii_audit_table('customer_data', id_column := 'customer_id');
 ```
 
 ---
@@ -1213,6 +1221,13 @@ Detect only specific types of PII for targeted scans:
 ```sql
 SELECT pii_detect_emails('Contact: john@example.com and jane@example.com');
 -- Returns only EMAIL matches
+```
+
+`anofox_tab_pii_detect_batch` (alias: `pii_detect_batch`) runs all detectors over a `VARCHAR[]`
+and returns one match list per element:
+
+```sql
+SELECT pii_detect_batch(['john@example.com', 'SSN: 123-45-6789']);
 ```
 
 ---
@@ -1623,7 +1638,8 @@ around the rolling baseline average.
 ```sql
 rel_count_change(table_name VARCHAR, date_column VARCHAR [, count_column VARCHAR,
                  window_days BIGINT = 7, lower_threshold DOUBLE = -0.5,
-                 upper_threshold DOUBLE = 0.5, reference_date DATE]) → TABLE
+                 upper_threshold DOUBLE = 0.5, reference_date DATE]
+                 [, start_date := DATE, end_date := DATE]) → TABLE
 ```
 
 **Parameters:**
@@ -1636,9 +1652,19 @@ rel_count_change(table_name VARCHAR, date_column VARCHAR [, count_column VARCHAR
 **Trivial pass:** empty input, no baseline days, or a zero baseline pass with an explicit message
 (not enough history is not a failure).
 
+**Date range:** `start_date := DATE, end_date := DATE` (named, both or neither, `start_date <= end_date`)
+evaluates every day of the inclusive range instead of one reference date and returns one row per
+date, ordered by `reference_date`, with the same columns as the single-date form; each row equals the
+single-date call for that date. The range cannot be combined with an explicit (non-NULL)
+`reference_date`.
+
 **Example:**
 ```sql
 SELECT * FROM rel_count_change('orders', 'order_date', NULL, 7, -0.5, 0.5);
+
+-- one row per day of January, e.g. for a status strip or an alarm timeline
+SELECT reference_date, status, rel_change
+FROM rel_count_change('orders', 'order_date', start_date := DATE '2026-01-01', end_date := DATE '2026-01-31');
 ```
 
 ---
@@ -1652,7 +1678,7 @@ trailing window (distinct from the row-level `iqr` check).
 ```sql
 metric_anomaly_iqr(table_name VARCHAR, date_column VARCHAR [, metric_column VARCHAR,
                    window_days BIGINT = 30, k DOUBLE = 1.5, mode VARCHAR = 'both',
-                   reference_date DATE]) → TABLE
+                   reference_date DATE] [, start_date := DATE, end_date := DATE]) → TABLE
 ```
 
 **Parameters:**
@@ -1667,9 +1693,16 @@ metric_anomaly_iqr(table_name VARCHAR, date_column VARCHAR [, metric_column VARC
 **Recipe — anomaly detection on your check history:** point it at a persisted `run_checks`
 result table: `SELECT * FROM metric_anomaly_iqr('dq_results', 'run_ts', 'value', 30, 1.5, 'both');`
 
+**Date range:** `start_date := DATE, end_date := DATE` (named, both or neither, `start_date <= end_date`)
+evaluates every day of the inclusive range instead of one reference date and returns one row per
+date, ordered by `reference_date`, with the same columns as the single-date form; each row equals the
+single-date call for that date. The range cannot be combined with an explicit (non-NULL)
+`reference_date`.
+
 **Example:**
 ```sql
 SELECT * FROM metric_anomaly_iqr('orders', 'order_date', NULL, 30, 1.5, 'both');
+SELECT * FROM metric_anomaly_iqr('orders', 'order_date', start_date := DATE '2026-01-01', end_date := DATE '2026-01-31');
 ```
 
 ---
@@ -1683,14 +1716,52 @@ Assert values-in-set membership over the trailing `window_days` days ending at t
 ```sql
 rolling_values_in_set(table_name VARCHAR, column_name VARCHAR, allowed_values LIST<VARCHAR>,
                       date_column VARCHAR [, window_days BIGINT = 7, min_rate DOUBLE = 1.0,
-                      reference_date DATE]) → TABLE
+                      reference_date DATE] [, start_date := DATE, end_date := DATE]) → TABLE
 ```
 
 **Returns:** `status`, `reference_date`, `in_set_rate`, `in_set_count`, `total_count`, `threshold`, `sample_violations`, `message`
 
+`sample_violations` holds up to 5 distinct values outside the allowed set, sorted.
+
+**Date range:** `start_date := DATE, end_date := DATE` (named, both or neither, `start_date <= end_date`)
+evaluates every day of the inclusive range instead of one reference date and returns one row per
+date, ordered by `reference_date`, with the same columns as the single-date form; each row equals the
+single-date call for that date. The range cannot be combined with an explicit (non-NULL)
+`reference_date`.
+
 **Example:**
 ```sql
 SELECT * FROM rolling_values_in_set('orders', 'status', ['completed', 'pending'], 'order_date', 14);
+SELECT * FROM rolling_values_in_set('orders', 'status', ['completed', 'pending'], 'order_date', 14,
+                                    start_date := DATE '2026-01-01', end_date := DATE '2026-01-31');
+```
+
+#### Events companions: `rel_count_change_events`, `metric_anomaly_iqr_events`, `rolling_values_in_set_events`
+
+Primary names `anofox_tab_rel_count_change_events`, `anofox_tab_metric_anomaly_iqr_events`,
+`anofox_tab_rolling_values_in_set_events`. Each takes exactly the arguments of its base check,
+including `reference_date` and the `start_date := DATE, end_date := DATE` range, and returns the
+anofox contract's `events` shape: one row per reference date whose check fails (or warns), ordered
+by `ds`. Passing dates are not events, so a passing single-date call returns no rows.
+
+| Column | Type | Meaning |
+|--------|------|---------|
+| `ds` | DATE | the reference date |
+| `kind` | VARCHAR | the check name (`rel_count_change`, `metric_anomaly_iqr`, `rolling_values_in_set`) |
+| `label` | VARCHAR | the base check's `message` |
+| `severity` | VARCHAR | `'alarm'` for `fail`, `'warning'` for `warn` |
+| `value` | DOUBLE | the measure: `rel_change`, `metric_value` or `in_set_rate` |
+| `threshold` | DOUBLE | the bound the measure crossed: the violated `lower_threshold`/`upper_threshold`, the crossed IQR bound (`lower_bound`/`upper_bound`), or `min_rate` |
+| `series` | VARCHAR | the table, or `table.column` when the check measures a column (`count_column`, `metric_column`, `column_name`) |
+
+Tagged `{'anofox.output': 'events', 'anofox.contract': '1'}`, see
+[anofox Integration Contract](#anofox-integration-contract).
+
+**Example:**
+```sql
+-- the alarm timeline of January
+SELECT ds, kind, severity, value, threshold, label
+FROM rel_count_change_events('orders', 'order_date', start_date := DATE '2026-01-01', end_date := DATE '2026-01-31');
 ```
 
 ---
@@ -1758,7 +1829,50 @@ SELECT check_name, status, value, message FROM run_checks('dq_checks') ORDER BY 
 
 ---
 
+## anofox Integration Contract
 
+anofox-tabular takes part in the anofox integration contract (anofox-visualization
+`docs/plans/integration-contract.md`): producers whose output follows a contract schema are tagged
+in `duckdb_functions().tags`, so anofox-visualization (`anofox_plot`) and other consumers find them
+without adapter SQL.
+
+#### `anofox_contract_version()`
+
+```sql
+anofox_contract_version() → VARCHAR   -- '1'
+```
+
+The contract version this extension implements. It is shared by every anofox extension: whichever
+extension loads first registers it, the others leave it in place.
+
+**Tagged producers** (`{'anofox.output': '<schema>', 'anofox.contract': '1'}`, on the
+`anofox_tab_*` primary name and on the alias):
+
+| Producer | Schema | Columns |
+|----------|--------|---------|
+| `run_checks` | `check` | `run_ts, check_name, check_type, table_name, column_name, identifier, value, lower_threshold, upper_threshold, status, message` |
+| `profile_correlations` | `matrix` | `column_a, column_b, pearson, spearman, n` (a pair list; the reader mirrors it) |
+| `rel_count_change_events`, `metric_anomaly_iqr_events`, `rolling_values_in_set_events` | `events` | `ds, kind, label, severity, value, threshold, series` |
+
+```sql
+SELECT DISTINCT function_name, tags['anofox.output'] AS output
+FROM duckdb_functions() WHERE tags['anofox.contract'] IS NOT NULL;
+```
+
+**The one-row checks** (`volume`, `null_rate`, `regex_match`, ..., and `agg_check`) keep their own
+result columns and are not tagged. `run_checks` is the contract-shaped `check` producer for them:
+put the checks in a checks table and every row comes back as `check_name, status, value,
+lower_threshold, upper_threshold, ...`. It runs 14 check types (`volume`, `null_rate`,
+`distinct_count`, `regex_match`, `values_in_set`, `agg`, `duplicate_count`, `occurrence`,
+`match_rate`, `compliance`, `freshness`, `rel_count_change`, `metric_anomaly_iqr`,
+`rolling_values_in_set`); `zscore`, `iqr` and `schema_check` are not available in a suite.
+Besides the contract statuses `pass`/`warn`/`fail`, `run_checks` reports a check that cannot run
+(e.g. a missing target table) as `status = 'error'`.
+
+The time-aware checks map to `events` through their `_events` companions (above); their base form
+keeps its columns.
+
+---
 
 ## Anomaly Detection
 
@@ -1775,116 +1889,109 @@ Industry-grade anomaly detection with [isotree](https://github.com/david-cortes/
 - **Sample Weights** - Weighted sampling for imbalanced datasets
 - **SCiForest** - Information-gain guided splitting with configurable candidates
 
-#### `anofox_tab_metric_isolation_forest` (alias: `metric_isolation_forest`)
+#### `anofox_tab_isolation_forest` (alias: `isolation_forest`)
 
 Univariate Isolation Forest for single column anomaly detection.
 
-**Full Signature:**
+**Signature:**
 ```sql
-metric_isolation_forest(
+isolation_forest(
     table_name VARCHAR,
-    column_name VARCHAR,
-    n_trees BIGINT,           -- 1-500, default 100
-    sample_size BIGINT,       -- 1-10000, default 256
-    contamination DOUBLE,     -- 0.0-0.5, default 0.1
-    output_mode VARCHAR,      -- 'summary' or 'scores'
-    ndim BIGINT,              -- 1-N, default 1 (Extended IF)
-    coef_type VARCHAR,        -- 'uniform' or 'normal'
-    scoring_metric VARCHAR,   -- 'depth', 'density', or 'adj_depth'
-    weight_column VARCHAR,    -- Column for sample weights (NULL = uniform)
-    ntry BIGINT,              -- 1-100, default 1 (SCiForest)
-    prob_pick_avg_gain DOUBLE -- 0.0-1.0, default 0.0
+    column_name VARCHAR
+    [, n_trees BIGINT          -- 1-500, default 100
+    [, sample_size BIGINT      -- 1-10000, default 256
+    [, contamination DOUBLE    -- 0.0-0.5, default 0.1
+    [, output_mode VARCHAR     -- 'summary' (default) or 'scores'
+    [, seed BIGINT ]]]]]       -- fixed seed for reproducible scores; NULL = random
+    [, id_column := VARCHAR]   -- named; 'scores' mode only, see Identifier pass-through
 ) → TABLE
 ```
 
-**Parameters:**
-| Parameter | Range | Default | Description |
-|-----------|-------|---------|-------------|
-| `n_trees` | 1-500 | 100 | Number of isolation trees |
-| `sample_size` | 1-10000 | 256 | Subsample size per tree |
-| `contamination` | 0.0-0.5 | 0.1 | Expected anomaly fraction |
-| `output_mode` | - | 'scores' | `'summary'` or `'scores'` |
-| `ndim` | 1-N | 1 | Hyperplane dimensions (Extended IF) |
-| `coef_type` | - | 'uniform' | `'uniform'` or `'normal'` |
-| `scoring_metric` | - | 'depth' | `'depth'`, `'density'`, `'adj_depth'` |
-| `weight_column` | - | NULL | Sample weight column name |
-| `ntry` | 1-100 | 1 | Split candidates (SCiForest) |
-| `prob_pick_avg_gain` | 0.0-1.0 | 0.0 | Gain-based selection probability |
+Trailing parameters are optional and positional. The Extended IF, SCiForest, weighting and
+scoring options are only available on `isolation_forest_mv` (which also accepts a single column).
 
 **Returns:**
-- `TABLE`: Anomaly detection results with `row_id`, `anomaly_score`, `is_anomaly`
+- `'scores'`: one row per input row: `row_id`, [`<id_column>`,] `value`, `anomaly_score`, `is_anomaly`
+- `'summary'`: one row: `status`, `outlier_count`, `total_count`, `avg_value`, `contamination`,
+  `n_trees`, `message`
 
 **Examples:**
 ```sql
--- Basic usage (backward compatible)
-SELECT * FROM metric_isolation_forest(
-    'sales_data', 'amount', 100, 256, 0.1, 'scores'
-) WHERE is_anomaly = true;
+-- Score every row, keep the anomalies
+SELECT * FROM isolation_forest('sales_data', 'amount', 100, 256, 0.1, 'scores')
+WHERE is_anomaly;
 
--- Extended IF with hyperplane splits
-SELECT * FROM metric_isolation_forest(
-    'transactions', 'amount', 100, 256, 0.1, 'scores',
-    3,          -- ndim: 3-dimensional hyperplanes
-    'normal',   -- coef_type: normal distribution
-    'depth'     -- scoring_metric
-);
+-- Reproducible scores
+SELECT * FROM isolation_forest('sales_data', 'amount', 100, 256, 0.1, 'scores', 42);
 
--- SCiForest with gain-based selection
-SELECT * FROM metric_isolation_forest(
-    'events', 'value', 100, 256, 0.05, 'scores',
-    1, 'uniform', 'depth',
-    NULL,       -- weight_column
-    10,         -- ntry: evaluate 10 candidates
-    0.5         -- prob_pick_avg_gain: 50% gain-based
-);
+-- Keep each row's key next to its score
+SELECT order_id, anomaly_score
+FROM isolation_forest('sales_data', 'amount', 100, 256, 0.1, 'scores', id_column := 'order_id')
+WHERE is_anomaly;
+
+-- One summary row
+SELECT status, outlier_count, message FROM isolation_forest('sales_data', 'amount');
 ```
 
 ---
 
-#### `anofox_tab_metric_isolation_forest_multivariate` (alias: `metric_isolation_forest_multivariate`)
+#### `anofox_tab_isolation_forest_mv` (alias: `isolation_forest_mv`)
 
-Multivariate Isolation Forest for multiple column anomaly detection.
+Multivariate Isolation Forest over one or more columns, with categorical columns, Extended IF,
+SCiForest, sample weights and alternative scoring.
 
-**Full Signature:**
+**Signature:**
 ```sql
-metric_isolation_forest_multivariate(
+isolation_forest_mv(
     table_name VARCHAR,
-    columns VARCHAR,          -- Comma-separated column names
-    n_trees BIGINT,
-    sample_size BIGINT,
-    contamination DOUBLE,
-    output_mode VARCHAR,
-    ndim BIGINT,
-    coef_type VARCHAR,
-    scoring_metric VARCHAR,
-    weight_column VARCHAR,
-    ntry BIGINT,
-    prob_pick_avg_gain DOUBLE
+    column_names VARCHAR       -- comma-separated, e.g. 'amount, quantity, region'
+    [, n_trees BIGINT          -- 1-500, default 100
+    [, sample_size BIGINT      -- 1-10000, default 256
+    [, contamination DOUBLE    -- 0.0-0.5, default 0.1
+    [, output_mode VARCHAR     -- 'summary' (default) or 'scores'
+    [, seed BIGINT             -- NULL = random
+    [, ndim BIGINT             -- >= 1, default 1; > 1 = Extended IF hyperplane splits
+    [, coef_type VARCHAR       -- 'uniform' (default) or 'normal'
+    [, scoring_metric VARCHAR  -- 'depth' (default), 'density' or 'adj_depth'
+    [, weight_column VARCHAR   -- column of sample weights; NULL = uniform
+    [, ntry BIGINT             -- >= 1, default 1; > 1 = SCiForest split candidates
+    [, prob_pick_avg_gain DOUBLE ]]]]]]]]]]]  -- 0.0-1.0, default 0.0
+    [, id_column := VARCHAR]   -- named; 'scores' mode only, see Identifier pass-through
 ) → TABLE
 ```
 
-**Parameters:**
-- `columns`: Comma-separated column names (e.g., `'amount, quantity, suspicious_amount'`)
-- All other parameters same as univariate version
+Pass `NULL` to keep a default while setting a later parameter.
 
 **Returns:**
-- `TABLE`: Anomaly detection results with `row_id`, `anomaly_score`, `is_anomaly`
+- `'scores'`: one row per input row: `row_id`, [`<id_column>`,] `anomaly_score`, `is_anomaly`
+- `'summary'`: one row: `status`, `outlier_count`, `total_count`, `n_columns`, `contamination`,
+  `n_trees`, `message`
 
 **Examples:**
 ```sql
 -- Basic multivariate
-SELECT * FROM metric_isolation_forest_multivariate(
+SELECT * FROM isolation_forest_mv(
     'customer_events', 'purchase_amount, session_duration, page_views',
     100, 256, 0.1, 'scores'
 ) ORDER BY anomaly_score DESC LIMIT 10;
 
 -- Extended IF with density scoring
-SELECT * FROM metric_isolation_forest_multivariate(
+SELECT * FROM isolation_forest_mv(
     'transactions', 'amount, quantity, duration',
     100, 256, 0.05, 'scores',
-    3,          -- ndim
+    NULL,       -- seed
+    3,          -- ndim: 3-dimensional hyperplanes
     'normal',   -- coef_type
-    'density'   -- scoring_metric: density-based scoring
+    'density'   -- scoring_metric
+);
+
+-- SCiForest with gain-based split selection
+SELECT * FROM isolation_forest_mv(
+    'events', 'value', 100, 256, 0.05, 'scores',
+    NULL, 1, 'uniform', 'depth',
+    NULL,       -- weight_column
+    10,         -- ntry: evaluate 10 split candidates
+    0.5         -- prob_pick_avg_gain: 50% gain-based
 );
 ```
 
@@ -1904,6 +2011,7 @@ anofox_tab_dbscan(
     eps DOUBLE,          -- optional, default 0.5
     min_pts BIGINT,      -- optional, default 5
     output_mode VARCHAR  -- optional, default 'summary'
+    [, id_column := VARCHAR]  -- named; 'clusters' mode only, see Identifier pass-through
 ) → TABLE
 ```
 
@@ -1916,7 +2024,7 @@ All parameters after `column_name` are optional.
 
 **Returns:**
 - `'summary'`: one row with `status` (`fail` when noise points exist), `cluster_count`, `noise_count`, `total_count`, `noise_rate`, `largest_cluster_size`, `eps`, `min_pts`, `message`
-- `'clusters'`: one row per non-NULL input row with `row_id`, `value`, `cluster_id` (`-1` = noise), `point_type`, `neighbor_count`, `anomaly_score`, `is_anomaly`
+- `'clusters'`: one row per non-NULL input row with `row_id`, [`<id_column>`,] `value`, `cluster_id` (`-1` = noise), `point_type`, `neighbor_count`, `anomaly_score`, `is_anomaly`
 - `point_type`: `'CORE'` (dense region), `'BORDER'` (cluster edge), or `'NOISE'` (outlier)
 
 **Example:**
@@ -1940,6 +2048,7 @@ anofox_tab_dbscan_mv(
     eps DOUBLE,          -- optional, default 0.5
     min_pts BIGINT,      -- optional, default 5
     output_mode VARCHAR  -- optional, default 'summary'
+    [, id_column := VARCHAR]  -- named; 'clusters' mode only, see Identifier pass-through
 ) → TABLE
 ```
 
@@ -1948,7 +2057,40 @@ anofox_tab_dbscan_mv(
 
 **Returns:**
 - `'summary'`: same columns as `anofox_tab_dbscan` plus `n_columns` (no `value` column in `'clusters'` mode)
-- `'clusters'`: one row per non-NULL input row with `row_id`, `cluster_id`, `point_type`, `neighbor_count`, `anomaly_score`, `is_anomaly`
+- `'clusters'`: one row per non-NULL input row with `row_id`, [`<id_column>`,] `cluster_id`, `point_type`, `neighbor_count`, `anomaly_score`, `is_anomaly`
+
+---
+
+### Identifier pass-through (`id_column`)
+
+The row-level outputs identify rows by `row_id`, a position that depends on the input order. The
+optional named parameter `id_column := '<column>'` adds the value of an input column to every
+output row, so results join back to the input by key instead of by position:
+
+| Function | Row-level mode |
+|----------|----------------|
+| `isolation_forest`, `isolation_forest_mv` | `'scores'` |
+| `dbscan`, `dbscan_mv` | `'clusters'` |
+| `outlier_tree` | `'outliers'` |
+| `pii_audit_table` | always |
+
+- The column is inserted directly after `row_id`, under the input column's name and with its type;
+  `row_id` keeps its meaning. Without `id_column` the output schema is unchanged.
+- The id is read in the same pass as the analyzed values, so it always belongs to the row the
+  result describes; rows skipped because a feature is NULL are skipped together with their id.
+- NULL ids are passed through; they never exclude a row.
+- Bind errors: a column the table does not have (`id_column 'x' not found in table 't'`), a
+  non-row-level `output_mode` (`id_column requires output_mode 'scores'`), and a name that collides
+  with an output column (e.g. an input column called `anomaly_score`; alias it in a view first).
+- Both the `anofox_tab_*` names and the short aliases accept it.
+
+```sql
+SELECT s.order_id, s.anomaly_score, o.customer
+FROM isolation_forest_mv('orders', 'amount,quantity', 100, 256, 0.05, 'scores', 42,
+                         id_column := 'order_id') s
+JOIN orders o USING (order_id)
+WHERE s.is_anomaly;
+```
 
 ---
 
@@ -1983,6 +2125,8 @@ outlier_tree(
     z_norm DOUBLE,
     z_outlier DOUBLE
 ) → TABLE
+
+-- Both forms take the named parameter id_column := VARCHAR ('outliers' mode only)
 ```
 
 **Parameters:**
@@ -1997,6 +2141,7 @@ outlier_tree(
 | `min_size_categ` | INTEGER | 75 | Min cluster size for categorical targets |
 | `z_norm` | DOUBLE | 2.67 | Z-threshold for confidence intervals |
 | `z_outlier` | DOUBLE | 8.0 | Z-threshold for outlier flagging |
+| `id_column` (named) | VARCHAR | — | Identifier column passed through after `row_id` (`'outliers'` mode only, see [Identifier pass-through](#identifier-pass-through-id_column)) |
 
 **Summary Mode Returns:**
 | Column | Type | Description |
@@ -2013,8 +2158,10 @@ outlier_tree(
 | Column | Type | Description |
 |--------|------|-------------|
 | `row_id` | BIGINT | Row index (1-indexed) |
+| `<id_column>` | the column's type | The row's identifier (only with `id_column`) |
 | `column_name` | VARCHAR | Column with outlier |
-| `outlier_value` | VARCHAR | The anomalous value |
+| `outlier_value` | VARCHAR | The anomalous value, as text (numeric and categorical columns) |
+| `outlier_value_num` | DOUBLE | The anomalous value as a number for numeric columns, without the precision loss of the text form; NULL for categorical columns |
 | `cluster_mean` | DOUBLE | Mean in cluster |
 | `cluster_sd` | DOUBLE | SD in cluster |
 | `cluster_size` | BIGINT | Rows in cluster |
@@ -2037,6 +2184,11 @@ FROM outlier_tree('employees', 'department,salary,years_exp', 'outliers');
 -- Returns explanations like:
 -- "Value 150000 for column 'salary' is unusually high (expected: 52333 ± 7413)
 --  when job_title = 'Junior Developer'"
+
+-- Numeric outliers against their cluster's normal range (no TRY_CAST needed)
+SELECT row_id, column_name, outlier_value_num, lower_bound, upper_bound
+FROM outlier_tree('employees', 'department,salary,years_exp', 'outliers')
+WHERE outlier_value_num IS NOT NULL;
 
 -- With custom parameters for small datasets
 SELECT * FROM outlier_tree(
@@ -2065,8 +2217,8 @@ Detailed row-level diff between two tables or views.
 **Signature:**
 ```sql
 anofox_tab_diff_joindiff(
-    source VARCHAR,
-    target VARCHAR,
+    source_table VARCHAR,
+    target_table VARCHAR,
     primary_key VARCHAR | LIST<VARCHAR>
     [, compare_columns LIST<VARCHAR>]
     [, include_all BOOLEAN]
@@ -2074,12 +2226,25 @@ anofox_tab_diff_joindiff(
 ```
 
 **Parameters:**
-- `source`: Source table or view name
-- `target`: Target table or view name
-- `primary_key`: Primary key column(s) for matching rows (single name or list)
+- `source_table`: Source table or view name
+- `target_table`: Target table or view name
+- `primary_key`: Primary key column(s) for matching rows (single name or list);
+  by name it is `primary_key := 'id'` or `primary_keys := ['id', 'date']`
+  (passing both names is a binder error)
 - `compare_columns`: Optional list of columns to compare (default: all
   non-key columns present in both tables)
 - `include_all`: Include `unchanged` rows in the output (default: `false`)
+
+Every parameter can be passed positionally or by name (`:=`), and the two can
+be mixed: positional values are read first, and a named parameter **overrides**
+the positional value of the same parameter. `source_table`, `target_table` and
+the primary key are required (positionally or by name).
+
+```sql
+SELECT * FROM diff_joindiff('source_tbl', 'target_tbl', 'id', include_all := true);
+SELECT * FROM diff_joindiff(source_table := 'source_tbl', target_table := 'target_tbl',
+                            primary_keys := ['user_id', 'date'], compare_columns := ['amount']);
+```
 
 **Semantics:**
 - Primary keys are matched NULL-safely (`IS NOT DISTINCT FROM`), so rows with
@@ -2114,20 +2279,26 @@ same result as `diff_joindiff` (without `compare_columns`/`include_all`).
 **Signature:**
 ```sql
 anofox_tab_diff_hashdiff(
-    source VARCHAR,
-    target VARCHAR,
+    source_table VARCHAR,
+    target_table VARCHAR,
     primary_key VARCHAR | LIST<VARCHAR>
 ) → TABLE
 ```
 
 **Parameters:**
-- `source`: Source table or view name
-- `target`: Target table or view name
-- `primary_key`: Primary key column(s) for matching rows (single name or list)
+- `source_table`: Source table or view name
+- `target_table`: Target table or view name
+- `primary_key`: Primary key column(s) for matching rows (single name or list);
+  by name it is `primary_key := 'id'` or `primary_keys := ['id', 'sku']`
+
+As for `diff_joindiff`, every parameter can also be passed by name, and a named
+parameter overrides the positional value of the same parameter.
+`compare_columns` and `include_all` do not exist on `diff_hashdiff`; passing
+them by name is a binder error.
 
 **Note:** The `bisection_threshold` and `bisection_factor` parameters of the
-hash/bisection algorithm are **not implemented**. Passing them raises a binder
-error instead of being silently ignored.
+hash/bisection algorithm are **not implemented**. Passing them, positionally or
+by name, raises a binder error instead of being silently ignored.
 
 **Example:**
 ```sql

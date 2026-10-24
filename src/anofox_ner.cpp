@@ -554,8 +554,9 @@ void NERModelManager::EnsureInitialized() {
 
     std::lock_guard<std::mutex> lock(init_lock_);
 
-    // Double-check after acquiring lock
-    if (status_.load() == NERStatus::LOADED) {
+    // Double-check after acquiring lock: another thread may have loaded the
+    // model, or failed / skipped the download, while this one waited
+    if (status_.load() != NERStatus::NOT_LOADED) {
         return;
     }
 
@@ -603,6 +604,16 @@ void NERModelManager::LoadModel() {
     // Model and tokenizer must be present as a matched pair; if either is
     // missing, (re-)download both from the metadata URLs
     if (!std::filesystem::exists(model_path) || !std::filesystem::exists(tokenizer_path)) {
+        if (!auto_download_.load()) {
+            status_.store(NERStatus::NOT_DOWNLOADED);
+            SetStatusMessage("NER model not downloaded: anofox_ner_auto_download is false. "
+                             "SET anofox_ner_auto_download = true to download it from Hugging Face, "
+                             "or place " + metadata->model_file + " and " + metadata->tokenizer_file +
+                             " in " + model_dir.string());
+            AnofoxTrace(AnofoxLogLevel::Info,
+                        "ner: Model assets not found and auto download is off; NER detection is skipped");
+            return;
+        }
         AnofoxTrace(AnofoxLogLevel::Info, "ner: Model assets not found, attempting download...");
         status_.store(NERStatus::DOWNLOADING);
         SetStatusMessage("Downloading model from HuggingFace...");
@@ -1182,6 +1193,17 @@ void NERModelManager::SetDevice(const std::string &device_name) {
                 "ner: Device set to '" + device_name + "' (reload required for changes to take effect)");
 }
 
+void NERModelManager::SetAutoDownload(bool enabled) {
+    auto_download_.store(enabled);
+    if (enabled) {
+        // Let the next NER call retry the download it skipped
+        auto expected = NERStatus::NOT_DOWNLOADED;
+        status_.compare_exchange_strong(expected, NERStatus::NOT_LOADED);
+    }
+    AnofoxTrace(AnofoxLogLevel::Info,
+                std::string("ner: Auto download ") + (enabled ? "enabled" : "disabled"));
+}
+
 std::string NERModelManager::GetDevice() const {
     std::lock_guard<std::mutex> lock(state_mutex_);
     return device_name_;
@@ -1285,6 +1307,13 @@ void SetNERModelOption(ClientContext &context, SetScope scope, Value &parameter)
                 "ner: Model set to '" + model_name + "' (takes effect on first model load)");
 }
 
+void SetNERAutoDownloadOption(ClientContext &context, SetScope scope, Value &parameter) {
+    if (parameter.IsNull()) {
+        throw InvalidInputException("anofox_ner_auto_download cannot be NULL");
+    }
+    NERModelManager::Instance().SetAutoDownload(BooleanValue::Get(parameter));
+}
+
 void SetNERDeviceOption(ClientContext &context, SetScope scope, Value &parameter) {
     if (parameter.IsNull()) {
         throw InvalidInputException("anofox_ner_device cannot be NULL");
@@ -1309,6 +1338,13 @@ void RegisterNEROptions(ExtensionLoader &loader) {
                               LogicalTypeId::VARCHAR,
                               Value("distilbert-en"),
                               SetNERModelOption);
+
+    config.AddExtensionOption("anofox_ner_auto_download",
+                              "Download the NER model (~66 MB) from Hugging Face on first use when it is not "
+                              "on disk; false skips NER-based detection instead (offline use)",
+                              LogicalTypeId::BOOLEAN,
+                              Value::BOOLEAN(true),
+                              SetNERAutoDownloadOption);
 
     config.AddExtensionOption("anofox_ner_device",
                               "OpenVINO device for NER inference: AUTO (default), CPU, GPU, GPU.0, etc.",
