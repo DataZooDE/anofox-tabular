@@ -1,0 +1,272 @@
+# name: test/sql/contract_anofox_tabular.test
+# description: anofox integration contract conformance (#107): anofox_contract_version(), the
+#              duckdb_functions() tags of every contract producer, and the column names/types each
+#              tagged producer returns (anofox-visualization docs/plans/integration-contract.md).
+# group: [anofox_tabular]
+
+require anofox_tabular
+
+statement ok
+LOAD anofox_tabular
+
+statement ok
+SET anofox_tab_trace_enabled = false
+
+# ===--------------------------------------------------------------------===
+# anofox_contract_version()
+# ===--------------------------------------------------------------------===
+
+query TT
+SELECT anofox_contract_version(), typeof(anofox_contract_version())
+----
+1	VARCHAR
+
+query TT
+SELECT function_type, description IS NOT NULL AND description <> ''
+FROM duckdb_functions() WHERE function_name = 'anofox_contract_version'
+----
+scalar	true
+
+# ===--------------------------------------------------------------------===
+# Tags: every contract producer, primary name and alias, and nothing else
+# ===--------------------------------------------------------------------===
+
+query TTT rowsort
+SELECT DISTINCT function_name, map_extract_value(tags, 'anofox.output'), map_extract_value(tags, 'anofox.contract')
+FROM duckdb_functions()
+WHERE map_extract_value(tags, 'anofox.contract') IS NOT NULL OR map_extract_value(tags, 'anofox.output') IS NOT NULL
+----
+anofox_tab_metric_anomaly_iqr_events	events	1
+anofox_tab_profile_correlations	matrix	1
+anofox_tab_rel_count_change_events	events	1
+anofox_tab_rolling_values_in_set_events	events	1
+anofox_tab_run_checks	check	1
+metric_anomaly_iqr_events	events	1
+profile_correlations	matrix	1
+rel_count_change_events	events	1
+rolling_values_in_set_events	events	1
+run_checks	check	1
+
+# the contract version tag equals anofox_contract_version()
+query I
+SELECT COUNT(*) FROM duckdb_functions()
+WHERE map_extract_value(tags, 'anofox.output') IS NOT NULL
+  AND map_extract_value(tags, 'anofox.contract') IS DISTINCT FROM anofox_contract_version()
+----
+0
+
+# every tagged producer has a description
+query I
+SELECT COUNT(*) FROM duckdb_functions()
+WHERE map_extract_value(tags, 'anofox.output') IS NOT NULL AND (description IS NULL OR description = '')
+----
+0
+
+# ===--------------------------------------------------------------------===
+# Test data
+# ===--------------------------------------------------------------------===
+
+statement ok
+CREATE TEMP TABLE orders AS
+SELECT d::DATE AS order_date, CASE WHEN r % 2 = 0 THEN 'shipped' ELSE 'open' END AS status,
+       CAST(r AS DOUBLE) AS amount, CAST(r * 2 AS DOUBLE) AS qty
+FROM (
+    SELECT d, unnest(range(1, CASE WHEN d = DATE '2026-01-10' THEN 2 ELSE 11 END)) AS r
+    FROM (SELECT unnest(generate_series(DATE '2026-01-01', DATE '2026-01-10', INTERVAL '1 day')) AS d)
+)
+
+statement ok
+CREATE TABLE contract_checks (
+    check_name VARCHAR, check_type VARCHAR, table_name VARCHAR, column_name VARCHAR, params VARCHAR,
+    lower_threshold DOUBLE, upper_threshold DOUBLE, monitor_only BOOLEAN, identifier_column VARCHAR,
+    filter_expr VARCHAR
+)
+
+statement ok
+INSERT INTO contract_checks VALUES
+    ('orders_volume', 'volume', 'orders', NULL, NULL, 1, NULL, false, NULL, NULL)
+
+# ===--------------------------------------------------------------------===
+# check: run_checks
+# ===--------------------------------------------------------------------===
+
+query TT
+SELECT column_name, column_type FROM (DESCRIBE SELECT * FROM run_checks('contract_checks'))
+----
+run_ts	TIMESTAMP
+check_name	VARCHAR
+check_type	VARCHAR
+table_name	VARCHAR
+column_name	VARCHAR
+identifier	VARCHAR
+value	DOUBLE
+lower_threshold	DOUBLE
+upper_threshold	DOUBLE
+status	VARCHAR
+message	VARCHAR
+
+query TT
+SELECT column_name, column_type FROM (DESCRIBE SELECT * FROM anofox_tab_run_checks('contract_checks'))
+----
+run_ts	TIMESTAMP
+check_name	VARCHAR
+check_type	VARCHAR
+table_name	VARCHAR
+column_name	VARCHAR
+identifier	VARCHAR
+value	DOUBLE
+lower_threshold	DOUBLE
+upper_threshold	DOUBLE
+status	VARCHAR
+message	VARCHAR
+
+# ===--------------------------------------------------------------------===
+# matrix: profile_correlations
+# ===--------------------------------------------------------------------===
+
+query TT
+SELECT column_name, column_type FROM (DESCRIBE SELECT * FROM profile_correlations('orders'))
+----
+column_a	VARCHAR
+column_b	VARCHAR
+pearson	DOUBLE
+spearman	DOUBLE
+n	BIGINT
+
+query TT
+SELECT column_name, column_type FROM (DESCRIBE SELECT * FROM anofox_tab_profile_correlations('orders'))
+----
+column_a	VARCHAR
+column_b	VARCHAR
+pearson	DOUBLE
+spearman	DOUBLE
+n	BIGINT
+
+# ===--------------------------------------------------------------------===
+# events: the time-aware checks' companions (single date and date range)
+# ===--------------------------------------------------------------------===
+
+query TT
+SELECT column_name, column_type FROM (DESCRIBE SELECT * FROM rel_count_change_events('orders', 'order_date'))
+----
+ds	DATE
+kind	VARCHAR
+label	VARCHAR
+severity	VARCHAR
+value	DOUBLE
+threshold	DOUBLE
+series	VARCHAR
+
+query TT
+SELECT column_name, column_type FROM (DESCRIBE SELECT * FROM anofox_tab_rel_count_change_events('orders', 'order_date', start_date := DATE '2026-01-01', end_date := DATE '2026-01-10'))
+----
+ds	DATE
+kind	VARCHAR
+label	VARCHAR
+severity	VARCHAR
+value	DOUBLE
+threshold	DOUBLE
+series	VARCHAR
+
+query TT
+SELECT column_name, column_type FROM (DESCRIBE SELECT * FROM metric_anomaly_iqr_events('orders', 'order_date', 'amount'))
+----
+ds	DATE
+kind	VARCHAR
+label	VARCHAR
+severity	VARCHAR
+value	DOUBLE
+threshold	DOUBLE
+series	VARCHAR
+
+query TT
+SELECT column_name, column_type FROM (DESCRIBE SELECT * FROM anofox_tab_metric_anomaly_iqr_events('orders', 'order_date', start_date := DATE '2026-01-01', end_date := DATE '2026-01-10'))
+----
+ds	DATE
+kind	VARCHAR
+label	VARCHAR
+severity	VARCHAR
+value	DOUBLE
+threshold	DOUBLE
+series	VARCHAR
+
+query TT
+SELECT column_name, column_type FROM (DESCRIBE SELECT * FROM rolling_values_in_set_events('orders', 'status', ['open'], 'order_date'))
+----
+ds	DATE
+kind	VARCHAR
+label	VARCHAR
+severity	VARCHAR
+value	DOUBLE
+threshold	DOUBLE
+series	VARCHAR
+
+query TT
+SELECT column_name, column_type FROM (DESCRIBE SELECT * FROM anofox_tab_rolling_values_in_set_events('orders', 'status', ['open'], 'order_date', start_date := DATE '2026-01-01', end_date := DATE '2026-01-10'))
+----
+ds	DATE
+kind	VARCHAR
+label	VARCHAR
+severity	VARCHAR
+value	DOUBLE
+threshold	DOUBLE
+series	VARCHAR
+
+# severity uses the contract vocabulary only
+query I
+SELECT COUNT(*) FROM (
+    SELECT severity FROM rel_count_change_events('orders', 'order_date', start_date := DATE '2026-01-01', end_date := DATE '2026-01-10')
+    UNION ALL
+    SELECT severity FROM metric_anomaly_iqr_events('orders', 'order_date', start_date := DATE '2026-01-01', end_date := DATE '2026-01-10')
+    UNION ALL
+    SELECT severity FROM rolling_values_in_set_events('orders', 'status', ['open'], 'order_date', start_date := DATE '2026-01-01', end_date := DATE '2026-01-10')
+) WHERE severity NOT IN ('warning', 'alarm')
+----
+0
+
+# ===--------------------------------------------------------------------===
+# run_checks is the `check` producer for the one-row checks: every check_type
+# it supports runs and yields a contract-shaped row (status pass/warn/fail).
+# Not supported by run_checks: zscore, iqr, schema_check.
+# ===--------------------------------------------------------------------===
+
+statement ok
+CREATE TEMP TABLE customers AS SELECT * FROM (VALUES ('open'), ('shipped')) t(code)
+
+statement ok
+CREATE TABLE all_type_checks AS SELECT * FROM contract_checks LIMIT 0
+
+statement ok
+INSERT INTO all_type_checks VALUES
+    ('c01', 'volume', 'orders', NULL, NULL, 1, NULL, false, NULL, NULL),
+    ('c02', 'null_rate', 'orders', 'status', NULL, NULL, 0.1, false, NULL, NULL),
+    ('c03', 'distinct_count', 'orders', 'status', NULL, 1, 5, false, NULL, NULL),
+    ('c04', 'regex_match', 'orders', 'status', '{"pattern": "^[a-z]+$"}', 0.9, NULL, false, NULL, NULL),
+    ('c05', 'values_in_set', 'orders', 'status', '{"allowed_values": ["open", "shipped"]}', 1.0, NULL, false, NULL, NULL),
+    ('c06', 'agg', 'orders', 'amount', '{"agg": "avg"}', 1, 10, false, NULL, NULL),
+    ('c07', 'duplicate_count', 'orders', 'amount', NULL, NULL, 1000, false, NULL, NULL),
+    ('c08', 'occurrence', 'orders', 'status', '{"mode": "max"}', NULL, 1000, false, NULL, NULL),
+    ('c09', 'match_rate', 'orders', 'status', '{"right_table": "customers", "right_keys": "code"}', 1.0, NULL, false, NULL, NULL),
+    ('c10', 'compliance', 'orders', NULL, '{"expression": "amount > 0"}', 1.0, NULL, false, NULL, NULL),
+    ('c11', 'freshness', 'orders', 'order_date', '{"reference_time": "2026-01-11 00:00:00"}', NULL, 172800, false, NULL, NULL),
+    ('c12', 'rel_count_change', 'orders', NULL, '{"date_column": "order_date", "reference_date": "2026-01-09"}', -0.5, 0.5, false, NULL, NULL),
+    ('c13', 'metric_anomaly_iqr', 'orders', NULL, '{"date_column": "order_date", "reference_date": "2026-01-09"}', NULL, NULL, false, NULL, NULL),
+    ('c14', 'rolling_values_in_set', 'orders', 'status', '{"date_column": "order_date", "allowed_values": ["open", "shipped"]}', 1.0, NULL, false, NULL, NULL)
+
+query TTT
+SELECT check_name, check_type, status FROM run_checks('all_type_checks') ORDER BY check_name
+----
+c01	volume	pass
+c02	null_rate	pass
+c03	distinct_count	pass
+c04	regex_match	pass
+c05	values_in_set	pass
+c06	agg	pass
+c07	duplicate_count	pass
+c08	occurrence	pass
+c09	match_rate	pass
+c10	compliance	pass
+c11	freshness	pass
+c12	rel_count_change	pass
+c13	metric_anomaly_iqr	pass
+c14	rolling_values_in_set	pass

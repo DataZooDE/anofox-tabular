@@ -10,6 +10,7 @@
 #include "anofox_metric.hpp"
 #include "anofox_check.hpp"
 #include "anofox_check_suite.hpp"
+#include "anofox_contract.hpp"
 #include "anofox_profile.hpp"
 #include "anofox_outlier_tree.hpp"
 #include "anofox_money.hpp"
@@ -151,6 +152,11 @@ void LoadInternal(ExtensionLoader &loader) {
 	anofox::RegisterNEROptions(loader);
 	anofox::RegisterPIIOptions(loader);
 	anofox::RegisterPIIFunctions(loader);
+
+	// anofox integration contract (#107): the shared version function, then the tags
+	// of the contract producers registered above
+	anofox::RegisterContractVersionFunction(loader);
+	anofox::ApplyContractTags(loader);
 
 	datazoo::RegisterBannerOption(loader);
 	// Last, so a load that fails earlier never advertises itself. Silent unless

@@ -56,11 +56,12 @@ All functions have aliases without the `anofox_tab_` prefix. For example:
 6. [PII Detection](#pii-detection)
 7. [Data Quality Metrics](#data-quality-metrics)
 8. [Check Suites](#check-suites)
-9. [Anomaly Detection](#anomaly-detection)
-10. [Data Diffing](#data-diffing)
-11. [Configuration](#configuration)
-12. [Function Coverage Matrix](#function-coverage-matrix)
-13. [Notes](#notes)
+9. [anofox Integration Contract](#anofox-integration-contract)
+10. [Anomaly Detection](#anomaly-detection)
+11. [Data Diffing](#data-diffing)
+12. [Configuration](#configuration)
+13. [Function Coverage Matrix](#function-coverage-matrix)
+14. [Notes](#notes)
 
 ---
 
@@ -1729,6 +1730,34 @@ SELECT * FROM rolling_values_in_set('orders', 'status', ['completed', 'pending']
                                     start_date := DATE '2026-01-01', end_date := DATE '2026-01-31');
 ```
 
+#### Events companions: `rel_count_change_events`, `metric_anomaly_iqr_events`, `rolling_values_in_set_events`
+
+Primary names `anofox_tab_rel_count_change_events`, `anofox_tab_metric_anomaly_iqr_events`,
+`anofox_tab_rolling_values_in_set_events`. Each takes exactly the arguments of its base check,
+including `reference_date` and the `start_date := DATE, end_date := DATE` range, and returns the
+anofox contract's `events` shape: one row per reference date whose check fails (or warns), ordered
+by `ds`. Passing dates are not events, so a passing single-date call returns no rows.
+
+| Column | Type | Meaning |
+|--------|------|---------|
+| `ds` | DATE | the reference date |
+| `kind` | VARCHAR | the check name (`rel_count_change`, `metric_anomaly_iqr`, `rolling_values_in_set`) |
+| `label` | VARCHAR | the base check's `message` |
+| `severity` | VARCHAR | `'alarm'` for `fail`, `'warning'` for `warn` |
+| `value` | DOUBLE | the measure: `rel_change`, `metric_value` or `in_set_rate` |
+| `threshold` | DOUBLE | the bound the measure crossed: the violated `lower_threshold`/`upper_threshold`, the crossed IQR bound (`lower_bound`/`upper_bound`), or `min_rate` |
+| `series` | VARCHAR | the table, or `table.column` when the check measures a column (`count_column`, `metric_column`, `column_name`) |
+
+Tagged `{'anofox.output': 'events', 'anofox.contract': '1'}`, see
+[anofox Integration Contract](#anofox-integration-contract).
+
+**Example:**
+```sql
+-- the alarm timeline of January
+SELECT ds, kind, severity, value, threshold, label
+FROM rel_count_change_events('orders', 'order_date', start_date := DATE '2026-01-01', end_date := DATE '2026-01-31');
+```
+
 ---
 
 ## Check Suites
@@ -1794,7 +1823,50 @@ SELECT check_name, status, value, message FROM run_checks('dq_checks') ORDER BY 
 
 ---
 
+## anofox Integration Contract
 
+anofox-tabular takes part in the anofox integration contract (anofox-visualization
+`docs/plans/integration-contract.md`): producers whose output follows a contract schema are tagged
+in `duckdb_functions().tags`, so anofox-visualization (`anofox_plot`) and other consumers find them
+without adapter SQL.
+
+#### `anofox_contract_version()`
+
+```sql
+anofox_contract_version() → VARCHAR   -- '1'
+```
+
+The contract version this extension implements. It is shared by every anofox extension: whichever
+extension loads first registers it, the others leave it in place.
+
+**Tagged producers** (`{'anofox.output': '<schema>', 'anofox.contract': '1'}`, on the
+`anofox_tab_*` primary name and on the alias):
+
+| Producer | Schema | Columns |
+|----------|--------|---------|
+| `run_checks` | `check` | `run_ts, check_name, check_type, table_name, column_name, identifier, value, lower_threshold, upper_threshold, status, message` |
+| `profile_correlations` | `matrix` | `column_a, column_b, pearson, spearman, n` (a pair list; the reader mirrors it) |
+| `rel_count_change_events`, `metric_anomaly_iqr_events`, `rolling_values_in_set_events` | `events` | `ds, kind, label, severity, value, threshold, series` |
+
+```sql
+SELECT DISTINCT function_name, tags['anofox.output'] AS output
+FROM duckdb_functions() WHERE tags['anofox.contract'] IS NOT NULL;
+```
+
+**The one-row checks** (`volume`, `null_rate`, `regex_match`, ..., and `agg_check`) keep their own
+result columns and are not tagged. `run_checks` is the contract-shaped `check` producer for them:
+put the checks in a checks table and every row comes back as `check_name, status, value,
+lower_threshold, upper_threshold, ...`. It runs 14 check types (`volume`, `null_rate`,
+`distinct_count`, `regex_match`, `values_in_set`, `agg`, `duplicate_count`, `occurrence`,
+`match_rate`, `compliance`, `freshness`, `rel_count_change`, `metric_anomaly_iqr`,
+`rolling_values_in_set`); `zscore`, `iqr` and `schema_check` are not available in a suite.
+Besides the contract statuses `pass`/`warn`/`fail`, `run_checks` reports a check that cannot run
+(e.g. a missing target table) as `status = 'error'`.
+
+The time-aware checks map to `events` through their `_events` companions (above); their base form
+keeps its columns.
+
+---
 
 ## Anomaly Detection
 

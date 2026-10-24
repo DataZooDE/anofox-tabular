@@ -641,6 +641,33 @@ static ReferenceDates ReadReferenceDates(TableFunctionBindInput &input, idx_t re
 	return dates;
 }
 
+// How a time-aware check's result row maps onto the contract `events` schema (#107)
+struct EventsMapping {
+	string kind;           // the check name
+	string series;         // the measured table / table.column
+	string value_expr;     // the check's measure, over the base result columns
+	string threshold_expr; // the bound the measure violated
+};
+
+// Helper: wrap a time-aware check's SQL into its events companion: one row per
+// reference date whose status is 'fail' (severity 'alarm') or 'warn' ('warning'),
+// ordered by ds. Passing dates are not events.
+static string WrapAsEventsSQL(const string &check_sql, const EventsMapping &mapping) {
+	return "SELECT reference_date AS ds, "
+	       "'" + EscapeSqlStringLiteral(mapping.kind) + "' AS kind, "
+	       "message AS label, "
+	       "CASE status WHEN 'fail' THEN 'alarm' ELSE 'warning' END AS severity, "
+	       "CAST(" + mapping.value_expr + " AS DOUBLE) AS value, "
+	       "CAST(" + mapping.threshold_expr + " AS DOUBLE) AS threshold, "
+	       "'" + EscapeSqlStringLiteral(mapping.series) + "' AS series "
+	       "FROM (" + check_sql + ") __check WHERE status IN ('fail', 'warn') ORDER BY ds";
+}
+
+// Helper: the series label of an event: the table, or table.column for a column measure
+static string EventsSeries(const string &table_name, const string &column_name) {
+	return column_name.empty() ? table_name : table_name + "." + column_name;
+}
+
 // Declare the optional start_date/end_date named parameters (#109) on every overload
 static void AddDateRangeParameters(TableFunctionSet &set) {
 	duckdb_compat::ForEachFunction(set, [](TableFunction &func) {
@@ -809,8 +836,8 @@ static unique_ptr<TableRef> CheckComplianceBindReplace(ClientContext &context, T
 	return ParseSubquery(sql, context, "Failed to parse compliance check query");
 }
 
-static unique_ptr<TableRef> CheckRelCountChangeBindReplace(ClientContext &context, TableFunctionBindInput &input) {
-	PostHogTelemetry::Instance().RecordFunctionCall("check_rel_count_change");
+// Builds the rel_count_change SQL from the bind input; fills the events mapping when asked
+static string BuildRelCountChangeSQL(TableFunctionBindInput &input, EventsMapping *events) {
 	if (input.inputs.size() < 2) {
 		throw BinderException(
 		    "anofox_tab_rel_count_change requires at least 2 arguments: table_name, date_column");
@@ -830,13 +857,34 @@ static unique_ptr<TableRef> CheckRelCountChangeBindReplace(ClientContext &contex
 	ValidateFiniteDouble(upper, "rel_count_change", "upper_threshold");
 	auto dates = ReadReferenceDates(input, 6, "rel_count_change");
 
+	if (events) {
+		events->kind = "rel_count_change";
+		events->series = EventsSeries(table_name, count_column);
+		events->value_expr = "rel_change";
+		events->threshold_expr =
+		    "CASE WHEN lower_threshold IS NOT NULL AND rel_change < lower_threshold THEN lower_threshold "
+		    "ELSE upper_threshold END";
+	}
 	string table_ref = BuildQueryTableRef(table_name);
-	string sql = GenerateRelCountChangeSQL(table_ref, date_column, count_column, window_days, lower, upper, dates);
+	return GenerateRelCountChangeSQL(table_ref, date_column, count_column, window_days, lower, upper, dates);
+}
+
+static unique_ptr<TableRef> CheckRelCountChangeBindReplace(ClientContext &context, TableFunctionBindInput &input) {
+	PostHogTelemetry::Instance().RecordFunctionCall("check_rel_count_change");
+	string sql = BuildRelCountChangeSQL(input, nullptr);
 	return ParseSubquery(sql, context, "Failed to parse relative count change check query");
 }
 
-static unique_ptr<TableRef> CheckMetricAnomalyIQRBindReplace(ClientContext &context, TableFunctionBindInput &input) {
-	PostHogTelemetry::Instance().RecordFunctionCall("check_metric_anomaly_iqr");
+static unique_ptr<TableRef> CheckRelCountChangeEventsBindReplace(ClientContext &context,
+                                                                 TableFunctionBindInput &input) {
+	PostHogTelemetry::Instance().RecordFunctionCall("check_rel_count_change_events");
+	EventsMapping events;
+	string sql = WrapAsEventsSQL(BuildRelCountChangeSQL(input, &events), events);
+	return ParseSubquery(sql, context, "Failed to parse relative count change events query");
+}
+
+// Builds the metric_anomaly_iqr SQL from the bind input; fills the events mapping when asked
+static string BuildMetricAnomalyIQRSQL(TableFunctionBindInput &input, EventsMapping *events) {
 	if (input.inputs.size() < 2) {
 		throw BinderException(
 		    "anofox_tab_metric_anomaly_iqr requires at least 2 arguments: table_name, date_column");
@@ -861,13 +909,32 @@ static unique_ptr<TableRef> CheckMetricAnomalyIQRBindReplace(ClientContext &cont
 	}
 	auto dates = ReadReferenceDates(input, 6, "metric_anomaly_iqr");
 
+	if (events) {
+		events->kind = "metric_anomaly_iqr";
+		events->series = EventsSeries(table_name, metric_column);
+		events->value_expr = "metric_value";
+		events->threshold_expr = "CASE WHEN metric_value < lower_bound THEN lower_bound ELSE upper_bound END";
+	}
 	string table_ref = BuildQueryTableRef(table_name);
-	string sql = GenerateMetricAnomalyIQRSQL(table_ref, date_column, metric_column, window_days, k, mode, dates);
+	return GenerateMetricAnomalyIQRSQL(table_ref, date_column, metric_column, window_days, k, mode, dates);
+}
+
+static unique_ptr<TableRef> CheckMetricAnomalyIQRBindReplace(ClientContext &context, TableFunctionBindInput &input) {
+	PostHogTelemetry::Instance().RecordFunctionCall("check_metric_anomaly_iqr");
+	string sql = BuildMetricAnomalyIQRSQL(input, nullptr);
 	return ParseSubquery(sql, context, "Failed to parse metric anomaly IQR check query");
 }
 
-static unique_ptr<TableRef> CheckRollingValuesInSetBindReplace(ClientContext &context, TableFunctionBindInput &input) {
-	PostHogTelemetry::Instance().RecordFunctionCall("check_rolling_values_in_set");
+static unique_ptr<TableRef> CheckMetricAnomalyIQREventsBindReplace(ClientContext &context,
+                                                                   TableFunctionBindInput &input) {
+	PostHogTelemetry::Instance().RecordFunctionCall("check_metric_anomaly_iqr_events");
+	EventsMapping events;
+	string sql = WrapAsEventsSQL(BuildMetricAnomalyIQRSQL(input, &events), events);
+	return ParseSubquery(sql, context, "Failed to parse metric anomaly IQR events query");
+}
+
+// Builds the rolling_values_in_set SQL from the bind input; fills the events mapping when asked
+static string BuildRollingValuesInSetSQL(TableFunctionBindInput &input, EventsMapping *events) {
 	if (input.inputs.size() < 4) {
 		throw BinderException("anofox_tab_rolling_values_in_set requires at least 4 arguments: "
 		                      "table_name, column_name, allowed_values, date_column");
@@ -882,10 +949,29 @@ static unique_ptr<TableRef> CheckRollingValuesInSetBindReplace(ClientContext &co
 	ValidateFiniteDouble(min_rate, "rolling_values_in_set", "min_rate");
 	auto dates = ReadReferenceDates(input, 6, "rolling_values_in_set");
 
+	if (events) {
+		events->kind = "rolling_values_in_set";
+		events->series = EventsSeries(table_name, column_name);
+		events->value_expr = "in_set_rate";
+		events->threshold_expr = "threshold";
+	}
 	string table_ref = BuildQueryTableRef(table_name);
-	string sql = GenerateRollingValuesInSetSQL(table_ref, column_name, allowed_array, date_column, window_days,
-	                                           min_rate, dates);
+	return GenerateRollingValuesInSetSQL(table_ref, column_name, allowed_array, date_column, window_days, min_rate,
+	                                     dates);
+}
+
+static unique_ptr<TableRef> CheckRollingValuesInSetBindReplace(ClientContext &context, TableFunctionBindInput &input) {
+	PostHogTelemetry::Instance().RecordFunctionCall("check_rolling_values_in_set");
+	string sql = BuildRollingValuesInSetSQL(input, nullptr);
 	return ParseSubquery(sql, context, "Failed to parse rolling values-in-set check query");
+}
+
+static unique_ptr<TableRef> CheckRollingValuesInSetEventsBindReplace(ClientContext &context,
+                                                                     TableFunctionBindInput &input) {
+	PostHogTelemetry::Instance().RecordFunctionCall("check_rolling_values_in_set_events");
+	EventsMapping events;
+	string sql = WrapAsEventsSQL(BuildRollingValuesInSetSQL(input, &events), events);
+	return ParseSubquery(sql, context, "Failed to parse rolling values-in-set events query");
 }
 
 //===--------------------------------------------------------------------===//
@@ -1053,6 +1139,25 @@ void RegisterCheckFunctions(ExtensionLoader &loader) {
 		RegisterTableFunctionSetWithAlias(loader, rel_count_set, "rel_count_change", {std::move(desc)});
 	}
 
+	// anofox_tab_rel_count_change_events(<rel_count_change arguments>) (alias: rel_count_change_events)
+	TableFunctionSet rel_count_events_set("anofox_tab_rel_count_change_events");
+	AddPrefixAritiesBindReplace(rel_count_events_set, "anofox_tab_rel_count_change_events", rel_count_args, 2,
+	                            DATAZOO_GUARD(ANOFOX_TABULAR_BANNER, CheckRelCountChangeEventsBindReplace));
+	AddDateRangeParameters(rel_count_events_set);
+	{
+		FunctionDescription desc;
+		desc.description = "Events companion of rel_count_change (same arguments, including start_date/end_date)."
+		                   " Returns the contract `events` shape (ds, kind, label, severity, value, threshold, series): one row per "
+		    "reference date whose check fails (severity 'alarm') or warns ('warning'), ordered by ds; passing dates "
+		    "are not events.";
+		desc.parameter_names = {"table_name", "date_column",     "count_column",   "window_days",
+		                        "lower_threshold", "upper_threshold", "reference_date"};
+		desc.examples = {"SELECT * FROM rel_count_change_events('orders', 'order_date', start_date := DATE '2026-01-01', "
+		                 "end_date := DATE '2026-01-31');"};
+		desc.categories = {"metric", "data-quality"};
+		RegisterTableFunctionSetWithAlias(loader, rel_count_events_set, "rel_count_change_events", {std::move(desc)});
+	}
+
 	// anofox_tab_metric_anomaly_iqr(table_name, date_column [, metric_column, window_days=30, k=1.5,
 	//                               mode='both', reference_date]) (alias: metric_anomaly_iqr)
 	const vector<LogicalType> metric_iqr_args = {
@@ -1077,6 +1182,27 @@ void RegisterCheckFunctions(ExtensionLoader &loader) {
 		                 "end_date := DATE '2026-01-31');"};
 		desc.categories = {"metric", "data-quality"};
 		RegisterTableFunctionSetWithAlias(loader, metric_iqr_set, "metric_anomaly_iqr", {std::move(desc)});
+	}
+
+	// anofox_tab_metric_anomaly_iqr_events(<metric_anomaly_iqr arguments>) (alias: metric_anomaly_iqr_events)
+	TableFunctionSet metric_iqr_events_set("anofox_tab_metric_anomaly_iqr_events");
+	AddPrefixAritiesBindReplace(metric_iqr_events_set, "anofox_tab_metric_anomaly_iqr_events", metric_iqr_args, 2,
+	                            DATAZOO_GUARD(ANOFOX_TABULAR_BANNER, CheckMetricAnomalyIQREventsBindReplace));
+	AddDateRangeParameters(metric_iqr_events_set);
+	{
+		FunctionDescription desc;
+		desc.description = "Events companion of metric_anomaly_iqr (same arguments, including start_date/end_date). "
+		                   "value is the daily metric, threshold the IQR bound it crossed."
+		                   " Returns the contract `events` shape (ds, kind, label, severity, value, threshold, series): one row per "
+		    "reference date whose check fails (severity 'alarm') or warns ('warning'), ordered by ds; passing dates "
+		    "are not events.";
+		desc.parameter_names = {"table_name", "date_column", "metric_column", "window_days",
+		                        "k",          "mode",        "reference_date"};
+		desc.examples = {"SELECT * FROM metric_anomaly_iqr_events('orders', 'order_date', start_date := DATE '2026-01-01', "
+		                 "end_date := DATE '2026-01-31');"};
+		desc.categories = {"metric", "data-quality"};
+		RegisterTableFunctionSetWithAlias(loader, metric_iqr_events_set, "metric_anomaly_iqr_events",
+		                                  {std::move(desc)});
 	}
 
 	// anofox_tab_rolling_values_in_set(table_name, column_name, allowed_values, date_column
@@ -1105,6 +1231,28 @@ void RegisterCheckFunctions(ExtensionLoader &loader) {
 		    "start_date := DATE '2026-01-01', end_date := DATE '2026-01-31');"};
 		desc.categories = {"metric", "data-quality"};
 		RegisterTableFunctionSetWithAlias(loader, rolling_set_set, "rolling_values_in_set", {std::move(desc)});
+	}
+
+	// anofox_tab_rolling_values_in_set_events(<rolling_values_in_set arguments>)
+	// (alias: rolling_values_in_set_events)
+	TableFunctionSet rolling_events_set("anofox_tab_rolling_values_in_set_events");
+	AddPrefixAritiesBindReplace(rolling_events_set, "anofox_tab_rolling_values_in_set_events", rolling_set_args, 4,
+	                            DATAZOO_GUARD(ANOFOX_TABULAR_BANNER, CheckRollingValuesInSetEventsBindReplace));
+	AddDateRangeParameters(rolling_events_set);
+	{
+		FunctionDescription desc;
+		desc.description = "Events companion of rolling_values_in_set (same arguments, including "
+		                   "start_date/end_date). value is the in-set rate, threshold min_rate."
+		                   " Returns the contract `events` shape (ds, kind, label, severity, value, threshold, series): one row per "
+		    "reference date whose check fails (severity 'alarm') or warns ('warning'), ordered by ds; passing dates "
+		    "are not events.";
+		desc.parameter_names = {"table_name",  "column_name", "allowed_values", "date_column",
+		                        "window_days", "min_rate",    "reference_date"};
+		desc.examples = {"SELECT * FROM rolling_values_in_set_events('orders', 'status', ['completed', 'pending'], "
+		                 "'order_date', 7, 1.0, start_date := DATE '2026-01-01', end_date := DATE '2026-01-31');"};
+		desc.categories = {"metric", "data-quality"};
+		RegisterTableFunctionSetWithAlias(loader, rolling_events_set, "rolling_values_in_set_events",
+		                                  {std::move(desc)});
 	}
 }
 

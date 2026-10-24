@@ -473,6 +473,29 @@ SELECT reference_date, status, rel_change
 FROM rel_count_change('orders', 'order_date', start_date := DATE '2026-01-01', end_date := DATE '2026-01-31');
 ```
 
+Their `_events` companions (`rel_count_change_events`, `metric_anomaly_iqr_events`,
+`rolling_values_in_set_events`, same arguments) return only the failing/warning dates in the anofox
+contract's `events` shape (`ds, kind, label, severity, value, threshold, series`), ready for an
+alarm timeline in anofox-visualization:
+
+```sql
+SELECT * FROM rel_count_change_events('orders', 'order_date', start_date := DATE '2026-01-01', end_date := DATE '2026-01-31');
+```
+
+**anofox integration contract:** contract producers carry the `duckdb_functions()` tags
+`{'anofox.output': '<schema>', 'anofox.contract': '1'}` and `anofox_contract_version()` returns
+`'1'`, so anofox-visualization plots them without adapter SQL:
+
+| Producer (primary `anofox_tab_*` name and alias) | Schema |
+|----------|--------|
+| `run_checks` | `check` |
+| `profile_correlations` | `matrix` |
+| `rel_count_change_events`, `metric_anomaly_iqr_events`, `rolling_values_in_set_events` | `events` |
+
+The one-row checks (including `agg_check`) keep their own columns and are not tagged; `run_checks`
+is the contract-shaped `check` producer for them (14 check types; not `zscore`, `iqr`,
+`schema_check`). See [docs/API_REFERENCE.md](docs/API_REFERENCE.md#anofox-integration-contract).
+
 **Check suites** — define checks once in a SQL table and run them all with one call:
 
 ```sql
@@ -1047,7 +1070,11 @@ All functions are registered under their canonical `anofox_tab_*` name plus the 
 | `anofox_tab_rel_count_change` (`rel_count_change`) | `(table VARCHAR, date_col VARCHAR [, count_col VARCHAR, window_days BIGINT = 7, lower DOUBLE = -0.5, upper DOUBLE = 0.5, reference_date DATE] [, start_date := DATE, end_date := DATE]) → TABLE` | Daily (distinct) count vs rolling baseline average; one row per date with a date range |
 | `anofox_tab_metric_anomaly_iqr` (`metric_anomaly_iqr`) | `(table VARCHAR, date_col VARCHAR [, metric_col VARCHAR, window_days BIGINT = 30, k DOUBLE = 1.5, mode VARCHAR = 'both', reference_date DATE] [, start_date := DATE, end_date := DATE]) → TABLE` | Daily metric outside Q1/Q3 ± k·IQR of the trailing window; one row per date with a date range |
 | `anofox_tab_rolling_values_in_set` (`rolling_values_in_set`) | `(table VARCHAR, column VARCHAR, allowed LIST<VARCHAR>, date_col VARCHAR [, window_days BIGINT = 7, min_rate DOUBLE = 1.0, reference_date DATE] [, start_date := DATE, end_date := DATE]) → TABLE` | Values-in-set rate over a trailing date window; one row per date with a date range |
-| `anofox_tab_run_checks` (`run_checks`) | `(checks_table VARCHAR) → TABLE` | Run every check in a checks table; uniform result rows |
+| `anofox_tab_rel_count_change_events` (`rel_count_change_events`) | same arguments as `rel_count_change` → `TABLE(ds, kind, label, severity, value, threshold, series)` | Contract `events`: one row per failing/warning reference date |
+| `anofox_tab_metric_anomaly_iqr_events` (`metric_anomaly_iqr_events`) | same arguments as `metric_anomaly_iqr` → `TABLE(ds, kind, label, severity, value, threshold, series)` | Contract `events`: one row per anomalous reference date |
+| `anofox_tab_rolling_values_in_set_events` (`rolling_values_in_set_events`) | same arguments as `rolling_values_in_set` → `TABLE(ds, kind, label, severity, value, threshold, series)` | Contract `events`: one row per failing/warning reference date |
+| `anofox_tab_run_checks` (`run_checks`) | `(checks_table VARCHAR) → TABLE` | Run every check in a checks table; uniform result rows (contract `check` schema) |
+| `anofox_contract_version` | `() → VARCHAR` | anofox integration contract version (`'1'`) |
 
 > **Security note:** `compliance` executes the caller-supplied expression as SQL with the caller's
 > privileges. The expression is validated at bind time to be a single boolean expression
