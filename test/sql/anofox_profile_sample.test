@@ -41,6 +41,6 @@ statement ok
 CREATE TABLE pt AS SELECT chr(122 - i::INT) AS s FROM range(0, 20) r(i);
 
 query T
-SELECT list_transform(top_values, x -> x.value) FROM profile_table('pt');
+SELECT list_transform(top_values, lambda x: x.value) FROM profile_table('pt');
 ----
 [g, h, i, j, k]

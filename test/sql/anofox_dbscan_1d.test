@@ -2,6 +2,8 @@
 # description: Univariate dbscan uses a sorted sweep for its neighbour search. The results must be
 #              identical to the former all-pairs search: the fingerprints below were captured with
 #              the all-pairs implementation (cluster ids, point types, neighbour counts, scores).
+#              Scores are rounded to 12 digits: the DuckDB 2.0 build compiles with -march=x86-64-v3,
+#              whose fused multiply-add changes the last bit of some scores.
 # group: [anofox_tabular]
 
 require anofox_tabular
@@ -25,22 +27,22 @@ FROM range(0, 400) t(i)
 ORDER BY i
 
 query T
-SELECT md5(string_agg(row_id || ':' || value || ':' || cluster_id || ':' || point_type || ':' || neighbor_count || ':' || anomaly_score || ':' || is_anomaly, ',' ORDER BY row_id))
+SELECT md5(string_agg(row_id || ':' || value || ':' || cluster_id || ':' || point_type || ':' || neighbor_count || ':' || round(anomaly_score, 12) || ':' || is_anomaly, ',' ORDER BY row_id))
 FROM dbscan('db1d', 'v', 0.2, 6, 'clusters')
 ----
-ecdbfd996c749ab216cf676a6e164f25
+7701b6cd0f137c5b22044630b8f092d6
 
 query T
-SELECT md5(string_agg(row_id || ':' || value || ':' || cluster_id || ':' || point_type || ':' || neighbor_count || ':' || anomaly_score || ':' || is_anomaly, ',' ORDER BY row_id))
+SELECT md5(string_agg(row_id || ':' || value || ':' || cluster_id || ':' || point_type || ':' || neighbor_count || ':' || round(anomaly_score, 12) || ':' || is_anomaly, ',' ORDER BY row_id))
 FROM dbscan('db1d', 'v', 0.1, 4, 'clusters')
 ----
-89be111d593b00e328b76611a2fc3a3f
+250b45a78616cc8bac295b554716f913
 
 query T
-SELECT md5(string_agg(row_id || ':' || value || ':' || cluster_id || ':' || point_type || ':' || neighbor_count || ':' || anomaly_score || ':' || is_anomaly, ',' ORDER BY row_id))
+SELECT md5(string_agg(row_id || ':' || value || ':' || cluster_id || ':' || point_type || ':' || neighbor_count || ':' || round(anomaly_score, 12) || ':' || is_anomaly, ',' ORDER BY row_id))
 FROM dbscan('db1d', 'v', 0.05, 5, 'clusters')
 ----
-743e804284852184e060b4fcda1d65e4
+7c10fca431930f7f14ead409b85ffe7b
 
 query TIIIIR
 SELECT status, cluster_count, noise_count, total_count, largest_cluster_size, round(noise_rate, 6)
