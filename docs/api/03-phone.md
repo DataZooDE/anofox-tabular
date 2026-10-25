@@ -30,7 +30,34 @@ JP, CN, IN, BR, MX, AR, RU, NL, SE, NO, DK, FI and CH. Numbers of other regions 
 Most functions take a `region` argument: a two-letter ISO region code such as `'US'` or `'DE'`.
 It tells the parser how to read a number without a leading `+` and country code. A number that
 starts with `+` carries its own country code. When `region` is `NULL`, the setting
-`anofox_tab_phonenumber_default_region` applies (default `US`).
+`anofox_tab_phonenumber_default_region` applies (default `US`). A `region` that is not one of
+the 21 supported codes (for example `'AT'`, or `'UK'` instead of `'GB'`) makes a number without
+`+` invalid; `phonenumber_parse` reports it as `unsupported_region`.
+
+The parser also understands two common ways of writing international numbers:
+
+- **International dialling prefix.** A number that starts with the region's international
+  prefix is read like a number with `+`: `0049 30 12345678` with region `'DE'`, or
+  `011 49 30 12345678` with region `'US'`. The prefixes are `00` in most regions, `011` in US
+  and CA, `0011` in AU, `010` in JP and `810` in RU.
+- **Trunk digit after the country code.** `+49 (0)30 12345678` and `+44 020 7946 0018` keep
+  the national prefix after the country code. It is dropped when the number is only valid
+  without it.
+
+```sql
+SELECT phonenumber_format('0049 30 12345678', 'DE', 'E164') AS idd,
+       phonenumber_format('+49 (0)30 12345678', NULL, 'E164') AS trunk,
+       phonenumber_is_valid('089 123456', 'DE') AS short_de;
+```
+
+```text
+┌───────────────┬───────────────┬──────────┐
+│      idd      │     trunk     │ short_de │
+│    varchar    │    varchar    │ boolean  │
+├───────────────┼───────────────┼──────────┤
+│ +493012345678 │ +493012345678 │ true     │
+└───────────────┴───────────────┴──────────┘
+```
 
 ```sql
 CREATE TABLE contacts AS
@@ -58,39 +85,50 @@ phonenumber_parse(phone VARCHAR, region VARCHAR) -> STRUCT(
     country_code    INTEGER,
     national_number VARCHAR,
     region          VARCHAR,
-    type            VARCHAR
+    type            VARCHAR,
+    reason          VARCHAR
 )
 ```
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `valid` | `BOOLEAN` | `true` when the number is valid; the other fields are `NULL` when it is not |
+| `valid` | `BOOLEAN` | `true` when the number is valid, the same as `phonenumber_is_valid`; the other fields except `reason` are `NULL` when it is not |
 | `country_code` | `INTEGER` | Country calling code, e.g. `1`, `44`, `49` |
 | `national_number` | `VARCHAR` | The number without country code and formatting |
 | `region` | `VARCHAR` | Region code, e.g. `US`, `GB` |
 | `type` | `VARCHAR` | `fixed_line`, `mobile`, `fixed_line_or_mobile` or `toll_free` |
+| `reason` | `VARCHAR` | `NULL` when the number is valid, else why it is not (see below) |
+
+| `reason` | Meaning |
+|----------|---------|
+| `not_a_number` | The input has no digits |
+| `unsupported_region` | A number without `+` and a `region` that is not one of the 21 supported regions |
+| `invalid_country_code` | The country code after `+` (or the international prefix) is not one of the supported regions |
+| `invalid_length` | The national number has a length that the region does not use |
+| `invalid_pattern` | The length fits, but the digits are not in a fixed-line, mobile or toll-free range of the region |
 
 ```sql
 SELECT id, phone,
        (phonenumber_parse(phone, region)).valid AS valid,
        (phonenumber_parse(phone, region)).country_code AS cc,
        (phonenumber_parse(phone, region)).national_number AS national,
-       (phonenumber_parse(phone, region)).type AS type
+       (phonenumber_parse(phone, region)).type AS type,
+       (phonenumber_parse(phone, region)).reason AS reason
 FROM contacts ORDER BY id;
 ```
 
 ```text
-┌───────┬──────────────────┬─────────┬───────┬────────────┬──────────────────────┐
-│  id   │      phone       │  valid  │  cc   │  national  │         type         │
-│ int32 │     varchar      │ boolean │ int32 │  varchar   │       varchar        │
-├───────┼──────────────────┼─────────┼───────┼────────────┼──────────────────────┤
-│     1 │ +1 650-253-0000  │ true    │     1 │ 6502530000 │ fixed_line_or_mobile │
-│     2 │ (650) 253-0000   │ true    │     1 │ 6502530000 │ fixed_line_or_mobile │
-│     3 │ +44 20 8366 1177 │ true    │    44 │ 2083661177 │ fixed_line           │
-│     4 │ +44 7400 123456  │ true    │    44 │ 7400123456 │ mobile               │
-│     5 │ +49 30 12345678  │ true    │    49 │ 3012345678 │ fixed_line           │
-│     6 │ 12               │ false   │  NULL │ NULL       │ NULL                 │
-└───────┴──────────────────┴─────────┴───────┴────────────┴──────────────────────┘
+┌───────┬──────────────────┬─────────┬───────┬────────────┬──────────────────────┬────────────────┐
+│  id   │      phone       │  valid  │  cc   │  national  │         type         │     reason     │
+│ int32 │     varchar      │ boolean │ int32 │  varchar   │       varchar        │    varchar     │
+├───────┼──────────────────┼─────────┼───────┼────────────┼──────────────────────┼────────────────┤
+│     1 │ +1 650-253-0000  │ true    │     1 │ 6502530000 │ fixed_line_or_mobile │ NULL           │
+│     2 │ (650) 253-0000   │ true    │     1 │ 6502530000 │ fixed_line_or_mobile │ NULL           │
+│     3 │ +44 20 8366 1177 │ true    │    44 │ 2083661177 │ fixed_line           │ NULL           │
+│     4 │ +44 7400 123456  │ true    │    44 │ 7400123456 │ mobile               │ NULL           │
+│     5 │ +49 30 12345678  │ true    │    49 │ 3012345678 │ fixed_line           │ NULL           │
+│     6 │ 12               │ false   │  NULL │ NULL       │ NULL                 │ invalid_length │
+└───────┴──────────────────┴─────────┴───────┴────────────┴──────────────────────┴────────────────┘
 ```
 
 ---
@@ -99,7 +137,8 @@ FROM contacts ORDER BY id;
 
 Canonical name: `anofox_tab_phonenumber_is_valid`. Scalar function.
 
-Returns `true` when the number has a valid length and prefix for its region.
+Returns `true` when the number has a valid length and is in a fixed-line, mobile or toll-free
+range of its region.
 
 ```text
 phonenumber_is_valid(phone VARCHAR, region VARCHAR) -> BOOLEAN
@@ -165,7 +204,22 @@ phonenumber_format(phone VARCHAR, region VARCHAR, format VARCHAR) -> VARCHAR
 | `region` | `VARCHAR` | Region hint, or `NULL` for the default region |
 | `format` | `VARCHAR` | `E164`, `INTERNATIONAL`, `NATIONAL` or `RFC3966`, case-insensitive |
 
-Returns `NULL` when the number is not valid. An unknown format raises an error.
+Returns `NULL` when the number cannot be parsed or has an impossible length. An unknown format
+raises an error.
+
+| Format | Layout |
+|--------|--------|
+| `E164` | `+` country code and national number, no separators: `+493012345678` |
+| `INTERNATIONAL` | `+` country code, a space, then the region's international grouping: `+49 30 12345678` |
+| `NATIONAL` | The region's national grouping, with the national prefix where the region dials one: `030 12345678` |
+| `RFC3966` | `tel:` URI: the international grouping with `-` between all blocks: `tel:+49-30-12345678` |
+
+The grouping follows per-region layout rules modelled on libphonenumber's number formats. Each
+rule names the leading digits it applies to and how the digits are split into blocks, so a
+Berlin number is `030 12345678`, a German mobile `0171 1234567` and a London number
+`020 7946 0018`. The rules cover the common fixed-line, mobile and toll-free layouts of the 21
+regions; a number that no rule covers is written as one block. US and CA numbers use the
+`(650) 253-0000` / `+1 650 253 0000` layout.
 
 ```sql
 SELECT f AS format, phonenumber_format('6502530000', 'US', f) AS formatted
@@ -190,6 +244,31 @@ SELECT phonenumber_format('6502530000', 'US', 'dotted');
 
 ```text
 Invalid Input Error: Unknown phone number format 'dotted'. Expected one of E164, INTERNATIONAL, NATIONAL, RFC3966
+```
+
+```sql
+SELECT phone, region,
+       phonenumber_format(phone, region, 'NATIONAL') AS national,
+       phonenumber_format(phone, region, 'INTERNATIONAL') AS international
+FROM (VALUES ('030 12345678', 'DE'), ('0171 1234567', 'DE'), ('07400 123456', 'GB'),
+             ('+44 20 7946 0018', NULL), ('01 23 45 67 89', 'FR'), ('044 668 18 00', 'CH'),
+             ('020 123 4567', 'NL'), ('+81 3 1234 5678', NULL)) t(phone, region);
+```
+
+```text
+┌──────────────────┬─────────┬────────────────┬───────────────────┐
+│      phone       │ region  │    national    │   international   │
+│     varchar      │ varchar │    varchar     │      varchar      │
+├──────────────────┼─────────┼────────────────┼───────────────────┤
+│ 030 12345678     │ DE      │ 030 12345678   │ +49 30 12345678   │
+│ 0171 1234567     │ DE      │ 0171 1234567   │ +49 171 1234567   │
+│ 07400 123456     │ GB      │ 07400 123456   │ +44 7400 123456   │
+│ +44 20 7946 0018 │ NULL    │ 020 7946 0018  │ +44 20 7946 0018  │
+│ 01 23 45 67 89   │ FR      │ 01 23 45 67 89 │ +33 1 23 45 67 89 │
+│ 044 668 18 00    │ CH      │ 044 668 18 00  │ +41 44 668 18 00  │
+│ 020 123 4567     │ NL      │ 020 123 4567   │ +31 20 123 4567   │
+│ +81 3 1234 5678  │ NULL    │ 03-1234-5678   │ +81 3-1234-5678   │
+└──────────────────┴─────────┴────────────────┴───────────────────┘
 ```
 
 ---
