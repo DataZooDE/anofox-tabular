@@ -5,7 +5,7 @@
 **Use this guide to:**
 - Install the Python package and open a connection
 - Run the SQL functions from Python
-- Validate, check, mask, score and diff pandas DataFrames
+- Validate, check, mask, score and diff pandas or polars DataFrames
 - Load the extension into a plain `duckdb` connection instead
 
 ## Install
@@ -64,32 +64,49 @@ print(validate.email_is_valid(conn, customers, column="email"))
 3   4                 NaN  IBAN DE89370400440532013000            <NA>
 ```
 
-The result is a copy of the DataFrame with a new `email_is_valid` column.
+The result is a copy of the DataFrame with a new `email_is_valid` column. It keeps the input's
+index and row order, so you can also assign the column back:
+
+```python
+customers["email_ok"] = validate.email_is_valid(conn, customers, column="email")["email_is_valid"]
+print(customers[["id", "email_ok"]].to_string(index=False))
+customers = customers.drop(columns="email_ok")
+```
+
+```text
+ id  email_ok
+  1      True
+  2     False
+  3      True
+  4      <NA>
+```
+
+The phone helpers take one region for all rows (`region="DE"`), or a column with the region of
+each row (`region_column="country"`).
 
 ## Run quality checks
 
-The check functions in `anofox.quality` take a table name and return a dict. Register the
-DataFrame and copy it into a table first:
+The check functions in `anofox.quality` take a table name or a DataFrame and return a dict
+with every result column of the SQL function by name:
 
 ```python
 from anofox import quality
 
-conn.register("customers_df", customers)
-conn.execute("CREATE TABLE customers AS SELECT * FROM customers_df")
-
-result = quality.null_rate(conn, "customers", "email", max_null_rate=0.1)
-print(result["status"], result["_raw"][-1])
-print(quality.volume(conn, "customers", min_rows=1)["status"])
+result = quality.null_rate(conn, customers, "email", max_null_rate=0.1)
+print(result["status"], result["null_rate"], result["message"])
+print(quality.volume(conn, customers, min_rows=1)["status"])
 ```
 
 ```text
-fail Null rate 0.25 (1/4) exceeds maximum 0.1
+fail 0.25 Null rate 0.25 (1/4) exceeds maximum 0.1
 pass
 ```
 
-Use a real table, not a registered view, for the functions that read through a second
-connection (anomaly detection, profiling, PII table scans). The wrappers in `anofox.anomaly`,
-`anofox.diff` and `anofox.profile` accept a DataFrame and copy it into a table for you.
+A DataFrame is copied into a temporary table for the call and dropped afterwards. On a
+connection to a database file (`anofox.connect("my.db")`) that copy is written to the file
+while the call runs. The functions that read through a second connection (anomaly detection,
+profiling, PII table scans) need a regular table: pass a DataFrame, or a table you created,
+not a view you registered with `conn.register()`.
 
 ## Mask PII
 
@@ -98,11 +115,17 @@ from anofox import pii
 
 print(pii.pii_mask(conn, "Mail ana@example.com, SSN 123-45-6789", strategy="redact"))
 print(pii.pii_contains(conn, "no contact data"))
+masked = pii.pii_mask(conn, customers.head(3), column="note", strategy="redact")
+print(masked[["id", "pii_mask"]].to_string(index=False))
 ```
 
 ```text
 Mail [EMAIL], SSN [US_SSN]
 False
+ id        pii_mask
+  1    call [PHONE]
+  2 no contact data
+  3    SSN [US_SSN]
 ```
 
 ## Score anomalies
@@ -117,7 +140,7 @@ readings = pd.DataFrame({
 scores = anomaly.isolation_forest(
     conn, readings, "value",
     output_mode="scores", n_trees=100, sample_size=16, contamination=0.05,
-    id_column="sensor_id",
+    id_column="sensor_id", seed=42,
 )
 print(scores[scores["is_anomaly"]][["sensor_id", "value"]].to_string(index=False))
 ```
@@ -127,7 +150,11 @@ print(scores[scores["is_anomaly"]][["sensor_id", "value"]].to_string(index=False
         20   95.0
 ```
 
-With `output_mode="summary"` the function returns a dict with the summary row instead.
+With `output_mode="summary"` the function returns a dict with the summary row instead. Pass a
+`seed` for scores that are the same on every run; without it the trees are random. The
+Python defaults are the SQL defaults: a parameter you leave out is passed as `NULL`, so the
+extension applies its own default. `dbscan` returns one row per input row with
+`output_mode="clusters"`, `outlier_tree` with `output_mode="outliers"`.
 
 ## Diff two DataFrames
 
@@ -150,14 +177,33 @@ diff_type  id  price
 ## Profile a table
 
 ```python
-summary = anofox.profile.profile_summary(conn, "customers")
+summary = anofox.profile.profile_summary(conn, customers)
 print(summary[["row_count", "column_count", "total_nulls"]].to_string(index=False))
-conn.close()
 ```
 
 ```text
  row_count  column_count  total_nulls
          4             3            1
+```
+
+## Use polars
+
+Every wrapper also takes a polars DataFrame and then returns a polars DataFrame. A table name
+gives a pandas DataFrame.
+
+```python
+import polars as pl
+
+orders = pl.DataFrame({"order_id": [1, 2, 3], "email": ["a@b.com", "bad", "c@d.org"]})
+checked = validate.email_is_valid(conn, orders, column="email")
+print(type(checked).__name__, checked["email_is_valid"].to_list())
+print(type(anofox.profile.profile_summary(conn, orders)).__name__)
+conn.close()
+```
+
+```text
+DataFrame [True, False, True]
+DataFrame
 ```
 
 ## Use a plain duckdb connection

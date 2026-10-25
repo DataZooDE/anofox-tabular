@@ -60,19 +60,25 @@ conn.execute("CREATE TABLE orders_v2 AS SELECT * FROM orders WHERE id <> 7")
 # ── Email validation ──────────────────────────────────────────────────
 print(validate.email_is_valid(conn, "hi@example.com"))                # True
 
-df = pd.DataFrame({"email": ["a@b.com", "bad-email", "c@d.org"]})
+df = pd.DataFrame({"email": ["a@b.com", "bad-email", "c@d.org"]}, index=[10, 20, 30])
 print(validate.email_is_valid(conn, df, column="email"))
-# DataFrame with an added 'email_is_valid' column
+# copy of df with an added 'email_is_valid' column; index and row order are kept,
+# so the column can be assigned back:
+df["ok"] = validate.email_is_valid(conn, df, column="email")["email_is_valid"]
 
 # ── Phone validation ──────────────────────────────────────────────────
 print(validate.phone_is_valid(conn, "+14155552671", region="US"))     # True
 print(validate.phone_format(conn, "+14155552671", "US", "INTERNATIONAL"))
+phones = pd.DataFrame({"phone": ["4155552671", "01 42 68 53 00"], "country": ["US", "FR"]})
+print(validate.phone_is_valid(conn, phones, column="phone", region_column="country"))
+# region_column: the region of each row (instead of one region= for all rows)
 
 # ── Data quality ──────────────────────────────────────────────────────
 print(quality.volume(conn, "orders", min_rows=100))
-print(quality.null_rate(conn, "orders", "amount", max_null_rate=0.05))
+print(quality.null_rate(conn, "orders", "amount", max_null_rate=0.05)["message"])
 print(quality.distinct_count(conn, "orders", "status", min_distinct=2, max_distinct=10))
 print(quality.schema_check(conn, "orders", ["id", "amount", "created_at"]))
+print(quality.volume(conn, df, min_rows=1)["status"])   # a DataFrame works too
 
 # ── High-level profile ────────────────────────────────────────────────
 print(conn.profile(df))   # pd.DataFrame with per-column metrics
@@ -81,6 +87,7 @@ print(conn.profile(df))   # pd.DataFrame with per-column metrics
 print(pii.pii_contains(conn, "Call me at +1-415-555-2671"))  # True
 print(pii.pii_detect(conn, "Email: test@example.com"))        # [{"type": "EMAIL", ...}]
 print(pii.pii_mask(conn, "test@example.com", strategy="redact"))
+print(pii.pii_mask(conn, df, column="email"))                 # adds a 'pii_mask' column
 print(pii.pii_scan_table(conn, "orders"))
 
 # ── Diff ──────────────────────────────────────────────────────────────
@@ -94,8 +101,42 @@ result = conn.validate(contacts, schema={
     "phone": PhoneRule(region="DE"),
 })
 print(result.passed)      # False
-print(result.failures)    # pd.DataFrame of failed rows
+print(result.failures)    # DataFrame: column, row_id, value, rule
 ```
+
+## DataFrames
+
+- **pandas and polars.** Every function that takes a DataFrame takes either. Results that are
+  DataFrames use the input's library: a polars input gives a polars result, a pandas input
+  or a table name gives pandas.
+- **Row-wise results** (`email_is_valid`, `email_validate`, `phone_is_valid`, `phone_parse`,
+  `pii_detect`, `pii_mask` with `column=`) are a copy of the input plus one column. They keep
+  the input's index (pandas) and row order, so `df["ok"] = ...["email_is_valid"]` lines up.
+- **Table functions** (`anofox.quality`, `anofox.anomaly`, `anofox.profile`, `anofox.diff`,
+  `pii_scan_table`, `pii_audit_table`, `conn.profile`, `conn.quality_check`) take a table name
+  or a DataFrame. A DataFrame is copied into a temporary table for the call and dropped
+  afterwards. On a connection to a database file (`anofox.connect("my.db")`) that copy is
+  written to the file while the call runs. Any other object raises `TypeError`.
+- **`conn.validate(df, schema)`** returns `ValidationResult(passed, failures)`. `failures` has
+  one row per failing value with the columns `column`, `row_id`, `value` and `rule`. `row_id`
+  is the index label of the failing row for a pandas DataFrame and its 0-based row position
+  for a polars DataFrame.
+- **`conn.quality_check(df, rules)`** supports the rules `volume`, `null_rate` and
+  `distinct_count`; any other rule name raises `ValueError`.
+
+## Results
+
+- The `anofox.quality` checks return a dict with the call's parameters and every result
+  column of the SQL function by name (`status`, the metric, the thresholds, `message`).
+  `DECIMAL` values are returned as `float`; `_raw` still holds the raw result row.
+- Values are passed to DuckDB as bound parameters and column names are quoted, so any text
+  (`o'brien@example.ie`) is safe to pass.
+- The anomaly wrappers use the SQL defaults: a parameter you leave out is passed as `NULL`
+  and the extension applies its default. `isolation_forest` and `isolation_forest_mv` take
+  `seed=` for reproducible scores (`isolation_forest_mv` also `ndim=`). The per-row modes
+  are `"scores"` (isolation forest), `"clusters"` (DBSCAN; `"scores"` is accepted too) and
+  `"outliers"` (outlier tree); an unknown `output_mode` raises `ValueError`. Column lists
+  can be a list or a comma-separated string (`"amount, items"`).
 
 ## Module overview
 
@@ -108,7 +149,7 @@ print(result.failures)    # pd.DataFrame of failed rows
 | `anofox.diff` | `joindiff`, `hashdiff` |
 | `anofox.profile` | `profile_table`, `profile_summary`, `profile_correlations` |
 | `anofox.money` | `make_money`, `money_from_cents`, `is_valid_currency`, `currency_symbol`, `money_add`, etc. |
-| `anofox.vat` | `make_vat`, `vat_is_valid`, `vat_is_eu_member`, `vat_country_name`, etc. |
+| `anofox.vat` | `make_vat`, `vat_is_valid`, `vat_format(conn, vat, style="plain"\|"iso")`, `vat_is_eu_member`, `vat_country_name`, etc. |
 
 ## CLI
 
