@@ -146,21 +146,21 @@ FROM profile_table('orders', ['amount'], 50, true);
 └─────────────┴───────────┴────────────┴────────────────────┘
 ```
 
-> **Known issue:** when the table has more rows than `sample_size` and `exact` is `false`, the
-> generated sampling query fails with a parser error (`syntax error at or near "REPEATABLE"`).
-> Until this is fixed, pass `exact = true` or a `sample_size` above the row count. The default
-> `sample_size` of 1,000,000 hits this only on larger tables.
+When the table has more rows than `sample_size` and `exact` is `false`, a fixed-seed reservoir
+sample of `sample_size` rows is profiled, so repeated runs see the same rows:
 
 ```sql
-SELECT column_name, is_sampled FROM profile_table('orders', ['amount'], 50);
+SELECT column_name, row_count, is_sampled, actual_sample_size
+FROM profile_table('orders', ['amount'], 50);
 ```
 
 ```text
-Invalid Input Error: profile_table query failed: Parser Error: syntax error at or near "REPEATABLE"
-
-LINE 1: ... AS (SELECT * FROM query_table('orders') USING SAMPLE 50 ROWS REPEATABLE (42))SELECT 'amount' AS column_name, 'DECIMAL...
-                                                                         ^
--> Unexpected? Please report it: https://github.com/DataZooDE/anofox-tabular/issues
+┌─────────────┬───────────┬────────────┬────────────────────┐
+│ column_name │ row_count │ is_sampled │ actual_sample_size │
+│   varchar   │   int64   │  boolean   │       int64        │
+├─────────────┼───────────┼────────────┼────────────────────┤
+│ amount      │        50 │ true       │                 50 │
+└─────────────┴───────────┴────────────┴────────────────────┘
 ```
 
 ---

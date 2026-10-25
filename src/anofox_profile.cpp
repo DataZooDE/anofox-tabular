@@ -508,7 +508,8 @@ static string BuildProfileTableSQL(const string &table_name,
 	string tbl = EscapeStringLiteral(table_name);
 	string sql = "WITH src AS (SELECT * FROM query_table('" + tbl + "')";
 	if (is_sampled) {
-		sql += " USING SAMPLE " + std::to_string(sample_size) + " ROWS REPEATABLE (42)";
+		// REPEATABLE needs an explicit sampling method; "USING SAMPLE n ROWS REPEATABLE (s)" is a syntax error
+		sql += " USING SAMPLE reservoir(" + std::to_string(sample_size) + " ROWS) REPEATABLE (42)";
 	}
 	sql += ")";
 
