@@ -1,0 +1,68 @@
+# name: test/sql/anofox_check_suite_freshness_empty.test
+# description: run_checks freshness fails like the standalone freshness check when there is no
+#              timestamp to evaluate (empty table, all-NULL column, all-NULL group); the other
+#              check types keep passing trivially on a NULL value.
+# group: [anofox_tabular]
+
+require anofox_tabular
+
+statement ok
+LOAD anofox_tabular
+
+statement ok
+SET anofox_tab_trace_enabled = false
+
+statement ok
+CREATE TABLE fe_empty (ts TIMESTAMP, grp VARCHAR, status VARCHAR)
+
+statement ok
+CREATE TABLE fe_groups (ts TIMESTAMP, grp VARCHAR)
+
+statement ok
+INSERT INTO fe_groups VALUES
+    (TIMESTAMP '2026-10-25 07:30:00', 'a'),
+    (NULL, 'b'),
+    (NULL, 'b')
+
+statement ok
+CREATE TABLE fe_checks (
+    check_name VARCHAR,
+    check_type VARCHAR,
+    table_name VARCHAR,
+    column_name VARCHAR,
+    params VARCHAR,
+    lower_threshold DOUBLE,
+    upper_threshold DOUBLE,
+    monitor_only BOOLEAN,
+    identifier_column VARCHAR,
+    filter_expr VARCHAR
+)
+
+statement ok
+INSERT INTO fe_checks VALUES
+    ('fresh',       'freshness',     'fe_empty',  'ts',     '{"reference_time":"2026-10-25 08:00:00"}', NULL, 3600, false, NULL, NULL),
+    ('fresh_mon',   'freshness',     'fe_empty',  'ts',     '{"reference_time":"2026-10-25 08:00:00"}', NULL, 3600, true,  NULL, NULL),
+    ('fresh_grp',   'freshness',     'fe_groups', 'ts',     '{"reference_time":"2026-10-25 08:00:00"}', NULL, 3600, false, 'grp', NULL),
+    ('status_set',  'values_in_set', 'fe_empty',  'status', '{"allowed_values":["ok"]}',                1.0,  NULL, false, NULL, NULL)
+
+# The standalone check: empty table -> fail
+query TT
+SELECT status, message FROM freshness('fe_empty', 'ts', INTERVAL 1 HOUR, TIMESTAMP '2026-10-25 08:00:00')
+----
+fail	No timestamp values found (table is empty or column is all NULL)
+
+# The suite agrees with the standalone check (monitor_only still turns a failure into warn)
+query TTTT
+SELECT check_name, identifier, status, message FROM run_checks('fe_checks') ORDER BY check_name, identifier
+----
+fresh	NULL	fail	No timestamp values found (table is empty or column is all NULL)
+fresh_grp	a	pass	freshness value 1800.0 is within thresholds
+fresh_grp	b	fail	No timestamp values found (table is empty or column is all NULL)
+fresh_mon	NULL	warn	No timestamp values found (table is empty or column is all NULL)
+status_set	NULL	pass	No value to evaluate; check passed trivially
+
+# The value of the failing freshness rows stays NULL
+query TR
+SELECT check_name, value FROM run_checks('fe_checks') WHERE check_name = 'fresh'
+----
+fresh	NULL

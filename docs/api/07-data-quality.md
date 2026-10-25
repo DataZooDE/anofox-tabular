@@ -245,6 +245,9 @@ FROM freshness('orders', 'created_at', INTERVAL '1 day', TIMESTAMP '2026-01-31 0
 Without `reference_time` the check compares against the current time, `CAST(now() AS TIMESTAMP)`
 (UTC unless the ICU extension is loaded, then the session time zone). It does not need ICU.
 
+An empty table, or a column that is all `NULL`, fails with `metric_value` and `age_seconds`
+`NULL` and the message `No timestamp values found (table is empty or column is all NULL)`.
+
 ---
 
 ## `zscore`
@@ -957,8 +960,8 @@ in a suite; both bounds apply.
 
 | `status` | Meaning |
 |----------|---------|
-| `pass` | `value` is within the thresholds, or `value` is NULL (nothing to evaluate) |
-| `fail` | `value` is outside a threshold |
+| `pass` | `value` is within the thresholds, or `value` is NULL (nothing to evaluate; message `No value to evaluate; check passed trivially`) |
+| `fail` | `value` is outside a threshold. For `freshness` also a NULL `value` (empty table, all-NULL column or, with `identifier_column`, a group without timestamps), like the direct [`freshness`](#freshness) function; message `No timestamp values found (table is empty or column is all NULL)` |
 | `warn` | as `fail`, for a check with `monitor_only = true` |
 | `error` | the check could not run: its table does not exist, or `identifier_column` is set for a type that does not support it |
 

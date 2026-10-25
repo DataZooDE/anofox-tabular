@@ -338,6 +338,11 @@ struct CheckBranch {
 	string inner_sql;            // derived table producing: [identifier,] value [, lower_threshold, upper_threshold]
 	bool computed_thresholds = false;
 	bool has_identifier = false;
+	// A NULL value fails the check (with this message) instead of passing trivially.
+	// freshness: without a timestamp the data cannot be shown to be fresh, the same
+	// outcome as the standalone freshness check.
+	bool null_value_fails = false;
+	string null_value_message;
 };
 
 static string ThresholdLiteral(const Value &threshold) {
@@ -414,6 +419,8 @@ static CheckBranch BuildCheckBranch(ClientContext &context, const CheckSpec &spe
 		                      ? "CAST(now() AS TIMESTAMP)"
 		                      : "'" + EscapeSqlStringLiteral(spec.reference_time) + "'::TIMESTAMP";
 		value_expr = "CAST(EXTRACT(EPOCH FROM (" + ref_time + " - MAX(CAST(" + col + " AS TIMESTAMP)))) AS DOUBLE)";
+		branch.null_value_fails = true;
+		branch.null_value_message = "No timestamp values found (table is empty or column is all NULL)";
 	} else if (spec.check_type == "occurrence") {
 		RequireColumn(spec);
 		string mode = spec.mode.empty() ? "max" : spec.mode;
@@ -579,6 +586,9 @@ static string BuildBranchSQL(const CheckSpec &spec, const CheckBranch &branch) {
 	string fail_status = spec.monitor_only ? "warn" : "fail";
 	string fail_cond = "(" + lower_expr + " IS NOT NULL AND __c.value < " + lower_expr + ") OR (" + upper_expr +
 	                   " IS NOT NULL AND __c.value > " + upper_expr + ")";
+	string null_status = branch.null_value_fails ? fail_status : "pass";
+	string null_message = branch.null_value_fails ? EscapeSqlStringLiteral(branch.null_value_message)
+	                                              : "No value to evaluate; check passed trivially";
 
 	return "SELECT CAST(now() AS TIMESTAMP) AS run_ts,"
 	       "'" + EscapeSqlStringLiteral(spec.check_name) + "' AS check_name, "
@@ -589,10 +599,10 @@ static string BuildBranchSQL(const CheckSpec &spec, const CheckBranch &branch) {
 	       "__c.value AS value, "
 	       + lower_expr + " AS lower_threshold, "
 	       + upper_expr + " AS upper_threshold, "
-	       "CASE WHEN __c.value IS NULL THEN 'pass' "
+	       "CASE WHEN __c.value IS NULL THEN '" + null_status + "' "
 	       "     WHEN " + fail_cond + " THEN '" + fail_status + "' "
 	       "     ELSE 'pass' END AS status, "
-	       "CASE WHEN __c.value IS NULL THEN 'No value to evaluate; check passed trivially' "
+	       "CASE WHEN __c.value IS NULL THEN '" + null_message + "' "
 	       "     WHEN " + fail_cond + " THEN '" + EscapeSqlStringLiteral(spec.check_type) +
 	       " value ' || CAST(__c.value AS VARCHAR) || ' violates thresholds' "
 	       "     ELSE '" + EscapeSqlStringLiteral(spec.check_type) +
