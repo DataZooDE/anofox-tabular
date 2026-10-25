@@ -164,3 +164,37 @@ class TestPendingResults:
         assert fresh.sql("SELECT sum(a) FROM pending_v").fetchall() == [(3,)]
         fresh.execute("SELECT * FROM range(3)").fetchone()
         fresh.unregister("pending_v")
+
+
+class TestValidateRules:
+    """conn.validate() rejects rule objects it cannot check instead of skipping them."""
+
+    @staticmethod
+    def _contacts():
+        import pandas as pd
+        return pd.DataFrame({
+            "customer_id": [1001, 1002, 1003],
+            "email": ["ana.lopez@example.com", "bad-email", "j.meyer@example.org"],
+            "phone": ["+49 30 901820", "123", "+1 650-253-0000"],
+        })
+
+    @pytest.mark.parametrize("rule", ["email", "phone", None, 42, {"mode": "regex"}])
+    def test_unsupported_rule_raises(self, conn, rule):
+        with pytest.raises(TypeError, match=r"'email'.*EmailRule.*PhoneRule"):
+            conn.validate(self._contacts(), {"email": rule})
+
+    def test_message_shows_the_rule(self, conn):
+        with pytest.raises(TypeError, match=r"got 'email'"):
+            conn.validate(self._contacts(), {"email": "email"})
+
+    def test_bad_rule_checks_nothing(self, conn):
+        from anofox.validate import EmailRule
+        # The unsupported rule is reported even after a supported one.
+        with pytest.raises(TypeError, match="'phone'"):
+            conn.validate(self._contacts(), {"email": EmailRule(), "phone": "phone"})
+
+    def test_supported_rules_still_work(self, conn):
+        from anofox.validate import EmailRule, PhoneRule
+        result = conn.validate(self._contacts(), {"email": EmailRule(), "phone": PhoneRule(region="DE")})
+        assert result.passed is False
+        assert sorted(result.failures["column"].tolist()) == ["email", "phone"]

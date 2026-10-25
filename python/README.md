@@ -124,7 +124,8 @@ print(result.failures)    # DataFrame: column, row_id, value, rule
 - **`conn.validate(df, schema)`** returns `ValidationResult(passed, failures)`. `failures` has
   one row per failing value with the columns `column`, `row_id`, `value` and `rule`. `row_id`
   is the index label of the failing row for a pandas DataFrame and its 0-based row position
-  for a polars DataFrame.
+  for a polars DataFrame. Each rule is an `EmailRule(mode=...)` or a `PhoneRule(region=...)`
+  from `anofox.validate`; any other rule, such as the string `"email"`, raises `TypeError`.
 - **`conn.quality_check(df, rules)`** supports the rules `volume`, `null_rate` and
   `distinct_count`; any other rule name raises `ValueError`.
 

@@ -201,7 +201,9 @@ class AnofoxConnection:
             pandas or polars DataFrame.
         schema:
             Mapping of ``{column_name: rule}`` where each rule is an
-            :class:`EmailRule` or :class:`PhoneRule`.
+            :class:`~anofox.validate.EmailRule` or
+            :class:`~anofox.validate.PhoneRule`. Any other rule (including a
+            plain string such as ``"email"``) raises :class:`TypeError`.
 
         Returns
         -------
@@ -218,17 +220,26 @@ class AnofoxConnection:
         df_type = detect_df_type(df)
         labels = list(df.index) if df_type == "pandas" else None
 
+        # Resolve every rule before checking any, so a schema with an
+        # unsupported rule fails as a whole instead of silently passing it.
+        checks = []
+        for col, rule in schema.items():
+            if isinstance(rule, EmailRule):
+                mode = rule.mode
+                checks.append((col, "anofox_tab_email_is_valid", mode, f"email({mode})"))
+            elif isinstance(rule, PhoneRule):
+                region = rule.region
+                checks.append((col, "anofox_tab_phonenumber_is_valid", region, f"phone({region})"))
+            else:
+                raise TypeError(
+                    f"unsupported rule for column {col!r}: got {rule!r}; "
+                    "use one of EmailRule, PhoneRule (from anofox.validate), "
+                    "e.g. EmailRule(mode='regex') or PhoneRule(region='DE')"
+                )
+
         failure_rows = []
         with registered_view(self._conn, df) as view:
-            for col, rule in schema.items():
-                if isinstance(rule, EmailRule):
-                    mode = getattr(rule, "mode", "regex")
-                    check_sql, param, rule_name = "anofox_tab_email_is_valid", mode, f"email({mode})"
-                elif isinstance(rule, PhoneRule):
-                    region = getattr(rule, "region", "US")
-                    check_sql, param, rule_name = "anofox_tab_phonenumber_is_valid", region, f"phone({region})"
-                else:
-                    continue
+            for col, check_sql, param, rule_name in checks:
                 results = self._conn.execute(
                     f"SELECT {quote_ident(POSITION_COLUMN)}, {quote_ident(col)}, "
                     f"{check_sql}({quote_ident(col)}, ?) AS valid "
