@@ -24,6 +24,18 @@ struct PhoneNumberParts {
 	//! True if the national number matches the region's fixed-line or mobile
 	//! validation pattern (computed once during Parse, reused by IsValid).
 	bool matches_valid_pattern = false;
+	//! Why the number is not valid (a PhoneNumberInvalidReason value); empty
+	//! when it is valid.
+	std::string reason;
+};
+
+//! Values of the `reason` field of phonenumber_parse
+struct PhoneNumberInvalidReason {
+	static constexpr const char *NOT_A_NUMBER = "not_a_number";
+	static constexpr const char *UNSUPPORTED_REGION = "unsupported_region";
+	static constexpr const char *INVALID_COUNTRY_CODE = "invalid_country_code";
+	static constexpr const char *INVALID_LENGTH = "invalid_length";
+	static constexpr const char *INVALID_PATTERN = "invalid_pattern";
 };
 
 enum class PhoneNumberFormatOption {

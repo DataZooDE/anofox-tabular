@@ -410,3 +410,47 @@ query T
 SELECT phonenumber_is_valid('(11) 91234-5678', 'BR');
 ----
 true
+
+# ----------------------------------------------------------------------
+# phonenumber_parse reason
+# ----------------------------------------------------------------------
+
+query ITTTTTT
+SELECT id, (p).valid, (p).country_code, (p).national_number, (p).region, (p).type, (p).reason
+FROM (SELECT id, phonenumber_parse(n, r) AS p
+      FROM (VALUES (1, '+49 30 12345678', NULL),
+                   (2, '0664 1234567', 'AT'),
+                   (3, '020 7946 0018', 'UK'),
+                   (4, '+43 664 1234567', NULL),
+                   (5, '12', 'US'),
+                   (6, '030 1234', 'DE'),
+                   (7, 'not a number', 'US'),
+                   (8, '0049 30 12345678', 'DE')) v(id, n, r))
+ORDER BY id;
+----
+1	true	49	3012345678	DE	fixed_line	NULL
+2	false	NULL	NULL	NULL	NULL	unsupported_region
+3	false	NULL	NULL	NULL	NULL	unsupported_region
+4	false	NULL	NULL	NULL	NULL	invalid_country_code
+5	false	NULL	NULL	NULL	NULL	invalid_length
+6	false	NULL	NULL	NULL	NULL	invalid_pattern
+7	false	NULL	NULL	NULL	NULL	not_a_number
+8	true	49	3012345678	DE	fixed_line	NULL
+
+# An international number ignores an unsupported region hint
+query TT
+SELECT (phonenumber_parse('+44 20 7946 0018', 'UK')).region, (phonenumber_parse('+44 20 7946 0018', 'UK')).reason;
+----
+GB	NULL
+
+# NULL input still gives a NULL struct
+query T
+SELECT phonenumber_parse(NULL, 'US') IS NULL;
+----
+true
+
+# Toll-free numbers are valid numbers (FR 0800 is neither fixed-line nor mobile)
+query TT
+SELECT (phonenumber_parse('0800 12 34 56', 'FR')).type, phonenumber_is_valid('0800 12 34 56', 'FR');
+----
+toll_free	true

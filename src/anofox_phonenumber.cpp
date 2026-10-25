@@ -93,8 +93,10 @@ struct PatternClassification {
 	bool matches_mobile = false;
 	bool matches_toll_free = false;
 
+	//! Toll-free numbers are valid numbers too (e.g. FR 0800, which matches
+	//! neither the fixed-line nor the mobile range)
 	bool MatchesValidPattern() const {
-		return matches_fixed_line || matches_mobile;
+		return matches_fixed_line || matches_mobile || matches_toll_free;
 	}
 	bool MatchesAnyPattern() const {
 		return matches_fixed_line || matches_mobile || matches_toll_free;
@@ -230,6 +232,7 @@ PhoneNumberParts PhoneNumberManager::Parse(const std::string& raw_number, const 
 	std::string normalized = NormalizePhoneNumber(raw_number);
 	if (normalized.empty()) {
 		AnofoxTrace(AnofoxLogLevel::Debug, "PhoneNumber parse failed: empty number");
+		parts.reason = PhoneNumberInvalidReason::NOT_A_NUMBER;
 		return parts;
 	}
 
@@ -243,12 +246,13 @@ PhoneNumberParts PhoneNumberManager::Parse(const std::string& raw_number, const 
 		// National format, or international format dialled with the region's
 		// international prefix (e.g. "0049 ..." from DE, "011 49 ..." from US).
 		// The region comes from the hint, falling back to the (session-snapshotted)
-		// default region.
-		region_code = !hint_upper.empty() && GetMetadataForRegion(hint_upper) ? hint_upper
-		                                                                      : EffectiveDefaultRegion(default_region);
+		// default region when there is no hint. An unsupported hint (e.g. 'AT',
+		// or 'UK' instead of 'GB') is an error rather than silently using the default.
+		region_code = !hint_upper.empty() ? hint_upper : EffectiveDefaultRegion(default_region);
 		const CountryMetadata* hint_metadata = GetMetadataForRegion(region_code);
 		if (!hint_metadata) {
-			AnofoxTrace(AnofoxLogLevel::Debug, "PhoneNumber parse failed: could not determine region");
+			AnofoxTrace(AnofoxLogLevel::Debug, "PhoneNumber parse failed: unsupported region=" + region_code);
+			parts.reason = PhoneNumberInvalidReason::UNSUPPORTED_REGION;
 			return parts;
 		}
 		const auto& idd = hint_metadata->international_prefix;
@@ -273,12 +277,14 @@ PhoneNumberParts PhoneNumberManager::Parse(const std::string& raw_number, const 
 		std::tie(country_code, national_number) = ExtractCountryCode(normalized);
 		if (country_code == 0) {
 			AnofoxTrace(AnofoxLogLevel::Debug, "PhoneNumber parse failed: unknown country code in " + normalized);
+			parts.reason = PhoneNumberInvalidReason::INVALID_COUNTRY_CODE;
 			return parts;
 		}
 		region_code = ResolveRegionForCountryCode(country_code, hint_upper, national_number);
 		if (region_code.empty()) {
 			AnofoxTrace(AnofoxLogLevel::Debug,
 			           "PhoneNumber parse failed: no region found for country_code=" + std::to_string(country_code));
+			parts.reason = PhoneNumberInvalidReason::INVALID_COUNTRY_CODE;
 			return parts;
 		}
 		national_number = StripTrunkPrefixAfterCountryCode(national_number, region_code);
@@ -287,6 +293,7 @@ PhoneNumberParts PhoneNumberManager::Parse(const std::string& raw_number, const 
 	const CountryMetadata* metadata = GetMetadataForRegion(region_code);
 	if (!metadata) {
 		AnofoxTrace(AnofoxLogLevel::Debug, "PhoneNumber parse failed: no metadata for region=" + region_code);
+		parts.reason = PhoneNumberInvalidReason::UNSUPPORTED_REGION;
 		return parts;
 	}
 
@@ -295,6 +302,7 @@ PhoneNumberParts PhoneNumberManager::Parse(const std::string& raw_number, const 
 		AnofoxTrace(AnofoxLogLevel::Debug,
 		           "PhoneNumber parse failed: invalid length=" + std::to_string(national_number.size()) +
 		           " for region=" + region_code);
+		parts.reason = PhoneNumberInvalidReason::INVALID_LENGTH;
 		return parts;
 	}
 
@@ -306,6 +314,10 @@ PhoneNumberParts PhoneNumberManager::Parse(const std::string& raw_number, const 
 	parts.region_code = region_code;
 	parts.type = DeterminePhoneNumberType(classification);
 	parts.matches_valid_pattern = classification.MatchesValidPattern();
+	if (!parts.matches_valid_pattern) {
+		// Possible (length fits) but not in a fixed-line, mobile or toll-free range
+		parts.reason = PhoneNumberInvalidReason::INVALID_PATTERN;
+	}
 
 	AnofoxTrace(AnofoxLogLevel::Debug,
 	           "PhoneNumber parse success region=" + parts.region_code + " type=" + parts.type);
@@ -671,12 +683,14 @@ void PhoneParseFunction(DataChunk& args, ExpressionState& state, Vector& result)
 	auto& national_number_vec = anofox::VectorRef(children[2]);
 	auto& region_vec = anofox::VectorRef(children[3]);
 	auto& type_vec = anofox::VectorRef(children[4]);
+	auto& reason_vec = anofox::VectorRef(children[5]);
 
 	auto valid_data = duckdb_compat::FlatData<bool>(valid_vec);
 	auto country_data = duckdb_compat::FlatData<int32_t>(country_code_vec);
 	auto national_data = duckdb_compat::FlatData<string_t>(national_number_vec);
 	auto region_data_out = duckdb_compat::FlatData<string_t>(region_vec);
 	auto type_data = duckdb_compat::FlatData<string_t>(type_vec);
+	auto reason_data = duckdb_compat::FlatData<string_t>(reason_vec);
 
 	for (idx_t i = 0; i < args.size(); i++) {
 		auto nr_idx = number_data.sel->get_index(i);
@@ -697,11 +711,13 @@ void PhoneParseFunction(DataChunk& args, ExpressionState& state, Vector& result)
 
 		auto parts = PhoneNumberManager::Instance().Parse(raw_number, region_hint, default_region);
 
+		// `valid` matches phonenumber_is_valid: a possible length and a valid range
+		const bool is_valid = parts.valid && parts.matches_valid_pattern;
 		FlatVector::SetNull(result, i, false);
 		FlatVector::SetNull(valid_vec, i, false);
-		valid_data[i] = parts.valid;
+		valid_data[i] = is_valid;
 
-		if (parts.valid) {
+		if (is_valid) {
 			FlatVector::SetNull(country_code_vec, i, false);
 			FlatVector::SetNull(national_number_vec, i, false);
 			FlatVector::SetNull(region_vec, i, false);
@@ -711,11 +727,14 @@ void PhoneParseFunction(DataChunk& args, ExpressionState& state, Vector& result)
 			national_data[i] = StringVector::AddString(national_number_vec, parts.national_number);
 			region_data_out[i] = StringVector::AddString(region_vec, parts.region_code);
 			type_data[i] = StringVector::AddString(type_vec, parts.type);
+			FlatVector::SetNull(reason_vec, i, true);
 		} else {
 			FlatVector::SetNull(country_code_vec, i, true);
 			FlatVector::SetNull(national_number_vec, i, true);
 			FlatVector::SetNull(region_vec, i, true);
 			FlatVector::SetNull(type_vec, i, true);
+			FlatVector::SetNull(reason_vec, i, false);
+			reason_data[i] = StringVector::AddString(reason_vec, parts.reason);
 		}
 	}
 }
@@ -1066,7 +1085,8 @@ ScalarFunction CreateParseScalar(const string& name) {
 	                                             {"country_code", LogicalTypeId::INTEGER},
 	                                             {"national_number", LogicalTypeId::VARCHAR},
 	                                             {"region", LogicalTypeId::VARCHAR},
-	                                             {"type", LogicalTypeId::VARCHAR}}),
+	                                             {"type", LogicalTypeId::VARCHAR},
+	                                             {"reason", LogicalTypeId::VARCHAR}}),
 	                        PhoneParseFunction);
 	duckdb_compat::SetStability(function, FunctionStability::CONSISTENT_WITHIN_QUERY);
 	duckdb_compat::SetNullHandling(function, FunctionNullHandling::SPECIAL_HANDLING);
@@ -1148,7 +1168,7 @@ void RegisterPhonenumberFunctions(ExtensionLoader& loader) {
 	// Register phonenumber_parse
 	{
 		FunctionDescription desc;
-		desc.description = "Parses a phone number string and returns a struct with E164, national, international, and RFC3966 formats, plus the region code.";
+		desc.description = "Parses a phone number string and returns a struct with validity, country code, national number, region, number type and, for an invalid number, the reason.";
 		desc.parameter_names = {"phone"};
 		desc.parameter_types = {LogicalType::VARCHAR};
 		desc.examples = {"SELECT phonenumber_parse('+14155552671');"};
