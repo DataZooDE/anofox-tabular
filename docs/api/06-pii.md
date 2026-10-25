@@ -802,6 +802,11 @@ On a build with OpenVINO, after the model has been loaded, it reports `true`, `L
 - **Platforms.** Per `vcpkg.json`, OpenVINO is built only for x64 Linux and x64 macOS, and
   `CMakeLists.txt` disables it on musl. On other builds `onnx_available` is `false` and the status
   is `NOT_AVAILABLE`. Check with `anofox_ner_status()`.
+- **Whole words and priority.** A NER match always covers whole words: a span that the model ends
+  inside a word is widened to the word, so masking never leaves part of a word in clear text.
+  Where a NER match overlaps a pattern-based match (an IBAN, a card number, an email address, ...),
+  the pattern-based match wins, so a guess like `IBAN DE` cannot leave the account number
+  unmasked.
 - **Confidence.** NER matches below 0.7 are never reported. `anofox_pii_min_confidence`
   (default 0.5) filters on top of that.
 - **Limits.** Input is truncated at 512 tokens, so entities after that are not found; the first

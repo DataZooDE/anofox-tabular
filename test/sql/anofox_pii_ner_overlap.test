@@ -1,0 +1,40 @@
+# name: test/sql/anofox_pii_ner_overlap.test
+# description: NER matches never leave part of a word or of a validated pattern match in clear text.
+#              A NER span that overlapped an IBAN used to win and leave the account number unmasked
+#              ("[ORGANIZATION]89370400440532013000"), and NER spans cut words ("Ko[ORGANIZATION]",
+#              "wohnh[NAME]", "Klaus-[NAME]", "[LOCATION]ße").
+# group: [anofox_tabular]
+
+require-env OPENVINO_AVAILABLE
+
+require anofox_tabular
+
+statement ok
+LOAD anofox_tabular
+
+statement ok
+CREATE TABLE texts AS SELECT * FROM (VALUES
+  (1, 'IBAN DE89370400440532013000'),
+  (2, 'Konto DE89 3704 0044 0532 0130 00'),
+  (3, 'Sehr geehrte Damen und Herren, mein Name ist Hans Müller, wohnhaft Hauptstraße 12, 80331 München.'),
+  (4, 'Ansprechpartner: Dr. med. Klaus-Peter Wagner'),
+  (5, 'Schadenmeldung von Frau Özdemir, Hauptstraße 12, 80331 München')
+) t(id, txt);
+
+# the validated IBAN is masked as IBAN, whatever NER finds around it
+query IT
+SELECT id, contains(pii_mask(txt), '[IBAN]') AND NOT contains(pii_mask(txt), '0532') FROM texts WHERE id <= 2 ORDER BY id;
+----
+1	true
+2	true
+
+# no placeholder is glued to letters of a partly masked word
+query IT
+SELECT id, regexp_matches(pii_mask(txt), '(\p{L}|-)\[|\](\p{L}|-)') FROM texts ORDER BY id;
+----
+1	false
+2	false
+3	false
+4	false
+5	false
+

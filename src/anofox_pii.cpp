@@ -47,6 +47,35 @@ bool IsNERType(PIIType type) {
            type == PIIType::MISC;
 }
 
+// A byte that belongs to a word: ASCII letters and digits, any byte of a
+// multi-byte UTF-8 character, and the joiners '-' and '\'' ("Klaus-Peter").
+bool IsWordByte(unsigned char c) {
+    return std::isalnum(c) || c >= 0x80 || c == '-' || c == '\'';
+}
+
+// NER spans come from subword tokens and can stop inside a word ("w[NAME]",
+// "[LOCATION]ße"). Widen the span to whole words so masking never leaves part
+// of a word in clear text.
+void WidenToWords(const std::string &text, PIIMatch &match) {
+    size_t start = match.start_pos;
+    size_t end = match.end_pos;
+    while (start > 0 && IsWordByte(static_cast<unsigned char>(text[start - 1]))) {
+        start--;
+    }
+    while (end < text.size() && IsWordByte(static_cast<unsigned char>(text[end]))) {
+        end++;
+    }
+    // Do not swallow a trailing joiner ("Wagner-" at the end of a span)
+    while (end > start && (text[end - 1] == '-' || text[end - 1] == '\'')) {
+        end--;
+    }
+    if (start != match.start_pos || end != match.end_pos) {
+        match.start_pos = start;
+        match.end_pos = end;
+        match.matched_text = text.substr(start, end - start);
+    }
+}
+
 // Words that label a PII field ("IBAN DE89...", "SSN: 123-...") rather than
 // name an entity. The NER model tags some of them as ORG or LOC (#118).
 bool IsFieldLabel(const std::string &text) {
@@ -1956,8 +1985,11 @@ std::vector<PIIMatch> PIIEngine::Detect(
             if (match.confidence < config.min_confidence) {
                 continue;
             }
-            if (IsNERType(match.type) && IsFieldLabel(match.matched_text)) {
-                continue;
+            if (IsNERType(match.type)) {
+                WidenToWords(text, match);
+                if (IsFieldLabel(match.matched_text)) {
+                    continue;
+                }
             }
             all_matches.push_back(std::move(match));
         }
@@ -1987,17 +2019,27 @@ std::vector<PIIMatch> PIIEngine::ResolveOverlaps(std::vector<PIIMatch> matches) 
               });
 
     // Greedily keep non-overlapping matches so Mask() replaces each region
-    // of the input exactly once.
+    // of the input exactly once. Pattern matches (validated formats such as
+    // IBAN or card numbers) are placed first; a NER span is kept only where it
+    // overlaps none of them, so a NER guess like "IBAN DE" can never leave the
+    // rest of an account number unmasked.
     std::vector<PIIMatch> resolved;
     resolved.reserve(matches.size());
-    size_t last_end = 0;
-    for (auto &match : matches) {
-        if (!resolved.empty() && match.start_pos < last_end) {
-            continue;  // Overlaps a higher-priority match
+    auto overlaps_kept = [&resolved](const PIIMatch &match) {
+        return std::any_of(resolved.begin(), resolved.end(), [&match](const PIIMatch &kept) {
+            return match.start_pos < kept.end_pos && kept.start_pos < match.end_pos;
+        });
+    };
+    for (bool ner_pass : {false, true}) {
+        for (auto &match : matches) {
+            if (IsNERType(match.type) != ner_pass || overlaps_kept(match)) {
+                continue;
+            }
+            resolved.push_back(std::move(match));
         }
-        last_end = match.end_pos;
-        resolved.push_back(std::move(match));
     }
+    std::sort(resolved.begin(), resolved.end(),
+              [](const PIIMatch &a, const PIIMatch &b) { return a.start_pos < b.start_pos; });
     return resolved;
 }
 
