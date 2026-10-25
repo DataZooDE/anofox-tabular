@@ -590,19 +590,19 @@ SELECT list_contains(list_transform(pii_detect('CH9300762011623852957'), lambda 
 ----
 true
 
-# --- IBAN with Spaces (not currently supported - requires no spaces) ---
+# --- IBAN with Spaces (groups of four separated by spaces) ---
 
 # German with spaces
 query I
 SELECT list_contains(list_transform(pii_detect('DE89 3704 0044 0532 0130 00'), lambda x: x.type), 'IBAN');
 ----
-false
+true
 
 # UK with spaces
 query I
 SELECT list_contains(list_transform(pii_detect('GB82 WEST 1234 5698 7654 32'), lambda x: x.type), 'IBAN');
 ----
-false
+true
 
 # --- IBAN in Context ---
 

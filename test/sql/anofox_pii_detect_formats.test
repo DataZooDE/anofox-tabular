@@ -1,0 +1,71 @@
+# name: test/sql/anofox_pii_detect_formats.test
+# description: Pattern recognizers find PII in the formats people actually type
+#              (grouped IBANs, national phone numbers, non-ASCII email addresses)
+#              and stay quiet on look-alikes (bare 9-digit references, VAT numbers,
+#              dates, amounts, postcodes)
+# group: [sql]
+
+require anofox_tabular
+
+statement ok
+LOAD anofox_tabular;
+
+# Restrict detection to the pattern types so the results do not depend on
+# whether the NER model is available.
+statement ok
+SET anofox_pii_enabled_types = 'EMAIL,PHONE,CREDIT_CARD,US_SSN,IP_ADDRESS,IBAN,DE_TAX_ID,URL,US_PASSPORT,CRYPTO_ADDRESS,UK_NINO,MAC_ADDRESS,API_KEY';
+
+# ============================================================================
+# IBAN: separators between every group of four
+# ============================================================================
+
+query T
+SELECT array_to_string(list_transform(pii_detect(s), lambda x: x.type || ':' || x.text), '; ')
+FROM (VALUES
+    (1, 'DE89 3704 0044 0532 0130 00'),
+    (2, 'DE89-3704-0044-0532-0130-00'),
+    (3, 'DE89370400440532013000'),
+    (4, 'GB82 WEST 1234 5698 7654 32'),
+    (5, 'GB82-WEST-1234-5698-7654-32'),
+    (6, 'GB82WEST12345698765432'),
+    (7, 'AT61 1904 3002 3457 3201'),
+    (8, 'AT61-1904-3002-3457-3201'),
+    (9, 'AT611904300234573201'),
+    (10, 'NL91 ABNA 0417 1643 00'),
+    (11, 'NL91-ABNA-0417-1643-00'),
+    (12, 'NL91ABNA0417164300')
+) t(i, s) ORDER BY i;
+----
+IBAN:DE89 3704 0044 0532 0130 00
+IBAN:DE89-3704-0044-0532-0130-00
+IBAN:DE89370400440532013000
+IBAN:GB82 WEST 1234 5698 7654 32
+IBAN:GB82-WEST-1234-5698-7654-32
+IBAN:GB82WEST12345698765432
+IBAN:AT61 1904 3002 3457 3201
+IBAN:AT61-1904-3002-3457-3201
+IBAN:AT611904300234573201
+IBAN:NL91 ABNA 0417 1643 00
+IBAN:NL91-ABNA-0417-1643-00
+IBAN:NL91ABNA0417164300
+
+# Grouped IBANs inside a sentence, followed by more words
+query T
+SELECT pii_mask('Bitte an DE89 3704 0044 0532 0130 00 bis Freitag, oder AT61 1904 3002 3457 3201 und fertig');
+----
+Bitte an [IBAN] bis Freitag, oder [IBAN] und fertig
+
+# Masking leaves no IBAN digits in clear text
+query T
+SELECT pii_mask('IBAN: GB82 WEST 1234 5698 7654 32, NL91-ABNA-0417-1643-00');
+----
+IBAN: [IBAN], [IBAN]
+
+# A grouped IBAN with a wrong checksum is not reported as an IBAN
+query T
+SELECT list_contains(list_transform(pii_detect('DE00 3704 0044 0532 0130 00'), lambda x: x.type), 'IBAN');
+----
+false
+
+statement ok
+SET anofox_pii_enabled_types = '';

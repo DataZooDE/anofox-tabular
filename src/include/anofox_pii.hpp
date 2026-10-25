@@ -185,6 +185,7 @@ class IBANRecognizer : public RegexRecognizer {
 public:
     IBANRecognizer();
     ~IBANRecognizer() override;
+    std::vector<PIIMatch> FindMatches(const std::string &text) const override;
     bool Validate(const std::string &text) const override;
     std::string GetPartialMask(const std::string &text) const override;
 

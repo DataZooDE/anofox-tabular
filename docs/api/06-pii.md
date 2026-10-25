@@ -53,7 +53,7 @@ NER types need the NER model.
 | `PHONE` | Phone numbers with a `+` prefix, parentheses or dashes | pattern |
 | `CREDIT_CARD` | Visa, Mastercard, Amex and Discover numbers | pattern + Luhn checksum |
 | `US_SSN` | US Social Security Numbers `XXX-XX-XXXX` | pattern + area validation |
-| `IBAN` | International Bank Account Numbers | pattern + MOD-97 checksum |
+| `IBAN` | International Bank Account Numbers, compact or in groups of four separated by single spaces or dashes (`DE89 3704 0044 0532 0130 00`) | pattern + MOD-97 checksum |
 | `IP_ADDRESS` | IPv4 and IPv6 addresses | pattern |
 | `URL` | HTTP and HTTPS URLs | pattern |
 | `MAC_ADDRESS` | MAC addresses (colon, hyphen, dot or no separator) | pattern |

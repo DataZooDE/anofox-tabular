@@ -608,11 +608,44 @@ IBANRecognizer::IBANRecognizer()
     : RegexRecognizer(
         PIIType::IBAN,
         "IBAN",
-        // Matches IBAN format: 2 letters + 2 check digits + up to 30 alphanumeric
-        R"(\b[A-Z]{2}[0-9]{2}[\s]?[A-Z0-9]{4}[\s]?[A-Z0-9]{4}[\s]?[A-Z0-9]{4}[\s]?[A-Z0-9]{0,14}\b)"
+        // 2 letters + 2 check digits, then groups of four alphanumerics and a
+        // shorter last group. The groups are either all compact or all
+        // separated by the same single space or dash (DE89 3704 0044 ...,
+        // DE89-3704-0044-..., DE89370400440532013000).
+        R"(\b[A-Z]{2}[0-9]{2}([ \-]?)[A-Z0-9]{4}(?:\1[A-Z0-9]{4}){1,6}(?:\1[A-Z0-9]{1,3})?\b)"
     ) {}
 
 IBANRecognizer::~IBANRecognizer() {}
+
+std::vector<PIIMatch> IBANRecognizer::FindMatches(const std::string &text) const {
+    std::vector<PIIMatch> matches;
+    std::sregex_iterator end;
+    for (std::sregex_iterator iter(text.begin(), text.end(), pattern_); iter != end; ++iter) {
+        const auto &match = *iter;
+        auto start = static_cast<size_t>(match.position());
+        std::string candidate = match.str();
+        const std::string separator = match[1].str();
+
+        // A grouped IBAN can be followed by a word that looks like one more
+        // group ("AT61 1904 3002 3457 3201 und"). When the checksum fails,
+        // drop trailing groups until it holds or too little is left.
+        bool valid = Validate(candidate);
+        while (!valid && !separator.empty()) {
+            auto cut = candidate.rfind(separator[0]);
+            if (cut == std::string::npos || cut < 4) {
+                break;
+            }
+            candidate.resize(cut);
+            valid = Validate(candidate);
+        }
+        if (valid) {
+            matches.emplace_back(type_, candidate, start, start + candidate.size(), 1.0);
+        } else {
+            AnofoxTrace(AnofoxLogLevel::Trace, "pii: IBAN candidate failed MOD-97: " + match.str());
+        }
+    }
+    return matches;
+}
 
 bool IBANRecognizer::Validate(const std::string &text) const {
     return Mod97Check(text);
