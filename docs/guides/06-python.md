@@ -41,6 +41,13 @@ print(conn.execute("SELECT email_is_valid('user@example.com') AS ok").fetchall()
 `conn.execute()` runs any SQL, so every function in the [API reference](../api/00-conventions.md)
 is available. The modules below wrap the common calls and accept DataFrames.
 
+With `duckdb` 2.0, a result of `conn.execute()` stays open until a fetch returns no more rows
+(`fetchone()` on a one-row result does not close it), and DuckDB refuses `register()` and `sql()`
+on the connection while it is open. The `anofox` functions and the `register()`, `unregister()`
+and `sql()` methods of the connection first run such a result to its end; `conn.complete()`
+does it explicitly. On `duckdb` 1.5.x a result does not stay open, and `conn.complete()` does
+nothing.
+
 ## Validate a DataFrame column
 
 ```python

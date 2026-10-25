@@ -10,6 +10,8 @@ import uuid
 from contextlib import contextmanager
 from typing import Any, Iterator, Literal
 
+from ._sql import finish, run
+
 
 DFType = Literal["pandas", "polars"]
 
@@ -48,8 +50,9 @@ def register_df_as_table(conn: Any, df: Any, name: str | None = None) -> str:
         name = f"_anofox_{uuid.uuid4().hex}"
 
     tmp_view = f"{name}_v"
+    finish(conn)  # register() fails while a result of execute() is pending (DuckDB 2.0)
     conn.register(tmp_view, _registrable(df))
-    conn.execute(f'CREATE TABLE "{name}" AS SELECT * FROM "{tmp_view}"')
+    run(conn, f'CREATE TABLE "{name}" AS SELECT * FROM "{tmp_view}"')
     conn.unregister(tmp_view)
     return name
 
@@ -91,11 +94,13 @@ def registered_view(conn: Any, df: Any) -> Iterator[str]:
     functions, not table functions that read through a second connection.
     """
     name = f"_anofox_v_{uuid.uuid4().hex}"
+    finish(conn)  # register() fails while a result of execute() is pending (DuckDB 2.0)
     conn.register(name, _registrable(with_position(df)))
     try:
         yield name
     finally:
         try:
+            finish(conn)
             conn.unregister(name)
         except Exception:
             pass
@@ -104,7 +109,7 @@ def registered_view(conn: Any, df: Any) -> Iterator[str]:
 def drop_df_table(conn: Any, name: str) -> None:
     """Drop a table previously created by :func:`register_df_as_table`."""
     try:
-        conn.execute(f'DROP TABLE IF EXISTS "{name}"')
+        run(conn, f'DROP TABLE IF EXISTS "{name}"')
     except Exception:
         pass
 
@@ -116,8 +121,8 @@ def relation_to_dataframe(rel: Any, df_type: DFType) -> Any:
     Parameters
     ----------
     rel:
-        A DuckDB ``DuckDBPyRelation`` or result object with ``.df()`` /
-        ``.pl()`` methods.
+        A DuckDB ``DuckDBPyRelation`` (from ``conn.sql(...)``). The result of
+        ``conn.execute(...)`` has no ``.pl()`` on DuckDB 2.0.
     df_type:
         ``"pandas"`` or ``"polars"``.
     """

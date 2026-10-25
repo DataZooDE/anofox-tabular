@@ -8,7 +8,7 @@ import functools
 import inspect
 from typing import Any, Callable, Optional, TypeVar, Union
 
-from ._sql import quote_ident
+from ._sql import fetch_frame, quote_ident
 from ._utils import (
     POSITION_COLUMN,
     detect_df_type,
@@ -146,16 +146,18 @@ def apply_scalar(
     its index, so the new column can be assigned back to the input.
     """
     with registered_view(conn.native, df) as view:
-        result = conn.native.execute(
+        result = fetch_frame(
+            conn,
             f"SELECT {expression} AS {quote_ident(result_name)} "
             f"FROM {quote_ident(view)} ORDER BY {quote_ident(POSITION_COLUMN)}",
             params,
+            df_type,
         )
         if df_type == "pandas":
-            values = result.df()[result_name]
+            values = result[result_name]
             values.index = df.index
             out = df.copy()
             out[result_name] = values
             return out
-        values = result.pl().get_column(result_name)
+        values = result.get_column(result_name)
         return df.with_columns(values)

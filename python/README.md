@@ -32,6 +32,10 @@ conn = anofox.connect(
 )
 ```
 
+With `duckdb` 2.0, a result of `conn.execute()` stays open until a fetch returns no more rows.
+The `anofox` functions and `conn.register()`, `conn.unregister()` and `conn.sql()` run an open
+result to its end first; `conn.complete()` does it explicitly (it does nothing on `duckdb` 1.5.x).
+
 ### Python-native API
 
 This block runs as is: it creates small sample tables first. Replace them with your own tables

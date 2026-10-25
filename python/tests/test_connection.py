@@ -114,3 +114,53 @@ class TestQualityCheckRules:
         result = conn.quality_check(pd.DataFrame({"a": [1, None]}), {"null_rate": {"column": "a"}})
         assert result["status"] == "fail"
         assert set(result["checks"]) == {"null_rate"}
+
+
+class TestPendingResults:
+    """
+    A wrapper call must leave no unfinished query result behind, and must not
+    trip over one left by the caller. The DuckDB 2.0 client refuses
+    register(), unregister() and sql() while a result of execute() is not read
+    to its end (fetchone() on a one-row result does not end it).
+    """
+
+    @pytest.fixture
+    def fresh(self, ext_path):
+        if ext_path is None:
+            pytest.skip("No extension binary")
+        import anofox
+        conn = anofox.connect(extension_path=ext_path)
+        yield conn
+        conn.close()
+
+    def test_scalar_wrapper_then_dataframe_wrapper(self, fresh):
+        import pandas as pd
+        from anofox import money, validate, vat
+
+        assert money.currency_name(fresh, "EUR")
+        assert vat.vat_is_valid(fresh, "DE123456789") in (True, False)
+        df = pd.DataFrame({"email": ["a@example.com", "bad"]})
+        out = validate.email_is_valid(fresh, df, column="email")
+        assert list(out["email_is_valid"]) == [True, False]
+
+    def test_connection_methods_after_partly_read_result(self, fresh):
+        import pandas as pd
+        from anofox.validate import EmailRule
+
+        fresh.execute("SELECT * FROM range(3)").fetchone()
+        assert fresh.is_extension_loaded()
+        df = pd.DataFrame({"email": ["a@example.com", "bad"]})
+        fresh.execute("SELECT * FROM range(3)").fetchone()
+        assert not fresh.validate(df, {"email": EmailRule()}).passed
+        fresh.execute("SELECT * FROM range(3)").fetchone()
+        assert len(fresh.profile(df)) == 1
+
+    def test_register_and_sql_after_partly_read_result(self, fresh):
+        import pandas as pd
+
+        fresh.execute("SELECT 42").fetchone()
+        fresh.register("pending_v", pd.DataFrame({"a": [1, 2]}))
+        fresh.execute("SELECT * FROM range(3)").fetchone()
+        assert fresh.sql("SELECT sum(a) FROM pending_v").fetchall() == [(3,)]
+        fresh.execute("SELECT * FROM range(3)").fetchone()
+        fresh.unregister("pending_v")

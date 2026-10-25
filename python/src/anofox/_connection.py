@@ -10,7 +10,7 @@ from typing import Any, Optional
 import duckdb
 
 from ._loader import AnofoxLoader, _DEFAULT_S3_BASE
-from ._sql import quote_ident
+from ._sql import fetch_one, finish, quote_ident
 
 
 class AnofoxConnection:
@@ -64,21 +64,36 @@ class AnofoxConnection:
     # ------------------------------------------------------------------
 
     def execute(self, query: str, parameters: Any = None) -> Any:
-        """Execute a SQL statement and return the DuckDB result object."""
+        """
+        Execute a SQL statement and return the DuckDB result object.
+
+        On DuckDB 2.0 the result stays open until a fetch returns no more
+        rows (``fetchone()`` on a one-row result does not end it). The other
+        methods of this class, and the anofox functions taking this
+        connection, first run such a pending result to its end, so a partly
+        read result never blocks them.
+        """
         if parameters is not None:
             return self._conn.execute(query, parameters)
         return self._conn.execute(query)
 
+    def complete(self) -> None:
+        """Run the pending result of :meth:`execute` to its end (no-op on DuckDB 1.x)."""
+        finish(self._conn)
+
     def sql(self, query: str) -> Any:
         """Execute a SQL statement and return a DuckDB relation."""
+        finish(self._conn)
         return self._conn.sql(query)
 
     def register(self, name: str, df: Any) -> None:
         """Register a DataFrame as a named view."""
+        finish(self._conn)
         self._conn.register(name, df)
 
     def unregister(self, name: str) -> None:
         """Remove a previously registered view."""
+        finish(self._conn)
         self._conn.unregister(name)
 
     def close(self) -> None:
@@ -96,10 +111,11 @@ class AnofoxConnection:
 
     def is_extension_loaded(self) -> bool:
         """Return True if the anofox_tabular extension is loaded."""
-        result = self._conn.execute(
-            "SELECT count(*) FROM duckdb_functions() WHERE function_name LIKE 'anofox_%'"
-        ).fetchone()
-        return result is not None and result[0] > 0
+        count = fetch_one(
+            self._conn,
+            "SELECT count(*) FROM duckdb_functions() WHERE function_name LIKE 'anofox_%'",
+        )
+        return count is not None and count > 0
 
     def profile(self, df_or_table: Any) -> Any:
         """
@@ -142,19 +158,17 @@ class AnofoxConnection:
                 cols_result = [(row[0], row[1]) for row in desc]
 
             # Volume (total rows)
-            total = self._conn.execute(
-                f"SELECT count(*) FROM {table_sql}"
-            ).fetchone()[0]
+            total = fetch_one(self._conn, f"SELECT count(*) FROM {table_sql}")
 
             rows = []
             for col_name, col_type in cols_result:
                 col_sql = quote_ident(col_name)
-                null_count = self._conn.execute(
-                    f"SELECT count(*) FROM {table_sql} WHERE {col_sql} IS NULL"
-                ).fetchone()[0]
-                distinct_count = self._conn.execute(
-                    f"SELECT count(DISTINCT {col_sql}) FROM {table_sql}"
-                ).fetchone()[0]
+                null_count = fetch_one(
+                    self._conn, f"SELECT count(*) FROM {table_sql} WHERE {col_sql} IS NULL"
+                )
+                distinct_count = fetch_one(
+                    self._conn, f"SELECT count(DISTINCT {col_sql}) FROM {table_sql}"
+                )
 
                 null_rate = null_count / total if total > 0 else 0.0
                 rows.append({

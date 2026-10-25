@@ -19,7 +19,7 @@ import json
 from decimal import Decimal
 from typing import Any, Optional, Union
 
-from ._sql import quote_ident
+from ._sql import quote_ident, run
 from ._table import TableLike, accepts_dataframes
 
 
@@ -806,7 +806,8 @@ def define_checks(conn: Any, checks: list[dict], checks_table: str = "dq_checks"
     Returns the checks table name.
     """
     checks_sql = quote_ident(checks_table)
-    conn.execute(
+    run(
+        conn,
         f"CREATE OR REPLACE TABLE {checks_sql} ("
         "check_name VARCHAR, check_type VARCHAR, table_name VARCHAR, column_name VARCHAR, "
         "params VARCHAR, lower_threshold DOUBLE, upper_threshold DOUBLE, "
@@ -817,7 +818,8 @@ def define_checks(conn: Any, checks: list[dict], checks_table: str = "dq_checks"
             if not check.get(required):
                 raise ValueError(f"every check needs a non-empty '{required}'")
         params = check.get("params")
-        conn.execute(
+        run(
+            conn,
             f"INSERT INTO {checks_sql} VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             [
                 check["check_name"],
@@ -863,12 +865,14 @@ def run_checks(
     """
     if result_table is not None:
         result_sql = quote_ident(result_table)
-        conn.execute(
+        run(
+            conn,
             f"CREATE TABLE IF NOT EXISTS {result_sql} AS "
             "SELECT * FROM anofox_tab_run_checks(?) LIMIT 0",
             [checks_table],
         )
-        conn.execute(
+        run(
+            conn,
             f"INSERT INTO {result_sql} SELECT * FROM anofox_tab_run_checks(?)", [checks_table]
         )
         cursor = conn.execute(

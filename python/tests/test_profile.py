@@ -244,6 +244,9 @@ class _DummyNative:
         self.last_params = params
         return self
 
+    def sql(self, query, params=None):
+        return self.execute(query, params)
+
     def df(self):
         return pandas.DataFrame()
 
