@@ -59,7 +59,7 @@ source.
 
 | Path | What it is |
 |------|------------|
-| `build/release/duckdb` | DuckDB CLI with the extension linked in |
+| `build/release/duckdb` | DuckDB CLI; start it through `scripts/duckdb-dev.sh`, which loads the extension |
 | `build/release/extension/anofox_tabular/anofox_tabular.duckdb_extension` | Loadable extension |
 | `build/release/test/unittest` | SQL test runner |
 
@@ -74,8 +74,9 @@ A locally built extension is unsigned. Start the DuckDB CLI with `-unsigned`, or
 
 ## DuckDB versions
 
-The source tree builds against DuckDB v1.5.6 (the `duckdb` submodule) and DuckDB 2.0. API
-differences sit behind the duckdb-compat helpers. See [Updating DuckDB](updating-duckdb.md).
+Local builds use DuckDB v2.0.0, the `duckdb` submodule pin; CI also builds v1.5.6. API
+differences sit behind the duckdb-compat helpers. See [Updating DuckDB](updating-duckdb.md),
+which also shows how to check v1.5.6 locally.
 
 ## Next steps
 

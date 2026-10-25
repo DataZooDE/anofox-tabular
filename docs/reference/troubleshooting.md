@@ -56,10 +56,10 @@ Binder Error: isolation_forest: cannot read table 'scratch': Catalog Error: Tabl
 Did you mean "sqlite_schema"?
 
 LINE 1: SELECT * FROM query_table('scratch') LIMIT 0
-                      ^
+             ^^^^^^^
 
 LINE 1: SELECT status FROM isolation_forest('scratch', 'v');
-                           ^
+                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 ```
 
 Use a regular table (`CREATE TABLE`) instead. The functions that need one are listed in

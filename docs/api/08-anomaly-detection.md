@@ -656,7 +656,7 @@ SELECT * FROM isolation_forest('readings', 'temperature', 100, 256, 0.1, 'scores
 Binder Error: isolation_forest: id_column 'no_such_column' not found in table 'readings'
 
 LINE 1: SELECT * FROM isolation_forest('readings', 'temperature', 100, 256, 0...
-                      ^
+                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 ```
 
 a mode that is not row-level,
@@ -670,7 +670,7 @@ Binder Error: dbscan: id_column requires output_mode 'clusters'
 -> Unexpected? Please report it: https://github.com/DataZooDE/anofox-tabular/issues
 
 LINE 1: SELECT * FROM dbscan('readings', 'temperature', 1.0, 5, 'summary', id_column...
-                      ^
+                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 ```
 
 and a name that collides with an output column. Rename the column in a view first.
@@ -685,7 +685,7 @@ SELECT * FROM isolation_forest('scored', 'temperature', 100, 256, 0.1, 'scores',
 Binder Error: isolation_forest: id_column 'anomaly_score' collides with output column 'anomaly_score'; rename or alias it first
 
 LINE 1: SELECT * FROM isolation_forest('scored', 'temperature', 100, 256, 0.1...
-                      ^
+                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 ```
 
 ## See also

@@ -108,13 +108,13 @@ SELECT status FROM isolation_forest('readings', 'v', n_trees := 10);
 
 ```text
 Binder Error: Invalid named parameter "n_trees" for function isolation_forest
-Candidates:
-    id_column VARCHAR
 
-
-LINE 1: SELECT status FROM isolation_forest('readings', 'v', n_trees := 10);
-                           ^
+LINE 1: ... status FROM isolation_forest('readings', 'v', n_trees := 10);
+                                                                     ^^
 ```
+
+Error output in these docs is shown as DuckDB 2.0 prints it. DuckDB v1.5.6 prints the same
+messages but marks the position with a single `^` and lists the accepted named parameters.
 
 ## Table and column arguments
 

@@ -64,7 +64,8 @@ Always use ninja for faster builds. Seldomly use `make clean` to clean the build
 
 ### Build Artifacts
 
-- `build/release/duckdb` – Standalone DuckDB CLI with extension statically linked
+- `build/release/duckdb` – DuckDB 2.0 CLI. It does not link the extension statically: start it
+  with `scripts/duckdb-dev.sh`, which loads the extension (works on v1.5.6 builds too)
 - `build/release/extension/anofox_tabular/anofox_tabular.duckdb_extension` – Loadable binary
 - `build/release/test/unittest` – Test runner
 
@@ -131,7 +132,7 @@ Add tracing messages to your implementation. The goal of the tracing messages sh
 It is possible to run individual SQL commands from the shell and directly observe their result via. Example:
 
 ```bash
-$ ./build/release/duckdb -c "LOAD anofox_tabular; SET anofox_tab_trace_level = 'warn'; SELECT DISTINCT function_name, function_type FROM duckdb_functions() WHERE function_name LIKE 'anofox_tab_email%' OR function_name LIKE 'anofox_tab_phonenumber_p%' ORDER BY function_name"
+$ scripts/duckdb-dev.sh -c "LOAD anofox_tabular; SET anofox_tab_trace_level = 'warn'; SELECT DISTINCT function_name, function_type FROM duckdb_functions() WHERE function_name LIKE 'anofox_tab_email%' OR function_name LIKE 'anofox_tab_phonenumber_p%' ORDER BY function_name"
 ┌──────────────────────────────┬───────────────┐
 │        function_name         │ function_type │
 │           varchar            │    varchar    │
@@ -194,11 +195,14 @@ libpostal is not a vcpkg port: `scripts/install-deps-ci.sh` builds it, and CMake
 
 ## Updating DuckDB Version
 
-One source tree builds on DuckDB v1.5.6 and the DuckDB 2.0 pre-release that
-community-extensions builds; API differences sit behind duckdb-compat helpers.
-See `docs/UPDATING.md` for the line table, the rules for new code (function
-names, registration through `anofox_function_alias.hpp`, `SetChildCardinality`)
-and the bump procedure.
+Local development happens on **DuckDB v2.0.0**: the `./duckdb` submodule is pinned to the
+`v2.0.0` tag and `./extension-ci-tools` to `v2.0-cyanoptera`, the line community-extensions
+publishes by default. The same source tree also builds on v1.5.6, which CI checks on every pull
+request; API differences sit behind duckdb-compat helpers. Python tests use `duckdb==2.0.0`
+(Python 3.11+). See `docs/dev/updating-duckdb.md` for the line table, the rules for new code
+(function names, registration through `anofox_function_alias.hpp`, `SetChildCardinality`,
+`lambda x:` instead of `x ->` in tests), local 2.0 specifics (version stamp, shell, `-march`)
+and how to check v1.5.6 locally.
 
 ## Key Files to Know
 

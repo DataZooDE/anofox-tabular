@@ -600,11 +600,11 @@ SELECT * FROM compliance('orders', 'amount > 0; DROP TABLE orders');
 ```
 
 ```text
-Binder Error: compliance: failed to parse expression 'amount > 0; DROP TABLE orders': {"exception_type":"Parser","exception_message":"syntax error at or near \";\"","position":"18","error_subtype":"SYNTAX_ERROR"}
+Binder Error: compliance: failed to parse expression 'amount > 0; DROP TABLE orders': {"exception_type":"Parser","exception_message":"syntax error at or near \";\"","location":"[18,1]","position":"18","error_subtype":"SYNTAX_ERROR"}
 -> Unexpected? Please report it: https://github.com/DataZooDE/anofox-tabular/issues
 
 LINE 1: SELECT * FROM compliance('orders', 'amount > 0; DROP TABLE orders');
-                      ^
+                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 ```
 
 ---
@@ -635,7 +635,7 @@ Binder Error: rel_count_change: start_date and end_date must be given together
 -> Unexpected? Please report it: https://github.com/DataZooDE/anofox-tabular/issues
 
 LINE 1: SELECT * FROM rel_count_change('orders', 'order_date', start_date := DATE...
-                      ^
+                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 ```
 
 ## `rel_count_change`

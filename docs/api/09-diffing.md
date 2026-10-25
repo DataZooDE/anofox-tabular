@@ -220,7 +220,7 @@ Binder Error: diff_joindiff: pass either primary_key or primary_keys, not both
 -> Unexpected? Please report it: https://github.com/DataZooDE/anofox-tabular/issues
 
 LINE 1: SELECT * FROM diff_joindiff('customers_v1', 'customers_v2', primary_key...
-                      ^
+                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 ```
 
 A primary key that is not unique is an error:
@@ -318,7 +318,7 @@ Binder Error: diff_hashdiff: the bisection_threshold/bisection_factor parameters
 -> Unexpected? Please report it: https://github.com/DataZooDE/anofox-tabular/issues
 
 LINE 1: SELECT * FROM diff_hashdiff('customers_v1', 'customers_v2', 'id', bisecti...
-                      ^
+                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 ```
 
 `compare_columns` and `include_all` do not exist on `diff_hashdiff`:
@@ -329,17 +329,9 @@ SELECT * FROM diff_hashdiff('customers_v1', 'customers_v2', 'id', include_all :=
 
 ```text
 Binder Error: Invalid named parameter "include_all" for function diff_hashdiff
-Candidates:
-    bisection_factor BIGINT
-    bisection_threshold BIGINT
-    primary_key VARCHAR
-    primary_keys VARCHAR[]
-    source_table VARCHAR
-    target_table VARCHAR
 
-
-LINE 1: SELECT * FROM diff_hashdiff('customers_v1', 'customers_v2', 'id', include...
-                      ^
+LINE 1: ...hdiff('customers_v1', 'customers_v2', 'id', include_all := true);
+                                                                      ^^^^
 ```
 
 ## See also
