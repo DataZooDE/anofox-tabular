@@ -220,7 +220,7 @@ freshness(table_name VARCHAR, timestamp_column VARCHAR, max_age INTERVAL [, refe
 | `table_name` | `VARCHAR` | required | Table or view |
 | `timestamp_column` | `VARCHAR` | required | Timestamp column |
 | `max_age` | `INTERVAL` | required | Largest allowed age of the newest row |
-| `reference_time` | `TIMESTAMP` | `now()` | The time the age is measured from |
+| `reference_time` | `TIMESTAMP` | current time | The time the age is measured from |
 
 | Column | Type | Description |
 |--------|------|-------------|
@@ -242,9 +242,8 @@ FROM freshness('orders', 'created_at', INTERVAL '1 day', TIMESTAMP '2026-01-31 0
 └─────────┴─────────────────────┴─────────────┘
 ```
 
-Without `reference_time` the check compares against `now()`. That form needs DuckDB's ICU
-extension, which the standard DuckDB builds include. A DuckDB build without ICU raises a binder
-error about `-(TIMESTAMP WITH TIME ZONE, INTERVAL)`; pass `reference_time` there.
+Without `reference_time` the check compares against the current time, `CAST(now() AS TIMESTAMP)`
+(UTC unless the ICU extension is loaded, then the session time zone). It does not need ICU.
 
 ---
 
@@ -940,7 +939,7 @@ suite. The `value` column holds the measure of each type:
 | `agg` | the aggregate | `agg` (required): `avg`, `min`, `max`, `sum`, `median`, `stddev` | yes |
 | `duplicate_count` | duplicates | none | yes |
 | `compliance` | compliance rate | `expression` (required) | yes |
-| `freshness` | age in seconds | `reference_time` (default `now()`) | yes |
+| `freshness` | age in seconds | `reference_time` (default: the current time, no ICU needed) | yes |
 | `occurrence` | frequency of the extreme value | `mode`: `max` (default) or `min` | no |
 | `match_rate` | match rate | `right_table`, `right_keys` (required), `left_keys` (default `column_name`) | no |
 | `rel_count_change` | relative change | `date_column` (required), `count_column`, `window_days` (7), `reference_date` | no |

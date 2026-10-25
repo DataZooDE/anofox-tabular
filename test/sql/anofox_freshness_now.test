@@ -1,0 +1,67 @@
+# name: test/sql/anofox_freshness_now.test
+# description: freshness without a reference_time measures against the current time and works
+#              without the ICU extension (now() is a TIMESTAMP WITH TIME ZONE; the plain
+#              TIMESTAMP arithmetic must not need ICU). Statuses are deterministic: one table
+#              holds a timestamp far in the past, the other one far in the future.
+# group: [anofox_tabular]
+
+require anofox_tabular
+
+statement ok
+LOAD anofox_tabular
+
+statement ok
+SET anofox_tab_trace_enabled = false
+
+statement ok
+CREATE TABLE fn_old (ts TIMESTAMP)
+
+statement ok
+INSERT INTO fn_old VALUES (TIMESTAMP '2000-01-01 00:00:00')
+
+statement ok
+CREATE TABLE fn_new (ts TIMESTAMP)
+
+statement ok
+INSERT INTO fn_new VALUES (TIMESTAMP '2999-01-01 00:00:00')
+
+# Standalone freshness, default max_age
+query T
+SELECT status FROM freshness('fn_old', 'ts', INTERVAL 1 DAY)
+----
+fail
+
+query T
+SELECT status FROM freshness('fn_new', 'ts', INTERVAL 1 DAY)
+----
+pass
+
+query T
+SELECT age_seconds > 0 FROM freshness('fn_old', 'ts', INTERVAL 1 DAY)
+----
+true
+
+statement ok
+CREATE TABLE fn_checks (
+    check_name VARCHAR,
+    check_type VARCHAR,
+    table_name VARCHAR,
+    column_name VARCHAR,
+    params VARCHAR,
+    lower_threshold DOUBLE,
+    upper_threshold DOUBLE,
+    monitor_only BOOLEAN,
+    identifier_column VARCHAR,
+    filter_expr VARCHAR
+)
+
+statement ok
+INSERT INTO fn_checks VALUES
+    ('old_fresh', 'freshness', 'fn_old', 'ts', NULL, NULL, 86400, false, NULL, NULL),
+    ('new_fresh', 'freshness', 'fn_new', 'ts', NULL, NULL, 86400, false, NULL, NULL)
+
+query TT
+SELECT check_name, status FROM run_checks('fn_checks') ORDER BY check_name
+----
+new_fresh	pass
+old_fresh	fail

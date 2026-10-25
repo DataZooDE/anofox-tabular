@@ -259,8 +259,10 @@ static string GenerateSchemaSQL(const string &table_name, const vector<string> &
 static string GenerateFreshnessSQL(const string &table_ref, const string &timestamp_column, const Value &max_age, const Value &reference_time) {
 	string max_age_interval =
 	    max_age.IsNull() ? "INTERVAL '1 day'" : "'" + EscapeSqlStringLiteral(max_age.ToString()) + "'::INTERVAL";
+	// CAST(now() AS TIMESTAMP): now() is a TIMESTAMP WITH TIME ZONE, and mixing it with plain
+	// TIMESTAMP/INTERVAL arithmetic needs the ICU extension
 	string ref_time =
-	    reference_time.IsNull() ? "now()" : "'" + EscapeSqlStringLiteral(reference_time.ToString()) + "'::TIMESTAMP";
+	    reference_time.IsNull() ? "CAST(now() AS TIMESTAMP)" : "'" + EscapeSqlStringLiteral(reference_time.ToString()) + "'::TIMESTAMP";
 	string col_id = QuoteSqlIdentifier(timestamp_column);
 
 	// Empty-input semantics: an empty table or all-NULL timestamp column yields one row with

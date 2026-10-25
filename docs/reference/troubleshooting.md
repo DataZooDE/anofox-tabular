@@ -68,28 +68,6 @@ Use a regular table (`CREATE TABLE`) instead. The functions that need one are li
 Most parameters are positional. Only a few accept `name := value`; the list is in
 [API conventions](../api/00-conventions.md#named-parameters).
 
-## `freshness` fails with "No function matches ... '-(TIMESTAMP WITH TIME ZONE, INTERVAL)'"
-
-Without a `reference_time` argument, `freshness` compares against `now()`, which needs DuckDB's
-`icu` extension. The standard DuckDB builds include it. In a build without it, load it with
-`LOAD icu;`, or pass a `reference_time`:
-
-```sql
-CREATE TABLE events AS
-SELECT TIMESTAMP '2026-03-01 12:00:00' - to_minutes(range) AS created_at FROM range(10);
-SELECT status, message
-FROM freshness('events', 'created_at', INTERVAL '1 hour', TIMESTAMP '2026-03-01 12:30:00');
-```
-
-```text
-┌─────────┬────────────────────────────────────────────────────────────────┐
-│ status  │                            message                             │
-│ varchar │                            varchar                             │
-├─────────┼────────────────────────────────────────────────────────────────┤
-│ pass    │ Data is fresh. Latest update: 2026-03-01 12:00:00 (age: 1800s) │
-└─────────┴────────────────────────────────────────────────────────────────┘
-```
-
 ## libpostal data missing
 
 `postal_parse_address` and `postal_expand_address` need about 500 MB of data. Download it once:

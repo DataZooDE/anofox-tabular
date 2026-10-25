@@ -408,8 +408,10 @@ static CheckBranch BuildCheckBranch(ClientContext &context, const CheckSpec &spe
 	} else if (spec.check_type == "freshness") {
 		RequireColumn(spec);
 		string col = QuoteSqlIdentifier(spec.column_name);
+		// CAST(now() AS TIMESTAMP): now() is a TIMESTAMP WITH TIME ZONE, and subtracting a
+		// plain TIMESTAMP from it needs the ICU extension
 		string ref_time = spec.reference_time.empty()
-		                      ? "now()"
+		                      ? "CAST(now() AS TIMESTAMP)"
 		                      : "'" + EscapeSqlStringLiteral(spec.reference_time) + "'::TIMESTAMP";
 		value_expr = "CAST(EXTRACT(EPOCH FROM (" + ref_time + " - MAX(CAST(" + col + " AS TIMESTAMP)))) AS DOUBLE)";
 	} else if (spec.check_type == "occurrence") {
