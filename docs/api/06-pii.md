@@ -50,7 +50,7 @@ NER types need the NER model.
 | Type | Detects | Method |
 |------|---------|--------|
 | `EMAIL` | Email addresses | pattern |
-| `PHONE` | Phone numbers with a `+` prefix, parentheses or dashes | pattern |
+| `PHONE` | International numbers with a `+` or `00` prefix (`+49 (0) 221 4711-0`, `0049 171 1234567`), national numbers with an area code and a space, dash or slash (`0171 1234567`, `089/12345678`, `(089) 123 456 78`) and US `(555) 123-4567`; 7 to 15 digits, starting after whitespace, `:` or `(` | pattern |
 | `CREDIT_CARD` | Visa, Mastercard, Amex and Discover numbers | pattern + Luhn checksum |
 | `US_SSN` | US Social Security Numbers `XXX-XX-XXXX` | pattern + area validation |
 | `IBAN` | International Bank Account Numbers, compact or in groups of four separated by single spaces or dashes (`DE89 3704 0044 0532 0130 00`) | pattern + MOD-97 checksum |
@@ -702,7 +702,7 @@ SELECT pii_type, recognizer_name, pattern_info FROM pii_status() ORDER BY pii_ty
 │ MISC           │ Unknown         │ No description                                         │
 │ NAME           │ Person Name     │ OpenVINO DistilBERT NER (92% F1)                       │
 │ ORGANIZATION   │ Unknown         │ No description                                         │
-│ PHONE          │ Phone           │ International phone formats (+XX, parentheses, dashes) │
+│ PHONE          │ Phone           │ International (+XX, 00XX) and national (0XX) formats   │
 │ UK_NINO        │ UK NINO         │ UK National Insurance Number format                    │
 │ URL            │ URL             │ HTTP/HTTPS URLs                                        │
 │ US_PASSPORT    │ US Passport     │ 9 digits or letter + 8 digits                          │

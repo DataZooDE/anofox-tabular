@@ -1017,20 +1017,75 @@ PhoneRecognizer::PhoneRecognizer()
     : RegexRecognizer(
         PIIType::PHONE,
         "Phone Number",
-        // Matches phone formats requiring distinctive features to avoid SSN overlap:
-        // - International prefix (+1, +44, etc.) with 7+ digits following
-        // - US with parentheses: (555) 123-4567
-        // Note: No leading \b for international since + is not a word char.
-        // The trailing boundary is a lookahead, so a following number can
-        // still claim the separating space; punctuation may end a number.
-        R"((?:^|[\s])(\+\d{1,4}[\s\-\.]?\(?\d{1,4}\)?[\s\-\.]?\d{1,4}[\s\-\.]?\d{2,4}[\s\-\.]?\d{2,4})(?=$|[\s,;:.!?)])|(\(\d{3}\)[\s\-\.]?\d{3}[\s\-\.]?\d{4}))"
+        // Group 1: a number that starts at the beginning of the text or after
+        // whitespace, ':', ';', '(' or '[' (ECMAScript has no lookbehind, so
+        // that character is consumed and FindMatches reports group 1 only):
+        // - international: +CC or 00CC (00 form needs a separator after the
+        //   country code), then up to six digit groups or a parenthesised
+        //   group such as "(0)", "(415)": +49 (0) 221 4711-0, +491711234567
+        // - national: an area code 0XX..0XXXXX, compact numbers are not
+        //   matched; "(089) 123 456 78", "0171 1234567", "089/12345678",
+        //   "089-123456-78"
+        // The number must end at whitespace, punctuation or the end of text.
+        // Group 2: US style (555) 123-4567.
+        // Dots are no separator in national numbers so dates (25.10.2026),
+        // amounts and version strings stay unmatched; Validate() checks the
+        // digit count.
+        R"((?:^|[\s:;(\[]))"
+        R"(((?:\+\d{1,3}|00[1-9]\d{0,2}(?=[ \-./]))(?:[ \-./]?\(\d{1,4}\)|[ \-./]?\d{1,5}){1,6})"
+        R"(|(?:\(0[1-9]\d{1,4}\) ?|0[1-9]\d{1,4}[ \-/])\d{2,8}(?:[ \-/]\d{1,8}){0,3}))"
+        R"((?=$|[\s,;:.!?)\]]))"
+        R"(|(\(\d{3}\)[\s\-\.]?\d{3}[\s\-\.]?\d{4}))"
     ) {}
 
 PhoneRecognizer::~PhoneRecognizer() {
     (void)type_;
 }
 
+std::vector<PIIMatch> PhoneRecognizer::FindMatches(const std::string &text) const {
+    std::vector<PIIMatch> matches;
+    std::sregex_iterator end;
+    for (std::sregex_iterator iter(text.begin(), text.end(), pattern_); iter != end; ++iter) {
+        const auto &match = *iter;
+        const size_t group = match[1].matched ? 1 : (match[2].matched ? 2 : 0);
+        if (group == 0) {
+            continue;
+        }
+        auto start = static_cast<size_t>(match.position(group));
+        std::string number = match[group].str();
+
+        // A number without "+" right after "<digit><space>" continues a
+        // longer digit sequence, e.g. the "0044 0532 0130 00" groups of an IBAN.
+        if (group == 1 && number[0] != '+' && start >= 2 && std::isspace(static_cast<unsigned char>(text[start - 1])) &&
+            std::isdigit(static_cast<unsigned char>(text[start - 2]))) {
+            AnofoxTrace(AnofoxLogLevel::Trace, "pii: phone candidate continues a digit sequence: " + number);
+            continue;
+        }
+        if (Validate(number)) {
+            matches.emplace_back(type_, number, start, start + number.size(), 1.0);
+        }
+    }
+    return matches;
+}
+
 bool PhoneRecognizer::Validate(const std::string &text) const {
+    // E.164 numbers have at most 15 digits; fewer than 7 is a short code or
+    // a fragment rather than a phone number.
+    size_t digit_count = 0;
+    for (char c : text) {
+        if (std::isdigit(static_cast<unsigned char>(c))) {
+            digit_count++;
+        }
+    }
+    if (digit_count < 7 || digit_count > 15) {
+        return false;
+    }
+    // The 00 of an international prefix is no part of the number itself;
+    // without this, SSN-like "001-45-6789" would pass as a phone number.
+    if (text.compare(0, 2, "00") == 0 && digit_count - 2 < 8) {
+        return false;
+    }
+
     // When deep validation is enabled, use libphonenumber for validation
     if (PIIConfig::Get().IsDeepValidationEnabled()) {
         try {
@@ -2600,7 +2655,7 @@ void PIIStatusFunction(ClientContext &, TableFunctionInput &input, DataChunk &ou
 
     static const std::unordered_map<PIIType, std::string> pattern_info = {
         {PIIType::EMAIL, "RFC 5322 email pattern"},
-        {PIIType::PHONE, "International phone formats (+XX, parentheses, dashes)"},
+        {PIIType::PHONE, "International (+XX, 00XX) and national (0XX) formats"},
         {PIIType::CREDIT_CARD, "Visa/MC/Amex/Discover with Luhn validation"},
         {PIIType::US_SSN, "XXX-XX-XXXX format with area validation"},
         {PIIType::IP_ADDRESS, "IPv4 and IPv6 formats"},
