@@ -3387,6 +3387,15 @@ void SetPIIDefaultMaskStrategyOption(ClientContext &, SetScope, Value &parameter
         throw InvalidInputException("anofox_pii_default_mask_strategy cannot be NULL");
     }
     auto strategy = parameter.ToString();
+    // 'none' is valid as an explicit argument, but as the default it would
+    // silently turn pii_redact_column(value) and pii_audit_table.masked_value
+    // into pass-throughs of raw PII. Unknown names still raise the generic
+    // "Invalid mask strategy" error from ParseMaskStrategy
+    if (ParseMaskStrategy(strategy) == MaskStrategy::NONE) {
+        throw InvalidInputException("anofox_pii_default_mask_strategy cannot be 'none': a default that "
+                                    "disables masking would expose raw PII. Use redact, hash, partial or "
+                                    "asterisk (pass 'none' explicitly to pii_mask and friends instead)");
+    }
     PIIConfig::Get().SetDefaultMaskStrategy(strategy);
     parameter = Value(PIIConfig::Get().GetDefaultMaskStrategyString());
 }
@@ -3458,7 +3467,7 @@ void PIIConfigFunction(ClientContext &, TableFunctionInput &input, DataChunk &ou
          "Minimum confidence threshold for NER-based detection (0.0 - 1.0)"},
         {"anofox_pii_default_mask_strategy",
          MaskStrategyToString(config.default_mask_strategy),
-         "Default masking strategy (REDACT, HASH, PARTIAL, ASTERISK, NONE)"},
+         "Default masking strategy (REDACT, HASH, PARTIAL, ASTERISK; NONE is rejected)"},
         {"anofox_pii_enabled_types",
          enabled_types_str.empty() ? "(all types)" : enabled_types_str,
          "Comma-separated list of PII types to detect (empty = all)"},
@@ -3506,7 +3515,7 @@ void RegisterPIIOptions(ExtensionLoader &loader) {
                               SetPIIMinConfidenceOption);
 
     config.AddExtensionOption("anofox_pii_default_mask_strategy",
-                              "Default masking strategy (REDACT, HASH, PARTIAL, ASTERISK, NONE)",
+                              "Default masking strategy (REDACT, HASH, PARTIAL, ASTERISK; NONE is rejected)",
                               LogicalTypeId::VARCHAR,
                               Value(PIIConfig::DEFAULT_MASK_STRATEGY),
                               SetPIIDefaultMaskStrategyOption);
