@@ -7,6 +7,7 @@
 - Know when you can pass arguments by name with `:=`
 - Read the signatures on the module pages
 - Know which functions need a regular table instead of a TEMP table
+- Keep one bad value from stopping a query with `TRY()`
 
 ## Function names
 
@@ -158,6 +159,28 @@ type of the value you pass, so `0.05` comes back as `DECIMAL(3,2)`, not `DOUBLE`
   an empty table. Empty input passes, with a message that says so.
 - Functions with an `output_mode` (`'summary'`, `'scores'`, `'clusters'`, `'outliers'`) return one
   summary row or one row per input row. The module pages list both shapes.
+
+## Errors and `TRY()`
+
+A scalar function raises an error for input it cannot handle, such as an unknown currency code
+in `money` or an unknown strategy in `pii_mask`, and the error stops the whole query. Wrap the
+call in DuckDB's `TRY()` to get `NULL` for those rows instead:
+
+```sql
+SELECT TRY(money(10, 'XYZ')) AS m;
+```
+
+```text
+┌────────────────────────────────────────────────┐
+│                       m                        │
+│ struct(amount decimal(18,3), currency varchar) │
+├────────────────────────────────────────────────┤
+│ NULL                                           │
+└────────────────────────────────────────────────┘
+```
+
+Validation functions such as `email_is_valid` or `phonenumber_is_valid` do not raise for bad
+values; they return `false`.
 
 ## Tracing output
 

@@ -16,6 +16,7 @@ Task-oriented walkthroughs. Every example creates its own data.
 | [04 PII](guides/04-pii.md) | Find, audit and mask personal data |
 | [05 Diffing and migration](guides/05-diffing-and-migration.md) | Compare two versions of a table and sign off a migration |
 | [06 Python](guides/06-python.md) | Use the `anofox` package with pandas DataFrames |
+| [07 Clean a customer master](guides/07-customer-master-data.md) | Validate and standardise emails, phones, VAT numbers and money |
 
 ## API reference
 

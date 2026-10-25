@@ -229,6 +229,7 @@ The full map is in [docs/README.md](docs/README.md).
 | [PII](docs/guides/04-pii.md) | Find, audit and mask personal data |
 | [Diffing and migration](docs/guides/05-diffing-and-migration.md) | Compare two versions of a table |
 | [Python](docs/guides/06-python.md) | The `anofox` package with DataFrames |
+| [Customer master data](docs/guides/07-customer-master-data.md) | Clean emails, phones, VAT numbers and money |
 
 ### API reference
 
