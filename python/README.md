@@ -155,7 +155,7 @@ print(result.failures)    # DataFrame: column, row_id, value, rule
 | `anofox.validate` | `email_is_valid`, `email_validate`, `phone_is_valid`, `phone_parse`, `phone_format`, `phone_region` |
 | `anofox.quality` | `volume`, `null_rate`, `distinct_count`, `freshness`, `zscore`, `iqr`, `schema_check`, `regex_match`, `values_in_set`, `agg_check`, `duplicate_count`, `occurrence`, `match_rate`, `compliance`, `rel_count_change`, `metric_anomaly_iqr`, `rolling_values_in_set`, `define_checks`, `run_checks` |
 | `anofox.anomaly` | `isolation_forest`, `isolation_forest_mv`, `dbscan`, `dbscan_mv`, `outlier_tree` |
-| `anofox.pii` | `pii_detect`, `pii_mask`, `pii_contains`, `pii_scan_table`, `pii_audit_table` |
+| `anofox.pii` | `pii_detect`, `pii_mask`, `pii_mask_value`, `pii_contains`, `pii_scan_table`, `pii_audit_table` |
 | `anofox.diff` | `joindiff`, `hashdiff` |
 | `anofox.profile` | `profile_table`, `profile_summary`, `profile_correlations` |
 | `anofox.money` | `make_money(conn, amount, currency)` (or a DataFrame with `column=` and `currency=` / `currency_column=`), `money_from_cents`, `is_valid_currency`, `currency_symbol`, `money_add`, etc. |

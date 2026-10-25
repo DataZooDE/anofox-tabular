@@ -147,3 +147,29 @@ class TestPiiTableColumnsArgument:
         as_list = pii.pii_audit_table(conn, text_table, columns=["text"])
         as_string = pii.pii_audit_table(conn, text_table, columns="text")
         assert as_string.equals(as_list)
+
+
+class TestPiiMaskValue:
+    """pii_mask_value masks a whole known-PII value, also where detection finds nothing."""
+
+    def test_scalar(self, conn):
+        from anofox import pii
+        assert pii.pii_mask_value(conn, "Li", "NAME") == "[NAME]"
+        assert pii.pii_mask_value(conn, None, "NAME") is None
+
+    def test_dataframe_keeps_index(self, conn):
+        import pandas as pd
+        from anofox import pii
+        df = pd.DataFrame({"first_name": ["Li", "Anna", None], "phone": ["01511234567", "030 1234", None]},
+                          index=[7, 8, 9])
+        out = pii.pii_mask_value(conn, df, "PHONE", strategy="redact", column="phone")
+        assert list(out.index) == [7, 8, 9]
+        assert out["pii_mask_value"].tolist()[:2] == ["[PHONE]", "[PHONE]"]
+        assert out["pii_mask_value"].isna().tolist()[2]
+
+    def test_unknown_type_raises(self, conn):
+        import duckdb
+        import pytest
+        from anofox import pii
+        with pytest.raises(duckdb.Error, match="Unknown PII type"):
+            pii.pii_mask_value(conn, "x", "NO_SUCH_TYPE")

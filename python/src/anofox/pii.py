@@ -95,6 +95,51 @@ def pii_mask(
     )
 
 
+def pii_mask_value(
+    conn: Any,
+    value_or_df: Union[str, None, Any],
+    pii_type: str,
+    strategy: str = "redact",
+    column: Optional[str] = None,
+) -> Union[str, None, Any]:
+    """
+    Mask a whole value of a known PII type, without running detection.
+
+    Use it for columns that hold PII by definition (``first_name``, ``phone``),
+    where detection can miss short or unusual values such as ``"Li"``.
+
+    Parameters
+    ----------
+    conn:
+        An :class:`~anofox.AnofoxConnection`.
+    value_or_df:
+        A value, ``None``, or a pandas/polars DataFrame (with *column*).
+    pii_type:
+        The PII type the values belong to, e.g. ``"NAME"`` or ``"PHONE"``.
+    strategy:
+        ``"redact"`` (default), ``"hash"``, ``"partial"``, ``"asterisk"`` or ``"none"``.
+    column:
+        Column name when *value_or_df* is a DataFrame.
+
+    Returns
+    -------
+    str or None
+        For a value: the masked value; ``None`` for ``None``.
+    DataFrame
+        For a DataFrame: a copy with an added ``pii_mask_value`` column (same
+        index and row order as the input).
+    """
+    if value_or_df is None or isinstance(value_or_df, str):
+        return fetch_one(conn, "SELECT anofox_tab_pii_mask_value(?, ?, ?)", [value_or_df, pii_type, strategy])
+
+    df_type = check_row_input(value_or_df, column)
+    return apply_scalar(
+        conn, value_or_df, df_type,
+        f"anofox_tab_pii_mask_value(CAST({quote_ident(column)} AS VARCHAR), ?, ?)", [pii_type, strategy],
+        "pii_mask_value",
+    )
+
+
 def pii_contains(
     conn: Any,
     text: str,

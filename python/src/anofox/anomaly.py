@@ -152,7 +152,8 @@ def dbscan(
         Numeric column name.
     output_mode:
         ``"summary"`` → dict; ``"scores"`` (or ``"clusters"``) → DataFrame
-        with one row per input row.
+        with one row per analysed row; rows with a NULL feature are left out,
+        and ``row_id`` is the 1-based table row number.
     epsilon:
         Neighbourhood radius ε (default 0.5).
     min_points:
@@ -200,7 +201,8 @@ def dbscan_mv(
         Numeric column names as a list, or as one comma-separated string.
     output_mode:
         ``"summary"`` → dict; ``"scores"`` (or ``"clusters"``) → DataFrame
-        with one row per input row.
+        with one row per analysed row; rows with a NULL feature are left out,
+        and ``row_id`` is the 1-based table row number.
     epsilon:
         Neighbourhood radius ε (default 0.5).
     min_points:
