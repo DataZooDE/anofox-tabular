@@ -181,56 +181,48 @@ class AnofoxConnection:
             pandas or polars DataFrame.
         schema:
             Mapping of ``{column_name: rule}`` where each rule is an
-            :class:`EmailRule`, :class:`PhoneRule`, or callable.
+            :class:`EmailRule` or :class:`PhoneRule`.
 
         Returns
         -------
         ValidationResult
-            Contains ``passed`` (bool) and ``failures`` (pd.DataFrame).
+            Contains ``passed`` (bool) and ``failures``, a DataFrame with the
+            columns ``column``, ``row_id``, ``value`` and ``rule``. ``row_id``
+            identifies the failing row of *df*: its index label for a pandas
+            DataFrame, its 0-based row position for a polars DataFrame.
         """
         from .validate import EmailRule, PhoneRule
         import pandas as pd
-        from ._utils import drop_df_table, register_df_as_table
+        from ._utils import POSITION_COLUMN, detect_df_type, registered_view
 
-        table_name = register_df_as_table(self._conn, df)
+        df_type = detect_df_type(df)
+        labels = list(df.index) if df_type == "pandas" else None
 
         failure_rows = []
-        try:
+        with registered_view(self._conn, df) as view:
             for col, rule in schema.items():
                 if isinstance(rule, EmailRule):
                     mode = getattr(rule, "mode", "regex")
-                    results = self._conn.execute(
-                        f"SELECT rowid, {quote_ident(col)}, "
-                        f"anofox_tab_email_is_valid({quote_ident(col)}, ?) AS valid "
-                        f"FROM {quote_ident(table_name)}",
-                        [mode],
-                    ).fetchall()
-                    for row_id, value, valid in results:
-                        if not valid:
-                            failure_rows.append({
-                                "column": col,
-                                "row_id": row_id,
-                                "value": value,
-                                "rule": f"email({mode})",
-                            })
+                    check_sql, param, rule_name = "anofox_tab_email_is_valid", mode, f"email({mode})"
                 elif isinstance(rule, PhoneRule):
                     region = getattr(rule, "region", "US")
-                    results = self._conn.execute(
-                        f"SELECT rowid, {quote_ident(col)}, "
-                        f"anofox_tab_phonenumber_is_valid({quote_ident(col)}, ?) AS valid "
-                        f"FROM {quote_ident(table_name)}",
-                        [region],
-                    ).fetchall()
-                    for row_id, value, valid in results:
-                        if not valid:
-                            failure_rows.append({
-                                "column": col,
-                                "row_id": row_id,
-                                "value": value,
-                                "rule": f"phone({region})",
-                            })
-        finally:
-            drop_df_table(self._conn, table_name)
+                    check_sql, param, rule_name = "anofox_tab_phonenumber_is_valid", region, f"phone({region})"
+                else:
+                    continue
+                results = self._conn.execute(
+                    f"SELECT {quote_ident(POSITION_COLUMN)}, {quote_ident(col)}, "
+                    f"{check_sql}({quote_ident(col)}, ?) AS valid "
+                    f"FROM {quote_ident(view)} ORDER BY 1",
+                    [param],
+                ).fetchall()
+                for position, value, valid in results:
+                    if not valid:
+                        failure_rows.append({
+                            "column": col,
+                            "row_id": labels[position] if labels is not None else position,
+                            "value": value,
+                            "rule": rule_name,
+                        })
 
         failures_df = pd.DataFrame(failure_rows) if failure_rows else pd.DataFrame(
             columns=["column", "row_id", "value", "rule"]

@@ -7,7 +7,7 @@ from __future__ import annotations
 import json
 from typing import Any, Optional, Union
 
-from ._sql import fetch_frame, fetch_one, id_column_arg
+from ._sql import fetch_frame, fetch_one, id_column_arg, quote_ident
 from ._table import apply_scalar
 from ._utils import detect_df_type
 
@@ -44,7 +44,10 @@ def pii_detect(
     if column is None:
         raise ValueError("'column' is required when passing a DataFrame.")
 
-    return apply_scalar(conn, text_or_df, df_type, "anofox_tab_pii_detect", column, [], "pii_detect")
+    return apply_scalar(
+        conn, text_or_df, df_type,
+        f"anofox_tab_pii_detect({quote_ident(column)})", [], "pii_detect",
+    )
 
 
 def pii_mask(

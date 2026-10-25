@@ -7,7 +7,8 @@ Fully generic — no anofox-specific logic here.
 from __future__ import annotations
 
 import uuid
-from typing import Any, Literal
+from contextlib import contextmanager
+from typing import Any, Iterator, Literal
 
 
 DFType = Literal["pandas", "polars"]
@@ -47,24 +48,57 @@ def register_df_as_table(conn: Any, df: Any, name: str | None = None) -> str:
         name = f"_anofox_{uuid.uuid4().hex}"
 
     tmp_view = f"{name}_v"
-    df_type = detect_df_type(df)
-    if df_type == "pandas":
+    conn.register(tmp_view, _registrable(df))
+    conn.execute(f'CREATE TABLE "{name}" AS SELECT * FROM "{tmp_view}"')
+    conn.unregister(tmp_view)
+    return name
+
+
+def _registrable(df: Any) -> Any:
+    """Return an object DuckDB can register for *df* (pandas goes through Arrow)."""
+    if detect_df_type(df) == "pandas":
         # Convert via PyArrow to handle pandas 3.x StringDtype and other
         # extended dtypes that DuckDB's register() may not recognise directly.
         # preserve_index=False: the index is not data; a non-range index would
         # otherwise become an extra "__index_level_0__" column.
         try:
             import pyarrow as pa
-            arrow_table = pa.Table.from_pandas(df, preserve_index=False)
-            conn.register(tmp_view, arrow_table)
+            return pa.Table.from_pandas(df, preserve_index=False)
         except ImportError:
-            conn.register(tmp_view, df)
-    else:
-        conn.register(tmp_view, df)
+            return df
+    return df
 
-    conn.execute(f'CREATE TABLE "{name}" AS SELECT * FROM "{tmp_view}"')
-    conn.unregister(tmp_view)
-    return name
+
+POSITION_COLUMN = "__anofox_pos"
+
+
+def with_position(df: Any) -> Any:
+    """Return a copy of *df* with a 0-based row position column :data:`POSITION_COLUMN`."""
+    positions = range(len(df))
+    if detect_df_type(df) == "pandas":
+        return df.assign(**{POSITION_COLUMN: list(positions)})
+    import polars as pl
+    return df.with_columns(pl.Series(POSITION_COLUMN, list(positions), dtype=pl.Int64))
+
+
+@contextmanager
+def registered_view(conn: Any, df: Any) -> Iterator[str]:
+    """
+    Register *df* plus a :data:`POSITION_COLUMN` as a temporary view on *conn*.
+
+    Yields the view name; the view is removed on exit. Unlike
+    :func:`register_df_as_table` nothing is copied, so this suits scalar
+    functions, not table functions that read through a second connection.
+    """
+    name = f"_anofox_v_{uuid.uuid4().hex}"
+    conn.register(name, _registrable(with_position(df)))
+    try:
+        yield name
+    finally:
+        try:
+            conn.unregister(name)
+        except Exception:
+            pass
 
 
 def drop_df_table(conn: Any, name: str) -> None:

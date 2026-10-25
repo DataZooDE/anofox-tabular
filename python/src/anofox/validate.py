@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 from typing import Any, Optional, Union
 
-from ._sql import fetch_one
+from ._sql import fetch_one, quote_ident
 from ._table import apply_scalar
 from ._utils import detect_df_type
 
@@ -72,7 +72,10 @@ def email_is_valid(
     if column is None:
         raise ValueError("'column' is required when passing a DataFrame.")
 
-    return apply_scalar(conn, email_or_df, df_type, "anofox_tab_email_is_valid", column, [mode], "email_is_valid")
+    return apply_scalar(
+        conn, email_or_df, df_type,
+        f"anofox_tab_email_is_valid({quote_ident(column)}, ?)", [mode], "email_is_valid",
+    )
 
 
 def email_validate(
@@ -118,7 +121,10 @@ def email_validate(
     if column is None:
         raise ValueError("'column' is required when passing a DataFrame.")
 
-    return apply_scalar(conn, email_or_df, df_type, "anofox_tab_email_validate", column, [mode], "email_validate")
+    return apply_scalar(
+        conn, email_or_df, df_type,
+        f"anofox_tab_email_validate({quote_ident(column)}, ?)", [mode], "email_validate",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -152,7 +158,10 @@ def phone_is_valid(
     if column is None:
         raise ValueError("'column' is required when passing a DataFrame.")
 
-    return apply_scalar(conn, phone_or_df, df_type, "anofox_tab_phonenumber_is_valid", column, [region], "phone_is_valid")
+    return apply_scalar(
+        conn, phone_or_df, df_type,
+        f"anofox_tab_phonenumber_is_valid({quote_ident(column)}, ?)", [region], "phone_is_valid",
+    )
 
 
 def phone_parse(
@@ -190,7 +199,10 @@ def phone_parse(
     if column is None:
         raise ValueError("'column' is required when passing a DataFrame.")
 
-    return apply_scalar(conn, phone_or_df, df_type, "anofox_tab_phonenumber_parse", column, [region], "phone_parse")
+    return apply_scalar(
+        conn, phone_or_df, df_type,
+        f"anofox_tab_phonenumber_parse({quote_ident(column)}, ?)", [region], "phone_parse",
+    )
 
 
 def phone_format(

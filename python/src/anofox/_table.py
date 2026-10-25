@@ -7,7 +7,13 @@ from __future__ import annotations
 from typing import Any, Union
 
 from ._sql import quote_ident
-from ._utils import detect_df_type, drop_df_table, register_df_as_table, relation_to_dataframe
+from ._utils import (
+    POSITION_COLUMN,
+    detect_df_type,
+    drop_df_table,
+    register_df_as_table,
+    registered_view,
+)
 
 
 def resolve_table(conn: Any, table_or_df: Union[str, Any]) -> tuple[str, bool]:
@@ -33,23 +39,29 @@ def apply_scalar(
     conn: Any,
     df: Any,
     df_type: str,
-    function: str,
-    column: str,
-    extra_args: list,
+    expression: str,
+    params: list,
     result_name: str,
 ) -> Any:
     """
-    Return *df* plus a *result_name* column computed by the scalar SQL
-    ``function(column, *extra_args)``; *extra_args* are bound as parameters.
+    Return a copy of *df* with one added column *result_name*.
+
+    *expression* is a SQL expression over the columns of *df* (identifiers
+    already quoted) with ``?`` placeholders for *params*. The result keeps the
+    input's rows in their order, its other columns unchanged and, for pandas,
+    its index, so the new column can be assigned back to the input.
     """
-    table_name = register_df_as_table(conn.native, df)
-    try:
-        placeholders = "".join(", ?" for _ in extra_args)
-        rel = conn.native.execute(
-            f"SELECT *, {function}({quote_ident(column)}{placeholders}) AS {quote_ident(result_name)} "
-            f"FROM {quote_ident(table_name)}",
-            extra_args,
+    with registered_view(conn.native, df) as view:
+        result = conn.native.execute(
+            f"SELECT {expression} AS {quote_ident(result_name)} "
+            f"FROM {quote_ident(view)} ORDER BY {quote_ident(POSITION_COLUMN)}",
+            params,
         )
-        return relation_to_dataframe(rel, df_type)
-    finally:
-        drop_df_table(conn.native, table_name)
+        if df_type == "pandas":
+            values = result.df()[result_name]
+            values.index = df.index
+            out = df.copy()
+            out[result_name] = values
+            return out
+        values = result.pl().get_column(result_name)
+        return df.with_columns(values)
