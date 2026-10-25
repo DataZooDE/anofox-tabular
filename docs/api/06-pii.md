@@ -28,6 +28,7 @@ and [Network and privacy](../reference/network-and-privacy.md)).
 | [`pii_detect_names`](#type-specific-detection) | `anofox_tab_pii_detect_names` | scalar | `NAME` matches |
 | [`pii_mask`](#pii_mask) | `anofox_tab_pii_mask` | scalar | text with all PII masked |
 | [`pii_mask_column`](#pii_mask_column) | `anofox_tab_pii_mask_column` | scalar | text with one PII type masked |
+| [`pii_mask_value`](#pii_mask_value) | `anofox_tab_pii_mask_value` | scalar | the whole value masked as one PII type, without detection |
 | [`pii_redact_column`](#pii_redact_column) | `anofox_tab_pii_redact_column` | scalar | text with all PII masked |
 | [`pii_contains`](#pii_contains) | `anofox_tab_pii_contains` | scalar | `BOOLEAN` |
 | [`pii_count`](#pii_count) | `anofox_tab_pii_count` | scalar | `BIGINT` |
@@ -37,7 +38,7 @@ and [Network and privacy](../reference/network-and-privacy.md)).
 | [`pii_is_valid_nino`](#validation-functions) | `anofox_tab_pii_is_valid_nino` | scalar | `BOOLEAN` |
 | [`pii_is_valid_de_tax_id`](#validation-functions) | `anofox_tab_pii_is_valid_de_tax_id` | scalar | `BOOLEAN` |
 | [`pii_is_valid_crypto_address`](#validation-functions) | `anofox_tab_pii_is_valid_crypto_address` | scalar | `BOOLEAN` |
-| [`pii_scan_table`](#pii_scan_table) | `anofox_tab_pii_scan_table` | table | one row per column and PII type |
+| [`pii_scan_table`](#pii_scan_table) | `anofox_tab_pii_scan_table` | table | one row per column and PII type, plus one per column without a match |
 | [`pii_audit_table`](#pii_audit_table) | `anofox_tab_pii_audit_table` | table | one row per match |
 | [`pii_status`](#pii_status) | `anofox_tab_pii_status` | table | the registered recognizers |
 | [`pii_config`](#pii_config) | `anofox_tab_pii_config` | table | the current PII settings |
@@ -149,7 +150,7 @@ The strategy argument is case-insensitive.
 | Strategy | Effect |
 |----------|--------|
 | `redact` (default) | Replace each match with its type label, e.g. `[EMAIL]` |
-| `partial` | Keep a few characters, e.g. `***-**-6789` |
+| `partial` | Keep a few characters, e.g. `***-**-6789`; never more than half of the letters and digits (see [Partial masks](#partial-masks)) |
 | `asterisk` | Replace every character with `*` |
 | `hash` | Replace with a pseudonym: the first 16 hex characters of the SHA-256 of the normalised value (see [Hashing](#hashing)) |
 | `none` | Leave the text unchanged |
@@ -157,6 +158,35 @@ The strategy argument is case-insensitive.
 `partial` and `asterisk` count characters, not bytes: `Müller` becomes six stars and a partial
 mask never cuts a multi-byte UTF-8 character in half, so masked values can be stored in any
 `VARCHAR` column.
+
+### Partial masks
+
+A partial mask keeps at most half of the letters and digits of a value and masks short values
+completely. Each type has its own rule:
+
+| Type | Rule | Example |
+|------|------|---------|
+| `EMAIL` | First character of the local part and the top-level domain; every other character becomes `*`, dots between domain labels stay. The domain is masked as well, because a company or personal domain identifies a person as well as the local part does | `jane.doe@acme-corp.com` → `j*******@*********.com`, `ab@cd.de` → `a*@**.de` |
+| `PHONE` | `***-***-` and the last 4 digits (`+***-***-` with a leading `+`); never more than half of the digits, up to 4 digits are masked completely | `+49 151 12345678` → `+***-***-5678` |
+| `CREDIT_CARD` | Last 4 digits; the first 4 too from 16 digits on | `4111 1111 1111 1111` → `4111********1111`, `3782 822463 10005` → `***********0005` |
+| `US_SSN` | Last 4 digits | `123-45-6789` → `***-**-6789` |
+| `IBAN` | Country code and check digits, plus up to 4 trailing characters while at most half stays readable | `DE89 3704 0044 0532 0130 00` → `DE89**************3000`, `NO9386011117947` → `NO93********947` |
+| `DE_TAX_ID` | Last 3 digits | `86095742719` → `**-***-***-719` |
+| `IP_ADDRESS` | First IPv4 octet or first IPv6 group | `192.168.1.100` → `192.***.***.**` |
+| `URL` | Scheme and top-level domain; every other host label is masked and a path, query or fragment becomes `/***` | `https://crm.example.com/customers/4711` → `https://***.*******.com/***` |
+| `MAC_ADDRESS` | Manufacturer part (first two octets, or first four hex digits) | `00:1A:2B:3C:4D:5E` → `00:1A:**:**:**:**` |
+| `UK_NINO` | Prefix letters and suffix letter | `AB123456C` → `AB ** ** ** C` |
+| `US_PASSPORT` | The leading letter | `A12345678` → `A********` |
+| `API_KEY` | The vendor prefix (`AKIA`, `ghp_`, ...) or the first 4 characters | `AKIAIOSFODNN7EXAMPLE` → `AKIA****************` |
+| `CRYPTO_ADDRESS` | First and last 4 characters | `bc1qar0s…5mdq` → `bc1q****…5mdq` |
+| `NAME` | Per word: the first character; words of up to 4 characters are masked completely | `Anna Schmidt` → `**** S******`, `Li Na` → `** **` |
+| `ORGANIZATION`, `MISC` | Per word: up to the first 3 characters, at most half of the word; words of up to 4 characters are masked completely | `Microsoft` → `Mic******`, `Deutsche Bank AG` → `Deu***** **** **` |
+| `LOCATION` | The first word like `ORGANIZATION`, all further words masked | `Berlin` → `Ber***`, `Rome` → `****`, `Frankfurt am Main` → `Fra****** ** ****` |
+| Any other type | The first and last character from 5 characters on, the first and last 2 from 8 characters on; up to 4 characters are masked completely | |
+
+The half rule is checked for every match: a type-specific mask that would reveal more than half of
+the letters and digits of the value (possible for unusual values passed to
+[`pii_mask_value`](#pii_mask_value)) is replaced by one `*` per character.
 
 `pii_mask(text)` without a strategy always redacts. The setting `anofox_pii_default_mask_strategy`
 applies only to `pii_redact_column(value)` and `pii_audit_table`. A strategy argument that
@@ -176,7 +206,7 @@ FROM (VALUES ('redact'), ('partial'), ('asterisk'), ('hash'), ('none')) t(s);
 │ varchar  │                   varchar                    │
 ├──────────┼──────────────────────────────────────────────┤
 │ redact   │ SSN: [US_SSN], mail [EMAIL]                  │
-│ partial  │ SSN: ***-**-6789, mail a.*@example.com       │
+│ partial  │ SSN: ***-**-6789, mail a**@*******.com       │
 │ asterisk │ SSN: ***********, mail ***************       │
 │ hash     │ SSN: 15e2b0d3c33891eb, mail a6f1bad172104d25 │
 │ none     │ SSN: 123-45-6789, mail a.b@example.com       │
@@ -437,6 +467,73 @@ SELECT pii_mask_column('SSN 123-45-6789, mail a@b.com', 'US_SSN', 'partial') AS 
 
 ---
 
+## `pii_mask_value`
+
+Canonical name: `anofox_tab_pii_mask_value`. Scalar function.
+
+Masks the whole value as the given PII type, without running detection. Use it for columns that
+are known to hold PII, where detection finds nothing in some cells: a two-letter first name such
+as `Li`, a phone number without separators such as `01511234567`.
+
+```text
+pii_mask_value(value VARCHAR, pii_type VARCHAR, strategy VARCHAR) -> VARCHAR
+```
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `value` | `VARCHAR` | required | The value to mask; all of it is treated as one match of `pii_type` |
+| `pii_type` | `VARCHAR` | required | A type from [PII types](#pii-types), e.g. `NAME`; the aliases of `pii_mask_column` (`person`, `ssn`, ...) work too |
+| `strategy` | `VARCHAR` | required | See [Masking strategies](#masking-strategies) |
+
+What each strategy returns:
+
+| Strategy | Result |
+|----------|--------|
+| `redact` | The type label, e.g. `[NAME]` |
+| `asterisk` | One `*` per character |
+| `partial` | The type's [partial mask](#partial-masks) |
+| `hash` | The type's normalised hash, the same value `pii_mask` gives a detected match (see [Hashing](#hashing)) |
+| `none` | The value unchanged |
+
+A `NULL` argument returns `NULL` for that row; the type and strategy can differ from row to row.
+An empty value stays empty. An unknown type (`Unknown PII type: …`) or strategy
+(`Invalid mask strategy: …`) is an error.
+
+```sql
+SELECT pii_mask_value('Li', 'NAME', 'redact')                    AS first_name,
+       pii_mask_value('01511234567', 'PHONE', 'partial')         AS phone,
+       pii_mask_value('jane.doe@acme-corp.com', 'EMAIL', 'partial') AS email,
+       pii_mask_value('Schmidt', 'NAME', 'asterisk')             AS last_name;
+```
+
+```text
+┌────────────┬──────────────┬────────────────────────┬───────────┐
+│ first_name │    phone     │         email          │ last_name │
+│  varchar   │   varchar    │        varchar         │  varchar  │
+├────────────┼──────────────┼────────────────────────┼───────────┤
+│ [NAME]     │ ***-***-4567 │ j*******@*********.com │ *******   │
+└────────────┴──────────────┴────────────────────────┴───────────┘
+```
+
+`pii_mask_column` only masks what detection finds, so `Li` and `01511234567` would stay as they
+are:
+
+```sql
+SELECT pii_mask_column('Li', 'NAME', 'redact') AS first_name,
+       pii_mask_column('01511234567', 'PHONE', 'redact') AS phone;
+```
+
+```text
+┌────────────┬─────────────┐
+│ first_name │    phone    │
+│  varchar   │   varchar   │
+├────────────┼─────────────┤
+│ Li         │ 01511234567 │
+└────────────┴─────────────┘
+```
+
+---
+
 ## `pii_redact_column`
 
 Canonical name: `anofox_tab_pii_redact_column`. Scalar function.
@@ -580,17 +677,21 @@ SELECT pii_is_valid_nino('AB123456C')                                  AS nino,
 
 Canonical name: `anofox_tab_pii_scan_table`. Table function.
 
-Scans the `VARCHAR` columns of a table and returns one row per column and PII type found.
-It accepts regular tables and views, not TEMP tables (see
+Scans the `VARCHAR` columns of a table and returns one row per column and PII type found, plus
+one row for every column without a match, so the result accounts for every column: an audit can
+show which columns were scanned and found clean, and which were not scanned at all. It accepts
+regular tables and views, not TEMP tables (see
 [Conventions](00-conventions.md#table-and-column-arguments)).
 
 ```text
 pii_scan_table(table_name VARCHAR [, columns VARCHAR]) -> TABLE(
-    column_name   VARCHAR,
-    pii_type      VARCHAR,
-    match_count   BIGINT,
-    sample_values VARCHAR[],
-    confidence    DOUBLE
+    column_name    VARCHAR,
+    pii_type       VARCHAR,
+    match_count    BIGINT,
+    sample_values  VARCHAR[],
+    confidence     DOUBLE,
+    values_scanned BIGINT,
+    status         VARCHAR
 )
 ```
 
@@ -601,13 +702,21 @@ pii_scan_table(table_name VARCHAR [, columns VARCHAR]) -> TABLE(
 
 | Column | Type | Description |
 |--------|------|-------------|
-| `column_name` | `VARCHAR` | The column with PII |
-| `pii_type` | `VARCHAR` | The PII type found |
-| `match_count` | `BIGINT` | Number of matches |
-| `sample_values` | `VARCHAR[]` | Up to 5 matched values |
-| `confidence` | `DOUBLE` | Mean confidence of the matches: `1.0` for pattern types (lower when `anofox_pii_require_checksum = false` adds checksum failures at `0.6`), the mean model score for NER types |
+| `column_name` | `VARCHAR` | The column |
+| `pii_type` | `VARCHAR` | The PII type found; `NULL` on a row without a match |
+| `match_count` | `BIGINT` | Number of matches; `0` on a row without a match |
+| `sample_values` | `VARCHAR[]` | Up to 5 matched values; empty on a row without a match |
+| `confidence` | `DOUBLE` | Mean confidence of the matches: `1.0` for pattern types (lower when `anofox_pii_require_checksum = false` adds checksum failures at `0.6`), the mean model score for NER types; `NULL` on a row without a match |
+| `values_scanned` | `BIGINT` | Number of non-`NULL` values of the column that were scanned; `0` for a skipped column |
+| `status` | `VARCHAR` | `scanned`: the row reports a PII type found in the column. `no_match`: the column was scanned and nothing was found. `skipped (<type>)`, e.g. `skipped (DATE)`: the column was not scanned because it is not `VARCHAR`; name it in `columns` to scan it. `error (<message>)`: the column could not be read |
 
-Rows come in table column order and, within a column, ordered by `pii_type`.
+Rows come in table column order and, within a column, ordered by `pii_type`. Without `columns`
+every column of the table appears; with `columns` exactly the named columns appear.
+`WHERE pii_type IS NOT NULL` keeps only the PII findings.
+
+`no_match` means that detection found nothing, not that the column holds no personal data:
+detection misses values it cannot recognise, such as a two-letter first name. Mask columns known
+to hold PII with [`pii_mask_value`](#pii_mask_value).
 
 `sample_values` holds matched values as they are, that is raw PII. Treat the scan result like
 the table itself, or mask it before you share it.
@@ -624,41 +733,40 @@ SELECT * FROM (VALUES
 ```
 
 ```sql
-SELECT column_name, pii_type, match_count, sample_values
-FROM pii_scan_table('customers')
-ORDER BY column_name, pii_type;
+SELECT column_name, pii_type, match_count, sample_values, values_scanned, status
+FROM pii_scan_table('customers');
 ```
 
 ```text
-┌─────────────┬─────────────┬─────────────┬─────────────────────────────────────┐
-│ column_name │  pii_type   │ match_count │            sample_values            │
-│   varchar   │   varchar   │    int64    │              varchar[]              │
-├─────────────┼─────────────┼─────────────┼─────────────────────────────────────┤
-│ card        │ CREDIT_CARD │           1 │ [4111 1111 1111 1111]               │
-│ email       │ EMAIL       │           2 │ [anna@example.com, bob@example.org] │
-│ note        │ IBAN        │           1 │ [DE89370400440532013000]            │
-│ note        │ PHONE       │           1 │ ['+1 (415) 555-1234']               │
-│ ssn         │ US_SSN      │           1 │ [123-45-6789]                       │
-└─────────────┴─────────────┴─────────────┴─────────────────────────────────────┘
+┌─────────────┬─────────────┬─────────────┬─────────────────────────────────────┬────────────────┬───────────────────┐
+│ column_name │  pii_type   │ match_count │            sample_values            │ values_scanned │      status       │
+│   varchar   │   varchar   │    int64    │              varchar[]              │     int64      │      varchar      │
+├─────────────┼─────────────┼─────────────┼─────────────────────────────────────┼────────────────┼───────────────────┤
+│ customer_id │ NULL        │           0 │ []                                  │              0 │ skipped (INTEGER) │
+│ email       │ EMAIL       │           2 │ [anna@example.com, bob@example.org] │              3 │ scanned           │
+│ ssn         │ US_SSN      │           1 │ [123-45-6789]                       │              2 │ scanned           │
+│ card        │ CREDIT_CARD │           1 │ [4111 1111 1111 1111]               │              1 │ scanned           │
+│ note        │ IBAN        │           1 │ [DE89370400440532013000]            │              3 │ scanned           │
+│ note        │ PHONE       │           1 │ ['+1 (415) 555-1234']               │              3 │ scanned           │
+└─────────────┴─────────────┴─────────────┴─────────────────────────────────────┴────────────────┴───────────────────┘
 ```
 
 Scan only some columns:
 
 ```sql
-SELECT column_name, pii_type, match_count
-FROM pii_scan_table('customers', 'email,note')
-ORDER BY column_name, pii_type;
+SELECT column_name, pii_type, match_count, status
+FROM pii_scan_table('customers', 'email,note');
 ```
 
 ```text
-┌─────────────┬──────────┬─────────────┐
-│ column_name │ pii_type │ match_count │
-│   varchar   │ varchar  │    int64    │
-├─────────────┼──────────┼─────────────┤
-│ email       │ EMAIL    │           2 │
-│ note        │ IBAN     │           1 │
-│ note        │ PHONE    │           1 │
-└─────────────┴──────────┴─────────────┘
+┌─────────────┬──────────┬─────────────┬─────────┐
+│ column_name │ pii_type │ match_count │ status  │
+│   varchar   │ varchar  │    int64    │ varchar │
+├─────────────┼──────────┼─────────────┼─────────┤
+│ email       │ EMAIL    │           2 │ scanned │
+│ note        │ IBAN     │           1 │ scanned │
+│ note        │ PHONE    │           1 │ scanned │
+└─────────────┴──────────┴─────────────┴─────────┘
 ```
 
 ---
@@ -680,7 +788,8 @@ pii_audit_table(table_name VARCHAR [, columns VARCHAR] [, id_column := VARCHAR])
     masked_value   VARCHAR,
     start_pos      BIGINT,
     end_pos        BIGINT,
-    confidence     DOUBLE
+    confidence     DOUBLE,
+    matched_text   VARCHAR
 )
 ```
 
@@ -700,23 +809,26 @@ pii_audit_table(table_name VARCHAR [, columns VARCHAR] [, id_column := VARCHAR])
 | `masked_value` | `VARCHAR` | The cell value masked with the default strategy |
 | `start_pos`, `end_pos` | `BIGINT` | Position of the match in the cell, in UTF-8 bytes |
 | `confidence` | `DOUBLE` | Match confidence |
+| `matched_text` | `VARCHAR` | The detected text, the part of `original_value` between `start_pos` and `end_pos` (raw PII) |
 
-`original_value` is the raw cell, so the audit result contains the PII it reports. Select only
+`original_value` and `matched_text` are raw PII, so the audit result contains the PII it reports. Select only
 `masked_value` when the result leaves the trusted environment.
 
 ```sql
-SELECT row_id, column_name, pii_type, original_value, masked_value, start_pos, end_pos
-FROM pii_audit_table('customers', 'ssn')
-ORDER BY row_id;
+SELECT row_id, column_name, pii_type, matched_text, masked_value, start_pos, end_pos
+FROM pii_audit_table('customers', 'ssn, note')
+ORDER BY row_id, column_name;
 ```
 
 ```text
-┌────────┬─────────────┬──────────┬────────────────┬──────────────┬───────────┬─────────┐
-│ row_id │ column_name │ pii_type │ original_value │ masked_value │ start_pos │ end_pos │
-│ int64  │   varchar   │ varchar  │    varchar     │   varchar    │   int64   │  int64  │
-├────────┼─────────────┼──────────┼────────────────┼──────────────┼───────────┼─────────┤
-│      1 │ ssn         │ US_SSN   │ 123-45-6789    │ [US_SSN]     │         0 │      11 │
-└────────┴─────────────┴──────────┴────────────────┴──────────────┴───────────┴─────────┘
+┌────────┬─────────────┬──────────┬────────────────────────┬────────────────────┬───────────┬─────────┐
+│ row_id │ column_name │ pii_type │      matched_text      │    masked_value    │ start_pos │ end_pos │
+│ int64  │   varchar   │ varchar  │        varchar         │      varchar       │   int64   │  int64  │
+├────────┼─────────────┼──────────┼────────────────────────┼────────────────────┼───────────┼─────────┤
+│      1 │ note        │ PHONE    │ +1 (415) 555-1234      │ Call me on [PHONE] │        11 │      28 │
+│      1 │ ssn         │ US_SSN   │ 123-45-6789            │ [US_SSN]           │         0 │      11 │
+│      3 │ note        │ IBAN     │ DE89370400440532013000 │ Wire to [IBAN]     │         8 │      30 │
+└────────┴─────────────┴──────────┴────────────────────────┴────────────────────┴───────────┴─────────┘
 ```
 
 With `id_column`, every finding carries the customer key, so it joins back to the table:
@@ -886,6 +998,9 @@ On a build with OpenVINO, after the model has been loaded, it reports `true`, `L
   Where a NER match overlaps a pattern-based match (an IBAN, a card number, an email address, ...),
   the pattern-based match wins, so a guess like `IBAN DE` cannot leave the account number
   unmasked.
+- **Codes.** A NER match that is only an ISO 3166-1 country code or ISO 4217 currency code in
+  capitals (`DE`, `GB`, `EUR`, `USD`) is dropped: the model tags such codes in master data as
+  organizations, and on their own they identify nobody.
 - **Confidence.** NER matches below 0.7 are never reported. `anofox_pii_min_confidence`
   (default 0.5) filters on top of that.
 - **Limits.** Input is truncated at 512 tokens, so entities after that are not found; the first

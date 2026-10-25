@@ -107,11 +107,13 @@ There are 17 checks. You can also store many checks in a table and run them with
 
 ## Find PII
 
-`pii_scan_table` reports which columns contain personal data:
+`pii_scan_table` reports which columns contain personal data (and, with a `NULL` `pii_type`, the
+columns where it found none):
 
 ```sql
 SELECT column_name, pii_type, match_count
 FROM pii_scan_table('orders')
+WHERE pii_type IS NOT NULL
 ORDER BY column_name, pii_type;
 ```
 

@@ -5,6 +5,7 @@
 **Use this guide to:**
 - Find which columns of a table contain PII
 - Inspect each finding with the key of its row
+- Prove which columns a scan covered
 - Mask PII for an export, with the strategy that fits each column
 - Restrict detection to the types you care about
 - Run without network access
@@ -23,11 +24,11 @@ LOAD anofox_tabular;
 ```sql
 CREATE TABLE customers AS
 SELECT * FROM (VALUES
-    (101, 'anna@example.com', '123-45-6789', '4111 1111 1111 1111', 'Call me on +1 (415) 555-1234'),
-    (102, 'bob@example.org',  NULL,          NULL,                  'No contact details here'),
-    (103, 'not an email',     '219-09-9999', NULL,                  'Wire to DE89370400440532013000'),
-    (104, 'carol@example.net', NULL,         '5500 0000 0000 0004', 'Server 192.168.1.20 is down')
-) t(customer_id, email, ssn, card, note);
+    (101, 'Anna',  'anna@example.com',  '123-45-6789', '4111 1111 1111 1111', '01511234567', DATE '2024-02-01', 'B2C', 'Call me on +1 (415) 555-1234'),
+    (102, 'Li',    'bob@example.org',   NULL,          NULL,                  NULL,          DATE '2024-05-17', 'B2B', 'No contact details here'),
+    (103, 'Bo',    'not an email',      '219-09-9999', NULL,                  '030 1234567', DATE '2025-01-09', 'B2C', 'Wire to DE89370400440532013000'),
+    (104, 'Carol', 'carol@example.net', NULL,          '5500 0000 0000 0004', NULL,          DATE '2025-03-30', 'B2B', 'Server 192.168.1.20 is down')
+) t(customer_id, first_name, email, ssn, card, phone, signup_date, segment, note);
 ```
 
 ## 2. Find the PII columns
@@ -37,6 +38,7 @@ SELECT * FROM (VALUES
 ```sql
 SELECT column_name, pii_type, match_count
 FROM pii_scan_table('customers')
+WHERE pii_type IS NOT NULL
 ORDER BY column_name, pii_type;
 ```
 
@@ -47,9 +49,11 @@ ORDER BY column_name, pii_type;
 ├─────────────┼─────────────┼─────────────┤
 │ card        │ CREDIT_CARD │           2 │
 │ email       │ EMAIL       │           3 │
+│ first_name  │ NAME        │           2 │
 │ note        │ IBAN        │           1 │
 │ note        │ IP_ADDRESS  │           1 │
 │ note        │ PHONE       │           1 │
+│ phone       │ PHONE       │           1 │
 │ ssn         │ US_SSN      │           2 │
 └─────────────┴─────────────┴─────────────┘
 ```
@@ -59,6 +63,47 @@ care.
 
 The scan also returns `sample_values`, up to five matched values per row. They are raw PII, so
 keep the scan result as protected as the table.
+
+### Prove what the scan covered
+
+Without the `WHERE` clause the scan accounts for every column: `status` says whether a column was
+scanned and found to hold PII (`scanned`), scanned without a match (`no_match`) or not scanned
+because it is not `VARCHAR` (`skipped (INTEGER)`, `skipped (DATE)`). `values_scanned` counts the
+non-`NULL` values that were checked:
+
+```sql
+SELECT column_name, pii_type, match_count, values_scanned, status
+FROM pii_scan_table('customers');
+```
+
+```text
+┌─────────────┬─────────────┬─────────────┬────────────────┬───────────────────┐
+│ column_name │  pii_type   │ match_count │ values_scanned │      status       │
+│   varchar   │   varchar   │    int64    │     int64      │      varchar      │
+├─────────────┼─────────────┼─────────────┼────────────────┼───────────────────┤
+│ customer_id │ NULL        │           0 │              0 │ skipped (INTEGER) │
+│ first_name  │ NAME        │           2 │              4 │ scanned           │
+│ email       │ EMAIL       │           3 │              4 │ scanned           │
+│ ssn         │ US_SSN      │           2 │              2 │ scanned           │
+│ card        │ CREDIT_CARD │           2 │              2 │ scanned           │
+│ phone       │ PHONE       │           1 │              2 │ scanned           │
+│ signup_date │ NULL        │           0 │              0 │ skipped (DATE)    │
+│ segment     │ NULL        │           0 │              4 │ no_match          │
+│ note        │ IBAN        │           1 │              4 │ scanned           │
+│ note        │ IP_ADDRESS  │           1 │              4 │ scanned           │
+│ note        │ PHONE       │           1 │              4 │ scanned           │
+└─────────────┴─────────────┴─────────────┴────────────────┴───────────────────┘
+  11 rows                                                            5 columns
+```
+
+This is the record to keep for an audit: every column of the table is listed. Name a skipped
+column in the `columns` argument to scan it as text.
+
+A count below `values_scanned`, or `no_match`, means that detection found nothing in the other
+values, not that they are free of personal data. `first_name` holds four names, but `Li` and `Bo`
+are too short for the NER model, and `phone` holds `01511234567`, a number without a separator
+that the phone pattern does not match. Columns like these are masked by what you know about them,
+not by detection (step 4).
 
 ## 3. Inspect the findings row by row
 
@@ -78,16 +123,19 @@ ORDER BY customer_id, column_name;
 ├─────────────┼─────────────┼─────────────┼────────────────────────────────┤
 │         101 │ card        │ CREDIT_CARD │ 4111 1111 1111 1111            │
 │         101 │ email       │ EMAIL       │ anna@example.com               │
+│         101 │ first_name  │ NAME        │ Anna                           │
 │         101 │ note        │ PHONE       │ Call me on +1 (415) 555-1234   │
 │         101 │ ssn         │ US_SSN      │ 123-45-6789                    │
 │         102 │ email       │ EMAIL       │ bob@example.org                │
 │         103 │ note        │ IBAN        │ Wire to DE89370400440532013000 │
+│         103 │ phone       │ PHONE       │ 030 1234567                    │
 │         103 │ ssn         │ US_SSN      │ 219-09-9999                    │
 │         104 │ card        │ CREDIT_CARD │ 5500 0000 0000 0004            │
 │         104 │ email       │ EMAIL       │ carol@example.net              │
+│         104 │ first_name  │ NAME        │ Carol                          │
 │         104 │ note        │ IP_ADDRESS  │ Server 192.168.1.20 is down    │
 └─────────────┴─────────────┴─────────────┴────────────────────────────────┘
-  10 rows                                                        4 columns
+  13 rows                                                        4 columns
 ```
 
 `original_value` is the unmasked cell: the audit result holds the PII it reports. Share
@@ -107,24 +155,32 @@ ORDER BY findings DESC, customer_id;
 │ customer_id │ findings │
 │    int32    │  int64   │
 ├─────────────┼──────────┤
-│         101 │        4 │
-│         104 │        3 │
-│         103 │        2 │
+│         101 │        5 │
+│         104 │        4 │
+│         103 │        3 │
 │         102 │        1 │
 └─────────────┴──────────┘
 ```
 
 ## 4. Mask the data for an export
 
-Pick a strategy per column. Here the email domain stays readable, the SSN keeps its last four
-digits, the card number is hashed so equal cards still match, and the free text is redacted:
+Pick a strategy per column. Columns that are known to hold one kind of PII are masked with
+`pii_mask_value`: it masks every non-`NULL` value as the given type, whether detection finds it
+or not, so `Li` and `01511234567` are masked too. Free text, where you do not know what is in
+it, goes through detection with `pii_mask`.
+
+Here the first name is redacted, the email keeps its first character and top-level domain, the
+SSN its last four digits, the card number and phone number are hashed so equal values still
+match, and the free text is redacted:
 
 ```sql
 CREATE TABLE customers_export AS
 SELECT customer_id,
-       pii_mask_column(email, 'EMAIL', 'partial')     AS email,
-       pii_mask_column(ssn, 'US_SSN', 'partial')      AS ssn,
-       pii_mask_column(card, 'CREDIT_CARD', 'hash')   AS card,
+       pii_mask_value(first_name, 'NAME', 'redact')   AS first_name,
+       pii_mask_value(email, 'EMAIL', 'partial')      AS email,
+       pii_mask_value(ssn, 'US_SSN', 'partial')       AS ssn,
+       pii_mask_value(card, 'CREDIT_CARD', 'hash')    AS card,
+       pii_mask_value(phone, 'PHONE', 'hash')         AS phone,
        pii_mask(note, 'redact')                       AS note
 FROM customers;
 
@@ -132,38 +188,43 @@ SELECT * FROM customers_export ORDER BY customer_id;
 ```
 
 ```text
-┌─────────────┬───────────────────┬─────────────┬──────────────────┬─────────────────────────────┐
-│ customer_id │       email       │     ssn     │       card       │            note             │
-│    int32    │      varchar      │   varchar   │     varchar      │           varchar           │
-├─────────────┼───────────────────┼─────────────┼──────────────────┼─────────────────────────────┤
-│         101 │ an**@example.com  │ ***-**-6789 │ 9bbef19476623ca5 │ Call me on [PHONE]          │
-│         102 │ bo*@example.org   │ NULL        │ NULL             │ No contact details here     │
-│         103 │ not an email      │ ***-**-9999 │ NULL             │ Wire to [IBAN]              │
-│         104 │ ca***@example.net │ NULL        │ dd1ed74bd626c6fa │ Server [IP_ADDRESS] is down │
-└─────────────┴───────────────────┴─────────────┴──────────────────┴─────────────────────────────┘
+┌─────────────┬────────────┬───────────────────┬─────────────┬──────────────────┬──────────────────┬─────────────────────────────┐
+│ customer_id │ first_name │       email       │     ssn     │       card       │      phone       │            note             │
+│    int32    │  varchar   │      varchar      │   varchar   │     varchar      │     varchar      │           varchar           │
+├─────────────┼────────────┼───────────────────┼─────────────┼──────────────────┼──────────────────┼─────────────────────────────┤
+│         101 │ [NAME]     │ a***@*******.com  │ ***-**-6789 │ 9bbef19476623ca5 │ 2d27d42a5cd7c21f │ Call me on [PHONE]          │
+│         102 │ [NAME]     │ b**@*******.org   │ NULL        │ NULL             │ NULL             │ No contact details here     │
+│         103 │ [NAME]     │ ************      │ ***-**-9999 │ NULL             │ 27423fa11f870569 │ Wire to [IBAN]              │
+│         104 │ [NAME]     │ c****@*******.net │ NULL        │ dd1ed74bd626c6fa │ NULL             │ Server [IP_ADDRESS] is down │
+└─────────────┴────────────┴───────────────────┴─────────────┴──────────────────┴──────────────────┴─────────────────────────────┘
 ```
+
+`email` of customer 103 is `not an email`: `pii_mask_value` masks it anyway, because the column
+is declared to hold email addresses. Use `pii_mask_column` instead where only detected values
+should change.
 
 Check what is left. Scan the export again:
 
 ```sql
 SELECT column_name, pii_type, match_count, sample_values
 FROM pii_scan_table('customers_export')
+WHERE pii_type IS NOT NULL
 ORDER BY column_name, pii_type;
 ```
 
 ```text
-┌─────────────┬──────────────┬─────────────┬────────────────────────────────────────────────────────┐
-│ column_name │   pii_type   │ match_count │                     sample_values                      │
-│   varchar   │   varchar    │    int64    │                       varchar[]                        │
-├─────────────┼──────────────┼─────────────┼────────────────────────────────────────────────────────┤
-│ email       │ EMAIL        │           3 │ [an**@example.com, bo*@example.org, ca***@example.net] │
-│ note        │ ORGANIZATION │           1 │ [IP_ADDRESS]                                           │
-└─────────────┴──────────────┴─────────────┴────────────────────────────────────────────────────────┘
+┌─────────────┬──────────────┬─────────────┬───────────────┐
+│ column_name │   pii_type   │ match_count │ sample_values │
+│   varchar   │   varchar    │    int64    │   varchar[]   │
+├─────────────┼──────────────┼─────────────┼───────────────┤
+│ note        │ ORGANIZATION │           1 │ [IP_ADDRESS]  │
+└─────────────┴──────────────┴─────────────┴───────────────┘
 ```
 
-The partially masked emails still look like email addresses, so the scan still reports them.
-That is expected for `partial`. Use `redact` or `hash` for columns that must not match any PII
-pattern after export.
+The re-scan only confirms that what detection finds was masked. It cannot show that values
+detection never found are gone: had `first_name` and `phone` been masked with `pii_mask_column`,
+`Li`, `Bo` and `01511234567` would still be in the export and this scan would not report them.
+Mask columns that are known to hold PII with `pii_mask_value`.
 
 The `ORGANIZATION` row comes from the NER model, which reads the label `[IP_ADDRESS]` as an
 organization name. NER results are statistical, so review them before you act on them. The
@@ -190,6 +251,7 @@ SET anofox_pii_enabled_types = 'EMAIL,US_SSN';
 
 SELECT column_name, pii_type, match_count
 FROM pii_scan_table('customers')
+WHERE pii_type IS NOT NULL
 ORDER BY column_name, pii_type;
 ```
 
