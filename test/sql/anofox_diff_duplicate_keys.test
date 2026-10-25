@@ -136,3 +136,25 @@ query I
 SELECT COUNT(*) FROM diff_joindiff('dk_empty', 'dk_empty', 'id', include_all := true)
 ----
 0
+
+# When both tables repeat a key, the error always names the source table first
+# (the two checks used to race, so the message named either side)
+statement ok
+CREATE TABLE dk_both_s AS SELECT i % 7 AS id, i AS v FROM range(1000) t(i)
+
+statement ok
+CREATE TABLE dk_both_t AS SELECT i % 5 AS id, i AS v FROM range(1000) t(i)
+
+loop i 0 25
+
+statement error
+SELECT * FROM diff_joindiff('dk_both_s', 'dk_both_t', 'id')
+----
+diff_joindiff: primary key is not unique in source table 'dk_both_s' (id = 0 appears 143 times)
+
+statement error
+SELECT * FROM diff_hashdiff('dk_both_t', 'dk_both_s', 'id')
+----
+diff_hashdiff: primary key is not unique in source table 'dk_both_t' (id = 0 appears 200 times)
+
+endloop

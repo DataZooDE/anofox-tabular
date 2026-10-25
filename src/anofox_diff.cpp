@@ -261,14 +261,18 @@ static DiffArguments ResolveDiffArguments(const string &function_name, const Tab
 
 // A diff needs a unique primary key on both sides: with a repeated key every
 // source row joins every target row of that key and the diff reports false
-// changes. The guard is a filter on one side of the join whose uncorrelated
-// scalar subquery looks for one repeated key (GROUP BY groups NULLs together,
-// matching the NULL-safe join) and raises an error() naming it; without a
-// repeated key it is NULL and the filter keeps every row. It runs inside the
-// diff query itself, so it sees everything the diff sees (TEMP tables, views,
-// uncommitted rows); the cost is one GROUP BY over the key per table.
-static string BuildUniqueKeyGuard(const string &function_name, const string &table_name, const string &side,
-                                  const vector<string> &primary_keys) {
+// changes. The guard is a filter on each side of the join whose uncorrelated
+// scalar subquery looks for one repeated key per table (GROUP BY groups NULLs
+// together, matching the NULL-safe join) and raises an error() naming it;
+// without a repeated key it is NULL and the filter keeps every row. Both
+// tables are checked in one subquery that prefers the source table and the
+// smallest key, and error() runs only on that single row, so the message is
+// the same on every run (two separate guards raced and named either table).
+// It runs inside the diff query itself, so it sees everything the diff sees
+// (TEMP tables, views, uncommitted rows); the cost is one GROUP BY over the
+// key per table.
+static string BuildRepeatedKeyMessages(const string &function_name, const string &table_name, const string &side,
+                                       int side_order, const vector<string> &primary_keys) {
 	string key_cols;
 	string key_desc = "''";
 	for (size_t i = 0; i < primary_keys.size(); i++) {
@@ -278,9 +282,18 @@ static string BuildUniqueKeyGuard(const string &function_name, const string &tab
 		            " = ' || COALESCE(CAST(" + col + " AS VARCHAR), 'NULL')";
 	}
 	string prefix = function_name + ": primary key is not unique in " + side + " table '" + table_name + "' (";
-	return "(SELECT error('" + EscapeSqlStringLiteral(prefix) + "' || " + key_desc +
-	       " || ' appears ' || CAST(COUNT(*) AS VARCHAR) || ' times)') FROM " + BuildQueryTableRef(table_name) +
-	       " GROUP BY " + key_cols + " HAVING COUNT(*) > 1 ORDER BY " + key_cols + " LIMIT 1) IS NULL";
+	return "(SELECT " + std::to_string(side_order) + " AS side, '" + EscapeSqlStringLiteral(prefix) + "' || " +
+	       key_desc + " || ' appears ' || CAST(COUNT(*) AS VARCHAR) || ' times)' AS msg FROM " +
+	       BuildQueryTableRef(table_name) + " GROUP BY " + key_cols + " HAVING COUNT(*) > 1 ORDER BY " + key_cols +
+	       " LIMIT 1)";
+}
+
+static string BuildUniqueKeyGuard(const string &function_name, const string &source_table,
+                                  const string &target_table, const vector<string> &primary_keys) {
+	return "(SELECT error(msg) FROM (SELECT msg FROM (" +
+	       BuildRepeatedKeyMessages(function_name, source_table, "source", 0, primary_keys) + " UNION ALL " +
+	       BuildRepeatedKeyMessages(function_name, target_table, "target", 1, primary_keys) +
+	       ") ORDER BY side LIMIT 1)) IS NULL";
 }
 
 static string GenerateJoinDiffSQL(const string &function_name, const string &source_table,
@@ -343,10 +356,10 @@ static string GenerateJoinDiffSQL(const string &function_name, const string &sou
 	// through query_table() so hostile and schema-qualified names are handled
 	// by the shared quoting helpers
 	sql += " FROM (SELECT true AS " + string(SOURCE_PRESENT_MARKER) + ", * FROM " + BuildQueryTableRef(source_table) +
-	       " WHERE " + BuildUniqueKeyGuard(function_name, source_table, "source", primary_keys) + ") s ";
+	       " WHERE " + BuildUniqueKeyGuard(function_name, source_table, target_table, primary_keys) + ") s ";
 	sql += "FULL OUTER JOIN (SELECT true AS " + string(TARGET_PRESENT_MARKER) + ", * FROM " +
 	       BuildQueryTableRef(target_table) + " WHERE " +
-	       BuildUniqueKeyGuard(function_name, target_table, "target", primary_keys) + ") t ";
+	       BuildUniqueKeyGuard(function_name, source_table, target_table, primary_keys) + ") t ";
 	sql += "ON " + pk_join_condition;
 
 	if (!include_all) {
