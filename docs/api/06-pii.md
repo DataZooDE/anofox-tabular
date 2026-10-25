@@ -52,13 +52,13 @@ NER types need the NER model.
 | `EMAIL` | Email addresses, also with non-ASCII letters (`jörg.k@müller-gmbh.de`) | pattern |
 | `PHONE` | International numbers with a `+` or `00` prefix (`+49 (0) 221 4711-0`, `0049 171 1234567`), national numbers with an area code and a space, dash or slash (`0171 1234567`, `089/12345678`, `(089) 123 456 78`) and US `(555) 123-4567`; 7 to 15 digits, starting after whitespace, `:` or `(` | pattern |
 | `CREDIT_CARD` | Visa, Mastercard, Amex and Discover numbers | pattern + Luhn checksum |
-| `US_SSN` | US Social Security Numbers `XXX-XX-XXXX` | pattern + area validation |
+| `US_SSN` | US Social Security Numbers `XXX-XX-XXXX` or `XXX XX XXXX`; bare 9-digit numbers are not matched | pattern + area validation |
 | `IBAN` | International Bank Account Numbers, compact or in groups of four separated by single spaces or dashes (`DE89 3704 0044 0532 0130 00`) | pattern + MOD-97 checksum |
 | `IP_ADDRESS` | IPv4 and IPv6 addresses | pattern |
 | `URL` | HTTP and HTTPS URLs | pattern |
 | `MAC_ADDRESS` | MAC addresses with colons, hyphens or dots; without separators only a standalone 12-character hex token with at least one letter A-F and one digit | pattern |
 | `UK_NINO` | UK National Insurance Numbers | pattern |
-| `US_PASSPORT` | 9 digits, or a letter and 8 digits | pattern |
+| `US_PASSPORT` | A letter and 8 digits (`C12345678`) | pattern |
 | `DE_TAX_ID` | German tax ID (Steueridentifikationsnummer, 11 digits) | pattern + checksum |
 | `API_KEY` | AWS and GitHub tokens, high-entropy strings | pattern + entropy |
 | `CRYPTO_ADDRESS` | Bitcoin (P2PKH, P2SH, SegWit) and Ethereum addresses | pattern + checksum where available |
@@ -67,8 +67,8 @@ NER types need the NER model.
 | `LOCATION` | Places | NER only |
 | `MISC` | Other named entities | NER only |
 
-`US_PASSPORT` matches any 9-digit sequence and has no checksum, so it can also match invoice or
-order numbers.
+Detection skips a bare 9-digit number such as `123456789`. It is neither a `US_SSN` nor a
+`US_PASSPORT`, because contract, order and claim numbers have the same shape.
 
 ## Masking strategies
 
@@ -705,7 +705,7 @@ SELECT pii_type, recognizer_name, pattern_info FROM pii_status() ORDER BY pii_ty
 │ PHONE          │ Phone           │ International (+XX, 00XX) and national (0XX) formats   │
 │ UK_NINO        │ UK NINO         │ UK National Insurance Number format                    │
 │ URL            │ URL             │ HTTP/HTTPS URLs                                        │
-│ US_PASSPORT    │ US Passport     │ 9 digits or letter + 8 digits                          │
+│ US_PASSPORT    │ US Passport     │ Letter + 8 digits                                      │
 │ US_SSN         │ US SSN          │ XXX-XX-XXXX format with area validation                │
 └────────────────┴─────────────────┴────────────────────────────────────────────────────────┘
   17 rows                                                                         3 columns

@@ -440,11 +440,11 @@ SELECT list_contains(list_transform(pii_detect('123-45-6789'), lambda x: x.type)
 ----
 true
 
-# Without dashes
+# Without separators a 9-digit number is not reported (reference numbers look the same)
 query I
 SELECT list_contains(list_transform(pii_detect('123456789'), lambda x: x.type), 'US_SSN');
 ----
-true
+false
 
 # With spaces
 query I
@@ -1011,12 +1011,12 @@ true
 
 # --- Valid Passport Formats ---
 
-# Current format (9 digits). Note: a 9-digit number that also forms a valid
-# SSN is reported as US_SSN by overlap resolution, so use a 9xx number here.
+# Bare 9-digit numbers are not reported: without a checksum they cannot be told
+# apart from contract, order or claim numbers.
 query I
 SELECT list_contains(list_transform(pii_detect('Passport: 987654321'), lambda x: x.type), 'US_PASSPORT');
 ----
-true
+false
 
 # Legacy format (letter + 8 digits)
 query I

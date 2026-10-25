@@ -227,5 +227,26 @@ SELECT pii_mask('Mail an jörg.k@example.com', 'partial');
 ----
 Mail an jö****@example.com
 
+# ============================================================================
+# US_SSN and US_PASSPORT: no bare 9-digit numbers
+# ============================================================================
+
+query T
+SELECT array_to_string(list_transform(pii_detect('Vertragsnummer 123456789, Schadennummer 987654321'), lambda x: x.type || ':' || x.text), '; ');
+----
+(empty)
+
+query T
+SELECT array_to_string(list_transform(pii_detect(s), lambda x: x.type || ':' || x.text), '; ')
+FROM (VALUES
+    (1, 'SSN 123-45-6789'),
+    (2, 'SSN 123 45 6789'),
+    (3, 'Passport C12345678')
+) t(i, s) ORDER BY i;
+----
+US_SSN:123-45-6789
+US_SSN:123 45 6789
+US_PASSPORT:C12345678
+
 statement ok
 SET anofox_pii_enabled_types = '';

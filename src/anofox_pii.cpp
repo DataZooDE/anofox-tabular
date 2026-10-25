@@ -544,8 +544,9 @@ USSSNRecognizer::USSSNRecognizer()
     : RegexRecognizer(
         PIIType::US_SSN,
         "US SSN",
-        // Matches XXX-XX-XXXX or XXXXXXXXX
-        R"(\b(?!000|666|9\d{2})([0-8]\d{2}|7([0-6]\d|7[012]))([\-\s]?)(?!00)\d{2}\3(?!0000)\d{4}\b)"
+        // Matches XXX-XX-XXXX or XXX XX XXXX. Bare 9-digit numbers are left
+        // out: contract, order and claim numbers look the same.
+        R"(\b(?!000|666|9\d{2})([0-8]\d{2}|7([0-6]\d|7[012]))([\- ])(?!00)\d{2}\3(?!0000)\d{4}\b)"
     ) {}
 
 USSSNRecognizer::~USSSNRecognizer() {}
@@ -1023,8 +1024,10 @@ USPassportRecognizer::USPassportRecognizer()
     : RegexRecognizer(
         PIIType::US_PASSPORT,
         "US Passport",
-        // Matches: 9 digits (current) or 1 letter + 8 digits (legacy)
-        R"(\b(?:[A-Z]\d{8}|\d{9})\b)"
+        // Matches 1 letter + 8 digits. Bare 9-digit passport numbers are not
+        // matched: without a checksum they are indistinguishable from any
+        // other 9-digit reference number.
+        R"(\b[A-Z]\d{8}\b)"
     ) {}
 
 USPassportRecognizer::~USPassportRecognizer() {
@@ -2697,7 +2700,7 @@ void PIIStatusFunction(ClientContext &, TableFunctionInput &input, DataChunk &ou
 #else
         {PIIType::NAME, "Dictionary-based name detection (200+ first names)"},
 #endif
-        {PIIType::US_PASSPORT, "9 digits or letter + 8 digits"},
+        {PIIType::US_PASSPORT, "Letter + 8 digits"},
         {PIIType::CRYPTO_ADDRESS, "Bitcoin (P2PKH/P2SH/SegWit) and Ethereum"},
         {PIIType::UK_NINO, "UK National Insurance Number format"},
         {PIIType::MAC_ADDRESS, "Colon/hyphen/dot formats; bare hex needs letter+digit"},
