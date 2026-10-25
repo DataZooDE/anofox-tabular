@@ -126,6 +126,41 @@ std::string MaskWordKeepingPrefix(const std::string &word, size_t keep) {
     }
     return Utf8Prefix(word, keep) + std::string(length - keep, '*');
 }
+
+// Canonical form of a matched value for the HASH strategy, so differently
+// formatted copies of one value (4111 1111 1111 1111 / 4111-1111-1111-1111)
+// hash alike: separators (space, dash, dot, slash, parentheses) are removed
+// from numeric identifiers, IBAN and UK NINO are upper-cased, e-mail
+// addresses are lower-cased. Other types are hashed as matched.
+std::string NormalizeForHash(PIIType type, const std::string &text) {
+    switch (type) {
+    case PIIType::PHONE:
+    case PIIType::CREDIT_CARD:
+    case PIIType::US_SSN:
+    case PIIType::DE_TAX_ID:
+    case PIIType::IBAN:
+    case PIIType::UK_NINO: {
+        const bool upper = type == PIIType::IBAN || type == PIIType::UK_NINO;
+        std::string normalized;
+        normalized.reserve(text.size());
+        for (char c : text) {
+            if (std::isspace(static_cast<unsigned char>(c)) || c == '-' || c == '.' || c == '/' ||
+                c == '(' || c == ')') {
+                continue;
+            }
+            normalized += upper ? static_cast<char>(std::toupper(static_cast<unsigned char>(c))) : c;
+        }
+        return normalized;
+    }
+    case PIIType::EMAIL: {
+        std::string normalized = StringUtil::Lower(text);
+        StringUtil::Trim(normalized);
+        return normalized;
+    }
+    default:
+        return text;
+    }
+}
 } // anonymous namespace
 
 // ============================================================================
@@ -1882,12 +1917,15 @@ std::string PIIEngine::ApplyMask(const PIIMatch &match, MaskStrategy strategy) c
             return "[" + PIITypeToString(match.type) + "]";
 
         case MaskStrategy::HASH: {
-            // SHA-256 hash, truncated to first 8 chars
+            // Pseudonym: the first 16 hex characters (64 bits) of the unsalted
+            // SHA-256 of the normalised value, so equal values join across
+            // formats. Not anonymisation: small value spaces (phone numbers,
+            // card numbers) can be brute-forced back to the value.
+            const std::string normalized = NormalizeForHash(match.type, match.matched_text);
             unsigned char hash[SHA256_DIGEST_LENGTH];
-            SHA256(reinterpret_cast<const unsigned char*>(match.matched_text.c_str()),
-                   match.matched_text.length(), hash);
+            SHA256(reinterpret_cast<const unsigned char*>(normalized.data()), normalized.size(), hash);
             std::ostringstream oss;
-            for (int i = 0; i < 4; ++i) {
+            for (int i = 0; i < 8; ++i) {
                 oss << std::hex << std::setfill('0') << std::setw(2) << static_cast<int>(hash[i]);
             }
             return oss.str();

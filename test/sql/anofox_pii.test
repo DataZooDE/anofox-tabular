@@ -1546,9 +1546,9 @@ SELECT pii_mask_column('Card: 4111111111111111', 'CREDIT_CARD', 'asterisk');
 ----
 Card: ****************
 
-# Type-specific masking with HASH strategy (8 hex chars)
+# Type-specific masking with HASH strategy (16 hex chars)
 query I
-SELECT regexp_matches(pii_mask_column('SSN: 123-45-6789', 'US_SSN', 'hash'), '[0-9a-f]{8}');
+SELECT regexp_matches(pii_mask_column('SSN: 123-45-6789', 'US_SSN', 'hash'), '[0-9a-f]{16}');
 ----
 true
 
@@ -1620,9 +1620,9 @@ SELECT pii_redact_column('SSN: 123-45-6789', 'partial');
 ----
 SSN: ***-**-6789
 
-# All PII with hash strategy (8 hex chars)
+# All PII with hash strategy (16 hex chars)
 query I
-SELECT regexp_matches(pii_redact_column('Email: test@test.com', 'hash'), '[0-9a-f]{8}');
+SELECT regexp_matches(pii_redact_column('Email: test@test.com', 'hash'), '[0-9a-f]{16}');
 ----
 true
 

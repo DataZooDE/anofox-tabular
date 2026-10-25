@@ -135,7 +135,7 @@ true
 
 # Hash masking produces hex
 query I
-SELECT regexp_matches(pii_mask('test@example.com', 'hash'), '^[0-9a-f]{8}$');
+SELECT regexp_matches(pii_mask('test@example.com', 'hash'), '^[0-9a-f]{16}$');
 ----
 true
 
