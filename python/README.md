@@ -75,7 +75,9 @@ print(validate.phone_is_valid(conn, "+14155552671", region="US"))     # True
 print(validate.phone_format(conn, "+14155552671", "US", "INTERNATIONAL"))
 phones = pd.DataFrame({"phone": ["4155552671", "01 42 68 53 00"], "country": ["US", "FR"]})
 print(validate.phone_is_valid(conn, phones, column="phone", region_column="country"))
-# region_column: the region of each row (instead of one region= for all rows)
+# region_column: the region of each row (instead of one region= for all rows).
+# Without region= the setting anofox_tab_phonenumber_default_region applies (US by default).
+print(validate.phone_format(conn, "12", "US"))                        # None: cannot be parsed
 
 # ── Data quality ──────────────────────────────────────────────────────
 print(quality.volume(conn, "orders", min_rows=100))
@@ -115,7 +117,7 @@ print(result.failures)    # DataFrame: column, row_id, value, rule
   or a table name gives pandas. A Series is not a DataFrame and raises `TypeError`: pass
   `series.to_frame()` (with `column=series.name` for the row-wise helpers).
 - **Row-wise results** (`email_is_valid`, `email_validate`, `phone_is_valid`, `phone_parse`,
-  `pii_detect`, `pii_mask` with `column=`) are a copy of the input plus one column. They keep
+  `phone_format`, `phone_region`, `pii_detect`, `pii_mask` with `column=`) are a copy of the input plus one column. They keep
   the input's index (pandas) and row order, so `df["ok"] = ...["email_is_valid"]` lines up.
 - **Table functions** (`anofox.quality`, `anofox.anomaly`, `anofox.profile`, `anofox.diff`,
   `pii_scan_table`, `pii_audit_table`, `conn.profile`, `conn.quality_check`) take a table name

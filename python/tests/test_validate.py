@@ -203,3 +203,81 @@ class TestPhoneRegionColumn:
         from anofox.validate import phone_is_valid
         out = phone_is_valid(conn, self._df(), column="phone")
         assert out["phone_is_valid"].tolist() == [True, False, True]
+
+
+def _customers():
+    import pandas as pd
+    return pd.DataFrame({
+        "customer_id": [1001, 1002, 1003, 1004],
+        "phone": ["030 901820", "(650) 253-0000", "01 42 68 53 00", "12"],
+        "country": ["DE", "US", "FR", "DE"],
+    }, index=[11, 7, 3, 5])
+
+
+class _DefaultRegion:
+    """Set anofox_tab_phonenumber_default_region for the block, then reset it."""
+
+    def __init__(self, conn, region):
+        self.conn, self.region = conn, region
+
+    def __enter__(self):
+        self.conn.execute(f"SET anofox_tab_phonenumber_default_region = '{self.region}'")
+        self.conn.complete()
+
+    def __exit__(self, *exc):
+        self.conn.execute("RESET anofox_tab_phonenumber_default_region")
+        self.conn.complete()
+
+
+class TestPhoneFormatApi:
+    def test_unparsable_number_is_none(self, conn):
+        from anofox.validate import phone_format
+        assert phone_format(conn, "12", "DE") is None
+
+    def test_region_and_format(self, conn):
+        from anofox.validate import phone_format
+        assert phone_format(conn, "030 901820", "DE", "INTERNATIONAL") == "+49 30 901820"
+        assert phone_format(conn, "030 901820", region="DE", fmt="RFC3966") == "tel:+49-30-901820"
+
+    def test_default_region_setting_applies(self, conn):
+        from anofox.validate import phone_format, phone_is_valid, phone_region
+        with _DefaultRegion(conn, "DE"):
+            assert phone_format(conn, "030 901820") == "+4930901820"
+            assert phone_is_valid(conn, "030 901820") is True
+            assert phone_region(conn, "030 901820") == "DE"
+
+    def test_dataframe_region_column(self, conn):
+        from anofox.validate import phone_format
+        df = _customers()
+        out = phone_format(conn, df, fmt="INTERNATIONAL", column="phone", region_column="country")
+        assert out.index.tolist() == [11, 7, 3, 5]
+        assert out["phone_format"].tolist()[:3] == ["+49 30 901820", "+1 650 253 0000", "+33 1 42 68 53 00"]
+        assert out["phone_format"].isna().tolist() == [False, False, False, True]
+        assert out["phone"].tolist() == df["phone"].tolist()
+
+    def test_dataframe_one_region(self, conn):
+        from anofox.validate import phone_format
+        df = _customers().head(1)
+        out = phone_format(conn, df, region="DE", column="phone")
+        assert out["phone_format"].tolist() == ["+4930901820"]
+
+    def test_polars(self, conn):
+        pl = pytest.importorskip("polars")
+        from anofox.validate import phone_format
+        df = pl.from_pandas(_customers())
+        out = phone_format(conn, df, column="phone", region_column="country")
+        assert isinstance(out, pl.DataFrame)
+        assert out["phone_format"].to_list() == ["+4930901820", "+16502530000", "+33142685300", None]
+
+
+class TestPhoneRegionApi:
+    def test_unparsable_number_is_none(self, conn):
+        from anofox.validate import phone_region
+        assert phone_region(conn, "12", "DE") is None
+
+    def test_dataframe(self, conn):
+        from anofox.validate import phone_region
+        out = phone_region(conn, _customers(), column="phone", region_column="country")
+        assert out.index.tolist() == [11, 7, 3, 5]
+        assert out["phone_region"].tolist()[:3] == ["DE", "US", "FR"]
+        assert out["phone_region"].isna().tolist()[3]

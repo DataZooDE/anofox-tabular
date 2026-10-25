@@ -45,7 +45,8 @@ class TestScalarValues:
         assert validate.phone_is_valid(conn, "+1 415' 555 2671", region="US") in (True, False)
         assert isinstance(validate.phone_parse(conn, "it's 4155552671"), dict)
         assert isinstance(validate.phone_format(conn, "+14155552671", "US", "E164"), str)
-        assert isinstance(validate.phone_region(conn, "+1 '415", "US"), str)
+        # Unparsable: the value reached the extension and came back as NULL.
+        assert validate.phone_region(conn, "+1 '415", "US") is None
 
     def test_mode_is_bound_not_pasted(self, conn):
         from anofox import validate

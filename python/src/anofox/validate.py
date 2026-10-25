@@ -144,7 +144,8 @@ def phone_is_valid(
         A single phone string or a DataFrame.
     region:
         ISO 3166-1 alpha-2 region code used for every value, e.g. ``"DE"``.
-        Defaults to ``"US"`` when neither *region* nor *region_column* is given.
+        Default ``None``: the setting ``anofox_tab_phonenumber_default_region``
+        applies (``US`` unless changed).
     column:
         Column name when a DataFrame is passed.
     region_column:
@@ -181,8 +182,8 @@ def phone_parse(
     phone_or_df:
         A single phone string or a DataFrame.
     region:
-        Region hint for parsing every value, e.g. ``"DE"``. Defaults to
-        ``"US"`` when neither *region* nor *region_column* is given.
+        Region hint for parsing every value, e.g. ``"DE"``. Default ``None``:
+        the setting ``anofox_tab_phonenumber_default_region`` applies.
     column:
         Column name when a DataFrame is passed.
     region_column:
@@ -212,58 +213,103 @@ def phone_parse(
 
 def phone_format(
     conn: Any,
-    phone: str,
-    region: str = "US",
+    phone_or_df: Union[str, Any],
+    region: Optional[str] = None,
     fmt: str = "E164",
-) -> str:
+    column: Optional[str] = None,
+    region_column: Optional[str] = None,
+) -> Union[Optional[str], Any]:
     """
-    Format a phone number string.
+    Format a phone number, like SQL ``phonenumber_format(phone, region, format)``.
 
     Parameters
     ----------
     conn:
         An :class:`~anofox.AnofoxConnection`.
-    phone:
-        Phone number string.
+    phone_or_df:
+        A single phone string or a pandas/polars DataFrame.
     region:
-        Default region hint, e.g. ``"DE"``.
+        Region hint for every value, e.g. ``"DE"``. Default ``None``: the
+        setting ``anofox_tab_phonenumber_default_region`` applies (``US``
+        unless changed).
     fmt:
         Output format: ``"E164"`` (default), ``"INTERNATIONAL"``,
-        ``"NATIONAL"``, or ``"RFC3966"``.
+        ``"NATIONAL"``, or ``"RFC3966"``; an unknown format raises a DuckDB error.
+    column:
+        Column name when a DataFrame is passed.
+    region_column:
+        DataFrame only: column holding the region hint of each row. Cannot be
+        combined with *region*.
 
     Returns
     -------
-    str
-        Formatted phone number.
+    str or None
+        When *phone_or_df* is a string; ``None`` when the number cannot be
+        parsed or has an impossible length.
+    DataFrame
+        When *phone_or_df* is a DataFrame: a copy with an added
+        ``phone_format`` column (input index and row order kept).
     """
-    value = fetch_one(conn, "SELECT anofox_tab_phonenumber_format(?, ?, ?)", [phone, region, fmt])
-    return str(value) if value is not None else ""
+    region_sql, region_params = _region_arg(region, region_column, isinstance(phone_or_df, str))
+    if isinstance(phone_or_df, str):
+        return fetch_one(
+            conn, "SELECT anofox_tab_phonenumber_format(?, ?, ?)", [phone_or_df, *region_params, fmt]
+        )
+
+    df_type = check_row_input(phone_or_df, column)
+
+    return apply_scalar(
+        conn, phone_or_df, df_type,
+        f"anofox_tab_phonenumber_format({quote_ident(column)}, {region_sql}, ?)",
+        [*region_params, fmt], "phone_format",
+    )
 
 
 def phone_region(
     conn: Any,
-    phone: str,
-    hint: str = "US",
-) -> str:
+    phone_or_df: Union[str, Any],
+    hint: Optional[str] = None,
+    column: Optional[str] = None,
+    region_column: Optional[str] = None,
+) -> Union[Optional[str], Any]:
     """
-    Detect the region/country code for a phone number.
+    Detect the region of a phone number, like SQL ``phonenumber_region(phone, region)``.
 
     Parameters
     ----------
     conn:
         An :class:`~anofox.AnofoxConnection`.
-    phone:
-        Phone number string.
+    phone_or_df:
+        A single phone string or a pandas/polars DataFrame.
     hint:
-        Region hint to assist parsing, e.g. ``"DE"``.
+        Region hint for every value, e.g. ``"DE"``. Default ``None``: the
+        setting ``anofox_tab_phonenumber_default_region`` applies.
+    column:
+        Column name when a DataFrame is passed.
+    region_column:
+        DataFrame only: column holding the region hint of each row. Cannot be
+        combined with *hint*.
 
     Returns
     -------
-    str
-        ISO 3166-1 alpha-2 region code.
+    str or None
+        ISO 3166-1 alpha-2 region code when *phone_or_df* is a string;
+        ``None`` when the number cannot be parsed.
+    DataFrame
+        When *phone_or_df* is a DataFrame: a copy with an added
+        ``phone_region`` column.
     """
-    value = fetch_one(conn, "SELECT anofox_tab_phonenumber_region(?, ?)", [phone, hint])
-    return str(value) if value is not None else ""
+    region_sql, region_params = _region_arg(hint, region_column, isinstance(phone_or_df, str))
+    if isinstance(phone_or_df, str):
+        return fetch_one(conn, "SELECT anofox_tab_phonenumber_region(?, ?)", [phone_or_df, *region_params])
+
+    df_type = check_row_input(phone_or_df, column)
+
+    return apply_scalar(
+        conn, phone_or_df, df_type,
+        f"anofox_tab_phonenumber_region({quote_ident(column)}, {region_sql})", region_params,
+        "phone_region",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -280,4 +326,5 @@ def _region_arg(
         if scalar_input:
             raise ValueError("'region_column' requires a DataFrame input.")
         return quote_ident(region_column), []
-    return "?", [region if region is not None else "US"]
+    # None binds as NULL: the setting anofox_tab_phonenumber_default_region applies.
+    return "?", [region]

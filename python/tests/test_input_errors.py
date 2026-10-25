@@ -17,6 +17,8 @@ ROW_WISE = [
     ("validate", "email_validate"),
     ("validate", "phone_is_valid"),
     ("validate", "phone_parse"),
+    ("validate", "phone_format"),
+    ("validate", "phone_region"),
     ("pii", "pii_detect"),
     ("pii", "pii_mask"),
 ]
