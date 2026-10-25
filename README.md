@@ -1,256 +1,238 @@
 # Anofox Tabular
 
-> **A data quality and validation toolkit for DuckDB**
+**Data quality, validation and anomaly detection for DuckDB**
 
-[![DuckDB](https://img.shields.io/badge/DuckDB-1.5.6_%7C_2.0-green)](https://duckdb.org/)
-[![C++17](https://img.shields.io/badge/C++-17-blue.svg)](https://isocpp.org/)
-[![License](https://img.shields.io/badge/license-BSL%201.1-blue.svg)](LICENSE)
-[![Functions](https://img.shields.io/badge/Functions-81-green)]()
-[![Modules](https://img.shields.io/badge/Modules-10-blue)]()
+[![License: BSL 1.1](https://img.shields.io/badge/License-BSL%201.1-blue.svg)](LICENSE)
+[![DuckDB](https://img.shields.io/badge/DuckDB-1.5.6%20%7C%202.0-green.svg)](https://duckdb.org/)
 
-SQL-native validation, anomaly detection, and data diffing—all without leaving your database.
+A DuckDB extension with about 100 SQL functions in 10 modules: data quality checks and check
+suites, column profiling, table diffing, anomaly detection (Isolation Forest, DBSCAN,
+OutlierTree), PII detection and masking, and validators for emails, postal addresses, phone
+numbers, EU VAT IDs and money. Everything is plain SQL. The core functions run locally inside
+DuckDB; [Network and privacy](#-network-and-privacy) lists the few features that use the network.
 
-> **⚠️ Breaking Change in v0.2.0:** Function names updated from `anofox_*` to `anofox_tab_*` prefix with convenient aliases (e.g., `email_is_valid`). See [API Reference](docs/API_REFERENCE.md) for details.
-
-### Important Notes
-
-- **Naming Convention:** Functions use `anofox_tab_*` prefix with shorter aliases available
-- **Positional Parameters:** All functions use positional parameters, NOT named parameters (`:=` syntax)
-- **Backward Compatible:** New isolation forest parameters are optional; existing queries work unchanged
-- **Enhanced in v0.2.0:** Isolation Forest now supports categorical columns, Extended IF, SCiForest, density scoring
-
-```sql
--- Email validation with DNS verification
-SELECT email_validate('user@example.com', 'dns') as result;
-
--- Detect outliers using Isolation Forest
-SELECT * FROM isolation_forest('sales', 'amount', 100, 256, 0.1, 'scores');
-
--- Validate European VAT and multi-currency transactions
-SELECT * FROM transactions
-WHERE vat_is_valid(vat_id)
-  AND money_is_positive(amount);
-```
-
----
-
-## 🌟 Why Anofox Tabular?
-
-**The DuckDB extension combining validation, anomaly detection, and data diffing.**
-
-- ✅ **10 Production-Ready Modules** - 81 SQL functions for email, postal, phone, money, VAT, PII, metrics, anomalies, diffing, and profiling
-- ⚡ **Blazing Fast** - Vectorized C++17 implementation processes millions of rows per second
-- 🔌 **Zero Friction** - SQL-native with no external services; works entirely within DuckDB
-- 📦 **Self-Contained** - Embedded validation patterns; no API keys or network calls required
-- 🎯 **Production-Grade** - Used in financial compliance, fraud detection, and migration validation
-
-**vs. Python Libraries:** No context switching, no data movement, 10-100x faster
-**vs. External APIs:** No latency, no rate limits, works offline, data stays local
+Every function has a canonical `anofox_tab_*` name and a short alias, for example
+`anofox_tab_email_is_valid` and `email_is_valid`. The examples use the short names.
 
 ---
 
 ## Key Features
 
 **Validation & Normalization:**
-- Email validation with DNS/SMTP verification
+- Email validation with optional DNS/SMTP verification
 - International address parsing via libpostal
 - Phone number handling via libphonenumber
-- European VAT compliance (29 countries)
+- EU VAT validation (28 countries: the 27 EU member states plus GB, with XI for Northern Ireland)
 - Multi-currency arithmetic (10 currencies)
 
 **Data Quality & Anomaly Detection:**
-- 18 data quality checks (volume, nulls, freshness, schema, regex, value sets, aggregates, duplicates, referential integrity, custom predicates, time-aware baselines) plus a config-driven check-suite runner
-- Enhanced Isolation Forest with categorical support, Extended IF, SCiForest
+- 17 data quality checks (volume, nulls, distinct counts, freshness, schema, z-score and IQR outliers, regex, value sets, aggregates, duplicates, occurrence, referential integrity, custom predicates, time-aware baselines), a table-driven check-suite runner (`run_checks`) and `_events` outputs for the time-aware checks
+- Isolation Forest with categorical support, Extended IF and SCiForest
 - DBSCAN density-based clustering
-- Statistical outliers via Z-Score and IQR
+- OutlierTree with human-readable explanations
 
-**Data Operations:**
-- Hash-based and join-based table diffing
-- Migration validation and change detection
-
-**Performance:**
-- Native DuckDB vectorized execution
-- Zero external API dependencies
-- Millions of rows per second throughput
+**PII, Diffing & Profiling:**
+- Detect and mask 17 PII types (pattern-based plus NER-based names, organizations and locations)
+- Hash-based and join-based table diffing for migration validation
+- Column profiling, table summaries and correlations, including nested types
 
 ---
 
 ## 📑 Table of Contents
 
-- [Feature Overview](#-feature-overview)
-- [Quick Start](#-quick-start)
 - [Installation](#-installation)
-  - [Python Package](#python-package)
-- [Features](#-features-all-10-modules)
+- [Quick Start](#-quick-start)
+- [Network and privacy](#-network-and-privacy)
+- [Feature Overview](#-feature-overview)
+- [Features](#-features---all-10-modules)
   - [Email Validation](#-email-validation)
   - [Address Parsing](#-address-parsing--normalization)
   - [Phone Number Validation](#-phone-number-validation)
   - [Money & Currency Operations](#-money--currency-operations)
   - [VAT Validation](#-vat-validation)
-  - [PII Detection](#-pii-detection)
+  - [PII Detection](#%EF%B8%8F-pii-detection)
   - [Data Quality Metrics](#-data-quality-metrics)
   - [Anomaly Detection](#-anomaly-detection)
   - [Data Diffing](#-data-diffing)
   - [Data Profiling](#-data-profiling)
 - [Real-World Examples](#-real-world-examples)
 - [SQL Function Reference](#-sql-function-reference)
-- [Configuration](#-configuration)
+- [Configuration](#%EF%B8%8F-configuration)
+- [Building from Source](#%EF%B8%8F-building-from-source)
 - [Testing](#-testing)
 - [Use Cases](#-use-cases)
-- [Architecture](#-architecture)
+- [Architecture](#%EF%B8%8F-architecture)
 - [Contributing](#-contributing)
 - [Troubleshooting](#-troubleshooting)
 - [Performance Tips](#-performance-tips)
 - [Telemetry](#-telemetry)
+- [Feedback](#feedback)
 - [License](#-license)
-
----
-
-## 📊 Feature Overview
-
-| Module | Functions | Use Case | Status |
-|--------|-----------|----------|--------|
-| 📧 **Email Validation** | 3 | RFC 5322, DNS, SMTP verification | Stable |
-| 📮 **Address Parsing** | 4 | International address normalization | Stable |
-| 📞 **Phone Numbers** | 9 | Google libphonenumber integration | Stable |
-| 💰 **Money & Currency** | 17 | Multi-currency operations, 10 currencies | ✨ New |
-| 💼 **VAT Validation** | 10 | European VAT compliance, 29 countries | ✨ New |
-| 🕵️ **PII Detection** | 20 | Detect & mask 17 PII types (SSN, IBAN, NAME, etc.) | ✨ New |
-| 🔍 **Quality Metrics** | 19 | 18 checks + check-suite runner (run_checks) | Stable |
-| 🤖 **Anomaly Detection** | 5 | Isolation Forest, DBSCAN, OutlierTree (explainable) | ✨ Enhanced |
-| 🔄 **Data Diffing** | 2 | Table comparison, migration validation | Stable |
-| 📊 **Data Profiling** | 3 | Column stats, correlations, table overview | ✨ New |
-
-**Total: 92 SQL Functions** | **Zero Required Dependencies***
-
-<sub>*Except libpostal (address parsing) and optional DNS/SMTP for email</sub>
-
----
-
-## 🚀 Quick Start
-
-```bash
-# Clone and build
-git clone https://github.com/datazoo/anofox-tabular.git
-cd anofox-tabular
-git submodule update --init --recursive
-make release
-
-# Launch DuckDB with extension loaded
-./build/release/duckdb
-```
-
-```sql
--- Inside DuckDB
-LOAD anofox_tabular;
-
--- Try email validation
-SELECT email_is_valid('user@example.com', 'regex') as valid;
-
--- Detect data anomalies
-SELECT * FROM isolation_forest(
-    'your_table', 'numeric_column', 100, 256, 0.1, 'scores'
-) WHERE is_anomaly = true;
-
--- Validate European VAT numbers
-SELECT vat_id, vat_is_valid(vat_id) as is_valid FROM customers;
-```
-
-Try the examples:
-```bash
-cd examples
-uv run email_verification.py
-uv run postal_verification.py
-```
 
 ---
 
 ## 📦 Installation
 
-### Technical Requirements
+### Community Extension
 
-| Requirement | Version | Notes |
-|-------------|---------|-------|
-| **DuckDB** | v1.5.6 or 2.0 | Required |
-| **C++ Compiler** | GCC 8+, Clang 7+, MSVC 2019+ | C++17 compatible |
-| **CMake** | ≥ 3.21 | Build system |
-| **Ninja** | Any | Recommended for faster builds |
-| **vcpkg** | Latest | Dependency management |
-| **libpostal** | Optional | For address parsing (~500MB data) |
-
-**vcpkg Setup:**
-
-```bash
-# Clone vcpkg
-git clone https://github.com/microsoft/vcpkg.git
-./vcpkg/bootstrap-vcpkg.sh
-export VCPKG_TOOLCHAIN_PATH="$(pwd)/vcpkg/scripts/buildsystems/vcpkg.cmake"
+```sql
+INSTALL anofox_tabular FROM community;
+LOAD anofox_tabular;
 ```
 
-### Building from Source
+To upgrade an installed copy, run `FORCE INSTALL anofox_tabular FROM community;`. A plain
+`INSTALL` does nothing when a build is already cached.
 
-```bash
-# Clone repository with submodules
-git clone https://github.com/datazoo/anofox-tabular.git
-cd anofox-tabular
-git submodule update --init --recursive
-
-# Build (uses ninja for speed)
-GEN=ninja make release
-
-# Run tests
-make test
-```
-
-**Build Artifacts:**
-- `build/release/duckdb` - DuckDB CLI with extension statically linked
-- `build/release/extension/anofox_tabular/anofox_tabular.duckdb_extension` - Loadable extension binary
-- `build/release/test/unittest` - Test runner
+Builds are published for DuckDB v1.5.6 and 2.0 on linux_amd64, osx_arm64, osx_amd64 and
+windows_amd64.
 
 ### Python Package
 
-Install the native Python wrapper — no raw SQL required:
-
 ```bash
-pip install anofox-tabular
-# with DataFrame support:
-pip install "anofox-tabular[pandas]"
-pip install "anofox-tabular[polars]"
+pip install anofox-tabular        # or: uv add anofox-tabular
 ```
+
+The package is imported as `anofox`. `anofox.connect()` returns a DuckDB connection with the
+extension loaded and downloads the extension for your `duckdb` version on first use:
 
 ```python
 import anofox
-from anofox import validate, quality, anomaly, pii, diff
+from anofox import validate
 
-conn = anofox.connect()  # extension downloaded automatically
-
-validate.email_is_valid(conn, "hi@example.com")           # True
-validate.email_is_valid(conn, "hi@example.com", mode="dns")
-
-import pandas as pd
-df = pd.DataFrame({"email": ["a@b.com", "bad@", "c@d.org"]})
-result_df = validate.email_is_valid(conn, df, column="email")
-
-quality.volume(conn, "my_table", min_rows=100)             # {"status": "pass", ...}
-anomaly.isolation_forest(conn, "my_table", "amount")       # {"status": ..., "n_anomalies": ...}
-changes = diff.joindiff(conn, df_before, df_after, primary_keys="id")
+conn = anofox.connect()
+print(validate.email_is_valid(conn, "hi@example.com"))   # True
 ```
 
-See [`python/README.md`](python/README.md) for the full Python API reference.
+See [`python/README.md`](python/README.md) for the full Python API.
 
-### Running raw-SQL examples
+### From Source
 
-```bash
-cd examples
-uv sync  # or: pip install -r requirements.txt
-uv run email_verification.py
-uv run postal_verification.py
+See [Building from Source](#%EF%B8%8F-building-from-source).
+
+---
+
+## 🚀 Quick Start
+
+This runs as pasted in the DuckDB CLI after the `INSTALL` above. It creates its own data.
+
+```sql
+LOAD anofox_tabular;
+SET anofox_tab_trace_level = 'warn';   -- optional: hide the [anofox] [info] trace lines
+
+-- Validate contact data
+SELECT email_is_valid('user@example.com') AS email_ok,
+       vat_is_valid('DE136695976') AS vat_ok;
+
+-- Find and mask PII in free text
+SELECT pii_mask('Reach jane@corp.com, card 4111 1111 1111 1111', 'redact') AS masked;
+
+-- A data quality check: one pass/fail row with a message
+CREATE TABLE orders AS
+  SELECT i AS id,
+         CASE WHEN i % 50 = 0 THEN NULL ELSE i % 7 END AS customer_id,
+         CASE WHEN i = 77 THEN 99999.0 ELSE 20 + i % 13 END AS amount
+  FROM range(1, 501) t(i);
+SELECT status, message FROM null_rate('orders', 'customer_id', 0.01);
+
+-- Anomaly scores with Isolation Forest
+-- (trees, sample size, contamination, output mode, seed)
+SELECT row_id, value, round(anomaly_score, 3) AS score, is_anomaly
+FROM isolation_forest('orders', 'amount', 100, 256, 0.01, 'scores', 42)
+ORDER BY anomaly_score DESC
+LIMIT 3;
+
+-- Compare two versions of a table
+CREATE TABLE customers_v1 AS
+  FROM (VALUES (1, 'Ada', 'ada@example.com'),
+               (2, 'Bob', 'bob@example.com'),
+               (3, 'Cy',  'cy@example.com')) t(id, name, email);
+CREATE TABLE customers_v2 AS
+  FROM (VALUES (1, 'Ada', 'ada@example.com'),
+               (2, 'Bob', 'robert@example.com'),
+               (4, 'Dee', 'dee@example.com')) t(id, name, email);
+SELECT * FROM diff_joindiff('customers_v1', 'customers_v2', 'id') ORDER BY id;
 ```
+
+Expected output:
+
+```
+┌──────────┬─────────┐
+│ email_ok │ vat_ok  │
+├──────────┼─────────┤
+│ true     │ true    │
+└──────────┴─────────┘
+┌───────────────────────────────────┐
+│              masked               │
+├───────────────────────────────────┤
+│ Reach [EMAIL], card [CREDIT_CARD] │
+└───────────────────────────────────┘
+┌─────────┬──────────────────────────────────────────────┐
+│ status  │                   message                    │
+├─────────┼──────────────────────────────────────────────┤
+│ fail    │ Null rate 0.02 (10/500) exceeds maximum 0.01 │
+└─────────┴──────────────────────────────────────────────┘
+┌────────┬─────────┬────────┬────────────┐
+│ row_id │  value  │ score  │ is_anomaly │
+├────────┼─────────┼────────┼────────────┤
+│     77 │ 99999.0 │  0.752 │ true       │
+│     25 │    32.0 │  0.557 │ false      │
+│     38 │    32.0 │  0.557 │ false      │
+└────────┴─────────┴────────┴────────────┘
+┌───────────┬───────┬─────────┬────────────────────┐
+│ diff_type │  id   │  name   │       email        │
+├───────────┼───────┼─────────┼────────────────────┤
+│ changed   │     2 │ Bob     │ robert@example.com │
+│ removed   │     3 │ NULL    │ NULL               │
+│ added     │     4 │ Dee     │ dee@example.com    │
+└───────────┴───────┴─────────┴────────────────────┘
+```
+
+The first PII call downloads the NER model (~66 MB) used for names, organizations and
+locations. Run `SET anofox_ner_auto_download = false;` first to skip it; the pattern-based
+types (email, credit card, IBAN, …) work without it, and the output above is the same.
+
+To try the Python example scripts, see [`examples/README.md`](examples/README.md).
+
+---
+
+## 🔒 Network and privacy
+
+The core functions run locally. These features use the network:
+
+| Feature | What it fetches | Opt out |
+|---|---|---|
+| PII name/organization/location detection (NER) | DistilBERT model, ~66 MB, from Hugging Face on first use, into `~/.duckdb/extensions/anofox/ner/` | `SET anofox_ner_auto_download = false` (status becomes `NOT_DOWNLOADED`; pattern recognizers keep working) |
+| Address parsing (`postal_load_data()`, or the first `postal_parse_address` / `postal_expand_address` call) | libpostal data, ~500 MB | do not call the postal functions |
+| `email_validate` / `email_is_valid` modes `dns` and `smtp` | DNS MX lookup / SMTP connection to the mail host | use mode `regex` (the default) |
+| Telemetry | anonymous usage events to PostHog EU; on by default; see [TELEMETRY.md](TELEMETRY.md) | `SET anofox_telemetry_enabled = false` or env `DATAZOO_DISABLE_TELEMETRY=1` (env also suppresses the load event) |
+| Feedback banner | none (local print, interactive terminals, once a day) | `SET datazoo_banner = false` |
+
+Telemetry never includes query text, table or column names, or any data values. See
+[Telemetry](#-telemetry) below.
+
+---
+
+## 📊 Feature Overview
+
+Function counts are canonical `anofox_tab_*` names; each also has a short alias.
+
+| Module | Functions | Use Case |
+|--------|-----------|----------|
+| 📧 **Email Validation** | 3 | Regex (RFC 5322 inspired), DNS and SMTP verification |
+| 📮 **Address Parsing** | 4 | International address normalization (libpostal; not built on Windows) |
+| 📞 **Phone Numbers** | 9 | Google libphonenumber integration |
+| 💰 **Money & Currency** | 17 | Multi-currency operations, 10 currencies |
+| 💼 **VAT Validation** | 10 | EU VAT validation, 28 countries |
+| 🕵️ **PII Detection** | 24 | Detect & mask 17 PII types (SSN, IBAN, NAME, etc.) |
+| 🔍 **Quality Checks** | 22 | 17 checks, 3 `_events` companions, the `run_checks` suite runner, `anofox_contract_version` |
+| 🤖 **Anomaly Detection** | 5 | Isolation Forest, DBSCAN, OutlierTree (explainable) |
+| 🔄 **Data Diffing** | 2 | Table comparison, migration validation |
+| 📊 **Data Profiling** | 3 | Column stats, correlations, table overview |
 
 ### Multi-Language Accessibility
 
 Works with any DuckDB language binding:
-- **Python**: `pip install anofox-tabular` (native wrapper with DataFrame support) or raw `duckdb` package
+- **Python**: `pip install anofox-tabular` (native wrapper with DataFrame support) or the plain `duckdb` package
 - **R**: `duckdb` package
 - **Node.js**: `duckdb` package
 - **Java**: DuckDB JDBC driver
@@ -288,6 +270,11 @@ SELECT email_validate('support@example.org', 'smtp');
 
 ### 📮 Address Parsing & Normalization
 
+> **Requires a one-time ~500 MB download.** Run `SELECT postal_load_data();` to fetch the libpostal
+> data up front; otherwise the first postal call downloads it. The data goes to
+> `anofox_tab_postal_data_path` (default `.duckdb/extensions/libpostal`, relative to the working
+> directory; its parent directory must exist). The address module is not built on Windows.
+
 Powered by **[libpostal](https://github.com/openvenues/libpostal)**, a statistical NLP library for parsing addresses:
 
 ```sql
@@ -301,7 +288,6 @@ SELECT postal_expand_address('123 Main St');
 ```
 
 **Includes:**
-- Automatic data download (~500MB language models)
 - Support for international addresses
 - Configurable data directory
 
@@ -316,11 +302,11 @@ International phone parsing via **[libphonenumber](https://github.com/google/lib
 ```sql
 -- Parse and validate phone numbers
 SELECT phonenumber_parse('+1 (415) 555-1234', 'US');
--- Returns: {valid: true, country_code: 1, national_number: '4155551234', ...}
+-- Returns: {'valid': true, 'country_code': 1, 'national_number': 4155551234, 'region': US, 'type': fixed_line_or_mobile}
 
 -- Format in different styles
 SELECT phonenumber_format('4155551234', 'US', 'INTERNATIONAL');
--- Returns: '+1 415-555-1234'
+-- Returns: '+1 415 555 1234'
 ```
 
 **Formats:** E164, INTERNATIONAL, NATIONAL, RFC3966
@@ -369,7 +355,7 @@ European VAT number validation for regulatory compliance and data quality.
 
 **Key Features:**
 - 10 SQL functions for VAT operations
-- 29 countries supported (28 EU + UK)
+- 28 countries: the 27 EU member states plus GB (`XI` for Northern Ireland; Greece is `EL`, `UK` is not a valid code)
 - Syntax validation with country-specific regex patterns
 - Check-digit (checksum) validation for 16 countries: AT, BE, DE, DK, ES, FI, FR, GR/EL, IE, IT, LU, NL, PL, PT, SE, SI
 - EU membership checks (accepts lowercase codes and the EL/XI VAT aliases)
@@ -409,16 +395,17 @@ Detect and mask Personally Identifiable Information (PII) in text data with 17 s
   - Model selection via `SET anofox_ner_model` (currently `distilbert-en` only) must happen before the model is first loaded
   - **Network access:** the first NER-based detection downloads the model (~66 MB) from Hugging Face into `~/.duckdb/extensions/anofox/ner/`. This applies to `pii_detect`, `pii_mask`, `pii_scan_table` and `pii_audit_table` unless `anofox_pii_enabled_types` is limited to pattern-based types. Offline, run `SET anofox_ner_auto_download = false` (see [NER Settings](#ner-settings)): NER detection is then skipped (NAME falls back to the dictionary) and nothing is downloaded
 
-**Masking Strategies:**
-- `REDACT` - Replace with [TYPE] label
-- `PARTIAL` - Show partial value (e.g., `***-**-6789` for SSN)
-- `ASTERISK` - Replace with same-length asterisks
-- `HASH` - Replace with SHA-256 hash (truncated)
+**Masking Strategies** (case-insensitive):
+- `redact` - Replace with [TYPE] label (default)
+- `partial` - Show partial value (e.g., `***-**-6789` for SSN)
+- `asterisk` - Replace with same-length asterisks
+- `hash` - Replace with SHA-256 hash (truncated)
+- `none` - Leave the text unchanged
 
 ```sql
 -- Detect all PII in text
 SELECT unnest(pii_detect('My SSN is 123-45-6789 and email is test@example.com'));
--- Returns: [{type: 'US_SSN', text: '123-45-6789', ...}, {type: 'EMAIL', ...}]
+-- Returns two rows: {'type': US_SSN, 'text': 123-45-6789, 'start_pos': 10, ...} and {'type': EMAIL, ...}
 
 -- Mask PII with partial strategy
 SELECT pii_mask('Contact: john@example.com, SSN: 123-45-6789', 'partial');
@@ -595,9 +582,9 @@ SELECT * FROM isolation_forest_mv(
 |-----------|--------|-------------|
 | `seed` | integer (default: NULL = random) | Fixed seed for reproducible scores (also on `isolation_forest`) |
 | `ndim` | 1-N (default: 1) | Dimensions for hyperplane splits |
-| `coef_type` | 'uniform', 'normal' | Coefficient distribution |
-| `scoring_metric` | 'depth', 'density', 'adj_depth' | Scoring method |
-| `weight_column` | column name | Sample weight column |
+| `coef_type` | 'uniform' (default), 'normal' | Coefficient distribution |
+| `scoring_metric` | 'depth' (default), 'density', 'adj_depth' | Scoring method |
+| `weight_column` | column name (default: NULL = uniform) | Sample weight column |
 | `ntry` | >= 1 (default: 1) | Split candidates per node |
 | `prob_pick_avg_gain` | 0.0-1.0 (default: 0.0) | Gain-based selection probability |
 
@@ -762,7 +749,7 @@ with anofox.connect() as conn:
 ### Email Verification at Scale
 
 ```sql
--- Load fraudulent emails dataset (5000+ spam/phishing samples)
+-- Load the fraudulent emails dataset (about 4,000 spam/phishing samples; run from the repo root)
 CREATE TABLE emails AS
 SELECT * FROM read_parquet('examples/data/fraudulent_emails.parquet');
 
@@ -866,16 +853,16 @@ FROM diff_joindiff('prod.users', 'staging.users', ['user_id'])
 GROUP BY diff_type
 ORDER BY row_count DESC;
 
--- Identify specific changed records
+-- Identify specific changed records: the diff returns the target values,
+-- so join the source table for the old ones
 SELECT
-    user_id,
-    source_email,
-    target_email,
-    source_created_at,
-    target_created_at
-FROM diff_joindiff('prod.users', 'staging.users', ['user_id'])
-WHERE diff_type = 'changed'
-  AND source_email != target_email
+    d.user_id,
+    s.email AS old_email,
+    d.email AS new_email
+FROM diff_joindiff('prod.users', 'staging.users', ['user_id']) d
+JOIN prod.users s USING (user_id)
+WHERE d.diff_type = 'changed'
+  AND s.email IS DISTINCT FROM d.email
 LIMIT 10;
 ```
 
@@ -1015,8 +1002,11 @@ All other countries are validated by syntax only. French VAT keys containing let
 #### Detection & Masking
 | Function | Signature | Returns | Description |
 |----------|-----------|---------|-------------|
-| `anofox_tab_pii_detect` | `(text VARCHAR)` | LIST(STRUCT) | Detect all PII in text (returns type, text, start, end, confidence) |
+| `anofox_tab_pii_detect` | `(text VARCHAR)` | LIST(STRUCT) | Detect all PII in text (returns type, text, start_pos, end_pos, confidence) |
+| `anofox_tab_pii_detect_batch` | `(texts VARCHAR[])` | LIST(LIST(STRUCT)) | `pii_detect` for each element of a list |
 | `anofox_tab_pii_mask` | `(text VARCHAR [, strategy VARCHAR])` | VARCHAR | Mask all PII in text (default: 'redact') |
+| `anofox_tab_pii_mask_column` | `(value VARCHAR, pii_type VARCHAR, strategy VARCHAR)` | VARCHAR | Mask only the matches of one PII type |
+| `anofox_tab_pii_redact_column` | `(value VARCHAR [, strategy VARCHAR])` | VARCHAR | Mask all PII in a value (default: `anofox_pii_default_mask_strategy`) |
 | `anofox_tab_pii_contains` | `(text VARCHAR)` | BOOLEAN | Check if text contains any PII |
 | `anofox_tab_pii_count` | `(text VARCHAR)` | BIGINT | Count PII occurrences in text |
 
@@ -1047,6 +1037,7 @@ All other countries are validated by syntax only. French VAT keys containing let
 | `anofox_tab_pii_audit_table` | `(table VARCHAR [, columns VARCHAR] [, id_column := VARCHAR])` | TABLE | Row-level PII audit with masking; `id_column` passes an identifier column through |
 | `anofox_tab_pii_status` | `()` | TABLE | List supported PII types and recognizers |
 | `anofox_tab_pii_config` | `()` | TABLE | Current PII configuration |
+| `anofox_ner_status` | `()` | TABLE | NER model status (`model_status`, `model_path`, …); no alias |
 
 ### Data Quality Metrics Functions
 
@@ -1116,7 +1107,7 @@ an empty table or an all-NULL column:
 | `anofox_tab_isolation_forest_mv` (alias `isolation_forest_mv`) | Multivariate Isolation Forest |
 | `anofox_tab_dbscan` (alias `dbscan`) | Univariate DBSCAN clustering |
 | `anofox_tab_dbscan_mv` (alias `dbscan_mv`) | Multivariate DBSCAN clustering |
-| `outlier_tree` | Explainable outlier detection with conditional distributions |
+| `anofox_tab_outlier_tree` (alias `outlier_tree`) | Explainable outlier detection with conditional distributions |
 
 **Isolation Forest Full Signature:**
 ```sql
@@ -1147,12 +1138,13 @@ All parameters after `column_name` are optional; `isolation_forest('sales', 'amo
 | `sample_size` | 1-10000 | 256 | Subsample size per tree |
 | `contamination` | 0.0-0.5 | 0.1 | Expected anomaly fraction |
 | `output_mode` | - | 'summary' | `'summary'` or `'scores'` |
-| `ndim` | 1-N | 1 | Hyperplane dimensions (Extended IF) |
-| `coef_type` | - | 'uniform' | `'uniform'` or `'normal'` |
-| `scoring_metric` | - | 'depth' | `'depth'`, `'density'`, `'adj_depth'` |
-| `weight_column` | - | NULL | Sample weight column name |
-| `ntry` | 1-100 | 1 | Split candidates (SCiForest) |
-| `prob_pick_avg_gain` | 0.0-1.0 | 0.0 | Gain-based selection probability |
+| `seed` | - | NULL (random) | Fixed seed for reproducible scores |
+| `ndim` | 1-N | 1 | Hyperplane dimensions (Extended IF; `isolation_forest_mv` only) |
+| `coef_type` | - | 'uniform' | `'uniform'` or `'normal'` (`isolation_forest_mv` only) |
+| `scoring_metric` | - | 'depth' | `'depth'`, `'density'`, `'adj_depth'` (`isolation_forest_mv` only) |
+| `weight_column` | - | NULL | Sample weight column name (`isolation_forest_mv` only) |
+| `ntry` | 1-100 | 1 | Split candidates (SCiForest; `isolation_forest_mv` only) |
+| `prob_pick_avg_gain` | 0.0-1.0 | 0.0 | Gain-based selection probability (`isolation_forest_mv` only) |
 
 **DBSCAN Full Signature:**
 ```sql
@@ -1202,7 +1194,7 @@ WHERE is_anomaly;
 | Function | Signature | Description |
 |----------|-----------|-------------|
 | `anofox_tab_profile_table` | `(table_name VARCHAR, columns VARCHAR[] DEFAULT [], sample_size BIGINT DEFAULT 1000000, exact BOOLEAN DEFAULT false) → TABLE` | Per-column statistics (27 output columns) |
-| `anofox_tab_profile_summary` | `(table_name VARCHAR) → TABLE` | Single-row table overview (10 output columns) |
+| `anofox_tab_profile_summary` | `(table_name VARCHAR) → TABLE` | Single-row table overview (11 output columns) |
 | `anofox_tab_profile_correlations` | `(table_name VARCHAR, columns VARCHAR[] DEFAULT []) → TABLE` | Pairwise Pearson and Spearman correlations for numeric columns |
 
 **Aliases:** `profile_table`, `profile_summary`, `profile_correlations`
@@ -1240,7 +1232,7 @@ WHERE is_anomaly;
 | `avg_length` | DOUBLE | Avg string length / list element count / map cardinality |
 | `min_length` | BIGINT | Min string length / list element count / map cardinality |
 | `max_length` | BIGINT | Max string length / list element count / map cardinality |
-| `pattern_summary` | VARCHAR | Detected pattern: `email`, `uuid`, `url`, `ip_address`, `iso_date`, `numeric_string`, `mixed`, `list`, `map`, `struct`, `union` |
+| `pattern_summary` | VARCHAR | Detected pattern: `email`, `phone`, `uuid`, `url`, `ip_address`, `iso_date`, `numeric_string`, `mixed`, `list`, `map`, `struct`, `union` |
 | `is_unique` | BOOLEAN | True if all non-NULL values are distinct |
 | `is_constant` | BOOLEAN | True if all non-NULL values are the same |
 | `zero_count` | BIGINT | Number of zero values (numeric only) |
@@ -1278,7 +1270,45 @@ WHERE is_anomaly;
 
 ## ⚙️ Configuration
 
-Set options via SQL or DuckDB's configuration file:
+Set options with `SET name = value;` after `LOAD anofox_tabular;`. List them all with:
+
+```sql
+SELECT name, input_type, value, description
+FROM duckdb_settings()
+WHERE name LIKE 'anofox%' OR name = 'datazoo_banner'
+ORDER BY name;
+```
+
+The 24 settings are grouped by prefix: `anofox_tab_*` for email, phone, postal and tracing,
+`anofox_pii_*` and `anofox_ner_*` for PII detection, `anofox_telemetry_*` for telemetry, and
+`datazoo_banner` for the DataZoo feedback banner.
+
+| Setting | Type | Default | Description |
+|---------|------|---------|-------------|
+| `anofox_tab_email_default_validation` | VARCHAR | `regex` | Default mode of `email_is_valid` / `email_validate` (`regex`, `dns`, `smtp`) |
+| `anofox_tab_email_regex_pattern` | VARCHAR | RFC 5322 inspired pattern | Regular expression used by the `regex` stage |
+| `anofox_tab_email_dns_timeout_ms` | BIGINT | `1000` | DNS resolver timeout in milliseconds |
+| `anofox_tab_email_dns_tries` | INTEGER | `1` | DNS attempts before failing (1-10) |
+| `anofox_tab_email_smtp_port` | INTEGER | `25` | SMTP port used when connecting to MX hosts |
+| `anofox_tab_email_smtp_connect_timeout_ms` | BIGINT | `5000` | SMTP connect timeout in milliseconds |
+| `anofox_tab_email_smtp_read_timeout_ms` | BIGINT | `5000` | SMTP read/write timeout in milliseconds |
+| `anofox_tab_email_smtp_helo_domain` | VARCHAR | `duckdb.local` | Domain sent in SMTP EHLO |
+| `anofox_tab_email_smtp_mail_from` | VARCHAR | `validator@duckdb.local` | MAIL FROM address used during SMTP verification |
+| `anofox_tab_phonenumber_default_region` | VARCHAR | `US` | Region used when the region hint is NULL; must be a supported 2-letter ISO code |
+| `anofox_tab_postal_data_path` | VARCHAR | `.duckdb/extensions/libpostal` | Directory of the libpostal data, relative to the working directory unless absolute; its parent directory must exist |
+| `anofox_tab_trace_enabled` | BOOLEAN | `true` | Print `[anofox] …` trace lines to the console |
+| `anofox_tab_trace_level` | VARCHAR | `info` | Minimum trace level (`trace`, `debug`, `info`, `warn`, `error`, `critical`, `off`) |
+| `anofox_pii_enabled_types` | VARCHAR | empty (all types) | Comma-separated PII types to detect |
+| `anofox_pii_min_confidence` | DOUBLE | `0.5` | Minimum confidence for NER-based detection (0.0-1.0) |
+| `anofox_pii_default_mask_strategy` | VARCHAR | `redact` | Strategy of `pii_redact_column(value)` and `pii_audit_table` (`redact`, `hash`, `partial`, `asterisk`, `none`) |
+| `anofox_pii_deep_validation` | BOOLEAN | `false` | Validate detected phone numbers with libphonenumber |
+| `anofox_ner_auto_download` | BOOLEAN | `true` | Download the NER model (~66 MB) on first use; `false` skips NER detection instead |
+| `anofox_ner_model` | VARCHAR | `distilbert-en` | NER model; set it before the model is first loaded |
+| `anofox_ner_device` | VARCHAR | `AUTO` | OpenVINO device (`AUTO`, `CPU`, `GPU`, `GPU.0`, …) |
+| `anofox_ner_cache_size` | BIGINT | `10000` | LRU cache size for NER results (0 disables) |
+| `anofox_telemetry_enabled` | BOOLEAN | `true` | Anonymous usage telemetry |
+| `anofox_telemetry_key` | VARCHAR | built-in project key | PostHog API key for telemetry |
+| `datazoo_banner` | BOOLEAN | `true` | Show the feedback banner in interactive terminals (at most once a day) |
 
 ### Email Settings
 
@@ -1297,9 +1327,9 @@ SET anofox_tab_email_smtp_mail_from = 'validator@duckdb.local';  -- MAIL FROM ad
 ### Postal Settings
 
 ```sql
-SET anofox_tab_postal_data_path = '.duckdb/extensions/libpostal';  -- Data directory
+SET anofox_tab_postal_data_path = '/data/libpostal';  -- the parent directory must exist
 
--- Download libpostal data on first use
+-- Download the libpostal data (~500 MB) up front; the first postal call does it otherwise
 SELECT postal_load_data();
 ```
 
@@ -1326,12 +1356,72 @@ SELECT model_status, status_message FROM anofox_ner_status();  -- NOT_DOWNLOADED
 
 For offline machines, copy `model_quantized.onnx` and `tokenizer.json` from a machine that has them into the same directory.
 
-### Tracing
+### PII Settings
 
 ```sql
-SET anofox_tab_trace_enabled = true;  -- Enable/disable logging
-SET anofox_tab_trace_level = 'info';  -- trace|debug|info|warn|error|critical|off
+SET anofox_pii_enabled_types = 'EMAIL,US_SSN';    -- detect only these types (empty = all)
+SET anofox_pii_min_confidence = 0.7;              -- NER confidence threshold
+SET anofox_pii_default_mask_strategy = 'partial'; -- used by pii_redact_column(value) and pii_audit_table
+SET anofox_pii_deep_validation = true;            -- check detected phone numbers with libphonenumber
+SELECT * FROM pii_config();
 ```
+
+### Tracing
+
+Tracing is on by default at level `info`, so the CLI prints `[anofox] [info] …` lines when the
+extension loads and while functions run. To quiet it:
+
+```sql
+SET anofox_tab_trace_level = 'warn';   -- only warnings and errors
+SET anofox_tab_trace_enabled = false;  -- or no trace output at all
+```
+
+### Telemetry and banner
+
+```sql
+SET anofox_telemetry_enabled = false;  -- see Telemetry below
+SET datazoo_banner = false;            -- no feedback banner
+```
+
+---
+
+## 🛠️ Building from Source
+
+| Requirement | Version | Notes |
+|-------------|---------|-------|
+| **DuckDB** | v1.5.6 or 2.0 | Required |
+| **C++ Compiler** | GCC 8+, Clang 7+, MSVC 2019+ | C++17 compatible |
+| **CMake** | ≥ 3.21 | Build system |
+| **Ninja** | Any | Recommended for faster builds |
+| **vcpkg** | Latest | Dependency management |
+| **libpostal** | Optional | For address parsing (~500MB data) |
+
+**vcpkg Setup:**
+
+```bash
+# Clone vcpkg
+git clone https://github.com/microsoft/vcpkg.git
+./vcpkg/bootstrap-vcpkg.sh
+export VCPKG_TOOLCHAIN_PATH="$(pwd)/vcpkg/scripts/buildsystems/vcpkg.cmake"
+```
+
+**Build:**
+
+```bash
+git clone --recurse-submodules https://github.com/DataZooDE/anofox-tabular.git
+cd anofox-tabular
+
+# Build (uses ninja for speed)
+GEN=ninja make release
+
+# Run tests
+make test
+```
+
+**Build Artifacts:**
+- `build/release/duckdb` - DuckDB CLI with extension statically linked
+- `build/release/extension/anofox_tabular/anofox_tabular.duckdb_extension` - Loadable extension binary
+- `build/release/test/unittest` - Test runner
 
 ---
 
@@ -1353,20 +1443,9 @@ make test_debug
 make test_ner
 ```
 
-**Test Files:**
-- `anofox_email_basic.test` - Email validation modes
-- `anofox_postal.test` - Address parsing
-- `anofox_phonenumber.test` - Phone validation
-- `anofox_metric.test` - Data quality metrics
-- `anofox_check.test` / `anofox_check_validation.test` - Check primitives and parameter/injection validation
-- `anofox_check_temporal.test` - Time-aware checks against a daily feed with collapse/spike days
-- `anofox_check_suite.test` - Suite runner: partitioning, monitor_only, error isolation, persistence
-- `anofox_check_scale.test` - All checks + suite runner against ~2M generated rows with seeded defects
-- `anofox_isolation_forest.test` - Anomaly detection
-- `anofox_dbscan.test` - Clustering algorithms
-- `anofox_diff.test` - Table comparison
-- `anofox_money.test` - Money operations
-- `anofox_vat.test` - VAT validation
+The SQL tests live in [`test/sql/`](test/sql/), one or more `.test` files per module. The postal
+tests (`anofox_postal.test.disabled`, `anofox_postal.test_disabled`) are disabled; postal
+coverage that needs no data runs in `anofox_postal_null.test` when `POSTAL_AVAILABLE` is set.
 
 ---
 
@@ -1414,10 +1493,11 @@ make test_ner
 │                Anofox Tabular Extension                  │
 │  ┌────────────┬────────────┬────────────┬─────────────┐ │
 │  │   Email    │   Postal   │   Phone    │   Quality   │ │
-│  │ Validation │  Parsing   │  Parsing   │   Metrics   │ │
+│  │ Validation │  Parsing   │  Parsing   │   Checks    │ │
 │  └────────────┴────────────┴────────────┴─────────────┘ │
 │  ┌─────────────────────────────────────────────────────┐ │
-│  │  Money · VAT · Anomaly Detection (IF, DBSCAN) · Diff  │ │
+│  │  Money · VAT · PII · Profiling · Diff                │ │
+│  │  Anomaly Detection (IF, DBSCAN, OutlierTree)         │ │
 │  └─────────────────────────────────────────────────────┘ │
 ├─────────────────────────────────────────────────────────┤
 │                 External Libraries                       │
@@ -1463,23 +1543,24 @@ See [`CLAUDE.md`](CLAUDE.md) for detailed development context.
 
 **Error**: `Extension "anofox_tabular" not found`
 
-**Solution**: Build the extension first:
-```bash
-make release
+**Solution**: Install it from the community repository, or upgrade a cached copy:
+```sql
+INSTALL anofox_tabular FROM community;
+FORCE INSTALL anofox_tabular FROM community;  -- upgrade
+LOAD anofox_tabular;
 ```
 
 ### Libpostal data missing
 
-**Error**: `Libpostal data not found`
+**Error**: `Failed to initialize libpostal. Use anofox_tab_postal_load_data() to download assets.`
+or `Failed to create directory ".duckdb/extensions/libpostal"`
 
-**Solution**: Download data automatically:
-```sql
-SELECT postal_load_data();
-```
-
-Or manually set the path:
+**Solution**: The data directory defaults to `.duckdb/extensions/libpostal` relative to the working
+directory, and its parent directory must exist. Point it at a writable directory and download
+the data (~500 MB):
 ```sql
 SET anofox_tab_postal_data_path = '/path/to/libpostal/data';
+SELECT postal_load_data();
 ```
 
 ### SMTP timeout errors
@@ -1541,11 +1622,11 @@ Anofox Tabular collects **anonymous usage data** to help improve the extension. 
 
 ### What We Collect
 
-- Extension load events (name, version, platform)
-- Anonymized device identifier (hashed MAC address)
-- Timestamp of events
+- Extension load events (name, version, DuckDB version, platform)
+- Function execution counts, aggregated per function and session (function name, call count, median duration)
+- A pseudonymous machine identifier (SHA-256 of a machine id)
 
-**We do NOT collect:** query content, table data, file paths, or any personally identifiable information.
+**We do NOT collect:** query text, table or column names, data values, file paths, or any personally identifiable information. See [TELEMETRY.md](TELEMETRY.md) for the full list.
 
 ### Disabling Telemetry
 
@@ -1573,6 +1654,22 @@ con = duckdb.connect(config={
     "anofox_telemetry_enabled": False,
 })
 ```
+
+---
+
+## Feedback
+
+If `anofox_tabular` misbehaves — a profile that looks wrong, a PII match it missed,
+a diff that surprises you — please
+[open an issue](https://github.com/DataZooDE/anofox-tabular/issues). Results depend on
+real data shapes we cannot reproduce here, so a report with your input is the fastest
+path to a fix. Errors from the diff and metric functions end with that link.
+
+If it saved you time, a star on the repo helps other people find it.
+
+The first time you load the extension in an interactive terminal each day, a small
+banner says the same thing. It never prints when output is piped, in notebooks, or in
+CI. Silence it with `SET datazoo_banner = false;` or `DATAZOO_NO_BANNER=1`.
 
 ---
 
@@ -1618,28 +1715,12 @@ This project incorporates third-party libraries and their respective licenses. F
 
 ## 🔗 Links
 
-- **GitHub**: https://github.com/datazoo/anofox-tabular
+- **GitHub**: https://github.com/DataZooDE/anofox-tabular
 - **DuckDB**: https://duckdb.org/
-- **Issues**: https://github.com/datazoo/anofox-tabular/issues
-- **Discussions**: https://github.com/datazoo/anofox-tabular/discussions
+- **Issues**: https://github.com/DataZooDE/anofox-tabular/issues
 
 ---
 
 <p align="center">
   <sub>Built with ❤️ for the DuckDB community</sub>
 </p>
-
-## Feedback
-
-If `anofox_tabular` misbehaves — a profile that looks wrong, a PII match it missed,
-a diff that surprises you — please
-[open an issue](https://github.com/DataZooDE/anofox-tabular/issues). Results depend on
-real data shapes we cannot reproduce here, so a report with your input is the fastest
-path to a fix. Errors from the diff and metric functions end with that link.
-
-If it saved you time, a star on the repo helps other people find it.
-
-The first time you load the extension in an interactive terminal each day, a small
-banner says the same thing. It never prints when output is piped, in notebooks, or in
-CI. Silence it with `SET datazoo_banner = false;` or `DATAZOO_NO_BANNER=1`.
-
