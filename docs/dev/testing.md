@@ -1,0 +1,73 @@
+# Testing
+
+> Run the SQL tests, the NER tests and the Python tests.
+
+**Use this page to:**
+- Run the whole SQL suite or one file
+- Run the tests that need the NER model or libpostal
+- Run the Python package tests
+
+## SQL tests
+
+The tests are [sqllogictest](https://duckdb.org/docs/stable/dev/sqllogictest/intro) files in
+[`test/sql/`](../../test/sql). Each starts with `require anofox_tabular`.
+
+```bash
+make test           # release build, all of test/
+make test_debug     # debug build
+```
+
+`make test` sets `DATAZOO_DISABLE_TELEMETRY=1`, so test runs send no telemetry. To run one file:
+
+```bash
+DATAZOO_DISABLE_TELEMETRY=1 ./build/release/test/unittest test/sql/anofox_vat.test
+```
+
+The test runner changes its working directory to the checkout it was built from. When you run a
+`unittest` built in another checkout (for example a git worktree), pass the directory:
+
+```bash
+DATAZOO_DISABLE_TELEMETRY=1 /path/to/build/release/test/unittest --test-dir "$PWD" test/sql/docs_coverage.test
+```
+
+## Tests that need extra data
+
+| Tests | Guard | How to run |
+|-------|-------|------------|
+| NER: `anofox_pii_ner.test`, `anofox_ner_cache_zero.test`, `anofox_ner_truncation.test` | `require-env OPENVINO_AVAILABLE` | `make test_ner`. Needs a build with OpenVINO and downloads the NER model (~66 MB) on first run. |
+| Postal: `anofox_postal_null.test` | `require-env POSTAL_AVAILABLE` | `make test` sets `POSTAL_AVAILABLE=1` when libpostal is installed |
+
+`test/sql/anofox_postal.test.disabled` and `anofox_postal.test_disabled` are not run, because
+they need the ~500 MB libpostal data.
+
+## Docs coverage test
+
+`test/sql/docs_coverage.test` fails when a registered function or setting is missing from the
+docs:
+
+- every function named `anofox%` and every short alias must appear as `` `name` `` or
+  `` `name(`` in `docs/api/*.md`;
+- every setting named `anofox%` and `datazoo_banner` must appear as `` `name` `` in
+  `docs/reference/configuration.md`.
+
+The test prints the missing names. When you add a function or a setting, document it on the
+module page and in the configuration reference, and the test passes again.
+
+## Python tests
+
+Use uv. Build the extension first, then:
+
+```bash
+cd python
+uv sync --extra dev
+ANOFOX_EXT_PATH=../build/release/extension/anofox_tabular/anofox_tabular.duckdb_extension \
+  uv run pytest tests/ -v
+
+# tests that do not need the extension
+uv run pytest tests/test_loader.py tests/test_utils.py -v
+```
+
+## Next steps
+
+- [Building](building.md)
+- [Architecture](architecture.md)
