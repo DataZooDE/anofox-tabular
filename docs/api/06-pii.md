@@ -686,29 +686,29 @@ SELECT pii_type, recognizer_name, pattern_info FROM pii_status() ORDER BY pii_ty
 ```
 
 ```text
-┌────────────────┬─────────────────┬────────────────────────────────────────────────────────┐
-│    pii_type    │ recognizer_name │                      pattern_info                      │
-│    varchar     │     varchar     │                        varchar                         │
-├────────────────┼─────────────────┼────────────────────────────────────────────────────────┤
-│ API_KEY        │ API Key         │ AWS/GitHub tokens and high-entropy strings             │
-│ CREDIT_CARD    │ Credit Card     │ Visa/MC/Amex/Discover with Luhn validation             │
-│ CRYPTO_ADDRESS │ Crypto Address  │ Bitcoin (P2PKH/P2SH/SegWit) and Ethereum               │
-│ DE_TAX_ID      │ German Tax ID   │ 11-digit Steueridentifikationsnummer                   │
-│ EMAIL          │ Email           │ RFC 5322 email pattern                                 │
-│ IBAN           │ IBAN            │ ISO 13616 with MOD-97 checksum                         │
-│ IP_ADDRESS     │ IP Address      │ IPv4 and IPv6 formats                                  │
-│ LOCATION       │ Unknown         │ No description                                         │
-│ MAC_ADDRESS    │ MAC Address     │ Colon/hyphen/dot formats; bare hex needs letter+digit  │
-│ MISC           │ Unknown         │ No description                                         │
-│ NAME           │ Person Name     │ OpenVINO DistilBERT NER (92% F1)                       │
-│ ORGANIZATION   │ Unknown         │ No description                                         │
-│ PHONE          │ Phone           │ International (+XX, 00XX) and national (0XX) formats   │
-│ UK_NINO        │ UK NINO         │ UK National Insurance Number format                    │
-│ URL            │ URL             │ HTTP/HTTPS URLs                                        │
-│ US_PASSPORT    │ US Passport     │ Letter + 8 digits                                      │
-│ US_SSN         │ US SSN          │ XXX-XX-XXXX format with area validation                │
-└────────────────┴─────────────────┴────────────────────────────────────────────────────────┘
-  17 rows                                                                         3 columns
+┌────────────────┬─────────────────┬───────────────────────────────────────────────────────┐
+│    pii_type    │ recognizer_name │                     pattern_info                      │
+│    varchar     │     varchar     │                        varchar                        │
+├────────────────┼─────────────────┼───────────────────────────────────────────────────────┤
+│ API_KEY        │ API Key         │ AWS/GitHub tokens and high-entropy strings            │
+│ CREDIT_CARD    │ Credit Card     │ Visa/MC/Amex/Discover with Luhn validation            │
+│ CRYPTO_ADDRESS │ Crypto Address  │ Bitcoin (P2PKH/P2SH/SegWit) and Ethereum              │
+│ DE_TAX_ID      │ German Tax ID   │ 11-digit Steueridentifikationsnummer                  │
+│ EMAIL          │ Email           │ RFC 5322 email pattern                                │
+│ IBAN           │ IBAN            │ ISO 13616 with MOD-97 checksum                        │
+│ IP_ADDRESS     │ IP Address      │ IPv4 and IPv6 formats                                 │
+│ LOCATION       │ Unknown         │ No description                                        │
+│ MAC_ADDRESS    │ MAC Address     │ Colon/hyphen/dot formats; bare hex needs letter+digit │
+│ MISC           │ Unknown         │ No description                                        │
+│ NAME           │ Person Name     │ OpenVINO DistilBERT NER (92% F1)                      │
+│ ORGANIZATION   │ Unknown         │ No description                                        │
+│ PHONE          │ Phone           │ International (+XX, 00XX) and national (0XX) formats  │
+│ UK_NINO        │ UK NINO         │ UK National Insurance Number format                   │
+│ URL            │ URL             │ HTTP/HTTPS URLs                                       │
+│ US_PASSPORT    │ US Passport     │ Letter + 8 digits                                     │
+│ US_SSN         │ US SSN          │ XXX-XX-XXXX format with area validation               │
+└────────────────┴─────────────────┴───────────────────────────────────────────────────────┘
+  17 rows                                                                        3 columns
 ```
 
 ---
