@@ -95,6 +95,11 @@ private:
 
 PhoneNumberFormatOption ParseFormatOption(const std::string &format_str);
 
+//! Canonical form of a user-supplied region code: surrounding whitespace is
+//! removed, letters are upper-cased and the common alias 'UK' maps to the ISO
+//! code 'GB'. Applied to region hints and to the default-region setting.
+std::string NormalizeRegionCode(const std::string &region);
+
 } // namespace phonenumber
 
 } // namespace anofox

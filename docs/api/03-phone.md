@@ -30,9 +30,26 @@ JP, CN, IN, BR, MX, AR, RU, NL, SE, NO, DK, FI and CH. Numbers of other regions 
 Most functions take a `region` argument: a two-letter ISO region code such as `'US'` or `'DE'`.
 It tells the parser how to read a number without a leading `+` and country code. A number that
 starts with `+` carries its own country code. When `region` is `NULL`, the setting
-`anofox_tab_phonenumber_default_region` applies (default `US`). A `region` that is not one of
-the 21 supported codes (for example `'AT'`, or `'UK'` instead of `'GB'`) makes a number without
+`anofox_tab_phonenumber_default_region` applies (default `US`). The code is case-insensitive and
+surrounding spaces are ignored (`' gb '` is `GB`); a `region` of only spaces counts as `NULL`.
+`'UK'` is accepted as an alias of `'GB'`, both as `region` and in the default-region setting. A
+`region` that is not one of the 21 supported codes (for example `'AT'`) makes a number without
 `+` invalid; `phonenumber_parse` reports it as `unsupported_region`.
+
+```sql
+SELECT phonenumber_format('020 7946 0958', 'UK', 'E164') AS uk,
+       phonenumber_format('020 7946 0958', ' gb ', 'E164') AS gb,
+       phonenumber_is_valid_for_region('+44 20 7946 0958', 'UK') AS valid_in_uk;
+```
+
+```text
+┌───────────────┬───────────────┬─────────────┐
+│      uk       │      gb       │ valid_in_uk │
+│    varchar    │    varchar    │   boolean   │
+├───────────────┼───────────────┼─────────────┤
+│ +442079460958 │ +442079460958 │ true        │
+└───────────────┴───────────────┴─────────────┘
+```
 
 The parser also understands two common ways of writing international numbers:
 

@@ -236,7 +236,7 @@ PhoneNumberParts PhoneNumberManager::Parse(const std::string& raw_number, const 
 		return parts;
 	}
 
-	std::string hint_upper = region_hint.empty() ? std::string() : StringUtil::Upper(region_hint);
+	std::string hint_upper = NormalizeRegionCode(region_hint);
 
 	int country_code = 0;
 	std::string national_number;
@@ -454,8 +454,8 @@ bool PhoneNumberManager::IsValidForRegion(const std::string& raw_number, const s
 	}
 
 	// Check if the parsed region matches the requested region
-	std::string requested_region =
-	    region_hint.empty() ? EffectiveDefaultRegion(default_region) : StringUtil::Upper(region_hint);
+	auto hint = NormalizeRegionCode(region_hint);
+	std::string requested_region = hint.empty() ? EffectiveDefaultRegion(default_region) : hint;
 	if (parts.region_code != requested_region) {
 		AnofoxTrace(AnofoxLogLevel::Debug,
 		           "PhoneNumber IsValidForRegion failed: parsed_region=" + parts.region_code +
@@ -521,7 +521,8 @@ std::string PhoneNumberManager::Match(const std::string& number1, const std::str
 std::string PhoneNumberManager::GetExampleNumber(const std::string& region_hint, const std::string& default_region) {
 	EnsureInitialized();
 
-	std::string region = region_hint.empty() ? EffectiveDefaultRegion(default_region) : StringUtil::Upper(region_hint);
+	auto hint = NormalizeRegionCode(region_hint);
+	std::string region = hint.empty() ? EffectiveDefaultRegion(default_region) : hint;
 	const CountryMetadata* metadata = GetMetadataForRegion(region);
 
 	if (!metadata) {
@@ -540,7 +541,7 @@ std::string PhoneNumberManager::GetExampleNumber(const std::string& region_hint,
 void PhoneNumberManager::SetDefaultRegion(const std::string& region) {
 	EnsureInitialized();
 	std::lock_guard<std::mutex> lock(RegionMutex());
-	default_region = StringUtil::Upper(region);
+	default_region = NormalizeRegionCode(region);
 	AnofoxTrace(AnofoxLogLevel::Debug, "PhoneNumber default region set to " + default_region);
 }
 
@@ -550,8 +551,9 @@ std::string PhoneNumberManager::GetDefaultRegion() const {
 }
 
 std::string PhoneNumberManager::EffectiveDefaultRegion(const std::string& default_region_p) const {
-	if (!default_region_p.empty()) {
-		return StringUtil::Upper(default_region_p);
+	auto normalized = NormalizeRegionCode(default_region_p);
+	if (!normalized.empty()) {
+		return normalized;
 	}
 	return GetDefaultRegion();
 }
@@ -567,6 +569,18 @@ void PhoneNumberManager::Initialize() {
 	// No external library initialization needed anymore
 	initialized = true;
 	AnofoxTrace(AnofoxLogLevel::Debug, "PhoneNumber initialization complete (custom implementation)");
+}
+
+std::string NormalizeRegionCode(const std::string& region) {
+	auto normalized = region;
+	StringUtil::Trim(normalized);
+	normalized = StringUtil::Upper(normalized);
+	// 'UK' is not an ISO 3166 code but is what most people type for the
+	// United Kingdom; libphonenumber metadata only knows 'GB'.
+	if (normalized == "UK") {
+		normalized = "GB";
+	}
+	return normalized;
 }
 
 PhoneNumberFormatOption ParseFormatOption(const std::string& format_str) {
@@ -609,14 +623,14 @@ static void SetPhonenumberDefaultRegionOption(ClientContext&, SetScope, Value& p
 	if (parameter.IsNull()) {
 		throw InvalidInputException("anofox_phonenumber_default_region cannot be NULL");
 	}
-	auto region = StringUtil::Upper(parameter.ToString());
+	auto region = phonenumber::NormalizeRegionCode(parameter.ToString());
 	if (!phonenumber::GetMetadataForRegion(region)) {
 		throw InvalidInputException(
 		    "Unknown region code '%s' for anofox_tab_phonenumber_default_region; expected a supported "
 		    "2-letter ISO region code (e.g. 'US', 'GB', 'DE')",
 		    parameter.ToString());
 	}
-	// Store the normalized (uppercase) value in the setting
+	// Store the normalized value (trimmed, uppercase, 'UK' -> 'GB') in the setting
 	parameter = Value(region);
 	PhoneNumberManager::Instance().SetDefaultRegion(region);
 }
@@ -640,7 +654,7 @@ struct PhoneBindData : public FunctionData {
 std::string SnapshotDefaultRegion(ClientContext& context) {
 	Value value;
 	if (context.TryGetCurrentSetting("anofox_tab_phonenumber_default_region", value) && !value.IsNull()) {
-		return StringUtil::Upper(value.ToString());
+		return phonenumber::NormalizeRegionCode(value.ToString());
 	}
 	return PhoneNumberManager::Instance().GetDefaultRegion();
 }

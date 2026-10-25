@@ -114,7 +114,7 @@ SELECT key, value FROM email_config() WHERE key LIKE 'dns%';
 
 | Setting | Effect |
 |---------|--------|
-| `anofox_tab_phonenumber_default_region` | Region used by the [phone functions](../api/03-phone.md) when the `region` argument is `NULL`. Must be one of the 21 supported region codes. Read when a query is bound. |
+| `anofox_tab_phonenumber_default_region` | Region used by the [phone functions](../api/03-phone.md) when the `region` argument is `NULL`. Must be one of the 21 supported region codes; case-insensitive, surrounding spaces are ignored and `UK` is stored as `GB`. Read when a query is bound. |
 
 ## Postal
 
