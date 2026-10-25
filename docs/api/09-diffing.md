@@ -78,6 +78,11 @@ Behavior:
   or to `NULL` counts.
 - The key and compare columns are checked against both tables at bind time. A missing column or
   table is a binder error.
+- The primary key must be unique in both tables. A repeated key value would join every source row
+  of that key with every target row and report false changes, so the diff raises an error naming
+  the table and one repeated key instead (see below). Two `NULL` keys count as repeated, matching
+  the NULL-safe join. The check costs one `GROUP BY` over the key columns per table and runs
+  inside the diff query, so it also covers TEMP tables and views.
 - The output has no source values. Join the result back to the source table to see old values.
 
 ```sql
@@ -218,6 +223,18 @@ LINE 1: SELECT * FROM diff_joindiff('customers_v1', 'customers_v2', primary_key.
                       ^
 ```
 
+A primary key that is not unique is an error:
+
+```sql
+CREATE TABLE visits_v1 (id INTEGER, page VARCHAR);
+INSERT INTO visits_v1 VALUES (1, 'home'), (1, 'cart'), (2, 'home');
+SELECT * FROM diff_joindiff('visits_v1', 'visits_v1', 'id');
+```
+
+```text
+Invalid Input Error: diff_joindiff: primary key is not unique in source table 'visits_v1' (id = 1 appears 2 times)
+```
+
 ### Compound keys
 
 Pass a list of key columns. Rows with a `NULL` key part are matched to each other:
@@ -270,7 +287,8 @@ diff_hashdiff(
 | `target_table` | `VARCHAR` | required | The new table or view |
 | `primary_key` | `VARCHAR` or `VARCHAR[]` | required | One key column, or a list. By name: `primary_key :=` or `primary_keys :=` |
 
-The output columns are the same as for [`diff_joindiff`](#diff_joindiff).
+The output columns are the same as for [`diff_joindiff`](#diff_joindiff). The primary key must be
+unique in both tables, as for `diff_joindiff`.
 
 ```sql
 SELECT * FROM diff_hashdiff('customers_v1', 'customers_v2', 'id') ORDER BY id;

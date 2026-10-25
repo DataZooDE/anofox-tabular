@@ -259,9 +259,33 @@ static DiffArguments ResolveDiffArguments(const string &function_name, const Tab
 
 // ParseSubquery is a shared helper from anofox_sql_utils.hpp.
 
-static string GenerateJoinDiffSQL(const string &source_table, const string &target_table,
-                                  const vector<string> &primary_keys, const vector<string> &compare_columns,
-                                  bool include_all) {
+// A diff needs a unique primary key on both sides: with a repeated key every
+// source row joins every target row of that key and the diff reports false
+// changes. The guard is a filter on one side of the join whose uncorrelated
+// scalar subquery looks for one repeated key (GROUP BY groups NULLs together,
+// matching the NULL-safe join) and raises an error() naming it; without a
+// repeated key it is NULL and the filter keeps every row. It runs inside the
+// diff query itself, so it sees everything the diff sees (TEMP tables, views,
+// uncommitted rows); the cost is one GROUP BY over the key per table.
+static string BuildUniqueKeyGuard(const string &function_name, const string &table_name, const string &side,
+                                  const vector<string> &primary_keys) {
+	string key_cols;
+	string key_desc = "''";
+	for (size_t i = 0; i < primary_keys.size(); i++) {
+		auto col = QuoteSqlIdentifier(primary_keys[i]);
+		key_cols += (i > 0 ? ", " : "") + col;
+		key_desc += " || '" + string(i > 0 ? ", " : "") + EscapeSqlStringLiteral(primary_keys[i]) +
+		            " = ' || COALESCE(CAST(" + col + " AS VARCHAR), 'NULL')";
+	}
+	string prefix = function_name + ": primary key is not unique in " + side + " table '" + table_name + "' (";
+	return "(SELECT error('" + EscapeSqlStringLiteral(prefix) + "' || " + key_desc +
+	       " || ' appears ' || CAST(COUNT(*) AS VARCHAR) || ' times)') FROM " + BuildQueryTableRef(table_name) +
+	       " GROUP BY " + key_cols + " HAVING COUNT(*) > 1 ORDER BY " + key_cols + " LIMIT 1) IS NULL";
+}
+
+static string GenerateJoinDiffSQL(const string &function_name, const string &source_table,
+                                  const string &target_table, const vector<string> &primary_keys,
+                                  const vector<string> &compare_columns, bool include_all) {
 	// NULL-safe primary key join condition: rows whose key components are
 	// NULL still match their counterpart on the other side
 	string pk_join_condition;
@@ -319,9 +343,10 @@ static string GenerateJoinDiffSQL(const string &source_table, const string &targ
 	// through query_table() so hostile and schema-qualified names are handled
 	// by the shared quoting helpers
 	sql += " FROM (SELECT true AS " + string(SOURCE_PRESENT_MARKER) + ", * FROM " + BuildQueryTableRef(source_table) +
-	       ") s ";
+	       " WHERE " + BuildUniqueKeyGuard(function_name, source_table, "source", primary_keys) + ") s ";
 	sql += "FULL OUTER JOIN (SELECT true AS " + string(TARGET_PRESENT_MARKER) + ", * FROM " +
-	       BuildQueryTableRef(target_table) + ") t ";
+	       BuildQueryTableRef(target_table) + " WHERE " +
+	       BuildUniqueKeyGuard(function_name, target_table, "target", primary_keys) + ") t ";
 	sql += "ON " + pk_join_condition;
 
 	if (!include_all) {
@@ -360,8 +385,8 @@ static unique_ptr<TableRef> JoinDiffBindReplace(ClientContext &context, TableFun
 	                                        args.primary_keys, compare_columns);
 
 	// Generate SQL query
-	string sql =
-	    GenerateJoinDiffSQL(args.source_table, args.target_table, args.primary_keys, compare_columns, include_all);
+	string sql = GenerateJoinDiffSQL("diff_joindiff", args.source_table, args.target_table, args.primary_keys,
+	                                 compare_columns, include_all);
 
 	// Parse and return as SubqueryRef
 	auto subquery_ref = ParseSubquery(sql, context,
@@ -390,7 +415,8 @@ static unique_ptr<TableRef> HashDiffBindReplace(ClientContext &context, TableFun
 	    ResolveCompareColumns(context, "diff_hashdiff", args.source_table, args.target_table, args.primary_keys, {});
 
 	// Generate SQL query using same logic as JoinDiff
-	string sql = GenerateJoinDiffSQL(args.source_table, args.target_table, args.primary_keys, compare_columns, false);
+	string sql = GenerateJoinDiffSQL("diff_hashdiff", args.source_table, args.target_table, args.primary_keys,
+	                                 compare_columns, false);
 
 	// Parse and return as SubqueryRef
 	auto subquery_ref = ParseSubquery(sql, context,

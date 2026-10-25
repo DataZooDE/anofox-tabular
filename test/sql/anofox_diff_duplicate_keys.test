@@ -1,0 +1,138 @@
+# name: test/sql/anofox_diff_duplicate_keys.test
+# description: diff_joindiff / diff_hashdiff require a unique primary key on both sides; a
+#              non-unique key raises a clear error instead of reporting false changes. NULL keys
+#              are matched NULL-safely, so two NULL keys are duplicates as well.
+# group: [anofox_tabular]
+
+require anofox_tabular
+
+statement ok
+LOAD anofox_tabular
+
+statement ok
+SET anofox_tab_trace_enabled = false
+
+statement ok
+CREATE TABLE dk_a (id INTEGER, v VARCHAR)
+
+statement ok
+INSERT INTO dk_a VALUES (1, 'a'), (1, 'b'), (2, 'c')
+
+statement ok
+CREATE TABLE dk_b AS SELECT * FROM dk_a
+
+statement ok
+CREATE TABLE dk_unique (id INTEGER, v VARCHAR)
+
+statement ok
+INSERT INTO dk_unique VALUES (1, 'a'), (2, 'c')
+
+# Duplicates in the source table
+statement error
+SELECT * FROM diff_joindiff('dk_a', 'dk_unique', 'id')
+----
+diff_joindiff: primary key is not unique in source table 'dk_a' (id = 1 appears 2 times)
+
+statement error
+SELECT * FROM diff_hashdiff('dk_a', 'dk_unique', 'id')
+----
+diff_hashdiff: primary key is not unique in source table 'dk_a' (id = 1 appears 2 times)
+
+# Duplicates in the target table
+statement error
+SELECT * FROM diff_joindiff('dk_unique', 'dk_b', 'id')
+----
+diff_joindiff: primary key is not unique in target table 'dk_b' (id = 1 appears 2 times)
+
+statement error
+SELECT * FROM diff_hashdiff('dk_unique', 'dk_b', 'id')
+----
+diff_hashdiff: primary key is not unique in target table 'dk_b' (id = 1 appears 2 times)
+
+# Identical tables with a duplicated key: an error, not two false 'changed' rows
+statement error
+SELECT * FROM diff_joindiff('dk_a', 'dk_b', 'id', include_all := true)
+----
+primary key is not unique
+
+# Unique keys keep working
+query TIT
+SELECT diff_type, id, v FROM diff_joindiff('dk_unique', 'dk_unique', 'id', include_all := true) ORDER BY id
+----
+unchanged	1	a
+unchanged	2	c
+
+# Composite keys: unique as a pair -> fine, duplicated pair -> error
+statement ok
+CREATE TABLE dk_c (k1 INTEGER, k2 VARCHAR, v INTEGER)
+
+statement ok
+INSERT INTO dk_c VALUES (1, 'x', 10), (1, 'y', 20), (2, 'x', 30)
+
+statement ok
+CREATE TABLE dk_c_dup (k1 INTEGER, k2 VARCHAR, v INTEGER)
+
+statement ok
+INSERT INTO dk_c_dup VALUES (1, 'x', 10), (1, 'x', 11), (1, 'x', 12), (2, 'x', 30)
+
+query TITI
+SELECT diff_type, k1, k2, v FROM diff_joindiff('dk_c', 'dk_c', ['k1', 'k2'], include_all := true) ORDER BY k1, k2
+----
+unchanged	1	x	10
+unchanged	1	y	20
+unchanged	2	x	30
+
+statement error
+SELECT * FROM diff_joindiff('dk_c', 'dk_c_dup', ['k1', 'k2'])
+----
+diff_joindiff: primary key is not unique in target table 'dk_c_dup' (k1 = 1, k2 = x appears 3 times)
+
+statement error
+SELECT * FROM diff_hashdiff('dk_c_dup', 'dk_c', ['k1', 'k2'])
+----
+diff_hashdiff: primary key is not unique in source table 'dk_c_dup' (k1 = 1, k2 = x appears 3 times)
+
+# NULL keys: a single NULL key matches its counterpart, two NULL keys are duplicates
+statement ok
+CREATE TABLE dk_n1 (id INTEGER, v VARCHAR)
+
+statement ok
+INSERT INTO dk_n1 VALUES (NULL, 'a'), (1, 'b')
+
+statement ok
+CREATE TABLE dk_n2 (id INTEGER, v VARCHAR)
+
+statement ok
+INSERT INTO dk_n2 VALUES (NULL, 'a'), (NULL, 'z'), (1, 'b')
+
+query TIT
+SELECT diff_type, id, v FROM diff_joindiff('dk_n1', 'dk_n1', 'id', include_all := true) ORDER BY id NULLS FIRST
+----
+unchanged	NULL	a
+unchanged	1	b
+
+statement error
+SELECT * FROM diff_joindiff('dk_n1', 'dk_n2', 'id')
+----
+diff_joindiff: primary key is not unique in target table 'dk_n2' (id = NULL appears 2 times)
+
+# Temp tables keep working with the uniqueness check (the check runs in the diff query itself)
+statement ok
+CREATE TEMP TABLE dk_tmp (id INTEGER, v VARCHAR)
+
+statement ok
+INSERT INTO dk_tmp VALUES (5, 'p'), (5, 'q')
+
+statement error
+SELECT * FROM diff_joindiff('dk_tmp', 'dk_unique', 'id')
+----
+diff_joindiff: primary key is not unique in source table 'dk_tmp' (id = 5 appears 2 times)
+
+# Empty tables are trivially unique
+statement ok
+CREATE TABLE dk_empty (id INTEGER, v VARCHAR)
+
+query I
+SELECT COUNT(*) FROM diff_joindiff('dk_empty', 'dk_empty', 'id', include_all := true)
+----
+0
