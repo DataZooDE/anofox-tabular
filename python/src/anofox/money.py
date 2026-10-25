@@ -106,9 +106,9 @@ def currency_name(conn: Any, code: str) -> str:
     return str(result[0]) if result[0] is not None else ""
 
 
-def money_format(conn: Any, money: dict, fmt: str = "{amount} {currency}") -> str:
+def money_format(conn: Any, money: dict, fmt: str = "code") -> str:
     """
-    Format a money value as a string.
+    Format a money value as a string, like SQL ``money_format(money, format_style)``.
 
     Parameters
     ----------
@@ -117,7 +117,9 @@ def money_format(conn: Any, money: dict, fmt: str = "{amount} {currency}") -> st
     money:
         Money dict with ``amount`` and ``currency`` keys.
     fmt:
-        Format string.
+        Format style: ``"code"`` (default, ``1234.50 EUR``), ``"symbol"``
+        (``1.234,50 €``) or ``"long"`` (``1.234,50 Euro``). Any other string
+        is formatted like ``"code"``; it is not a template.
 
     Returns
     -------

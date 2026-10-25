@@ -220,3 +220,22 @@ class TestMoneyFormatting:
         from anofox import money
         result = money.money_format(conn, {"amount": 1234567.89, "currency": "USD"}, "symbol")
         assert result == "$1,234,567.89"
+
+
+class TestMoneyFormatStyles:
+    """money_format takes the SQL format styles: symbol, long, code (the default)."""
+
+    def test_default_is_code_style(self, conn):
+        from anofox import money
+        m = {"amount": 1234.5, "currency": "EUR"}
+        assert money.money_format(conn, m) == "1234.50 EUR"
+        assert money.money_format(conn, m) == money.money_format(conn, m, "code")
+
+    def test_long_style(self, conn):
+        from anofox import money
+        assert money.money_format(conn, {"amount": 1234.5, "currency": "EUR"}, "long") == "1.234,50 Euro"
+
+    def test_default_is_documented_as_code(self):
+        import inspect
+        from anofox import money
+        assert inspect.signature(money.money_format).parameters["fmt"].default == "code"
