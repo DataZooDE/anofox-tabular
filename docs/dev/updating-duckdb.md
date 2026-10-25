@@ -77,6 +77,9 @@ What the 2.0 port changed, and the rule for new code:
   (the Python package) refuse to load the extension. The `Makefile` sets `OVERRIDE_GIT_DESCRIBE`
   to the tag when `./duckdb` sits exactly on a release tag; check the configure line
   `-- git hash ..., version v2.0.0`.
+- **Switching an existing checkout.** After `git submodule update` moves `./duckdb` to another
+  line, delete `build/release/CMakeCache.txt` (and `build/release/CMakeFiles`) before building:
+  the v1.5 cache sets `CMAKE_CXX_STANDARD=11`, which the 2.0 configure step rejects.
 - **Shell.** The 2.0 shell does not link the extension statically. `scripts/duckdb-dev.sh` starts
   `build/release/duckdb` with the extension loaded (`-unsigned`), on both lines:
   `scripts/duckdb-dev.sh -c "SELECT email_is_valid('a@b.com')"`. With `AI_AGENT` set and stdout
