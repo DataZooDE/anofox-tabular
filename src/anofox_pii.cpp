@@ -847,30 +847,60 @@ std::string URLRecognizer::GetPartialMask(const std::string &text) const {
 // Email Recognizer
 // ============================================================================
 
+namespace {
+
+// Email pattern with non-ASCII letters (jörg, müller, weiß, пётр).
+// std::regex matches bytes, so such a letter is a UTF-8 sequence: a lead byte
+// C3-DF, E1 or E3-EF and one or two continuation bytes. C2 and E2 are left out
+// so NBSP, quotes and dashes (« » „ “ –) around an address stay outside it.
+// The local part and each domain label start with a letter or digit, labels
+// also end with one; the leftmost-match rule then starts the address at its
+// first character, so no leading \b is needed (\b treats UTF-8 bytes as
+// non-word characters and used to cut "jörg.k@..." to "rg.k@...").
+std::string BuildEmailPattern() {
+    const std::string utf8_letter = R"([\xC3-\xDF\xE1\xE3-\xEF][\x80-\xBF]{1,2})";
+    const std::string alnum = "(?:[A-Za-z0-9]|" + utf8_letter + ")";
+    const std::string label = alnum + "(?:(?:[A-Za-z0-9-]|" + utf8_letter + ")*" + alnum + ")?";
+    const std::string local = alnum + "(?:[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]|" + utf8_letter + ")*";
+    return local + "@" + label + R"((?:\.)" + label + ")*";
+}
+
+} // namespace
+
 EmailRecognizer::EmailRecognizer()
     : RegexRecognizer(
         PIIType::EMAIL,
         "Email",
-        R"(\b[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\b)"
+        BuildEmailPattern()
     ) {}
 
 EmailRecognizer::~EmailRecognizer() {}
 
 std::string EmailRecognizer::GetPartialMask(const std::string &text) const {
-    // Show first 2 chars of local part + domain: jo***@example.com
+    // Show first 2 characters of local part + domain: jo***@example.com.
+    // Characters are UTF-8 code points, so "jörg" keeps "jö", never half of "ö".
     auto at_pos = text.find('@');
-    if (at_pos == std::string::npos || at_pos < 2) {
+    if (at_pos == std::string::npos) {
         return "***@***.***";
     }
 
     std::string local = text.substr(0, at_pos);
     std::string domain = text.substr(at_pos);
 
-    if (local.length() <= 2) {
+    std::vector<size_t> char_starts;
+    for (size_t i = 0; i < local.size(); ++i) {
+        if ((static_cast<unsigned char>(local[i]) & 0xC0) != 0x80) {
+            char_starts.push_back(i);
+        }
+    }
+    if (char_starts.size() < 2) {
+        return "***@***.***";
+    }
+    if (char_starts.size() == 2) {
         return local + "***" + domain;
     }
 
-    return local.substr(0, 2) + std::string(local.length() - 2, '*') + domain;
+    return local.substr(0, char_starts[2]) + std::string(char_starts.size() - 2, '*') + domain;
 }
 
 // ============================================================================

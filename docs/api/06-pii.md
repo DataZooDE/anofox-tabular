@@ -49,7 +49,7 @@ NER types need the NER model.
 
 | Type | Detects | Method |
 |------|---------|--------|
-| `EMAIL` | Email addresses | pattern |
+| `EMAIL` | Email addresses, also with non-ASCII letters (`jörg.k@müller-gmbh.de`) | pattern |
 | `PHONE` | International numbers with a `+` or `00` prefix (`+49 (0) 221 4711-0`, `0049 171 1234567`), national numbers with an area code and a space, dash or slash (`0171 1234567`, `089/12345678`, `(089) 123 456 78`) and US `(555) 123-4567`; 7 to 15 digits, starting after whitespace, `:` or `(` | pattern |
 | `CREDIT_CARD` | Visa, Mastercard, Amex and Discover numbers | pattern + Luhn checksum |
 | `US_SSN` | US Social Security Numbers `XXX-XX-XXXX` | pattern + area validation |
