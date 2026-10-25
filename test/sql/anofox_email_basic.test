@@ -120,3 +120,19 @@ SET anofox_tab_trace_enabled=false;
 
 statement ok
 SET anofox_tab_trace_enabled=true;
+
+# The email settings are process-wide: restore the defaults this file changed so
+# later test files start from a clean configuration
+statement ok
+SET anofox_tab_email_regex_pattern = '^[A-Za-z0-9.!#$%&''*+/=?^_`{|}~-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*$';
+
+statement ok
+SET anofox_tab_email_smtp_connect_timeout_ms = 5000;
+
+statement ok
+SET anofox_tab_email_smtp_read_timeout_ms = 5000;
+
+query T
+SELECT email_is_valid('first.last@example.com', 'regex');
+----
+true
