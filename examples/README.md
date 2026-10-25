@@ -10,7 +10,7 @@ The scripts load `anofox_tabular` in this order:
 
 1. the file named by the `ANOFOX_EXT_PATH` environment variable;
 2. a local build at `../build/release/extension/anofox_tabular/anofox_tabular.duckdb_extension`
-   (see [Building from Source](../README.md#%EF%B8%8F-building-from-source));
+   (see [Building from Source](../docs/dev/building.md));
 3. otherwise `INSTALL anofox_tabular FROM community`, which needs network access.
 
 The `duckdb` Python package must match the DuckDB version the extension was built for
@@ -308,7 +308,7 @@ conn = duckdb.connect("example.db")  # File-based
 
 - [DuckDB Python API Documentation](https://duckdb.org/docs/api/python/overview)
 - [Anofox Tabular Documentation](../README.md)
-- [Email Validation](../README.md#-email-validation)
+- [Email Validation](../docs/api/01-email.md)
 
 ## Contributing
 
