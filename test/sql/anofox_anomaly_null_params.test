@@ -97,7 +97,8 @@ SELECT * FROM outlier_tree('np', 'v, g', 'bogus');
 ----
 outlier_tree: output_mode must be 'summary' or 'outliers'
 
-statement error
-SELECT * FROM outlier_tree('np', 'v, g', 'OUTLIERS');
+# output_mode is case-insensitive
+query I
+SELECT COUNT(*) = (SELECT COUNT(*) FROM outlier_tree('np', 'v, g', 'outliers')) FROM outlier_tree('np', 'v, g', 'OUTLIERS');
 ----
-outlier_tree: output_mode must be 'summary' or 'outliers'
+true

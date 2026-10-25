@@ -95,6 +95,61 @@ void ValidateFiniteDouble(const Value &value, const string &function_name, const
 	}
 }
 
+string RequireNonNullArgument(const Value *value, const string &function_name, const string &argument_name) {
+	if (!value || value->IsNull()) {
+		throw BinderException("%s: %s must not be NULL", function_name, argument_name);
+	}
+	return value->ToString();
+}
+
+string RequireNonNullArgument(const TableFunctionBindInput &input, idx_t index, const string &function_name,
+                              const string &argument_name) {
+	return RequireNonNullArgument(index < input.inputs.size() ? &input.inputs[index] : nullptr, function_name,
+	                              argument_name);
+}
+
+void ValidateThresholdOrder(const Value &lower, const Value &upper, const string &function_name,
+                            const string &lower_name, const string &upper_name) {
+	if (lower.IsNull() || upper.IsNull()) {
+		return;
+	}
+	if (lower.GetValue<double>() > upper.GetValue<double>()) {
+		throw BinderException("%s: %s (%s) must not be greater than %s (%s)", function_name, lower_name,
+		                      lower.ToString(), upper_name, upper.ToString());
+	}
+}
+
+void ValidateNonNegative(const Value &value, const string &function_name, const string &parameter_name) {
+	if (value.IsNull()) {
+		return;
+	}
+	if (value.GetValue<double>() < 0) {
+		throw BinderException("%s: %s must not be negative (got %s)", function_name, parameter_name,
+		                      value.ToString());
+	}
+}
+
+void ValidateRate(const Value &value, const string &function_name, const string &parameter_name) {
+	ValidateFiniteDouble(value, function_name, parameter_name);
+	if (value.IsNull()) {
+		return;
+	}
+	double rate = value.GetValue<double>();
+	if (rate < 0 || rate > 1) {
+		throw BinderException("%s: %s must be between 0 and 1 (got %s)", function_name, parameter_name,
+		                      value.ToString());
+	}
+}
+
+string RoundedNumberSQL(const string &double_expr) {
+	return "CAST(CASE WHEN abs(" + double_expr + ") < 0.001 THEN " + double_expr + " ELSE round(" + double_expr +
+	       ", 3) END AS VARCHAR)";
+}
+
+string LowerOption(const string &value) {
+	return StringUtil::Lower(value);
+}
+
 vector<string> ParseCommaSeparatedColumns(const string &columns_str) {
 	vector<string> column_names;
 	size_t start = 0;

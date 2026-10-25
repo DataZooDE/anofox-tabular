@@ -103,12 +103,12 @@ static string GenerateRegexMatchSQL(const string &table_ref, const string &colum
 		"CASE "
 		"  WHEN total_count = 0 THEN 'No non-NULL values to evaluate; regex match check passed trivially' "
 		"  WHEN (" + min_val + " IS NOT NULL AND match_rate < " + min_val + ") THEN "
-		"    'Match rate ' || CAST(match_rate AS VARCHAR) || ' (' || CAST(matched_count AS VARCHAR) || '/' || "
+		"    'Match rate ' || " + RoundedNumberSQL("match_rate") + " || ' (' || CAST(matched_count AS VARCHAR) || '/' || "
 		"    CAST(total_count AS VARCHAR) || ') is below minimum ' || CAST(" + min_val + " AS VARCHAR) "
 		"  WHEN (" + max_val + " IS NOT NULL AND match_rate > " + max_val + ") THEN "
-		"    'Match rate ' || CAST(match_rate AS VARCHAR) || ' (' || CAST(matched_count AS VARCHAR) || '/' || "
+		"    'Match rate ' || " + RoundedNumberSQL("match_rate") + " || ' (' || CAST(matched_count AS VARCHAR) || '/' || "
 		"    CAST(total_count AS VARCHAR) || ') exceeds maximum ' || CAST(" + max_val + " AS VARCHAR) "
-		"  ELSE 'Match rate ' || CAST(match_rate AS VARCHAR) || ' (' || CAST(matched_count AS VARCHAR) || '/' || "
+		"  ELSE 'Match rate ' || " + RoundedNumberSQL("match_rate") + " || ' (' || CAST(matched_count AS VARCHAR) || '/' || "
 		"    CAST(total_count AS VARCHAR) || ') is within acceptable range' "
 		"END AS message "
 		"FROM (SELECT "
@@ -144,10 +144,10 @@ static string GenerateValuesInSetSQL(const string &table_ref, const string &colu
 		"CASE "
 		"  WHEN total_count = 0 THEN 'No non-NULL values to evaluate; values-in-set check passed trivially' "
 		"  WHEN in_set_rate >= " + min_val + " THEN "
-		"    'In-set rate ' || CAST(in_set_rate AS VARCHAR) || ' (' || CAST(in_set_count AS VARCHAR) || '/' || "
+		"    'In-set rate ' || " + RoundedNumberSQL("in_set_rate") + " || ' (' || CAST(in_set_count AS VARCHAR) || '/' || "
 		"    CAST(total_count AS VARCHAR) || ') is acceptable' "
 		"  ELSE "
-		"    'In-set rate ' || CAST(in_set_rate AS VARCHAR) || ' (' || CAST(in_set_count AS VARCHAR) || '/' || "
+		"    'In-set rate ' || " + RoundedNumberSQL("in_set_rate") + " || ' (' || CAST(in_set_count AS VARCHAR) || '/' || "
 		"    CAST(total_count AS VARCHAR) || ') is below minimum ' || CAST(" + min_val + " AS VARCHAR) "
 		"END AS message "
 		"FROM (SELECT "
@@ -155,6 +155,18 @@ static string GenerateValuesInSetSQL(const string &table_ref, const string &colu
 		"  COUNT(*) AS total_count, "
 		"  COALESCE(CAST(SUM(CASE WHEN list_contains(" + allowed_array + ", " + col_str + ") THEN 1 ELSE 0 END) AS DOUBLE) / NULLIF(COUNT(*), 0), 0.0) AS in_set_rate "
 		"FROM " + table_ref + " WHERE " + col_id + " IS NOT NULL)";
+}
+
+// AGG(double_expr) over the finite values only (STDDEV and friends raise "out of range" on
+// NaN/Inf); when the input holds any NaN/Inf value the result is NaN, so the check cannot
+// pass on data it could not evaluate.
+string BuildFiniteAggregateExpr(const string &agg_upper, const string &double_expr) {
+	return "CASE WHEN " + BuildNonFiniteCountExpr(double_expr) + " > 0 THEN CAST('nan' AS DOUBLE) ELSE CAST(" +
+	       agg_upper + "(" + double_expr + ") FILTER (WHERE isfinite(" + double_expr + ")) AS DOUBLE) END";
+}
+
+string BuildNonFiniteCountExpr(const string &double_expr) {
+	return "COUNT(*) FILTER (WHERE NOT isfinite(" + double_expr + "))";
 }
 
 // Helper: Generate SQL for aggregate assertions (avg/min/max/sum/median/stddev vs thresholds).
@@ -172,6 +184,7 @@ static string GenerateAggCheckSQL(const string &table_ref, const string &column_
 	return "SELECT "
 		"CASE "
 		"  WHEN value IS NULL THEN 'pass' "
+		"  WHEN isnan(value) THEN 'fail' "
 		"  WHEN (" + lower_val + " IS NOT NULL AND value < " + lower_val + ") OR "
 		"       (" + upper_val + " IS NOT NULL AND value > " + upper_val + ") THEN 'fail' "
 		"  ELSE 'pass' "
@@ -182,34 +195,42 @@ static string GenerateAggCheckSQL(const string &table_ref, const string &column_
 		+ upper_val + " AS upper_threshold, "
 		"CASE "
 		"  WHEN value IS NULL THEN 'No non-NULL values to evaluate; " + agg_keyword + " check passed trivially' "
+		"  WHEN isnan(value) THEN '" + agg_keyword + " value is NaN: the column contains ' || "
+		"    CAST(nonfinite_count AS VARCHAR) || ' NaN/Inf value(s)' "
 		"  WHEN (" + lower_val + " IS NOT NULL AND value < " + lower_val + ") THEN "
 		"    '" + agg_keyword + " value ' || CAST(value AS VARCHAR) || ' is below minimum ' || CAST(" + lower_val + " AS VARCHAR) "
 		"  WHEN (" + upper_val + " IS NOT NULL AND value > " + upper_val + ") THEN "
 		"    '" + agg_keyword + " value ' || CAST(value AS VARCHAR) || ' exceeds maximum ' || CAST(" + upper_val + " AS VARCHAR) "
 		"  ELSE '" + agg_keyword + " value ' || CAST(value AS VARCHAR) || ' is within acceptable range' "
 		"END AS message "
-		"FROM (SELECT CAST(" + agg_upper + "(CAST(" + col_id + " AS DOUBLE)) AS DOUBLE) AS value FROM " + table_ref + ")";
+		"FROM (SELECT " + BuildFiniteAggregateExpr(agg_upper, "CAST(" + col_id + " AS DOUBLE)") + " AS value, " +
+		BuildNonFiniteCountExpr("CAST(" + col_id + " AS DOUBLE)") + " AS nonfinite_count FROM " + table_ref + ")";
+}
+
+string BuildDuplicateCountExpr(const vector<string> &column_names) {
+	if (column_names.size() == 1) {
+		// COUNT(DISTINCT) skips NULL: the NULL keys form one extra group when present
+		string col = QuoteSqlIdentifier(column_names[0]);
+		return "(COUNT(*) - COUNT(DISTINCT " + col + ") - CASE WHEN COUNT(*) > COUNT(" + col + ") THEN 1 ELSE 0 END)";
+	}
+	// A compound key is a ROW value, never NULL itself; DISTINCT compares its NULL
+	// components as equal, so (x, NULL) twice is one duplicate and once is none.
+	string row = "row(";
+	for (size_t i = 0; i < column_names.size(); i++) {
+		if (i > 0) {
+			row += ", ";
+		}
+		row += QuoteSqlIdentifier(column_names[i]);
+	}
+	return "(COUNT(*) - COUNT(DISTINCT " + row + ")))";
 }
 
 // Helper: Generate SQL for duplicate count checks.
-// Duplicates are COUNT(*) - COUNT(DISTINCT key); for a single column NULLs count as
-// duplicates of each other (COUNT(DISTINCT) ignores NULL).
+// Duplicates are the rows beyond the first of each distinct key. NULL keys are duplicates of
+// each other only: one NULL key is no duplicate, two are one (see BuildDuplicateCountExpr).
 static string GenerateDuplicateCountSQL(const string &table_ref, const vector<string> &column_names,
                                         const Value &max_duplicates) {
 	string max_val = max_duplicates.IsNull() ? "0" : max_duplicates.ToString();
-	string distinct_expr;
-	if (column_names.size() == 1) {
-		distinct_expr = QuoteSqlIdentifier(column_names[0]);
-	} else {
-		distinct_expr = "(";
-		for (size_t i = 0; i < column_names.size(); i++) {
-			if (i > 0) {
-				distinct_expr += ", ";
-			}
-			distinct_expr += QuoteSqlIdentifier(column_names[i]);
-		}
-		distinct_expr += ")";
-	}
 
 	return "SELECT "
 		"CASE WHEN duplicate_count <= " + max_val + " THEN 'pass' ELSE 'fail' END AS status, "
@@ -226,7 +247,7 @@ static string GenerateDuplicateCountSQL(const string &table_ref, const vector<st
 		"    ' rows exceeds maximum ' || CAST(" + max_val + " AS VARCHAR) "
 		"END AS message "
 		"FROM (SELECT "
-		"  COUNT(*) - COUNT(DISTINCT " + distinct_expr + ") AS duplicate_count, "
+		"  " + BuildDuplicateCountExpr(column_names) + " AS duplicate_count, "
 		"  COUNT(*) AS total_count "
 		"FROM " + table_ref + ")";
 }
@@ -332,10 +353,10 @@ static string GenerateMatchRateSQL(const string &left_ref, const string &right_r
 		"CASE "
 		"  WHEN total_count = 0 THEN 'Left table is empty (0 rows); match rate check passed trivially' "
 		"  WHEN match_rate >= " + min_val + " THEN "
-		"    'Match rate ' || CAST(match_rate AS VARCHAR) || ' (' || CAST(matched_count AS VARCHAR) || '/' || "
+		"    'Match rate ' || " + RoundedNumberSQL("match_rate") + " || ' (' || CAST(matched_count AS VARCHAR) || '/' || "
 		"    CAST(total_count AS VARCHAR) || ') is acceptable' "
 		"  ELSE "
-		"    'Match rate ' || CAST(match_rate AS VARCHAR) || ' (' || CAST(matched_count AS VARCHAR) || '/' || "
+		"    'Match rate ' || " + RoundedNumberSQL("match_rate") + " || ' (' || CAST(matched_count AS VARCHAR) || '/' || "
 		"    CAST(total_count AS VARCHAR) || ') is below minimum ' || CAST(" + min_val + " AS VARCHAR) "
 		"END AS message "
 		"FROM stats";
@@ -363,10 +384,10 @@ static string GenerateComplianceSQL(const string &table_ref, const string &expre
 		"CASE "
 		"  WHEN total_count = 0 THEN 'Table is empty (0 rows); compliance check passed trivially' "
 		"  WHEN compliance_rate >= " + min_val + " THEN "
-		"    'Compliance rate ' || CAST(compliance_rate AS VARCHAR) || ' (' || CAST(compliant_count AS VARCHAR) || '/' || "
+		"    'Compliance rate ' || " + RoundedNumberSQL("compliance_rate") + " || ' (' || CAST(compliant_count AS VARCHAR) || '/' || "
 		"    CAST(total_count AS VARCHAR) || ') is acceptable' "
 		"  ELSE "
-		"    'Compliance rate ' || CAST(compliance_rate AS VARCHAR) || ' (' || CAST(compliant_count AS VARCHAR) || '/' || "
+		"    'Compliance rate ' || " + RoundedNumberSQL("compliance_rate") + " || ' (' || CAST(compliant_count AS VARCHAR) || '/' || "
 		"    CAST(total_count AS VARCHAR) || ') is below minimum ' || CAST(" + min_val + " AS VARCHAR) "
 		"END AS message "
 		"FROM (SELECT "
@@ -464,10 +485,10 @@ static string GenerateRelCountChangeSQL(const string &table_ref, const string &d
 		"  WHEN (" + lower_val + " IS NOT NULL AND rel_change < " + lower_val + ") OR "
 		"       (" + upper_val + " IS NOT NULL AND rel_change > " + upper_val + ") THEN "
 		"    'Count ' || CAST(ref_c AS VARCHAR) || ' on ' || CAST(ref_d AS VARCHAR) || ' deviates by ' || "
-		"    CAST(rel_change AS VARCHAR) || ' from baseline average ' || CAST(baseline_avg AS VARCHAR) "
+		"    " + RoundedNumberSQL("rel_change") + " || ' from baseline average ' || " + RoundedNumberSQL("baseline_avg") + " "
 		"  ELSE "
 		"    'Count ' || CAST(ref_c AS VARCHAR) || ' on ' || CAST(ref_d AS VARCHAR) || ' is within ' || "
-		"    CAST(rel_change AS VARCHAR) || ' of baseline average ' || CAST(baseline_avg AS VARCHAR) "
+		"    " + RoundedNumberSQL("rel_change") + " || ' of baseline average ' || " + RoundedNumberSQL("baseline_avg") + " "
 		"END AS message "
 		"FROM summary ORDER BY reference_date";
 }
@@ -586,10 +607,10 @@ static string GenerateRollingValuesInSetSQL(const string &table_ref, const strin
 		"CASE "
 		"  WHEN total_count = 0 THEN 'No values in the trailing window; rolling values-in-set check passed trivially' "
 		"  WHEN in_set_rate >= " + min_val + " THEN "
-		"    'In-set rate ' || CAST(in_set_rate AS VARCHAR) || ' (' || CAST(in_set_count AS VARCHAR) || '/' || "
+		"    'In-set rate ' || " + RoundedNumberSQL("in_set_rate") + " || ' (' || CAST(in_set_count AS VARCHAR) || '/' || "
 		"    CAST(total_count AS VARCHAR) || ') over the trailing " + window_val + " day(s) is acceptable' "
 		"  ELSE "
-		"    'In-set rate ' || CAST(in_set_rate AS VARCHAR) || ' (' || CAST(in_set_count AS VARCHAR) || '/' || "
+		"    'In-set rate ' || " + RoundedNumberSQL("in_set_rate") + " || ' (' || CAST(in_set_count AS VARCHAR) || '/' || "
 		"    CAST(total_count AS VARCHAR) || ') over the trailing " + window_val + " day(s) is below minimum ' || CAST(" + min_val + " AS VARCHAR) "
 		"END AS message "
 		"FROM rates ORDER BY reference_date";
@@ -687,15 +708,13 @@ static unique_ptr<TableRef> CheckRegexMatchBindReplace(ClientContext &context, T
 		    "anofox_tab_regex_match requires at least 4 arguments: table_name, column_name, pattern, min_match_rate");
 	}
 
-	string table_name = input.inputs[0].ToString();
-	string column_name = input.inputs[1].ToString();
-	if (input.inputs[2].IsNull()) {
-		throw BinderException("regex_match: pattern must not be NULL");
-	}
-	string pattern = input.inputs[2].ToString();
-	ValidateFiniteDouble(input.inputs[3], "regex_match", "min_match_rate");
+	string table_name = RequireNonNullArgument(input, 0, "regex_match", "table_name");
+	string column_name = RequireNonNullArgument(input, 1, "regex_match", "column_name");
+	string pattern = RequireNonNullArgument(input, 2, "regex_match", "pattern");
+	ValidateRate(input.inputs[3], "regex_match", "min_match_rate");
 	Value max_rate = (input.inputs.size() > 4) ? input.inputs[4] : Value();
-	ValidateFiniteDouble(max_rate, "regex_match", "max_match_rate");
+	ValidateRate(max_rate, "regex_match", "max_match_rate");
+	ValidateThresholdOrder(input.inputs[3], max_rate, "regex_match", "min_match_rate", "max_match_rate");
 
 	string table_ref = BuildQueryTableRef(table_name);
 	string sql = GenerateRegexMatchSQL(table_ref, column_name, pattern, input.inputs[3], max_rate);
@@ -709,11 +728,12 @@ static unique_ptr<TableRef> CheckValuesInSetBindReplace(ClientContext &context, 
 		    "anofox_tab_values_in_set requires at least 3 arguments: table_name, column_name, allowed_values");
 	}
 
-	string table_name = input.inputs[0].ToString();
-	string column_name = input.inputs[1].ToString();
+	string table_name = RequireNonNullArgument(input, 0, "values_in_set", "table_name");
+	string column_name = RequireNonNullArgument(input, 1, "values_in_set", "column_name");
+	RequireNonNullArgument(input, 2, "values_in_set", "allowed_values");
 	string allowed_array = BuildVarcharArrayLiteral(input.inputs[2]);
 	Value min_rate = (input.inputs.size() > 3) ? input.inputs[3] : Value();
-	ValidateFiniteDouble(min_rate, "values_in_set", "min_rate");
+	ValidateRate(min_rate, "values_in_set", "min_rate");
 
 	string table_ref = BuildQueryTableRef(table_name);
 	string sql = GenerateValuesInSetSQL(table_ref, column_name, allowed_array, min_rate);
@@ -727,8 +747,8 @@ static unique_ptr<TableRef> CheckAggBindReplace(ClientContext &context, TableFun
 		    "anofox_tab_agg_check requires 5 arguments: table_name, column_name, agg, lower_threshold, upper_threshold");
 	}
 
-	string table_name = input.inputs[0].ToString();
-	string column_name = input.inputs[1].ToString();
+	string table_name = RequireNonNullArgument(input, 0, "agg_check", "table_name");
+	string column_name = RequireNonNullArgument(input, 1, "agg_check", "column_name");
 	string agg = input.inputs[2].IsNull() ? "" : input.inputs[2].ToString();
 	std::transform(agg.begin(), agg.end(), agg.begin(), ::tolower);
 	// Whitelist: the aggregate keyword is spliced into SQL, so it must never come from raw user input
@@ -738,6 +758,7 @@ static unique_ptr<TableRef> CheckAggBindReplace(ClientContext &context, TableFun
 	}
 	ValidateFiniteDouble(input.inputs[3], "agg_check", "lower_threshold");
 	ValidateFiniteDouble(input.inputs[4], "agg_check", "upper_threshold");
+	ValidateThresholdOrder(input.inputs[3], input.inputs[4], "agg_check", "lower_threshold", "upper_threshold");
 
 	string table_ref = BuildQueryTableRef(table_name);
 	string sql = GenerateAggCheckSQL(table_ref, column_name, agg, input.inputs[3], input.inputs[4]);
@@ -751,8 +772,8 @@ static unique_ptr<TableRef> CheckDuplicateCountBindReplace(ClientContext &contex
 		    "anofox_tab_duplicate_count requires at least 2 arguments: table_name, column_names");
 	}
 
-	string table_name = input.inputs[0].ToString();
-	auto column_names = ParseCommaSeparatedColumns(input.inputs[1].ToString());
+	string table_name = RequireNonNullArgument(input, 0, "duplicate_count", "table_name");
+	auto column_names = ParseCommaSeparatedColumns(RequireNonNullArgument(input, 1, "duplicate_count", "column_names"));
 	if (column_names.empty()) {
 		throw BinderException("duplicate_count: column_names must contain at least one column");
 	}
@@ -773,13 +794,16 @@ static unique_ptr<TableRef> CheckOccurrenceBindReplace(ClientContext &context, T
 		    "anofox_tab_occurrence requires 5 arguments: table_name, column_name, mode, lower_threshold, upper_threshold");
 	}
 
-	string table_name = input.inputs[0].ToString();
-	string column_name = input.inputs[1].ToString();
+	string table_name = RequireNonNullArgument(input, 0, "occurrence", "table_name");
+	string column_name = RequireNonNullArgument(input, 1, "occurrence", "column_name");
 	string mode = input.inputs[2].IsNull() ? "" : input.inputs[2].ToString();
 	std::transform(mode.begin(), mode.end(), mode.begin(), ::tolower);
 	if (mode != "max" && mode != "min") {
 		throw BinderException("occurrence: mode must be 'max' or 'min'");
 	}
+	ValidateNonNegative(input.inputs[3], "occurrence", "lower_threshold");
+	ValidateNonNegative(input.inputs[4], "occurrence", "upper_threshold");
+	ValidateThresholdOrder(input.inputs[3], input.inputs[4], "occurrence", "lower_threshold", "upper_threshold");
 
 	string table_ref = BuildQueryTableRef(table_name);
 	string sql = GenerateOccurrenceSQL(table_ref, column_name, mode, input.inputs[3], input.inputs[4]);
@@ -793,10 +817,10 @@ static unique_ptr<TableRef> CheckMatchRateBindReplace(ClientContext &context, Ta
 		    "anofox_tab_match_rate requires at least 4 arguments: left_table, right_table, left_keys, right_keys");
 	}
 
-	string left_table = input.inputs[0].ToString();
-	string right_table = input.inputs[1].ToString();
-	auto left_keys = ParseCommaSeparatedColumns(input.inputs[2].ToString());
-	auto right_keys = ParseCommaSeparatedColumns(input.inputs[3].ToString());
+	string left_table = RequireNonNullArgument(input, 0, "match_rate", "left_table");
+	string right_table = RequireNonNullArgument(input, 1, "match_rate", "right_table");
+	auto left_keys = ParseCommaSeparatedColumns(RequireNonNullArgument(input, 2, "match_rate", "left_keys"));
+	auto right_keys = ParseCommaSeparatedColumns(RequireNonNullArgument(input, 3, "match_rate", "right_keys"));
 	if (left_keys.empty()) {
 		throw BinderException("match_rate: left_keys must contain at least one column");
 	}
@@ -805,7 +829,7 @@ static unique_ptr<TableRef> CheckMatchRateBindReplace(ClientContext &context, Ta
 		                      std::to_string(left_keys.size()) + " vs " + std::to_string(right_keys.size()) + ")");
 	}
 	Value min_rate = (input.inputs.size() > 4) ? input.inputs[4] : Value();
-	ValidateFiniteDouble(min_rate, "match_rate", "min_rate");
+	ValidateRate(min_rate, "match_rate", "min_rate");
 
 	AnofoxTrace(AnofoxLogLevel::Debug, "check: match_rate left='" + left_table + "', right='" + right_table +
 	                                       "', keys=" + std::to_string(left_keys.size()));
@@ -821,14 +845,11 @@ static unique_ptr<TableRef> CheckComplianceBindReplace(ClientContext &context, T
 		    "anofox_tab_compliance requires at least 2 arguments: table_name, expression");
 	}
 
-	string table_name = input.inputs[0].ToString();
-	if (input.inputs[1].IsNull()) {
-		throw BinderException("compliance: expression must not be NULL");
-	}
-	string expression = input.inputs[1].ToString();
+	string table_name = RequireNonNullArgument(input, 0, "compliance", "table_name");
+	string expression = RequireNonNullArgument(input, 1, "compliance", "expression");
 	ValidateBooleanExpression(context, expression, "compliance");
 	Value min_rate = (input.inputs.size() > 2) ? input.inputs[2] : Value();
-	ValidateFiniteDouble(min_rate, "compliance", "min_rate");
+	ValidateRate(min_rate, "compliance", "min_rate");
 
 	AnofoxTrace(AnofoxLogLevel::Debug, "check: compliance table='" + table_name + "', expression='" + expression + "'");
 	string table_ref = BuildQueryTableRef(table_name);
@@ -843,8 +864,9 @@ static string BuildRelCountChangeSQL(TableFunctionBindInput &input, EventsMappin
 		    "anofox_tab_rel_count_change requires at least 2 arguments: table_name, date_column");
 	}
 
-	string table_name = input.inputs[0].ToString();
-	string date_column = input.inputs[1].ToString();
+	const string function_name = events ? "rel_count_change_events" : "rel_count_change";
+	string table_name = RequireNonNullArgument(input, 0, function_name, "table_name");
+	string date_column = RequireNonNullArgument(input, 1, function_name, "date_column");
 	string count_column;
 	if (input.inputs.size() > 2 && !input.inputs[2].IsNull()) {
 		count_column = input.inputs[2].ToString();
@@ -855,6 +877,7 @@ static string BuildRelCountChangeSQL(TableFunctionBindInput &input, EventsMappin
 	Value upper = (input.inputs.size() > 5) ? input.inputs[5] : Value::DOUBLE(0.5);
 	ValidateFiniteDouble(lower, "rel_count_change", "lower_threshold");
 	ValidateFiniteDouble(upper, "rel_count_change", "upper_threshold");
+	ValidateThresholdOrder(lower, upper, "rel_count_change", "lower_threshold", "upper_threshold");
 	auto dates = ReadReferenceDates(input, 6, "rel_count_change");
 
 	if (events) {
@@ -890,8 +913,9 @@ static string BuildMetricAnomalyIQRSQL(TableFunctionBindInput &input, EventsMapp
 		    "anofox_tab_metric_anomaly_iqr requires at least 2 arguments: table_name, date_column");
 	}
 
-	string table_name = input.inputs[0].ToString();
-	string date_column = input.inputs[1].ToString();
+	const string function_name = events ? "metric_anomaly_iqr_events" : "metric_anomaly_iqr";
+	string table_name = RequireNonNullArgument(input, 0, function_name, "table_name");
+	string date_column = RequireNonNullArgument(input, 1, function_name, "date_column");
 	string metric_column;
 	if (input.inputs.size() > 2 && !input.inputs[2].IsNull()) {
 		metric_column = input.inputs[2].ToString();
@@ -899,6 +923,7 @@ static string BuildMetricAnomalyIQRSQL(TableFunctionBindInput &input, EventsMapp
 	int64_t window_days = ReadWindowDays(input, 3, 30, "metric_anomaly_iqr");
 	Value k = (input.inputs.size() > 4) ? input.inputs[4] : Value();
 	ValidateFiniteDouble(k, "metric_anomaly_iqr", "k");
+	ValidateNonNegative(k, "metric_anomaly_iqr", "k");
 	string mode = "both";
 	if (input.inputs.size() > 5 && !input.inputs[5].IsNull()) {
 		mode = input.inputs[5].ToString();
@@ -940,13 +965,15 @@ static string BuildRollingValuesInSetSQL(TableFunctionBindInput &input, EventsMa
 		                      "table_name, column_name, allowed_values, date_column");
 	}
 
-	string table_name = input.inputs[0].ToString();
-	string column_name = input.inputs[1].ToString();
+	const string function_name = events ? "rolling_values_in_set_events" : "rolling_values_in_set";
+	string table_name = RequireNonNullArgument(input, 0, function_name, "table_name");
+	string column_name = RequireNonNullArgument(input, 1, function_name, "column_name");
+	RequireNonNullArgument(input, 2, function_name, "allowed_values");
 	string allowed_array = BuildVarcharArrayLiteral(input.inputs[2]);
-	string date_column = input.inputs[3].ToString();
+	string date_column = RequireNonNullArgument(input, 3, function_name, "date_column");
 	int64_t window_days = ReadWindowDays(input, 4, 7, "rolling_values_in_set");
 	Value min_rate = (input.inputs.size() > 5) ? input.inputs[5] : Value();
-	ValidateFiniteDouble(min_rate, "rolling_values_in_set", "min_rate");
+	ValidateRate(min_rate, "rolling_values_in_set", "min_rate");
 	auto dates = ReadReferenceDates(input, 6, "rolling_values_in_set");
 
 	if (events) {

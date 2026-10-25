@@ -68,10 +68,10 @@ static string GenerateNullRateSQL(const string &table_ref, const string &column_
 		"CASE "
 		"  WHEN total_count = 0 THEN 'Table is empty (0 rows); null rate check passed trivially' "
 		"  WHEN null_rate <= " + max_rate_val + " THEN "
-		"    'Null rate ' || CAST(null_rate AS VARCHAR) || ' (' || CAST(null_count AS VARCHAR) || '/' || "
+		"    'Null rate ' || " + RoundedNumberSQL("null_rate") + " || ' (' || CAST(null_count AS VARCHAR) || '/' || "
 		"    CAST(total_count AS VARCHAR) || ') is acceptable' "
 		"  ELSE "
-		"    'Null rate ' || CAST(null_rate AS VARCHAR) || ' (' || CAST(null_count AS VARCHAR) || '/' || "
+		"    'Null rate ' || " + RoundedNumberSQL("null_rate") + " || ' (' || CAST(null_count AS VARCHAR) || '/' || "
 		"    CAST(total_count AS VARCHAR) || ') exceeds maximum ' || CAST(" + max_rate_val + " AS VARCHAR) "
 		"END AS message "
 		"FROM (SELECT "
@@ -119,11 +119,18 @@ static string GenerateZscoreSQL(const string &table_ref, const string &column_na
 	// 4. summary: driven by stats so exactly one row is returned even for empty input
 	// Empty-input semantics: empty/all-NULL input yields one row with total_count = 0,
 	// outlier_count = 0, outlier_rate = 0.0, NULL mean/stddev, status 'pass'.
-	return "WITH vals AS ("
+	// NaN/Inf values are left out of the statistics (they would turn mean/stddev into NaN and
+	// every row into an "outlier") and counted for the message.
+	const string nonfinite_note =
+	    "CASE WHEN nonfinite_count > 0 THEN '; ' || CAST(nonfinite_count AS VARCHAR) || ' NaN/Inf value(s) ignored' "
+	    "ELSE '' END";
+	return "WITH all_vals AS ("
 		"SELECT CAST(" + col_id + " AS DOUBLE) AS val FROM " + table_ref + " WHERE " + col_id + " IS NOT NULL"
 		"), "
+		"vals AS (SELECT val FROM all_vals WHERE isfinite(val)), "
 		"stats AS ("
-		"SELECT AVG(val) AS mean, STDDEV(val) AS stddev, COUNT(*) AS total_count FROM vals"
+		"SELECT AVG(val) AS mean, STDDEV(val) AS stddev, COUNT(*) AS total_count, "
+		"(SELECT COUNT(*) FROM all_vals WHERE NOT isfinite(val)) AS nonfinite_count FROM vals"
 		"), "
 		"with_zscore AS ("
 		"SELECT CASE WHEN s.stddev IS NULL OR s.stddev = 0 THEN 0.0 "
@@ -132,7 +139,7 @@ static string GenerateZscoreSQL(const string &table_ref, const string &column_na
 		"), "
 		"summary AS ("
 		"SELECT "
-		"  s.mean, s.stddev, s.total_count, "
+		"  s.mean, s.stddev, s.total_count, s.nonfinite_count, "
 		"  (SELECT COUNT(*) FROM with_zscore z WHERE z.abs_zscore > " + thresh_val + ") AS outlier_count "
 		"FROM stats s"
 		") "
@@ -150,11 +157,11 @@ static string GenerateZscoreSQL(const string &table_ref, const string &column_na
 		"  WHEN stddev IS NULL OR stddev = 0 THEN "
 		"    'No outliers detected (constant column: standard deviation is 0 or undefined)' "
 		"  WHEN outlier_count = 0 THEN "
-		"    'No outliers detected (z-score threshold: ' || CAST(" + thresh_val + " AS VARCHAR) || ')' "
+		"    'No outliers detected (z-score threshold: ' || CAST(" + thresh_val + " AS VARCHAR) || " + nonfinite_note + " || ')' "
 		"  ELSE "
 		"    CAST(outlier_count AS VARCHAR) || ' outlier(s) detected (' || "
-		"    CAST((CAST(outlier_count AS DOUBLE) / total_count * 100) AS VARCHAR) || "
-		"    '% of ' || CAST(total_count AS VARCHAR) || ' rows)' "
+		"    " + RoundedNumberSQL("CAST(outlier_count AS DOUBLE) / total_count * 100") + " || "
+		"    '% of ' || CAST(total_count AS VARCHAR) || ' rows' || " + nonfinite_note + " || ')' "
 		"END AS message "
 		"FROM summary";
 }
@@ -286,7 +293,9 @@ static string GenerateFreshnessSQL(const string &table_ref, const string &timest
 		"    'Data is stale. Latest update: ' || CAST(latest_timestamp AS VARCHAR) || ' (age: ' || CAST(EXTRACT(EPOCH FROM (" + ref_time + " - latest_timestamp))::BIGINT AS VARCHAR) || 's, max allowed: ' || CAST(EXTRACT(EPOCH FROM " + max_age_interval + ")::BIGINT AS VARCHAR) || 's)' "
 		"END AS message "
 		"FROM (SELECT "
-		"  MAX(" + col_id + ") AS latest_timestamp, "
+		// CAST(... AS TIMESTAMP): a TIMESTAMP WITH TIME ZONE column is compared as its UTC
+		// TIMESTAMP, like run_checks does; TIMESTAMPTZ - TIMESTAMP arithmetic needs ICU
+		"  MAX(CAST(" + col_id + " AS TIMESTAMP)) AS latest_timestamp, "
 		+ ref_time + " - " + max_age_interval + " AS threshold_timestamp "
 		"FROM " + table_ref + ")";
 }
@@ -303,7 +312,10 @@ static unique_ptr<TableRef> MetricVolumeBindReplace(ClientContext &context, Tabl
 		throw BinderException("anofox_metric_volume requires 3 arguments: table_name, min_rows, max_rows");
 	}
 
-	string table_name = input.inputs[0].ToString();
+	string table_name = RequireNonNullArgument(input, 0, "volume", "table_name");
+	ValidateNonNegative(input.inputs[1], "volume", "min_rows");
+	ValidateNonNegative(input.inputs[2], "volume", "max_rows");
+	ValidateThresholdOrder(input.inputs[1], input.inputs[2], "volume", "min_rows", "max_rows");
 	string table_ref = BuildQueryTableRef(table_name);
 	string sql = GenerateVolumeSQL(table_ref, input.inputs[1], input.inputs[2]);
 	return ParseSubquery(sql, context, "Failed to parse volume metric query");
@@ -315,9 +327,9 @@ static unique_ptr<TableRef> MetricNullRateBindReplace(ClientContext &context, Ta
 		throw BinderException("anofox_metric_null_rate requires 3 arguments: table_name, column_name, max_null_rate");
 	}
 
-	string table_name = input.inputs[0].ToString();
-	string column_name = input.inputs[1].ToString();
-	ValidateFiniteDouble(input.inputs[2], "null_rate", "max_null_rate");
+	string table_name = RequireNonNullArgument(input, 0, "null_rate", "table_name");
+	string column_name = RequireNonNullArgument(input, 1, "null_rate", "column_name");
+	ValidateRate(input.inputs[2], "null_rate", "max_null_rate");
 	string table_ref = BuildQueryTableRef(table_name);
 	string sql = GenerateNullRateSQL(table_ref, column_name, input.inputs[2]);
 	return ParseSubquery(sql, context, "Failed to parse null rate metric query");
@@ -329,8 +341,11 @@ static unique_ptr<TableRef> MetricDistinctCountBindReplace(ClientContext &contex
 		throw BinderException("anofox_metric_distinct_count requires 4 arguments: table_name, column_name, min_distinct, max_distinct");
 	}
 
-	string table_name = input.inputs[0].ToString();
-	string column_name = input.inputs[1].ToString();
+	string table_name = RequireNonNullArgument(input, 0, "distinct_count", "table_name");
+	string column_name = RequireNonNullArgument(input, 1, "distinct_count", "column_name");
+	ValidateNonNegative(input.inputs[2], "distinct_count", "min_distinct");
+	ValidateNonNegative(input.inputs[3], "distinct_count", "max_distinct");
+	ValidateThresholdOrder(input.inputs[2], input.inputs[3], "distinct_count", "min_distinct", "max_distinct");
 	string table_ref = BuildQueryTableRef(table_name);
 	string sql = GenerateDistinctCountSQL(table_ref, column_name, input.inputs[2], input.inputs[3]);
 	return ParseSubquery(sql, context, "Failed to parse distinct count metric query");
@@ -342,9 +357,12 @@ static unique_ptr<TableRef> MetricZscoreBindReplace(ClientContext &context, Tabl
 		throw BinderException("anofox_metric_zscore requires 3 arguments: table_name, column_name, threshold");
 	}
 
-	string table_name = input.inputs[0].ToString();
-	string column_name = input.inputs[1].ToString();
+	string table_name = RequireNonNullArgument(input, 0, "zscore", "table_name");
+	string column_name = RequireNonNullArgument(input, 1, "zscore", "column_name");
 	ValidateFiniteDouble(input.inputs[2], "zscore", "threshold");
+	if (!input.inputs[2].IsNull() && input.inputs[2].GetValue<double>() <= 0) {
+		throw BinderException("zscore: threshold must be positive (got %s)", input.inputs[2].ToString());
+	}
 	string table_ref = BuildQueryTableRef(table_name);
 	string sql = GenerateZscoreSQL(table_ref, column_name, input.inputs[2]);
 	return ParseSubquery(sql, context, "Failed to parse zscore metric query");
@@ -356,9 +374,10 @@ static unique_ptr<TableRef> MetricIQRBindReplace(ClientContext &context, TableFu
 		throw BinderException("anofox_metric_iqr requires 3 arguments: table_name, column_name, iqr_multiplier");
 	}
 
-	string table_name = input.inputs[0].ToString();
-	string column_name = input.inputs[1].ToString();
+	string table_name = RequireNonNullArgument(input, 0, "iqr", "table_name");
+	string column_name = RequireNonNullArgument(input, 1, "iqr", "column_name");
 	ValidateFiniteDouble(input.inputs[2], "iqr", "iqr_multiplier");
+	ValidateNonNegative(input.inputs[2], "iqr", "iqr_multiplier");
 	string table_ref = BuildQueryTableRef(table_name);
 	string sql = GenerateIQRSQL(table_ref, column_name, input.inputs[2]);
 	return ParseSubquery(sql, context, "Failed to parse IQR metric query");
@@ -370,7 +389,7 @@ static unique_ptr<TableRef> MetricSchemaBindReplace(ClientContext &context, Tabl
 		throw BinderException("anofox_metric_schema requires 2 arguments: table_name, required_columns");
 	}
 
-	string table_name = input.inputs[0].ToString();
+	string table_name = RequireNonNullArgument(input, 0, "schema_check", "table_name");
 	vector<string> required_columns;
 	if (!input.inputs[1].IsNull() && input.inputs[1].type().id() == LogicalTypeId::LIST) {
 		auto &list_children = ListValue::GetChildren(input.inputs[1]);
@@ -393,8 +412,8 @@ static unique_ptr<TableRef> MetricFreshnessBindReplace(ClientContext &context, T
 		throw BinderException("anofox_metric_freshness requires at least 3 arguments: table_name, timestamp_column, max_age");
 	}
 
-	string table_name = input.inputs[0].ToString();
-	string timestamp_column = input.inputs[1].ToString();
+	string table_name = RequireNonNullArgument(input, 0, "freshness", "table_name");
+	string timestamp_column = RequireNonNullArgument(input, 1, "freshness", "timestamp_column");
 	Value max_age = input.inputs[2];
 	Value reference_time = (input.inputs.size() > 3) ? input.inputs[3] : Value();
 
@@ -510,7 +529,7 @@ static void ParseIsolationForestCommonParameters(TableFunctionBindInput &input, 
 	int64_t n_trees_val = OptionalInput<int64_t>(input, 2, 100);
 	int64_t sample_size_val = OptionalInput<int64_t>(input, 3, 256);
 	contamination = OptionalInput<double>(input, 4, 0.1);
-	output_mode = OptionalInput<string>(input, 5, "summary");
+	output_mode = LowerOption(OptionalInput<string>(input, 5, "summary"));
 
 	// Seed parameter (optional, index 6); any signed value is an acceptable seed
 	seed = 0;
@@ -545,8 +564,8 @@ static unique_ptr<FunctionData> IsolationForestBind(ClientContext &context, Tabl
 		throw BinderException("isolation_forest requires at least 2 arguments: table_name, column_name");
 	}
 
-	string table_name = input.inputs[0].ToString();
-	string column_name = input.inputs[1].ToString();
+	string table_name = RequireNonNullArgument(input, 0, "isolation_forest", "table_name");
+	string column_name = RequireNonNullArgument(input, 1, "isolation_forest", "column_name");
 	vector<string> column_names = {column_name};
 
 	size_t n_trees;
@@ -604,10 +623,10 @@ static unique_ptr<FunctionData> IsolationForestMultivariateBind(ClientContext &c
 		throw BinderException("isolation_forest_mv requires at least 2 arguments: table_name, column_names");
 	}
 
-	string table_name = input.inputs[0].ToString();
+	string table_name = RequireNonNullArgument(input, 0, "isolation_forest_mv", "table_name");
 
 	// Parse comma-separated column names
-	auto column_names = ParseCommaSeparatedColumns(input.inputs[1].ToString());
+	auto column_names = ParseCommaSeparatedColumns(RequireNonNullArgument(input, 1, "isolation_forest_mv", "column_names"));
 	if (column_names.empty()) {
 		throw BinderException("column_names must contain at least one column");
 	}
@@ -1114,7 +1133,7 @@ static void ParseDBSCANParameters(TableFunctionBindInput &input, const string &f
                                   int64_t &min_pts, string &output_mode) {
 	eps = OptionalInput<double>(input, 2, 0.5);
 	min_pts = OptionalInput<int64_t>(input, 3, 5);
-	output_mode = OptionalInput<string>(input, 4, "summary");
+	output_mode = LowerOption(OptionalInput<string>(input, 4, "summary"));
 
 	if (!std::isfinite(eps) || eps <= 0.0) {
 		throw BinderException(function_name + ": eps must be a finite number > 0.0");
@@ -1183,8 +1202,8 @@ static unique_ptr<FunctionData> DBSCANBind(ClientContext &context, TableFunction
 		throw BinderException("dbscan requires at least 2 arguments: table_name, column_name");
 	}
 
-	string table_name = input.inputs[0].ToString();
-	vector<string> column_names = {input.inputs[1].ToString()};
+	string table_name = RequireNonNullArgument(input, 0, "dbscan", "table_name");
+	vector<string> column_names = {RequireNonNullArgument(input, 1, "dbscan", "column_name")};
 
 	double eps;
 	int64_t min_pts;
@@ -1209,8 +1228,8 @@ static unique_ptr<FunctionData> DBSCANMultivariateBind(ClientContext &context, T
 		throw BinderException("dbscan_mv requires at least 2 arguments: table_name, column_names");
 	}
 
-	string table_name = input.inputs[0].ToString();
-	auto column_names = ParseCommaSeparatedColumns(input.inputs[1].ToString());
+	string table_name = RequireNonNullArgument(input, 0, "dbscan_mv", "table_name");
+	auto column_names = ParseCommaSeparatedColumns(RequireNonNullArgument(input, 1, "dbscan_mv", "column_names"));
 	if (column_names.empty()) {
 		throw BinderException("column_names must contain at least one column");
 	}

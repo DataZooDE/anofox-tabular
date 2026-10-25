@@ -15,6 +15,16 @@ void RegisterCheckFunctions(ExtensionLoader &loader);
 // caller's privileges (same trust model as running SQL directly).
 void ValidateBooleanExpression(ClientContext &context, const string &expr, const string &function_name);
 
+// SQL expression counting duplicate keys over the current group: rows beyond the first of
+// each distinct key; NULL keys are duplicates of each other only. A compound key compares
+// NULL components as equal.
+string BuildDuplicateCountExpr(const vector<string> &column_names);
+
+// AGG(double_expr) over the finite values; NaN when the input contains a NaN/Inf value.
+string BuildFiniteAggregateExpr(const string &agg_upper, const string &double_expr);
+// COUNT of the NaN/Inf values of double_expr.
+string BuildNonFiniteCountExpr(const string &double_expr);
+
 // Build a ['a', 'b', ...]::VARCHAR[] literal from a LIST value.
 string BuildVarcharArrayLiteral(const Value &list_value);
 

@@ -224,14 +224,8 @@ static DiffArguments ResolveDiffArguments(const string &function_name, const Tab
 	DiffArguments args;
 	auto source_table = ResolveArgument(input, 0, "source_table");
 	auto target_table = ResolveArgument(input, 1, "target_table");
-	if (!source_table || source_table->IsNull()) {
-		throw BinderException("%s: source_table is required and cannot be NULL", function_name);
-	}
-	if (!target_table || target_table->IsNull()) {
-		throw BinderException("%s: target_table is required and cannot be NULL", function_name);
-	}
-	args.source_table = source_table->ToString();
-	args.target_table = target_table->ToString();
+	args.source_table = RequireNonNullArgument(source_table, function_name, "source_table");
+	args.target_table = RequireNonNullArgument(target_table, function_name, "target_table");
 
 	auto named_key = duckdb_compat::FindNamedParameter(input.named_parameters, "primary_key");
 	auto named_keys = duckdb_compat::FindNamedParameter(input.named_parameters, "primary_keys");
@@ -246,6 +240,7 @@ static DiffArguments ResolveDiffArguments(const string &function_name, const Tab
 		throw BinderException("%s: primary_key is required (a column name, or a list of names as primary_keys)",
 		                      function_name);
 	}
+	RequireNonNullArgument(primary_key, function_name, named_keys ? "primary_keys" : "primary_key");
 	args.primary_keys = ParseColumnList(*primary_key);
 	if (args.primary_keys.empty()) {
 		throw BinderException("%s: Primary key(s) cannot be empty", function_name);

@@ -834,8 +834,8 @@ static unique_ptr<FunctionData> OutlierTreeBind(ClientContext &context, TableFun
         throw BinderException("outlier_tree requires at least 2 arguments: table_name, columns");
     }
 
-    std::string table_name = input.inputs[0].ToString();
-    std::string columns_str = input.inputs[1].ToString();
+    std::string table_name = RequireNonNullArgument(input, 0, "outlier_tree", "table_name");
+    std::string columns_str = RequireNonNullArgument(input, 1, "outlier_tree", "columns");
 
     // Parse column names
     std::vector<std::string> column_names;
@@ -866,7 +866,7 @@ static unique_ptr<FunctionData> OutlierTreeBind(ClientContext &context, TableFun
     auto optional = [&](idx_t index, Value default_value) {
         return input.inputs.size() > index && !input.inputs[index].IsNull() ? input.inputs[index] : default_value;
     };
-    std::string output_mode = optional(2, Value("summary")).ToString();
+    std::string output_mode = LowerOption(optional(2, Value("summary")).ToString());
     int64_t max_depth_raw = optional(3, Value::BIGINT(4)).GetValue<int64_t>();
     double max_perc_outliers = optional(4, Value::DOUBLE(0.01)).GetValue<double>();
     int64_t min_size_numeric_raw = optional(5, Value::BIGINT(25)).GetValue<int64_t>();

@@ -1,0 +1,59 @@
+# name: test/sql/anofox_check_freshness_tz.test
+# description: freshness on a TIMESTAMP WITH TIME ZONE column works without the ICU
+#              extension: the column is compared as a UTC TIMESTAMP, as run_checks does.
+#              (The unittest runner has no ICU loaded.)
+# group: [anofox_tabular]
+
+require anofox_tabular
+
+statement ok
+LOAD anofox_tabular
+
+statement ok
+SET anofox_tab_trace_enabled = false
+
+# Events from a webshop tracker, stored with time zone
+statement ok
+CREATE TABLE web_events (event_id INTEGER, event_type VARCHAR, received_at TIMESTAMPTZ)
+
+statement ok
+INSERT INTO web_events VALUES
+    (1, 'page_view',   TIMESTAMPTZ '2026-10-24 06:00:00+00'),
+    (2, 'add_to_cart', TIMESTAMPTZ '2026-10-24 07:30:00+00'),
+    (3, 'checkout',    TIMESTAMPTZ '2026-10-24 08:00:00+00')
+
+query TTIT
+SELECT status, metric_value, age_seconds, message
+FROM freshness('web_events', 'received_at', INTERVAL '2 hours', TIMESTAMP '2026-10-24 09:00:00')
+----
+pass	2026-10-24 08:00:00	3600	Data is fresh. Latest update: 2026-10-24 08:00:00 (age: 3600s)
+
+query TI
+SELECT status, age_seconds
+FROM freshness('web_events', 'received_at', INTERVAL '30 minutes', TIMESTAMP '2026-10-24 09:00:00')
+----
+fail	3600
+
+# without a reference time (now()) the check binds and runs too: the data is old
+query T
+SELECT status FROM freshness('web_events', 'received_at', INTERVAL '1 hour')
+----
+fail
+
+# the result type of metric_value is TIMESTAMP
+query T
+SELECT typeof(metric_value) FROM freshness('web_events', 'received_at', INTERVAL '1 hour')
+----
+TIMESTAMP
+
+# DATE columns keep working
+statement ok
+CREATE TABLE daily_loads (load_date DATE)
+
+statement ok
+INSERT INTO daily_loads VALUES (DATE '2026-10-23'), (DATE '2026-10-24')
+
+query TI
+SELECT status, age_seconds FROM freshness('daily_loads', 'load_date', INTERVAL '1 day', TIMESTAMP '2026-10-24 06:00:00')
+----
+pass	21600

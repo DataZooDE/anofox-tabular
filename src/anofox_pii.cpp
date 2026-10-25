@@ -2973,7 +2973,7 @@ unique_ptr<FunctionData> PIIAuditTableBind(ClientContext &context, TableFunction
     if (input.inputs.empty()) {
         throw BinderException("pii_audit_table requires a table name");
     }
-    auto table_name = input.inputs[0].GetValue<std::string>();
+    auto table_name = RequireNonNullArgument(input, 0, "pii_audit_table", "table_name");
 
     // Get optional column filter
     std::vector<std::string> column_filter;
@@ -3247,7 +3247,7 @@ unique_ptr<FunctionData> PIIScanTableBind(ClientContext &context, TableFunctionB
     if (input.inputs.empty()) {
         throw BinderException("pii_scan_table requires a table name");
     }
-    auto table_name = input.inputs[0].GetValue<std::string>();
+    auto table_name = RequireNonNullArgument(input, 0, "pii_scan_table", "table_name");
 
     // Get optional column filter
     std::vector<std::string> column_filter;
