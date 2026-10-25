@@ -103,7 +103,7 @@ phonenumber_parse(phone VARCHAR, region VARCHAR) -> STRUCT(
 |----------|---------|
 | `not_a_number` | The input has no digits |
 | `unsupported_region` | A number without `+` and a `region` that is not one of the 21 supported regions |
-| `invalid_country_code` | The country code after `+` (or the international prefix) is not one of the supported regions |
+| `unsupported_country_code` | The country code after `+` (or the international prefix) is not one of the supported regions, e.g. `+43` (Austria) |
 | `invalid_length` | The national number has a length that the region does not use |
 | `invalid_pattern` | The length fits, but the digits are not in a fixed-line, mobile or toll-free range of the region |
 

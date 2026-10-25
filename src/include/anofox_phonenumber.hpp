@@ -33,7 +33,7 @@ struct PhoneNumberParts {
 struct PhoneNumberInvalidReason {
 	static constexpr const char *NOT_A_NUMBER = "not_a_number";
 	static constexpr const char *UNSUPPORTED_REGION = "unsupported_region";
-	static constexpr const char *INVALID_COUNTRY_CODE = "invalid_country_code";
+	static constexpr const char *INVALID_COUNTRY_CODE = "unsupported_country_code";
 	static constexpr const char *INVALID_LENGTH = "invalid_length";
 	static constexpr const char *INVALID_PATTERN = "invalid_pattern";
 };
