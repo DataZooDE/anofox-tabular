@@ -1,21 +1,21 @@
 # Anofox Tabular Extension - API Reference
 
-**Version:** 0.1.0  
+**Applies to:** anofox-tabular releases from v2026.10 on  
 **DuckDB Version:** v1.5.6 or 2.0
 
 ---
 
 ## Overview
 
-The Anofox Tabular extension provides comprehensive data quality validation, anomaly detection, and data diffing capabilities directly within DuckDB. All validation and analysis computations are performed by native C++ implementations with optional integration to external libraries.
+The Anofox Tabular extension provides data quality checks, validation, anomaly detection, PII detection, data diffing and profiling directly within DuckDB. All computations run in native C++ inside DuckDB.
 
 ### Key Features
 
-- **9 Production-Ready Modules**: Email, postal, phone, money, VAT, PII, metrics, anomalies, and diffing
-- **62 SQL Functions**: Complete validation and analysis toolkit
-- **Zero Friction**: SQL-native with no external services required (except optional libpostal for address parsing)
-- **Blazing Fast**: Vectorized C++17 implementation processes millions of rows per second
-- **Self-Contained**: Embedded validation patterns; no API keys or network calls required
+- **10 modules**: email, postal, phone, money, VAT, PII, data quality, anomaly detection, diffing and profiling
+- **99 SQL functions** (canonical names; see the [Function Coverage Matrix](#function-coverage-matrix))
+- **Runs locally**: the core functions need no external service. Network is used only by the NER
+  model download (PII), the libpostal data download (address parsing), the email `dns`/`smtp`
+  modes and the anonymous telemetry. See [Network use](#network-use).
 
 ### Function Naming Conventions
 
@@ -23,16 +23,26 @@ Functions follow consistent naming patterns:
 - `anofox_tab_*` prefix for all extension functions (with aliases without prefix)
 - `anofox_tab_*_is_valid` suffix for validation functions
 - `anofox_tab_*_format` suffix for formatting functions
-- `anofox_tab_metric_*` prefix for data quality metrics
 - `anofox_tab_diff_*` prefix for data diffing operations
 
-All functions have aliases without the `anofox_tab_` prefix. For example:
+All `anofox_tab_*` functions have aliases without the `anofox_tab_` prefix. The two helpers
+`anofox_ner_status` and `anofox_contract_version` have no alias. For example:
 - `anofox_tab_email_is_valid` can also be called as `email_is_valid`
 - `anofox_tab_vat` can also be called as `vat`
 
 ### Parameter Conventions
 
-**Important**: All functions use **positional parameters**, NOT named parameters (`:=` syntax).
+Arguments are positional. In addition, these parameters also accept the named form (`name := value`):
+
+- every parameter of `diff_joindiff` and `diff_hashdiff` (`source_table`, `target_table`,
+  `primary_key` / `primary_keys`, `compare_columns`, `include_all`; a named value overrides the
+  positional one);
+- `start_date` and `end_date` on `rel_count_change`, `metric_anomaly_iqr`,
+  `rolling_values_in_set` and their `_events` companions (named only);
+- `id_column` on `isolation_forest`, `isolation_forest_mv`, `dbscan`, `dbscan_mv`,
+  `outlier_tree` and `pii_audit_table` (named only).
+
+All other functions reject named arguments with a binder error.
 
 **Common Parameter Types**:
 - `email`: Email address - `VARCHAR`
@@ -59,9 +69,10 @@ All functions have aliases without the `anofox_tab_` prefix. For example:
 9. [anofox Integration Contract](#anofox-integration-contract)
 10. [Anomaly Detection](#anomaly-detection)
 11. [Data Diffing](#data-diffing)
-12. [Configuration](#configuration)
-13. [Function Coverage Matrix](#function-coverage-matrix)
-14. [Notes](#notes)
+12. [Data Profiling](#data-profiling)
+13. [Configuration](#configuration)
+14. [Function Coverage Matrix](#function-coverage-matrix)
+15. [Notes](#notes)
 
 ---
 
@@ -444,13 +455,13 @@ Create a money value from amount and currency code.
 
 **Signature:**
 ```sql
-anofox_tab_money (alias: money(amount DOUBLE, currency_code VARCHAR) → STRUCT(amount DECIMAL(18,3), currency VARCHAR)
+anofox_tab_money(amount DOUBLE, currency_code VARCHAR) → STRUCT(amount DECIMAL(18,3), currency VARCHAR)
 ```
 
 **Example:**
 ```sql
-SELECT anofox_tab_money (alias: money(100.50, 'USD');
--- Returns: {amount: 100.5, currency: 'USD'}
+SELECT money(100.50, 'USD');
+-- Returns: {'amount': 100.500, 'currency': USD}
 ```
 
 ---
@@ -461,13 +472,13 @@ Create a money value from an integer amount in the currency's smallest unit (e.g
 
 **Signature:**
 ```sql
-anofox_tab_money (alias: money_from_cents(cents BIGINT, currency_code VARCHAR) → STRUCT(amount DECIMAL(18,3), currency VARCHAR)
+anofox_tab_money_from_cents(cents BIGINT, currency_code VARCHAR) → STRUCT(amount DECIMAL(18,3), currency VARCHAR)
 ```
 
 **Example:**
 ```sql
-SELECT anofox_tab_money (alias: money_from_cents(10050, 'USD');
--- Returns: {amount: 100.5, currency: 'USD'}
+SELECT money_from_cents(10050, 'USD');
+-- Returns: {'amount': 100.500, 'currency': USD}
 ```
 
 ---
@@ -478,13 +489,13 @@ Extract amount from money struct.
 
 **Signature:**
 ```sql
-anofox_tab_money (alias: money_amount(money STRUCT) → DECIMAL(18,3)
+anofox_tab_money_amount(money STRUCT) → DECIMAL(18,3)
 ```
 
 **Example:**
 ```sql
-SELECT anofox_tab_money (alias: money_amount(anofox_tab_money (alias: money(100.50, 'USD'));
--- Returns: 100.5
+SELECT money_amount(money(100.50, 'USD'));
+-- Returns: 100.500
 ```
 
 ---
@@ -495,12 +506,12 @@ Extract currency code from money struct.
 
 **Signature:**
 ```sql
-anofox_tab_money (alias: money_currency(money STRUCT) → VARCHAR
+anofox_tab_money_currency(money STRUCT) → VARCHAR
 ```
 
 **Example:**
 ```sql
-SELECT anofox_tab_money (alias: money_currency(anofox_tab_money (alias: money(100.50, 'USD'));
+SELECT money_currency(money(100.50, 'USD'));
 -- Returns: 'USD'
 ```
 
@@ -514,12 +525,12 @@ Check if currency code is valid.
 
 **Signature:**
 ```sql
-anofox_tab_is_valid_currency (alias: is_valid_currency(code VARCHAR) → BOOLEAN
+anofox_tab_is_valid_currency(code VARCHAR) → BOOLEAN
 ```
 
 **Example:**
 ```sql
-SELECT anofox_tab_is_valid_currency (alias: is_valid_currency('USD');
+SELECT is_valid_currency('USD');
 -- Returns: true
 ```
 
@@ -531,12 +542,12 @@ Get currency symbol (e.g., '$', '€').
 
 **Signature:**
 ```sql
-anofox_tab_currency_ (alias: currency_symbol(code VARCHAR) → VARCHAR
+anofox_tab_currency_symbol(code VARCHAR) → VARCHAR
 ```
 
 **Example:**
 ```sql
-SELECT anofox_tab_currency_ (alias: currency_symbol('USD');
+SELECT currency_symbol('USD');
 -- Returns: '$'
 ```
 
@@ -548,12 +559,12 @@ Get currency name (e.g., 'United States Dollar').
 
 **Signature:**
 ```sql
-anofox_tab_currency_ (alias: currency_name(code VARCHAR) → VARCHAR
+anofox_tab_currency_name(code VARCHAR) → VARCHAR
 ```
 
 **Example:**
 ```sql
-SELECT anofox_tab_currency_ (alias: currency_name('USD');
+SELECT currency_name('USD');
 -- Returns: 'United States Dollar'
 ```
 
@@ -567,7 +578,7 @@ Format money for display. The number of decimals is derived from the currency's 
 
 **Signature:**
 ```sql
-anofox_tab_money (alias: money_format(money STRUCT, style VARCHAR) → VARCHAR
+anofox_tab_money_format(money STRUCT, style VARCHAR) → VARCHAR
 ```
 
 **Parameters:**
@@ -575,7 +586,7 @@ anofox_tab_money (alias: money_format(money STRUCT, style VARCHAR) → VARCHAR
 
 **Example:**
 ```sql
-SELECT anofox_tab_money (alias: money_format(anofox_tab_money (alias: money(150.00, 'EUR'), 'symbol');
+SELECT money_format(money(150.00, 'EUR'), 'symbol');
 -- Returns: '150,00 €'
 ```
 
@@ -589,7 +600,7 @@ Check if amount > 0.
 
 **Signature:**
 ```sql
-anofox_tab_money (alias: money_is_positive(money STRUCT) → BOOLEAN
+anofox_tab_money_is_positive(money STRUCT) → BOOLEAN
 ```
 
 ---
@@ -600,7 +611,7 @@ Check if amount < 0.
 
 **Signature:**
 ```sql
-anofox_tab_money (alias: money_is_negative(money STRUCT) → BOOLEAN
+anofox_tab_money_is_negative(money STRUCT) → BOOLEAN
 ```
 
 ---
@@ -611,7 +622,7 @@ Check if amount == 0.
 
 **Signature:**
 ```sql
-anofox_tab_money (alias: money_is_zero(money STRUCT) → BOOLEAN
+anofox_tab_money_is_zero(money STRUCT) → BOOLEAN
 ```
 
 ---
@@ -622,7 +633,7 @@ Get absolute value (sign removed).
 
 **Signature:**
 ```sql
-anofox_tab_money (alias: money_abs(money STRUCT) → STRUCT(amount DECIMAL(18,3), currency VARCHAR)
+anofox_tab_money_abs(money STRUCT) → STRUCT(amount DECIMAL(18,3), currency VARCHAR)
 ```
 
 ---
@@ -635,16 +646,16 @@ Add two money values (same currency required).
 
 **Signature:**
 ```sql
-anofox_tab_money (alias: money_add(money1 STRUCT, money2 STRUCT) → STRUCT(amount DECIMAL(18,3), currency VARCHAR)
+anofox_tab_money_add(money1 STRUCT, money2 STRUCT) → STRUCT(amount DECIMAL(18,3), currency VARCHAR)
 ```
 
 **Example:**
 ```sql
-SELECT anofox_tab_money (alias: money_add(
-    anofox_tab_money (alias: money(100.00, 'EUR'),
-    anofox_tab_money (alias: money(50.00, 'EUR')
+SELECT money_add(
+    money(100.00, 'EUR'),
+    money(50.00, 'EUR')
 );
--- Returns: {amount: 150.0, currency: 'EUR'}
+-- Returns: {'amount': 150.000, 'currency': EUR}
 ```
 
 ---
@@ -655,7 +666,7 @@ Subtract money2 from money1 (same currency required).
 
 **Signature:**
 ```sql
-anofox_tab_money (alias: money_subtract(money1 STRUCT, money2 STRUCT) → STRUCT(amount DECIMAL(18,3), currency VARCHAR)
+anofox_tab_money_subtract(money1 STRUCT, money2 STRUCT) → STRUCT(amount DECIMAL(18,3), currency VARCHAR)
 ```
 
 ---
@@ -666,7 +677,7 @@ Multiply money by a scalar factor.
 
 **Signature:**
 ```sql
-anofox_tab_money (alias: money_multiply(money STRUCT, factor DOUBLE) → STRUCT(amount DECIMAL(18,3), currency VARCHAR)
+anofox_tab_money_multiply(money STRUCT, factor DOUBLE) → STRUCT(amount DECIMAL(18,3), currency VARCHAR)
 ```
 
 ---
@@ -679,12 +690,12 @@ Check if amount is within range.
 
 **Signature:**
 ```sql
-anofox_tab_money (alias: money_in_range(money STRUCT, min DOUBLE, max DOUBLE) → BOOLEAN
+anofox_tab_money_in_range(money STRUCT, min DOUBLE, max DOUBLE) → BOOLEAN
 ```
 
 **Example:**
 ```sql
-SELECT anofox_tab_money (alias: money_in_range(anofox_tab_money (alias: money(100.00, 'USD'), 0.01, 99999.99);
+SELECT money_in_range(money(100.00, 'USD'), 0.01, 99999.99);
 -- Returns: true
 ```
 
@@ -696,7 +707,7 @@ Check if two money values have same currency.
 
 **Signature:**
 ```sql
-anofox_tab_money (alias: money_same_currency(money1 STRUCT, money2 STRUCT) → BOOLEAN
+anofox_tab_money_same_currency(money1 STRUCT, money2 STRUCT) → BOOLEAN
 ```
 
 ---
@@ -707,7 +718,12 @@ European VAT number validation for regulatory compliance and data quality.
 
 ### Supported Countries
 
-29 countries supported (28 EU + UK): AT, BE, BG, CY, CZ, DE, DK, EE, EL, ES, FI, FR, HR, HU, IE, IT, LT, LU, LV, MT, NL, PL, PT, RO, SE, SI, SK, UK
+28 countries: the 27 EU member states plus the United Kingdom.
+
+AT, BE, BG, CY, CZ, DE, DK, EE, EL (Greece), ES, FI, FR, HR, HU, IE, IT, LT, LU, LV, MT, NL, PL, PT, RO, SE, SI, SK, GB
+
+Greece uses the VAT prefix `EL`; `GR` is accepted as well. Northern Ireland uses `XI`. `UK` is
+not a valid code: `is_valid_vat_country('UK')` is false, `'GB'` and `'XI'` are true.
 
 ### Basic Operations
 
@@ -717,13 +733,13 @@ Parse VAT string into country and digits.
 
 **Signature:**
 ```sql
-anofox_tab_vat (alias: vat(vat_string VARCHAR) → STRUCT(country VARCHAR, digits VARCHAR)
+anofox_tab_vat(vat_string VARCHAR) → STRUCT(country VARCHAR, digits VARCHAR)
 ```
 
 **Example:**
 ```sql
-SELECT anofox_tab_vat (alias: vat('DE123456789');
--- Returns: {country: 'DE', digits: '123456789'}
+SELECT vat('DE123456789');
+-- Returns: {'country': DE, 'digits': 123456789}
 ```
 
 ---
@@ -735,12 +751,12 @@ VAT aliases `EL` (Greece) and `XI` (Northern Ireland / GB) are accepted.
 
 **Signature:**
 ```sql
-anofox_tab_is_valid_vat_country (alias: is_valid_vat_country(code VARCHAR) → BOOLEAN
+anofox_tab_is_valid_vat_country(code VARCHAR) → BOOLEAN
 ```
 
 **Example:**
 ```sql
-SELECT anofox_tab_is_valid_vat_country (alias: is_valid_vat_country('DE');
+SELECT is_valid_vat_country('DE');
 -- Returns: true
 ```
 
@@ -752,12 +768,12 @@ Normalize VAT string (uppercase, remove punctuation).
 
 **Signature:**
 ```sql
-anofox_tab_vat (alias: vat_normalize(vat_string VARCHAR) → VARCHAR
+anofox_tab_vat_normalize(vat_string VARCHAR) → VARCHAR
 ```
 
 **Example:**
 ```sql
-SELECT anofox_tab_vat (alias: vat_normalize('de 123-456-789');
+SELECT vat_normalize('de 123-456-789');
 -- Returns: 'DE123456789'
 ```
 
@@ -771,7 +787,7 @@ Validate VAT syntax against country pattern.
 
 **Signature:**
 ```sql
-anofox_tab_vat (alias: vat_is_valid_syntax(vat_string VARCHAR) → BOOLEAN
+anofox_tab_vat_is_valid_syntax(vat_string VARCHAR) → BOOLEAN
 ```
 
 ---
@@ -782,7 +798,7 @@ Parse VAT into country and normalized digits.
 
 **Signature:**
 ```sql
-anofox_tab_vat (alias: vat_split(vat_string VARCHAR) → STRUCT(country VARCHAR, digits VARCHAR)
+anofox_tab_vat_split(vat_string VARCHAR) → STRUCT(country VARCHAR, digits VARCHAR)
 ```
 
 ---
@@ -793,7 +809,7 @@ Check if VAT has valid country prefix.
 
 **Signature:**
 ```sql
-anofox_tab_vat (alias: vat_exists(vat_string VARCHAR) → BOOLEAN
+anofox_tab_vat_exists(vat_string VARCHAR) → BOOLEAN
 ```
 
 ---
@@ -807,7 +823,7 @@ Check if country is EU member. Codes are case-insensitive and the VAT aliases
 
 **Signature:**
 ```sql
-anofox_tab_vat (alias: vat_is_eu_member(country_code VARCHAR) → BOOLEAN
+anofox_tab_vat_is_eu_member(country_code VARCHAR) → BOOLEAN
 ```
 
 ---
@@ -818,12 +834,12 @@ Get full country name.
 
 **Signature:**
 ```sql
-anofox_tab_vat (alias: vat_country_name(country_code VARCHAR) → VARCHAR
+anofox_tab_vat_country_name(country_code VARCHAR) → VARCHAR
 ```
 
 **Example:**
 ```sql
-SELECT anofox_tab_vat (alias: vat_country_name('DE');
+SELECT vat_country_name('DE');
 -- Returns: 'Germany'
 ```
 
@@ -840,7 +856,7 @@ Unparseable VAT numbers return `NULL`; unknown styles raise an error.
 
 **Signature:**
 ```sql
-anofox_tab_vat (alias: vat_format(vat_string VARCHAR, style VARCHAR) → VARCHAR
+anofox_tab_vat_format(vat_string VARCHAR, style VARCHAR) → VARCHAR
 ```
 
 **Example:**
@@ -866,7 +882,7 @@ without check-digit verification.
 
 **Signature:**
 ```sql
-anofox_tab_vat (alias: vat_is_valid(vat_string VARCHAR) → BOOLEAN
+anofox_tab_vat_is_valid(vat_string VARCHAR) → BOOLEAN
 ```
 
 **Example:**
@@ -916,7 +932,7 @@ Detect and mask Personally Identifiable Information (PII) in text data. Supports
 **PHONE:**
 - Requires distinctive features (+ prefix or parentheses format)
 - Pattern-based detection only, not full libphonenumber validation
-- For comprehensive phone parsing, use `anofox_phonenumber_parse()`
+- For comprehensive phone parsing, use `phonenumber_parse()`
 
 **API_KEY:**
 - Generic pattern uses entropy threshold (≥3.5 bits/char for 32+ chars)
@@ -951,39 +967,43 @@ Detect and mask Personally Identifiable Information (PII) in text data. Supports
 
 ### Masking Strategies
 
+Strategy names are case-insensitive (`'partial'` and `'PARTIAL'` are the same).
+
 | Strategy | Description | Example Output |
 |----------|-------------|----------------|
 | `redact` | Replace with type label | `[EMAIL]`, `[US_SSN]` |
 | `partial` | Show partial value | `te**@example.com`, `***-**-6789` |
 | `asterisk` | Replace with asterisks (same length) | `****************` |
 | `hash` | Replace with SHA-256 hash (truncated) | `a1b2c3d4e5f6...` |
+| `none` | Leave the text unchanged | `123-45-6789` |
 
 ### Functions
 
 #### `anofox_tab_pii_detect` (alias: `pii_detect`)
 
-Detect all PII in input text and return matches as JSON.
+Detect all PII in input text and return the matches as a list of structs.
 
 **Signature:**
 ```sql
-anofox_tab_pii_detect(text VARCHAR) → VARCHAR
+anofox_tab_pii_detect(text VARCHAR)
+  → STRUCT("type" VARCHAR, "text" VARCHAR, start_pos BIGINT, end_pos BIGINT, confidence DOUBLE)[]
 ```
 
 **Returns:**
-- `VARCHAR`: JSON array of detected PII matches with type, position, and confidence
+- One struct per match with its type, matched text, start/end position and confidence
 
 **Example:**
 ```sql
 SELECT pii_detect('Contact: john.doe@example.com, SSN: 123-45-6789');
--- Returns: [{"type":"EMAIL","text":"john.doe@example.com","start":9,"end":29,"confidence":1.00},
---           {"type":"US_SSN","text":"123-45-6789","start":36,"end":47,"confidence":1.00}]
+-- Returns: [{'type': EMAIL, 'text': john.doe@example.com, 'start_pos': 9, 'end_pos': 29, 'confidence': 1.0},
+--           {'type': US_SSN, 'text': 123-45-6789, 'start_pos': 36, 'end_pos': 47, 'confidence': 1.0}]
 
--- NER-based entity detection example:
+-- NER-based entity detection (downloads the NER model on first use; confidences are rounded here):
 SELECT pii_detect('John Smith from Microsoft visited Paris to study French');
--- Returns: [{"type":"NAME","text":"John Smith","start":0,"end":10,"confidence":1.00},
---           {"type":"ORGANIZATION","text":"Microsoft","start":16,"end":25,"confidence":1.00},
---           {"type":"LOCATION","text":"Paris","start":34,"end":39,"confidence":1.00},
---           {"type":"MISC","text":"French","start":49,"end":55,"confidence":1.00}]
+-- Returns: [{'type': NAME, 'text': John Smith, 'start_pos': 0, 'end_pos': 10, 'confidence': 0.999...},
+--           {'type': ORGANIZATION, 'text': Microsoft, 'start_pos': 16, 'end_pos': 25, ...},
+--           {'type': LOCATION, 'text': Paris, 'start_pos': 34, 'end_pos': 39, ...},
+--           {'type': MISC, 'text': French, 'start_pos': 49, 'end_pos': 55, ...}]
 ```
 
 ---
@@ -999,7 +1019,7 @@ anofox_tab_pii_mask(text VARCHAR [, strategy VARCHAR]) → VARCHAR
 
 **Parameters:**
 - `text`: Input text containing potential PII
-- `strategy`: Masking strategy - `'redact'` (default), `'partial'`, `'asterisk'`, or `'hash'`
+- `strategy`: Masking strategy - `'redact'` (default), `'partial'`, `'asterisk'`, `'hash'` or `'none'` (case-insensitive)
 
 **Returns:**
 - `VARCHAR`: Text with PII masked according to strategy
@@ -1107,7 +1127,7 @@ anofox_ner_status() → TABLE(onnx_available, model_status, model_path, model_si
 ```sql
 SELECT * FROM anofox_ner_status();
 -- onnx_available | model_status  | model_path                                                                 | model_size_mb | status_message
--- true           | LOADED        | /home/user/.duckdb/extensions/anofox/ner/distilbert-en/model_quantized.onnx | 66.5        | Model loaded successfully
+-- true           | LOADED        | /home/user/.duckdb/extensions/anofox/ner/distilbert-en/model_quantized.onnx | 62.7          | Model loaded successfully (distilbert-en, device: CPU)
 ```
 
 **NER configuration options:**
@@ -1224,10 +1244,12 @@ SELECT pii_detect_emails('Contact: john@example.com and jane@example.com');
 ```
 
 `anofox_tab_pii_detect_batch` (alias: `pii_detect_batch`) runs all detectors over a `VARCHAR[]`
-and returns one match list per element:
+and returns one match list per element (the element type is the `pii_detect` struct):
 
 ```sql
 SELECT pii_detect_batch(['john@example.com', 'SSN: 123-45-6789']);
+-- Returns: [[{'type': EMAIL, 'text': john@example.com, 'start_pos': 0, 'end_pos': 16, 'confidence': 1.0}],
+--           [{'type': US_SSN, 'text': 123-45-6789, 'start_pos': 5, 'end_pos': 16, 'confidence': 1.0}]]
 ```
 
 ---
@@ -1257,11 +1279,11 @@ SELECT pii_is_valid_iban('DE89370400440532013000');   -- true (MOD-97 valid)
 
 ##### `anofox_tab_pii_mask_column` (alias: `pii_mask_column`)
 
-Type-specific masking for a single PII type.
+Masks only the matches of one PII type; other PII in the value stays as it is.
 
 **Signature:**
 ```sql
-pii_mask_column(value VARCHAR, pii_type VARCHAR, strategy VARCHAR) → VARCHAR
+anofox_tab_pii_mask_column(value VARCHAR, pii_type VARCHAR, strategy VARCHAR) → VARCHAR
 ```
 
 **Example:**
@@ -1274,17 +1296,22 @@ SELECT pii_mask_column('123-45-6789', 'US_SSN', 'partial');
 
 ##### `anofox_tab_pii_redact_column` (alias: `pii_redact_column`)
 
-Mask all PII in text with optional strategy.
+Mask all PII in text with an optional strategy. Without one it uses
+`anofox_pii_default_mask_strategy` (default `'redact'`), which also sets the `masked_value` of
+`pii_audit_table`. `pii_mask` without a strategy always redacts.
 
 **Signature:**
 ```sql
-pii_redact_column(value VARCHAR [, strategy VARCHAR]) → VARCHAR
+anofox_tab_pii_redact_column(value VARCHAR [, strategy VARCHAR]) → VARCHAR
 ```
 
 **Example:**
 ```sql
 SELECT pii_redact_column('Email: test@example.com');
 -- Returns: Email: [EMAIL]
+
+SELECT pii_redact_column('Email: test@example.com', 'asterisk');
+-- Returns: Email: ****************
 ```
 
 ---
@@ -1295,7 +1322,7 @@ Display current PII configuration settings.
 
 **Signature:**
 ```sql
-pii_config() → TABLE(option, value, description)
+pii_config() → TABLE(option_name VARCHAR, option_value VARCHAR, description VARCHAR)
 ```
 
 **Example:**
@@ -1310,9 +1337,9 @@ SELECT * FROM pii_config();
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
 | `anofox_pii_min_confidence` | DOUBLE | 0.5 | Minimum confidence threshold (0.0-1.0) |
-| `anofox_pii_default_mask_strategy` | VARCHAR | 'redact' | Default masking strategy |
+| `anofox_pii_default_mask_strategy` | VARCHAR | 'redact' | Strategy used by `pii_redact_column(value)` and the `masked_value` of `pii_audit_table` (`redact`, `hash`, `partial`, `asterisk`, `none`; case-insensitive). `pii_mask` without a strategy always redacts. |
 | `anofox_pii_enabled_types` | VARCHAR | '' | Comma-separated list of enabled PII types (empty = all) |
-| `anofox_pii_deep_validation` | BOOLEAN | false | Enable deep email/phone validation |
+| `anofox_pii_deep_validation` | BOOLEAN | false | Validate detected phone numbers with libphonenumber |
 
 **Example:**
 ```sql
@@ -2445,7 +2472,45 @@ WHERE abs(pearson) > 0.7;
 
 ## Configuration
 
-Set options via SQL or DuckDB's configuration file.
+Set options with `SET name = value;` after `LOAD anofox_tabular;`. List them all with:
+
+```sql
+SELECT name, input_type, value, description
+FROM duckdb_settings()
+WHERE name LIKE 'anofox%' OR name = 'datazoo_banner'
+ORDER BY name;
+```
+
+The 24 settings are grouped by prefix: `anofox_tab_*` for email, phone, postal and tracing,
+`anofox_pii_*` and `anofox_ner_*` for PII detection, `anofox_telemetry_*` for telemetry, and
+`datazoo_banner` for the DataZoo feedback banner.
+
+| Setting | Type | Default | Description |
+|---------|------|---------|-------------|
+| `anofox_tab_email_default_validation` | VARCHAR | `regex` | Default mode of `email_is_valid` / `email_validate` (`regex`, `dns`, `smtp`) |
+| `anofox_tab_email_regex_pattern` | VARCHAR | RFC 5322 inspired pattern | Regular expression used by the `regex` stage |
+| `anofox_tab_email_dns_timeout_ms` | BIGINT | `1000` | DNS resolver timeout in milliseconds |
+| `anofox_tab_email_dns_tries` | INTEGER | `1` | DNS attempts before failing (1-10) |
+| `anofox_tab_email_smtp_port` | INTEGER | `25` | SMTP port used when connecting to MX hosts |
+| `anofox_tab_email_smtp_connect_timeout_ms` | BIGINT | `5000` | SMTP connect timeout in milliseconds |
+| `anofox_tab_email_smtp_read_timeout_ms` | BIGINT | `5000` | SMTP read/write timeout in milliseconds |
+| `anofox_tab_email_smtp_helo_domain` | VARCHAR | `duckdb.local` | Domain sent in SMTP EHLO |
+| `anofox_tab_email_smtp_mail_from` | VARCHAR | `validator@duckdb.local` | MAIL FROM address used during SMTP verification |
+| `anofox_tab_phonenumber_default_region` | VARCHAR | `US` | Region used when the region hint is NULL; must be a supported 2-letter ISO code |
+| `anofox_tab_postal_data_path` | VARCHAR | `.duckdb/extensions/libpostal` | Directory of the libpostal data, relative to the working directory unless absolute; its parent directory must exist |
+| `anofox_tab_trace_enabled` | BOOLEAN | `true` | Print `[anofox] …` trace lines to the console |
+| `anofox_tab_trace_level` | VARCHAR | `info` | Minimum trace level (`trace`, `debug`, `info`, `warn`, `error`, `critical`, `off`) |
+| `anofox_pii_enabled_types` | VARCHAR | empty (all types) | Comma-separated PII types to detect |
+| `anofox_pii_min_confidence` | DOUBLE | `0.5` | Minimum confidence for NER-based detection (0.0-1.0) |
+| `anofox_pii_default_mask_strategy` | VARCHAR | `redact` | Strategy of `pii_redact_column(value)` and `pii_audit_table` (`redact`, `hash`, `partial`, `asterisk`, `none`) |
+| `anofox_pii_deep_validation` | BOOLEAN | `false` | Validate detected phone numbers with libphonenumber |
+| `anofox_ner_auto_download` | BOOLEAN | `true` | Download the NER model (~66 MB) on first use; `false` skips NER detection instead |
+| `anofox_ner_model` | VARCHAR | `distilbert-en` | NER model; set it before the model is first loaded |
+| `anofox_ner_device` | VARCHAR | `AUTO` | OpenVINO device (`AUTO`, `CPU`, `GPU`, `GPU.0`, …) |
+| `anofox_ner_cache_size` | BIGINT | `10000` | LRU cache size for NER results (0 disables) |
+| `anofox_telemetry_enabled` | BOOLEAN | `true` | Anonymous usage telemetry |
+| `anofox_telemetry_key` | VARCHAR | built-in project key | PostHog API key for telemetry |
+| `datazoo_banner` | BOOLEAN | `true` | Show the feedback banner in interactive terminals (at most once a day) |
 
 ### Email Settings
 
@@ -2464,11 +2529,9 @@ SET anofox_tab_email_smtp_mail_from = 'validator@duckdb.local';  -- MAIL FROM ad
 ### Postal Settings
 
 ```sql
-SET anofox_tab_postal_data_path = '.duckdb/extensions/libpostal';  -- Data directory
+SET anofox_tab_postal_data_path = '/data/libpostal';  -- the parent directory must exist
 
--- Download libpostal data on first use
-SELECT anofox_tab_postal_load_data();
--- or using alias:
+-- Download the libpostal data (~500 MB) up front; the first postal call does it otherwise
 SELECT postal_load_data();
 ```
 
@@ -2481,75 +2544,101 @@ SET anofox_tab_phonenumber_default_region = 'US';  -- Default region code
 The default region must be a supported 2-letter ISO region code; unknown codes are rejected.
 The value is session-scoped and snapshotted when a query is bound, so changing it mid-query has no effect on running queries.
 
+### PII and NER Settings
+
+See [PII Configuration Options](#configuration-options) and the
+[NER configuration options](#anofox_ner_status).
+
 ### Tracing
 
+Tracing is on by default at level `info`, so the CLI prints `[anofox] [info] …` lines when the
+extension loads and while functions run. To quiet it:
+
 ```sql
-SET anofox_tab_trace_enabled = true;  -- Enable/disable logging
-SET anofox_tab_trace_level = 'info';  -- trace|debug|info|warn|error|critical|off
+SET anofox_tab_trace_level = 'warn';   -- only warnings and errors
+SET anofox_tab_trace_enabled = false;  -- or no trace output at all
 ```
 
 ### Telemetry
 
-Anonymous usage telemetry helps improve the extension. No personal data or query content is collected.
+Anonymous usage telemetry is on by default. It sends the extension load event and aggregated
+function call counts (function name, count, median duration) to PostHog EU; never query text,
+table or column names, or data. See [TELEMETRY.md](../TELEMETRY.md) for the full list.
 
-**What is collected:**
-- Extension load events (extension name, version, platform)
-- Function execution counts (function name only, no arguments or data)
-
-**Disable via environment variable (before loading extension):**
+**Disable via environment variable (also suppresses the load event):**
 ```bash
 export DATAZOO_DISABLE_TELEMETRY=1
 ```
 
-**Disable via SQL (after loading extension):**
+**Disable via SQL (after loading the extension):**
 ```sql
 SET anofox_telemetry_enabled = false;
 ```
 
-**Configure API key (advanced):**
-```sql
-SET anofox_telemetry_key = 'your_custom_key';
-```
+### Feedback banner
+
+The first load in an interactive terminal each day prints a short feedback banner. It never
+prints when output is piped, in notebooks or in CI. Silence it with `SET datazoo_banner = false;`
+or `DATAZOO_NO_BANNER=1`.
+
+### Network use
+
+The core functions run locally. These features use the network:
+
+| Feature | What it fetches | Opt out |
+|---|---|---|
+| PII name/organization/location detection (NER) | DistilBERT model, ~66 MB, from Hugging Face on first use, into `~/.duckdb/extensions/anofox/ner/` | `SET anofox_ner_auto_download = false` (status becomes `NOT_DOWNLOADED`; pattern recognizers keep working) |
+| Address parsing (`postal_load_data()`, or the first `postal_parse_address` / `postal_expand_address` call) | libpostal data, ~500 MB | do not call the postal functions |
+| `email_validate` / `email_is_valid` modes `dns` and `smtp` | DNS MX lookup / SMTP connection to the mail host | use mode `regex` (the default) |
+| Telemetry | anonymous usage events to PostHog EU; on by default; see [TELEMETRY.md](../TELEMETRY.md) | `SET anofox_telemetry_enabled = false` or env `DATAZOO_DISABLE_TELEMETRY=1` (env also suppresses the load event) |
+| Feedback banner | none (local print, interactive terminals, once a day) | `SET datazoo_banner = false` |
 
 ---
 
 ## Function Coverage Matrix
+
+Counts are canonical function names (each `anofox_tab_*` function also has a short alias).
 
 ### Summary Statistics
 
 | Category | Count | Function Types |
 |----------|-------|----------------|
 | Email Validation | 3 | Scalar (2), Table (1) |
-| Address Parsing | 4 | Scalar (2), Table (2) |
+| Address Parsing | 4 | Scalar (3), Table (1) |
 | Phone Numbers | 9 | Scalar (8), Table (1) |
 | Money & Currency | 17 | Scalar functions |
 | VAT Validation | 10 | Scalar functions |
-| PII Detection | 20 | 15 scalar + 5 table functions |
-| Data Quality Metrics | 19 | Table functions |
+| PII Detection | 24 | Scalar (19), Table (5, including `anofox_ner_status`) |
+| Data Quality Checks | 22 | 17 checks, 3 `_events` companions, `run_checks` (table) and `anofox_contract_version` (scalar) |
 | Anomaly Detection | 5 | Table functions |
 | Data Diffing | 2 | Table functions |
-| **Total** | **89** | |
+| Data Profiling | 3 | Table functions |
+| **Total** | **99** | |
 
 ### Function Type Breakdown
 
 | Type | Count | Examples |
 |------|-------|----------|
 | Scalar Functions | 60 | `anofox_tab_email_is_valid` (alias: `email_is_valid`), `anofox_tab_pii_detect` (alias: `pii_detect`), `anofox_tab_vat_is_valid` (alias: `vat_is_valid`) |
-| Table Functions | 29 | `anofox_tab_volume` (alias: `volume`), `anofox_tab_compliance` (alias: `compliance`), `anofox_tab_isolation_forest` (alias: `isolation_forest`), `anofox_tab_outlier_tree` (alias: `outlier_tree`) |
+| Table Functions | 39 | `anofox_tab_volume` (alias: `volume`), `anofox_tab_compliance` (alias: `compliance`), `anofox_tab_isolation_forest` (alias: `isolation_forest`), `anofox_tab_outlier_tree` (alias: `outlier_tree`) |
+
+Check the numbers against your build with
+`SELECT function_type, count(DISTINCT function_name) FROM duckdb_functions() WHERE function_name LIKE 'anofox%' GROUP BY ALL;`.
 
 ### Module Status
 
 | Module | Functions | Status | Dependencies |
 |--------|-----------|--------|--------------|
 | Email Validation | 3 | Stable | c-ares (optional DNS), OpenSSL (optional SMTP) |
-| Address Parsing | 4 | Stable | libpostal (required) |
+| Address Parsing | 4 | Stable | libpostal (required; the module is not built on Windows) |
 | Phone Numbers | 9 | Stable | libphonenumber (embedded) |
 | Money & Currency | 17 | Stable | None |
 | VAT Validation | 10 | Stable | None |
-| PII Detection | 20 | Stable | OpenVINO (for NER), OpenSSL (for hash masking) |
-| Data Quality Metrics | 19 | Stable | None |
+| PII Detection | 24 | Stable | OpenVINO (for NER), OpenSSL (for hash masking) |
+| Data Quality Checks | 22 | Stable | None |
 | Anomaly Detection | 5 | Stable | None |
 | Data Diffing | 2 | Stable | None |
+| Data Profiling | 3 | Stable | None |
 
 ---
 
@@ -2557,26 +2646,27 @@ SET anofox_telemetry_key = 'your_custom_key';
 
 1. **All validation calculations** are performed by native C++ implementations with optional integration to external libraries (libpostal, libphonenumber).
 
-2. **Positional parameters only**: Functions do NOT support named parameters (`:=` syntax). Parameters must be provided in the order specified.
+2. **Parameters**: arguments are positional. Only the parameters listed under
+   [Parameter Conventions](#parameter-conventions) also accept the named form (`:=`).
 
 3. **NULL handling**:
    - Missing values in input will cause functions to return NULL
    - Table functions handle NULLs explicitly in their output
 
 4. **Performance**:
-   - Scalar functions: Vectorized execution, optimized for large datasets
-   - Table functions: SQL-based implementation, efficient for large tables
+   - Scalar functions: Vectorized execution
+   - Table functions: SQL-based implementation
    - Automatic parallelization across CPU cores where applicable
 
 5. **External dependencies**:
-   - **libpostal**: Required for address parsing. Data (~500MB) is downloaded automatically on first use via `anofox_tab_postal_load_data()`.
+   - **libpostal**: Required for address parsing. Its data (~500MB) is downloaded on the first postal call, or up front with `postal_load_data()`.
    - **c-ares**: Optional for DNS email validation
    - **OpenSSL**: Optional for SMTP email validation
    - **libphonenumber**: Embedded implementation, no external dependencies
 
 6. **Money struct format**: All money functions use `STRUCT(amount DECIMAL(18,3), currency VARCHAR)` format. Currency codes must match supported currencies (USD, EUR, GBP, JPY, CAD, AUD, CHF, CNY, INR, BRL).
 
-7. **VAT country codes**: Use ISO 3166-1 alpha-2 country codes (e.g., 'DE', 'FR', 'GB'). The extension supports 29 countries (28 EU + UK).
+7. **VAT country codes**: Use the VAT prefixes of the 28 supported countries (27 EU member states plus `GB`, with `XI` for Northern Ireland and `EL` for Greece). `UK` is not accepted.
 
 8. **Anomaly detection parameters**:
    - Isolation Forest: Higher `n_trees` and `sample_size` improve accuracy but increase computation time
@@ -2588,9 +2678,3 @@ SET anofox_telemetry_key = 'your_custom_key';
    - `anofox_tab_diff_hashdiff` (alias `diff_hashdiff`): currently identical to
      `diff_joindiff`; the bisection parameters are not implemented and rejected
    - Both functions support compound primary keys and match keys NULL-safely
-
----
-
-**Last Updated:** 2025-01-XX  
-**API Version:** 0.1.0
-
