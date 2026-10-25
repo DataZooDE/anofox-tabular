@@ -3610,9 +3610,19 @@ struct PIIAuditTableBindData : public TableFunctionData {
 // Shared by pii_audit_table and pii_scan_table. The relation is bound with a sibling
 // connection (LIMIT 0 reads no rows), the same way the scan itself reads it; a catalog
 // lookup would only find tables, and casting a view entry to a table entry crashed.
-static std::vector<std::string> ResolvePIIScanColumns(ClientContext &context, const std::string &function_name,
-                                                      const std::string &table_name,
-                                                      const std::vector<std::string> &column_filter) {
+// One column of a table to scan: its name and type, and whether it is scanned
+struct PIIScanColumn {
+    std::string name;
+    std::string type;
+    bool scan;
+};
+
+// The columns pii_scan_table reports, in table order. Without a filter: every column, VARCHAR
+// columns scanned and the others marked as skipped. With a filter: exactly the named columns,
+// all scanned.
+static std::vector<PIIScanColumn> ResolvePIIScanPlan(ClientContext &context, const std::string &function_name,
+                                                     const std::string &table_name,
+                                                     const std::vector<std::string> &column_filter) {
     Connection con(*context.db);
     auto result = con.Query("SELECT * FROM " + BuildQueryTableRef(table_name) + " LIMIT 0");
     if (result->HasError()) {
@@ -3634,10 +3644,23 @@ static std::vector<std::string> ResolvePIIScanColumns(ClientContext &context, co
         }
     }
 
-    std::vector<std::string> columns;
+    std::vector<PIIScanColumn> plan;
     for (idx_t i = 0; i < available_names.size(); i++) {
-        if (selected[i]) {
-            columns.push_back(available_names[i]);
+        if (selected[i] || column_filter.empty()) {
+            plan.push_back({available_names[i], result_types[i].ToString(), selected[i]});
+        }
+    }
+    return plan;
+}
+
+// The names of the columns to scan (see ResolvePIIScanPlan)
+static std::vector<std::string> ResolvePIIScanColumns(ClientContext &context, const std::string &function_name,
+                                                      const std::string &table_name,
+                                                      const std::vector<std::string> &column_filter) {
+    std::vector<std::string> columns;
+    for (auto &column : ResolvePIIScanPlan(context, function_name, table_name, column_filter)) {
+        if (column.scan) {
+            columns.push_back(std::move(column.name));
         }
     }
     return columns;
@@ -3649,6 +3672,7 @@ struct PIIAuditTableResult {
     PIIType pii_type;
     std::string original_value;
     std::string masked_value;
+    std::string matched_text;
     int64_t start_pos;
     int64_t end_pos;
     double confidence;
@@ -3739,6 +3763,9 @@ unique_ptr<FunctionData> PIIAuditTableBind(ClientContext &context, TableFunction
 
     names.emplace_back("confidence");
     return_types.emplace_back(LogicalTypeId::DOUBLE);
+
+    names.emplace_back("matched_text");
+    return_types.emplace_back(LogicalTypeId::VARCHAR);
 
     // Every output row is row-level, so id_column is valid in any call
     auto id_column = BindIdColumn(context, input, "pii_audit_table", table_name, true, "");
@@ -3840,6 +3867,7 @@ void PIIAuditTableFunction(ClientContext &context, TableFunctionInput &input, Da
                     res.pii_type = match.type;
                     res.original_value = text;
                     res.masked_value = masked;
+                    res.matched_text = match.matched_text;
                     res.start_pos = static_cast<int64_t>(match.start_pos);
                     res.end_pos = static_cast<int64_t>(match.end_pos);
                     res.confidence = match.confidence;
@@ -3876,6 +3904,8 @@ void PIIAuditTableFunction(ClientContext &context, TableFunctionInput &input, Da
     auto start_positions = duckdb_compat::FlatData<int64_t>(output.data[base + 4]);
     auto end_positions = duckdb_compat::FlatData<int64_t>(output.data[base + 5]);
     auto confidences = duckdb_compat::FlatData<double>(output.data[base + 6]);
+    auto &matched_text_vec = output.data[base + 7];
+    auto matched_texts = duckdb_compat::FlatData<string_t>(matched_text_vec);
 
     for (idx_t i = 0; i < count; i++) {
         const auto &res = state.pending[state.pending_offset + i];
@@ -3890,6 +3920,7 @@ void PIIAuditTableFunction(ClientContext &context, TableFunctionInput &input, Da
         start_positions[i] = res.start_pos;
         end_positions[i] = res.end_pos;
         confidences[i] = res.confidence;
+        matched_texts[i] = StringVector::AddString(matched_text_vec, res.matched_text);
     }
 
     state.pending_offset += count;
@@ -3927,6 +3958,9 @@ struct PIIScanTableBindData : public TableFunctionData {
         : table_name(table), column_filter(cols) {}
 };
 
+// One output row of pii_scan_table: a PII type found in a column (status "scanned"), or a
+// column without any match ("no_match"), skipped for its type ("skipped (DATE)") or not
+// readable ("error (...)"); the last three have pii_type UNKNOWN (output NULL)
 struct PIIScanTableResult {
     std::string column_name;
     PIIType pii_type;
@@ -3934,17 +3968,30 @@ struct PIIScanTableResult {
     std::vector<std::string> sample_values;
     double confidence;       // mean match confidence, set once the column is scanned
     double confidence_sum;   // running sum of match confidences
+    int64_t values_scanned;  // non-NULL values of the column that were scanned
+    std::string status;
 
-    PIIScanTableResult() : pii_type(PIIType::UNKNOWN), match_count(0), confidence(1.0), confidence_sum(0.0) {}
+    PIIScanTableResult()
+        : pii_type(PIIType::UNKNOWN), match_count(0), confidence(1.0), confidence_sum(0.0), values_scanned(0),
+          status("scanned") {}
 };
+
+PIIScanTableResult MakePIIScanStatusRow(const std::string &column_name, int64_t values_scanned,
+                                        const std::string &status) {
+    PIIScanTableResult row;
+    row.column_name = column_name;
+    row.values_scanned = values_scanned;
+    row.status = status;
+    return row;
+}
 
 // Streaming scan state: columns are scanned one at a time with streamed
 // input chunks; only the (small) per-column aggregates of columns that have
 // not been emitted yet are buffered.
 struct PIIScanTableState : public GlobalTableFunctionState {
     bool initialized = false;
-    // Columns to scan (resolved from the catalog on first call)
-    std::vector<std::string> columns_to_scan;
+    // Columns to report (resolved on first call), scanned or skipped
+    std::vector<PIIScanColumn> columns_to_scan;
     idx_t column_idx = 0;
     // Configuration snapshot taken once for the whole scan
     PIIConfigSnapshot config;
@@ -4005,6 +4052,12 @@ unique_ptr<FunctionData> PIIScanTableBind(ClientContext &context, TableFunctionB
     names.emplace_back("confidence");
     return_types.emplace_back(LogicalTypeId::DOUBLE);
 
+    names.emplace_back("values_scanned");
+    return_types.emplace_back(LogicalTypeId::BIGINT);
+
+    names.emplace_back("status");
+    return_types.emplace_back(LogicalTypeId::VARCHAR);
+
     return make_uniq<PIIScanTableBindData>(table_name, column_filter);
 }
 
@@ -4018,7 +4071,7 @@ void PIIScanTableFunction(ClientContext &context, TableFunctionInput &input, Dat
             state.initialized = true;
             // Resolve the VARCHAR columns to scan and snapshot the
             // configuration once for the whole scan
-            state.columns_to_scan = ResolvePIIScanColumns(context, "pii_scan_table", bind_data.table_name, bind_data.column_filter);
+            state.columns_to_scan = ResolvePIIScanPlan(context, "pii_scan_table", bind_data.table_name, bind_data.column_filter);
             state.config = PIIConfig::Get().Snapshot();
         }
 
@@ -4030,8 +4083,16 @@ void PIIScanTableFunction(ClientContext &context, TableFunctionInput &input, Dat
             state.pending.clear();
             state.pending_offset = 0;
 
-            const auto &col_name = state.columns_to_scan[state.column_idx];
+            const auto &column = state.columns_to_scan[state.column_idx];
+            const auto &col_name = column.name;
             state.column_idx++;
+
+            // A column that is not scanned is still reported, so the result
+            // accounts for every column of the table
+            if (!column.scan) {
+                state.pending.push_back(MakePIIScanStatusRow(col_name, 0, "skipped (" + column.type + ")"));
+                continue;
+            }
 
             // Build query to get the non-NULL column values
             std::string query = "SELECT CAST(" + QuoteSqlIdentifier(col_name) + " AS VARCHAR) FROM " +
@@ -4043,12 +4104,14 @@ void PIIScanTableFunction(ClientContext &context, TableFunctionInput &input, Dat
             auto result = StreamQuery(con, query);
             if (result->HasError()) {
                 AnofoxTrace(AnofoxLogLevel::Warn, "pii_scan_table: Error querying column " + col_name);
+                state.pending.push_back(MakePIIScanStatusRow(col_name, 0, "error (" + result->GetError() + ")"));
                 continue;
             }
 
             // Aggregate PII detections by type
             std::unordered_map<PIIType, PIIScanTableResult> col_results;
             std::vector<std::string> batch_texts;
+            int64_t values_scanned = 0;
 
             while (true) {
                 auto chunk = result->Fetch();
@@ -4070,6 +4133,7 @@ void PIIScanTableFunction(ClientContext &context, TableFunctionInput &input, Dat
 
                 // Run batch detection (pre-warms NER cache)
                 auto batch_matches = engine.DetectBatch(batch_texts, {}, state.config);
+                values_scanned += static_cast<int64_t>(batch_texts.size());
 
                 // Process results
                 for (size_t i = 0; i < batch_matches.size(); i++) {
@@ -4088,6 +4152,11 @@ void PIIScanTableFunction(ClientContext &context, TableFunctionInput &input, Dat
             }
             if (result->HasError()) {
                 AnofoxTrace(AnofoxLogLevel::Warn, "pii_scan_table: Error querying column " + col_name);
+                state.pending.push_back(MakePIIScanStatusRow(col_name, values_scanned, "error (" + result->GetError() + ")"));
+                continue;
+            }
+            if (col_results.empty()) {
+                state.pending.push_back(MakePIIScanStatusRow(col_name, values_scanned, "no_match"));
                 continue;
             }
 
@@ -4098,6 +4167,7 @@ void PIIScanTableFunction(ClientContext &context, TableFunctionInput &input, Dat
             const size_t first_pending = state.pending.size();
             for (auto &[type, res] : col_results) {
                 res.confidence = res.confidence_sum / static_cast<double>(res.match_count);
+                res.values_scanned = values_scanned;
                 state.pending.push_back(std::move(res));
             }
             std::sort(state.pending.begin() + static_cast<std::ptrdiff_t>(first_pending), state.pending.end(),
@@ -4120,8 +4190,12 @@ void PIIScanTableFunction(ClientContext &context, TableFunctionInput &input, Dat
         // Column 0: column_name
         output.SetValue(0, i, Value(res.column_name));
 
+        // Rows without a match (no_match, skipped, error) have no type,
+        // samples or confidence
+        const bool has_match = res.pii_type != PIIType::UNKNOWN;
+
         // Column 1: pii_type
-        output.SetValue(1, i, Value(PIITypeToString(res.pii_type)));
+        output.SetValue(1, i, has_match ? Value(PIITypeToString(res.pii_type)) : Value(LogicalType::VARCHAR));
 
         // Column 2: match_count
         output.SetValue(2, i, Value::BIGINT(res.match_count));
@@ -4134,7 +4208,11 @@ void PIIScanTableFunction(ClientContext &context, TableFunctionInput &input, Dat
         output.SetValue(3, i, Value::LIST(LogicalTypeId::VARCHAR, std::move(sample_list)));
 
         // Column 4: confidence
-        output.SetValue(4, i, Value::DOUBLE(res.confidence));
+        output.SetValue(4, i, has_match ? Value::DOUBLE(res.confidence) : Value(LogicalType::DOUBLE));
+
+        // Column 5: values_scanned, column 6: status
+        output.SetValue(5, i, Value::BIGINT(res.values_scanned));
+        output.SetValue(6, i, Value(res.status));
     }
 
     state.pending_offset += count;

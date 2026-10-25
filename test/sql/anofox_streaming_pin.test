@@ -67,6 +67,7 @@ FROM range(1, 2010) t(i);
 query TTIR
 SELECT column_name, pii_type, match_count, confidence
 FROM anofox_tab_pii_scan_table('pin_pii')
+WHERE pii_type IS NOT NULL
 ORDER BY column_name, pii_type;
 ----
 extra	CREDIT_CARD	20	1.0

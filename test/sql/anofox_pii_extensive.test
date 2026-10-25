@@ -1599,11 +1599,11 @@ SELECT match_count FROM pii_scan_table('extensive_pii_test') WHERE column_name =
 ----
 4
 
-# Clean text column - no PII
-query I
-SELECT COUNT(*) FROM pii_scan_table('extensive_pii_test') WHERE column_name = 'clean_text';
+# Clean text column - no PII: one no_match row, no PII type
+query TTIIT
+SELECT column_name, pii_type, match_count, values_scanned, status FROM pii_scan_table('extensive_pii_test') WHERE column_name = 'clean_text';
 ----
-0
+clean_text	NULL	0	5	no_match
 
 # --- pii_audit_table Tests ---
 

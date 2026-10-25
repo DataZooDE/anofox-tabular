@@ -88,7 +88,7 @@ INSERT INTO cr_crm VALUES
 
 # Default (no filter): VARCHAR columns, JSON included
 query TTI
-SELECT column_name, pii_type, match_count FROM pii_scan_table('cr_crm') ORDER BY column_name
+SELECT column_name, pii_type, match_count FROM pii_scan_table('cr_crm') WHERE status = 'scanned' ORDER BY column_name
 ----
 Email	EMAIL	1
 doc	EMAIL	1

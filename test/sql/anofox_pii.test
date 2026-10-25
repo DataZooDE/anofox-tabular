@@ -685,11 +685,11 @@ SELECT confidence FROM pii_scan_table('pii_test_data') WHERE pii_type = 'EMAIL';
 ----
 1.0
 
-# No PII in clean column
-query I
-SELECT COUNT(*) FROM pii_scan_table('pii_test_data', 'clean_text');
+# No PII in clean column: one no_match row
+query TIT
+SELECT pii_type, match_count, status FROM pii_scan_table('pii_test_data', 'clean_text');
 ----
-0
+NULL	0	no_match
 
 # Clean up
 statement ok
@@ -1070,11 +1070,11 @@ SELECT COUNT(*) > 0 FROM pii_audit_table('audit_test_data');
 ----
 true
 
-# Test pii_audit_table schema - 8 columns
+# Test pii_audit_table schema - 9 columns (matched_text last)
 query I
 SELECT COUNT(*) FROM (DESCRIBE SELECT * FROM pii_audit_table('audit_test_data'));
 ----
-8
+9
 
 # Test row_id column is populated
 query I

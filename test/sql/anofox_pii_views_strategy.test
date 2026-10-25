@@ -18,10 +18,12 @@ CREATE VIEW pv AS SELECT id, note, n FROM pv_src;
 
 # --- views ---
 
-query TTI
-SELECT column_name, pii_type, match_count FROM pii_scan_table('pv');
+query TTIT
+SELECT column_name, pii_type, match_count, status FROM pii_scan_table('pv');
 ----
-note	EMAIL	3
+id	NULL	0	skipped (BIGINT)
+note	EMAIL	3	scanned
+n	NULL	0	skipped (BIGINT)
 
 query ITT
 SELECT row_id, column_name, masked_value FROM pii_audit_table('pv') ORDER BY row_id;
