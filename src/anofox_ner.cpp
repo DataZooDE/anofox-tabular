@@ -417,22 +417,6 @@ bool NERModelManager::IsAvailable() const {
 #endif
 }
 
-NERStatusSnapshot NERModelManager::GetStatusSnapshot() const {
-    NERStatusSnapshot snapshot;
-    {
-        std::lock_guard<std::mutex> lock(state_mutex_);
-        snapshot.status = status_.load();
-        snapshot.message = status_message_;
-        snapshot.model_path = model_path_;
-        snapshot.model_name = current_model_name_;
-        snapshot.device = device_name_;
-    }
-    if (snapshot.model_path.empty()) {
-        snapshot.model_path = DefaultModelPath();
-    }
-    return snapshot;
-}
-
 void NERModelManager::SetStatusMessage(const std::string &message) {
     std::lock_guard<std::mutex> lock(state_mutex_);
     status_message_ = message;
@@ -506,6 +490,63 @@ static void MigrateLegacyAssets(const ModelMetadata &metadata,
         AnofoxTrace(AnofoxLogLevel::Warn,
                     std::string("ner: Legacy asset migration failed: ") + e.what());
     }
+}
+
+/**
+ * True when the model and tokenizer of a model are on disk, either in the
+ * per-model directory or (DistilBERT only) in the legacy flat layout that
+ * MigrateLegacyAssets moves on load.
+ */
+static bool ModelAssetsOnDisk(const ModelMetadata &metadata, const std::filesystem::path &model_dir) {
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    if (fs::exists(model_dir / metadata.model_file, ec) && fs::exists(model_dir / metadata.tokenizer_file, ec)) {
+        return true;
+    }
+    if (metadata.name == "distilbert-en") {
+        const auto base = model_dir.parent_path();
+        return fs::exists(base / metadata.model_file, ec) && fs::exists(base / metadata.tokenizer_file, ec);
+    }
+    return false;
+}
+
+static std::string NotDownloadedMessage(const ModelMetadata &metadata, const std::filesystem::path &model_dir) {
+    return "NER model not downloaded: anofox_ner_auto_download is false. "
+           "SET anofox_ner_auto_download = true to download it from Hugging Face, "
+           "or place " + metadata.model_file + " and " + metadata.tokenizer_file + " in " + model_dir.string();
+}
+
+NERStatusSnapshot NERModelManager::GetStatusSnapshot() const {
+    NERStatusSnapshot snapshot;
+    {
+        std::lock_guard<std::mutex> lock(state_mutex_);
+        snapshot.status = status_.load();
+        snapshot.message = status_message_;
+        snapshot.model_path = model_path_;
+        snapshot.model_name = current_model_name_;
+        snapshot.device = device_name_;
+    }
+    if (snapshot.model_path.empty()) {
+        snapshot.model_path = DefaultModelPath();
+    }
+#if HAVE_OPENVINO
+    // Before the first detection the model is NOT_LOADED. When auto download
+    // is off and the assets are not on disk, the first detection will not
+    // load it either: report NOT_DOWNLOADED right away instead of after the
+    // first (silently NER-less) query. The stored status is left alone so
+    // placing the files on disk still lets the next detection load them.
+    if (snapshot.status == NERStatus::NOT_LOADED && !auto_download_.load()) {
+        const auto *metadata = GetModelMetadata(GetCurrentModelName());
+        if (metadata) {
+            const auto model_dir = NERModelDir(*metadata);
+            if (!model_dir.empty() && !ModelAssetsOnDisk(*metadata, model_dir)) {
+                snapshot.status = NERStatus::NOT_DOWNLOADED;
+                snapshot.message = NotDownloadedMessage(*metadata, model_dir);
+            }
+        }
+    }
+#endif
+    return snapshot;
 }
 
 std::string NERModelManager::DefaultModelPath() {
@@ -606,10 +647,7 @@ void NERModelManager::LoadModel() {
     if (!std::filesystem::exists(model_path) || !std::filesystem::exists(tokenizer_path)) {
         if (!auto_download_.load()) {
             status_.store(NERStatus::NOT_DOWNLOADED);
-            SetStatusMessage("NER model not downloaded: anofox_ner_auto_download is false. "
-                             "SET anofox_ner_auto_download = true to download it from Hugging Face, "
-                             "or place " + metadata->model_file + " and " + metadata->tokenizer_file +
-                             " in " + model_dir.string());
+            SetStatusMessage(NotDownloadedMessage(*metadata, model_dir));
             AnofoxTrace(AnofoxLogLevel::Info,
                         "ner: Model assets not found and auto download is off; NER detection is skipped");
             return;
