@@ -35,26 +35,27 @@ def create_conn():
 
 
 def load_extension(conn):
-    """Load Anofox Tabular extension with custom search path if needed."""
-    project_root = Path(__file__).parent.parent
+    """Load anofox_tabular.
 
-    # Try the repository path first (where extensions are deployed)
-    repo_path = project_root / "build" / "release" / "repository"
-    if repo_path.exists():
-        conn.execute(f"SET extension_directory = '{repo_path}'")
-        conn.execute("LOAD anofox_tabular")
+    Order: the ANOFOX_EXT_PATH environment variable, then a local build in
+    ../build/release, then INSTALL ... FROM community.
+    """
+    ext_path = os.environ.get("ANOFOX_EXT_PATH")
+    if not ext_path:
+        local_build = (
+            Path(__file__).parent.parent
+            / "build" / "release" / "extension" / "anofox_tabular"
+            / "anofox_tabular.duckdb_extension"
+        )
+        if local_build.exists():
+            ext_path = str(local_build)
+    if ext_path:
+        conn.execute(f"LOAD '{ext_path}'")
     else:
-        # Try the direct extension path
-        ext_path = project_root / "build" / "release" / "extension" / "anofox_tabular"
-        if ext_path.exists():
-            conn.execute(f"SET extension_directory = '{ext_path.parent}'")
-            conn.execute("LOAD anofox_tabular")
-        else:
-            raise FileNotFoundError(
-                f"Anofox Tabular extension not found. "
-                f"Please build the extension first: make release\n"
-                f"Looked in: {repo_path} and {ext_path}"
-            )
+        conn.execute("INSTALL anofox_tabular FROM community")
+        conn.execute("LOAD anofox_tabular")
+    # Keep the console readable: hide the [anofox] [info] trace lines
+    conn.execute("SET anofox_tab_trace_level = 'warn'")
 
 
 def example_1_basic_email_validation():
@@ -79,7 +80,7 @@ def example_1_basic_email_validation():
     for email in emails:
         # Use the regex validation (fastest, basic syntax check)
         result = conn.execute(
-            f"SELECT anofox_email_is_valid('{email}', 'regex') as valid"
+            f"SELECT email_is_valid('{email}', 'regex') as valid"
         ).fetchall()[0][0]
         status = " Valid" if result else " Invalid"
         print(f"  {email:30} � {status}")
@@ -113,7 +114,7 @@ def example_2_detailed_validation():
                 result.stage,
                 result.reason
             FROM (
-                SELECT anofox_email_validate('{email}', 'regex') as result
+                SELECT email_validate('{email}', 'regex') as result
             )
             """
         ).fetchall()
@@ -196,7 +197,7 @@ def example_4_extract_and_validate_senders():
                 THEN TRIM(SUBSTRING("from", POSITION('<' IN "from") + 1, POSITION('>' IN "from") - POSITION('<' IN "from") - 1))
                 ELSE "from"
             END as extracted_email,
-            anofox_email_is_valid(
+            email_is_valid(
                 CASE
                     WHEN "from" LIKE '%<%>%'
                     THEN TRIM(SUBSTRING("from", POSITION('<' IN "from") + 1, POSITION('>' IN "from") - POSITION('<' IN "from") - 1))
@@ -230,8 +231,8 @@ def example_4_extract_and_validate_senders():
         )
         SELECT
             COUNT(*) as total_senders,
-            SUM(CASE WHEN anofox_email_is_valid(email, 'regex') THEN 1 ELSE 0 END) as valid_count,
-            SUM(CASE WHEN NOT anofox_email_is_valid(email, 'regex') THEN 1 ELSE 0 END) as invalid_count
+            SUM(CASE WHEN email_is_valid(email, 'regex') THEN 1 ELSE 0 END) as valid_count,
+            SUM(CASE WHEN NOT email_is_valid(email, 'regex') THEN 1 ELSE 0 END) as invalid_count
         FROM extracted
         """
     ).fetchall()[0]
@@ -255,7 +256,7 @@ def example_5_email_config():
     load_extension(conn)
 
     print("\nCurrent email validation configuration:")
-    result = conn.execute("SELECT * FROM anofox_email_config()").fetchall()
+    result = conn.execute("SELECT * FROM email_config()").fetchall()
 
     for key, value in result:
         # Truncate long values for display
@@ -298,9 +299,9 @@ def example_6_batch_validation():
         SELECT
             id,
             email,
-            anofox_email_is_valid(email, 'regex') as valid_regex,
+            email_is_valid(email, 'regex') as valid_regex,
             CASE
-                WHEN anofox_email_is_valid(email, 'regex') THEN ''
+                WHEN email_is_valid(email, 'regex') THEN ''
                 ELSE ''
             END as status
         FROM test_emails
@@ -317,8 +318,8 @@ def example_6_batch_validation():
     summary = conn.execute("""
         SELECT
             COUNT(*) as total,
-            SUM(CASE WHEN anofox_email_is_valid(email, 'regex') THEN 1 ELSE 0 END) as valid,
-            SUM(CASE WHEN NOT anofox_email_is_valid(email, 'regex') THEN 1 ELSE 0 END) as invalid
+            SUM(CASE WHEN email_is_valid(email, 'regex') THEN 1 ELSE 0 END) as valid,
+            SUM(CASE WHEN NOT email_is_valid(email, 'regex') THEN 1 ELSE 0 END) as invalid
         FROM test_emails
     """).fetchall()[0]
 

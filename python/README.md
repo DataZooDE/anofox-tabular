@@ -34,59 +34,66 @@ conn = anofox.connect(
 
 ### Python-native API
 
+This block runs as is: it creates small sample tables first. Replace them with your own tables
+or DataFrames.
+
 ```python
+# needs the pandas extra: pip install "anofox-tabular[pandas]"
+import pandas as pd
+
 import anofox
-from anofox import validate, quality, pii, diff
+from anofox import diff, pii, quality, validate
+from anofox.validate import EmailRule, PhoneRule
 
 conn = anofox.connect()
 
-# ── Email validation ──────────────────────────────────────────────────
-validate.email_is_valid(conn, "hi@example.com")                # True
-validate.email_is_valid(conn, "hi@example.com", mode="dns")    # True (DNS checked)
+# ── Sample data (replace with your own tables) ───────────────────────
+conn.execute("""
+    CREATE TABLE orders AS
+    SELECT i AS id, 20 + i % 13 AS amount,
+           CASE WHEN i % 4 = 0 THEN 'open' ELSE 'shipped' END AS status,
+           TIMESTAMP '2026-01-01' + INTERVAL (i) HOUR AS created_at
+    FROM range(1, 201) t(i)
+""")
+conn.execute("CREATE TABLE orders_v2 AS SELECT * FROM orders WHERE id <> 7")
 
-import pandas as pd
+# ── Email validation ──────────────────────────────────────────────────
+print(validate.email_is_valid(conn, "hi@example.com"))                # True
+
 df = pd.DataFrame({"email": ["a@b.com", "bad-email", "c@d.org"]})
-result_df = validate.email_is_valid(conn, df, column="email")
-# Returns DataFrame with added 'email_is_valid' column
+print(validate.email_is_valid(conn, df, column="email"))
+# DataFrame with an added 'email_is_valid' column
 
 # ── Phone validation ──────────────────────────────────────────────────
-validate.phone_is_valid(conn, "+14155552671", region="US")     # True
-validate.phone_format(conn, "+14155552671", "US", "INTERNATIONAL")
+print(validate.phone_is_valid(conn, "+14155552671", region="US"))     # True
+print(validate.phone_format(conn, "+14155552671", "US", "INTERNATIONAL"))
 
 # ── Data quality ──────────────────────────────────────────────────────
-conn.execute("CREATE TABLE orders AS SELECT * FROM read_parquet('orders.parquet')")
-
-quality.volume(conn, "orders", min_rows=100)
-# {"status": "pass", "min_rows": 100, ...}
-
-quality.null_rate(conn, "orders", "amount", max_null_rate=0.05)
-quality.distinct_count(conn, "orders", "status", min_distinct=2, max_distinct=10)
-quality.schema_check(conn, "orders", ["id", "amount", "created_at"])
+print(quality.volume(conn, "orders", min_rows=100))
+print(quality.null_rate(conn, "orders", "amount", max_null_rate=0.05))
+print(quality.distinct_count(conn, "orders", "status", min_distinct=2, max_distinct=10))
+print(quality.schema_check(conn, "orders", ["id", "amount", "created_at"]))
 
 # ── High-level profile ────────────────────────────────────────────────
-summary = conn.profile(df)   # returns pd.DataFrame with per-column metrics
+print(conn.profile(df))   # pd.DataFrame with per-column metrics
 
 # ── PII detection ─────────────────────────────────────────────────────
-pii.pii_contains(conn, "Call me at +1-415-555-2671")  # True
-pii.pii_detect(conn, "Email: test@example.com")        # [{"type": "EMAIL", ...}]
-pii.pii_mask(conn, "test@example.com", strategy="redact")
-
-scan_result = pii.pii_scan_table(conn, "orders")  # pd.DataFrame
+print(pii.pii_contains(conn, "Call me at +1-415-555-2671"))  # True
+print(pii.pii_detect(conn, "Email: test@example.com"))        # [{"type": "EMAIL", ...}]
+print(pii.pii_mask(conn, "test@example.com", strategy="redact"))
+print(pii.pii_scan_table(conn, "orders"))
 
 # ── Diff ──────────────────────────────────────────────────────────────
-# Table names or DataFrames both work
-changes = diff.joindiff(conn, "orders_v1", "orders_v2", primary_keys="id")
-changes = diff.joindiff(conn, df_before, df_after, primary_keys="id")
-# Returns pd.DataFrame with diff_type: 'added', 'removed', 'changed', 'unchanged'
+print(diff.joindiff(conn, "orders", "orders_v2", primary_keys="id"))
+# diff_type: 'added', 'removed', 'changed' (and 'unchanged' with include_unchanged=True)
 
 # ── Schema validation ─────────────────────────────────────────────────
-from anofox.validate import EmailRule, PhoneRule
-
-result = conn.validate(df, schema={
-    "email": EmailRule(mode="dns"),
+contacts = pd.DataFrame({"email": ["a@b.com", "bad-email"], "phone": ["+49 30 901820", "123"]})
+result = conn.validate(contacts, schema={
+    "email": EmailRule(mode="regex"),
     "phone": PhoneRule(region="DE"),
 })
-print(result.passed)      # True / False
+print(result.passed)      # False
 print(result.failures)    # pd.DataFrame of failed rows
 ```
 
@@ -95,10 +102,11 @@ print(result.failures)    # pd.DataFrame of failed rows
 | Module | Functions |
 |--------|-----------|
 | `anofox.validate` | `email_is_valid`, `email_validate`, `phone_is_valid`, `phone_parse`, `phone_format`, `phone_region` |
-| `anofox.quality` | `volume`, `null_rate`, `distinct_count`, `freshness`, `zscore`, `iqr`, `schema_check` |
+| `anofox.quality` | `volume`, `null_rate`, `distinct_count`, `freshness`, `zscore`, `iqr`, `schema_check`, `regex_match`, `values_in_set`, `agg_check`, `duplicate_count`, `occurrence`, `match_rate`, `compliance`, `rel_count_change`, `metric_anomaly_iqr`, `rolling_values_in_set`, `define_checks`, `run_checks` |
 | `anofox.anomaly` | `isolation_forest`, `isolation_forest_mv`, `dbscan`, `dbscan_mv`, `outlier_tree` |
 | `anofox.pii` | `pii_detect`, `pii_mask`, `pii_contains`, `pii_scan_table`, `pii_audit_table` |
 | `anofox.diff` | `joindiff`, `hashdiff` |
+| `anofox.profile` | `profile_table`, `profile_summary`, `profile_correlations` |
 | `anofox.money` | `make_money`, `money_from_cents`, `is_valid_currency`, `currency_symbol`, `money_add`, etc. |
 | `anofox.vat` | `make_vat`, `vat_is_valid`, `vat_is_eu_member`, `vat_country_name`, etc. |
 
@@ -157,19 +165,19 @@ registry does not, so by default downloads come from the mirror. Set
 ## Development
 
 ```bash
-# Build the extension first
-make release
+# Build the extension first (from the repository root)
+GEN=ninja make release
 
-# Install package in dev mode
+# Create the dev environment
 cd python
-pip install -e ".[dev]"
+uv sync --extra dev
 
 # Run tests
 ANOFOX_EXT_PATH=../build/release/extension/anofox_tabular/anofox_tabular.duckdb_extension \
-  pytest tests/ -v
+  uv run pytest tests/ -v
 
 # Loader/utils tests run without extension (no env var needed)
-pytest tests/test_loader.py tests/test_utils.py -v
+uv run pytest tests/test_loader.py tests/test_utils.py -v
 ```
 
 ## License

@@ -32,13 +32,21 @@ uv add --dev <package>
 ## Project Overview
 
 **Anofox Tabular** is a DuckDB extension providing data quality validation and improvement primitives. 
-It's built on the DuckDB C++ extension template and consists of four main validation modules:
+It's built on the DuckDB C++ extension template and consists of 10 modules:
 
 - **Email**: Regex, DNS, and SMTP validation with configurable timeouts
 - **Postal**: Address parsing and expansion via libpostal
-- **Phone**: Phone number parsing/formatting via libphonenumber
+- **Phone**: Phone number parsing/formatting (built-in implementation)
+- **Money**: Currency-aware DECIMAL money values
+- **VAT**: EU VAT number validation (28 countries)
+- **PII**: Pattern- and NER-based PII detection and masking
+- **Data quality**: Check functions, check suites (`run_checks`) and `_events` outputs
+- **Anomaly detection**: Isolation Forest, DBSCAN, OutlierTree
+- **Diffing**: `diff_joindiff` / `diff_hashdiff`
+- **Profiling**: `profile_table`, `profile_summary`, `profile_correlations`
 
-- **Quality**: (Newly added) Additional quality checking functions
+Every SQL function has a canonical `anofox_tab_*` name and a short alias (`email_is_valid`);
+only `anofox_ner_status` and `anofox_contract_version` have no alias.
 
 The extension is implemented entirely in C++17 with dependencies managed through vcpkg.
 
@@ -46,7 +54,7 @@ The extension is implemented entirely in C++17 with dependencies managed through
 
 - **Makefile**: Entry point that wraps `extension-ci-tools/makefiles/duckdb_extension.Makefile`
 - **CMakeLists.txt**: Defines targets `anofox_tabular_extension` (static) and `anofox_tabular_loadable_extension` (dynamic)
-- **vcpkg**: Dependencies (libphonenumber, libpostal, spdlog, c-ares, Boost, absl) are declared in `vcpkg.json`
+- **vcpkg**: Dependencies (openssl, c-ares, spdlog, curl, OpenVINO) are declared in `vcpkg.json`; libpostal is built separately
 
 ```bash
 GEN=ninja make release                   # Build the extension (requires vcpkg)
@@ -69,7 +77,7 @@ If you get linker error with duplicate symbol, eg. `duckdb::LogicalType::VARCHAR
 
 The `LoadInternal()` function registers all modules on extension load. Each module (email, postal, phone) follows a two-part pattern:
 
-1. **Options Registration** – SQL-level configuration options (e.g., `SET anofox_email_dns_timeout_ms`)
+1. **Options Registration** – SQL-level configuration options (e.g., `SET anofox_tab_email_dns_timeout_ms`)
 2. **Functions Registration** – SQL scalar and table functions
 
 ### Module Organization
@@ -91,23 +99,29 @@ Each feature module has three layers:
 
 **Postal Module** (`anofox_postal.*`)
 - Wraps libpostal for address parsing and normalization
-- Manages data bundle lifecycle (`anofox_postal_load_data()` downloads ~500 MB assets)
-- Path controlled via `anofox_postal_data_path` config option
+- Manages data bundle lifecycle (`postal_load_data()` downloads ~500 MB assets; the first postal call does it otherwise)
+- Path controlled via the `anofox_tab_postal_data_path` config option
+- Not built on Windows; the postal SQL tests run only with `POSTAL_AVAILABLE`
 
 **Phone Module** (`anofox_phonenumber.*`)
-- Wraps libphonenumber for international phone parsing/formatting
+- Built-in international phone parsing/formatting (`anofox_phonenumber_metadata.cpp` holds the region metadata)
 - Supports four output formats: E164, INTERNATIONAL, NATIONAL, RFC3966
-- Region hints allow contextual parsing (defaults to `anofox_phonenumber_default_region`)
+- Region hints allow contextual parsing (defaults to `anofox_tab_phonenumber_default_region`)
 
-**Quality Module** (`anofox_quality.*`)
-- Provides additional data quality checks (newly added)
+**Data Quality Modules** (`anofox_metric.*`, `anofox_check.*`, `anofox_check_suite.*`, `anofox_contract.*`)
+- Check functions (`volume`, `null_rate`, …, `zscore`, `iqr`), the time-aware checks with
+  `_events` companions, the `run_checks` suite runner and the integration contract
+
+**Other modules**: `anofox_money*`, `anofox_vat*`, `anofox_pii.*` / `anofox_ner.*`,
+`anofox_isolation_forest.*`, `anofox_dbscan.*`, `anofox_outlier_tree.*`, `anofox_diff.*`,
+`anofox_profile.*`
 
 ### Tracing
 Add tracing messages to your implementation. The goal of the tracing messages should be, that we easier understand errors and logical problems. 
 
 `src/anofox_trace.*` provides centralized logging via spdlog:
-- Global on/off: `SET anofox_trace_enabled`
-- Level control: `SET anofox_trace_level = 'trace'|'debug'|'info'|'warn'|'error'|'critical'|'off'`
+- Global on/off: `SET anofox_tab_trace_enabled` (default `true`)
+- Level control: `SET anofox_tab_trace_level = 'trace'|'debug'|'info'|'warn'|'error'|'critical'|'off'` (default `info`)
 - All logs prefixed with subsystem: `[anofox] email: …`, etc.
 - Compile-time configuration: spdlog is header-only with custom fmt bundling
 
@@ -117,44 +131,21 @@ Add tracing messages to your implementation. The goal of the tracing messages sh
 It is possible to run individual SQL commands from the shell and directly observe their result via. Example:
 
 ```bash
-[jr@bigfox anofox-tabular]$ ./build/release/duckdb -s "LOAD './build/release/extension/anofox_tabular/anofox_tabular.duckdb_extension'; SELECT function_name FROM duckdb_functions() where function_name LIKE '%anofox%'"
-┌──────────────────────────────┐
-│        function_name         │
-│           varchar            │
-├──────────────────────────────┤
-│ anofox_profile_columns       │
-│ anofox_completeness          │
-│ anofox_compliance            │
-│ anofox_correlation           │
-│ anofox_count_distinct        │
-│ anofox_distinctness          │
-│ anofox_email_config          │
-│ anofox_entropy               │
-│ anofox_histogram             │
-│ anofox_mutual_information    │
-│ anofox_phonenumber_status    │
-│ anofox_postal_status         │
-│ anofox_quantiles             │
-│ anofox_uniqueness            │
-│ anofox_unique_value_ratio    │
-│ anofox_phonenumber_parse     │
-│ anofox_email_is_valid        │
-│ anofox_email_is_valid        │
-│ anofox_email_validate        │
-│ anofox_email_validate        │
-│ anofox_phonenumber_format    │
-│ anofox_phonenumber_region    │
-│ anofox_postal_expand_address │
-│ anofox_postal_load_data      │
-│ anofox_postal_parse_address  │
-│ anofox_assert_completeness   │
-│ anofox_assert_uniqueness     │
-│ anofox_assert_distinct       │
-│ anofox_assert_compliance     │
-├──────────────────────────────┤
-│           29 rows            │
-└──────────────────────────────┘
+$ ./build/release/duckdb -c "LOAD anofox_tabular; SET anofox_tab_trace_level = 'warn'; SELECT DISTINCT function_name, function_type FROM duckdb_functions() WHERE function_name LIKE 'anofox_tab_email%' OR function_name LIKE 'anofox_tab_phonenumber_p%' ORDER BY function_name"
+┌──────────────────────────────┬───────────────┐
+│        function_name         │ function_type │
+│           varchar            │    varchar    │
+├──────────────────────────────┼───────────────┤
+│ anofox_tab_email_config      │ table         │
+│ anofox_tab_email_is_valid    │ scalar        │
+│ anofox_tab_email_validate    │ scalar        │
+│ anofox_tab_phonenumber_parse │ scalar        │
+└──────────────────────────────┴───────────────┘
 ```
+
+`SET anofox_tab_trace_level = 'warn'` hides the `[anofox] [info]` trace lines of later
+statements; the lines printed during `LOAD` still appear (on stderr). Prefix the command with `DATAZOO_DISABLE_TELEMETRY=1` to
+send no telemetry while testing.
 
 ### SQL Test Format
 All tests are SQLLogicTests (`.test` files) located in `test/sql/`.
@@ -162,11 +153,10 @@ To understand the format on can look at https://duckdb.org/docs/stable/dev/sqllo
 If you need examples, look at the extensive test suite of duckdb itself in `./duckdb/test/sql`.
 
 
-- `anofox_email_basic.test` – Email validation modes and configuration
-- `anofox_postal.test` – Address parsing/expansion
-- `anofox_phonenumber.test` – Phone parsing/formatting
-- `anofox_quality.test` – Quality check functions
-- `pragma.test` – Configuration option tests
+Test files are named after their module (`anofox_email_basic.test`, `anofox_phonenumber.test`,
+`anofox_check*.test`, `anofox_pii*.test`, `pragma.test` for options, …); list `test/sql/` for
+the current set. The postal tests `anofox_postal.test.disabled` and `anofox_postal.test_disabled`
+are disabled; `anofox_postal_null.test` runs only with `POSTAL_AVAILABLE`.
 
 Each test file starts with `require anofox_tabular` and includes `LOAD anofox_tabular`.
 
@@ -194,12 +184,13 @@ export VCPKG_TOOLCHAIN_PATH="${VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake"
 ```
 
 Declared in `vcpkg.json`:
-- **libphonenumber** – Phone parsing/formatting
 - **c-ares** – DNS resolution (async, used by email DNS module)
 - **spdlog** – Logging (header-only)
-- **libpostal** – Address parsing (via pkg-config)
-- **Boost** (date_time, system, thread) – Utilities
-- **absl** – Google Abseil logging framework
+- **openssl** – Hashing (PII hash masking)
+- **curl** – Downloads (postal data, NER model)
+- **openvino** – NER inference; only on x64 Linux and x64 macOS
+
+libpostal is not a vcpkg port: `scripts/install-deps-ci.sh` builds it, and CMake finds it via pkg-config (skipped with `ANOFOX_TABULAR_NO_LIBPOSTAL=1`).
 
 ## Updating DuckDB Version
 
@@ -226,19 +217,21 @@ and the bump procedure.
 
 1. Declare in the module header (e.g., `src/include/anofox_email.hpp`)
 2. Implement in the module source (e.g., `src/anofox_email.cpp`)
-3. Register with DuckDB in the module's registration function:
+3. Register with DuckDB in the module's registration function, under the canonical
+   `anofox_tab_*` name plus its short alias, through the helpers in
+   `src/include/anofox_function_alias.hpp`:
    ```cpp
-   CreateScalarFunction<...>(loader, "function_name", ...);
+   RegisterScalarFunctionWithAlias(loader, func, "short_name", {std::move(desc)});
    // or
-   CreateTableFunction<...>(loader, "table_function_name", ...);
+   RegisterTableFunctionSetWithAlias(loader, func_set, "short_name", {std::move(desc)});
    ```
 4. Add test cases to `test/sql/` following SQLLogicTest format
-5. Update README.md SQL Function Reference table if user-facing
+5. Update README.md and docs/API_REFERENCE.md if user-facing (see the Documentation Update Workflow below)
 
 ### Adding a Configuration Option
 
 1. Define in module registration (e.g., `RegisterEmailOptions()`)
-2. Use `loader.RegisterCastFunction()` or similar for option handling
+2. Add it with `config.AddExtensionOption(...)`, using the module's prefix (`anofox_tab_*`, or `anofox_pii_*` / `anofox_ner_*` for PII)
 3. Test with `SET option_name = value;` in `.test` files
 4. Document in README.md Configuration Options table
 
