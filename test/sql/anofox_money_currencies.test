@@ -1,0 +1,102 @@
+# name: test/sql/anofox_money_currencies.test
+# description: Extended ISO 4217 currency coverage (European non-euro and other
+#              common currencies) and whitespace-tolerant currency codes.
+# group: [anofox_tabular]
+
+require anofox_tabular
+
+statement ok
+LOAD anofox_tabular;
+
+# Every newly supported code is valid
+query I
+SELECT count(*) FROM (VALUES
+    ('PLN'), ('SEK'), ('DKK'), ('NOK'), ('CZK'), ('HUF'), ('RON'), ('BGN'), ('ISK'), ('TRY'),
+    ('NZD'), ('SGD'), ('HKD'), ('KRW'), ('MXN'), ('ZAR'), ('ILS'), ('AED'), ('SAR'), ('THB'),
+    ('IDR'), ('MYR'), ('PHP'), ('TWD'), ('RUB'), ('UAH'), ('KWD'), ('BHD')) t(code)
+WHERE is_valid_currency(code);
+----
+28
+
+# money() accepts the new codes and canonicalizes to upper case
+query TTT
+SELECT money(100, 'PLN'), money(100, 'sek'), money(12.345, 'KWD');
+----
+{'amount': 100.000, 'currency': PLN}	{'amount': 100.000, 'currency': SEK}	{'amount': 12.345, 'currency': KWD}
+
+# money_from_cents respects the currency's minor units (ISO 4217)
+query TTTTT
+SELECT money_from_cents(1234, 'ISK'), money_from_cents(1234, 'KRW'), money_from_cents(1234, 'HUF'),
+       money_from_cents(1234, 'PLN'), money_from_cents(1234, 'BHD');
+----
+{'amount': 1234.000, 'currency': ISK}	{'amount': 1234.000, 'currency': KRW}	{'amount': 12.340, 'currency': HUF}	{'amount': 12.340, 'currency': PLN}	{'amount': 1.234, 'currency': BHD}
+
+# Format round trips: code style uses the currency's decimals
+query TTTTT
+SELECT money_format(money_from_cents(123456, 'SEK'), 'code'),
+       money_format(money_from_cents(1234, 'ISK'), 'code'),
+       money_format(money(1234.5, 'KRW'), 'code'),
+       money_format(money(1234.5, 'TWD'), 'code'),
+       money_format(money(1.2345, 'KWD'), 'code');
+----
+1234.56 SEK	1234 ISK	1235 KRW	1234.50 TWD	1.235 KWD
+
+# Symbol style uses the currency's symbol, position and separators
+query TTTTTT
+SELECT money_format(money(1234567.891, 'PLN'), 'symbol'),
+       money_format(money(1234.5, 'CHF'), 'symbol'),
+       money_format(money(1234.5, 'DKK'), 'symbol'),
+       money_format(money(1234.5, 'TRY'), 'symbol'),
+       money_format(money(1234.5, 'NZD'), 'symbol'),
+       money_format(money(1234.5, 'CZK'), 'symbol');
+----
+1 234 567,89 zł	1'234.50 CHF	1.234,50 kr.	₺1.234,50	$1,234.50	1 234,50 Kč
+
+query TTTT
+SELECT currency_symbol('PLN'), currency_name('SEK'), currency_symbol('KRW'), currency_name('ISK');
+----
+zł	Swedish Krona	₩	Icelandic Króna
+
+# Surrounding whitespace in currency codes is ignored everywhere
+query TTTT
+SELECT money(100, ' EUR'), money(100, ' eur '), money_from_cents(10050, 'usd  '), money(5, '	GBP	');
+----
+{'amount': 100.000, 'currency': EUR}	{'amount': 100.000, 'currency': EUR}	{'amount': 100.500, 'currency': USD}	{'amount': 5.000, 'currency': GBP}
+
+query TTTT
+SELECT is_valid_currency(' EUR'), is_valid_currency(' pln '), currency_symbol(' eur '), currency_name(' USD');
+----
+true	true	€	United States Dollar
+
+query T
+SELECT money_format(money(1234.5, ' sek '), 'code');
+----
+1234.50 SEK
+
+# Arithmetic between values built from padded and unpadded codes works
+query T
+SELECT money_add(money(1, ' EUR '), money(2, 'EUR'));
+----
+{'amount': 3.000, 'currency': EUR}
+
+# Whitespace-only and inner-whitespace codes are still invalid
+query TT
+SELECT is_valid_currency('   '), is_valid_currency('E UR');
+----
+false	false
+
+statement error
+SELECT money(100, 'E UR');
+----
+Invalid currency code
+
+# Unknown codes raise; TRY() turns the error into NULL
+statement error
+SELECT money(100, 'XYZ');
+----
+Invalid currency code: XYZ
+
+query T
+SELECT TRY(money(100, 'XYZ')) IS NULL;
+----
+true

@@ -19,10 +19,41 @@ STRUCT(amount DECIMAL(18,3), currency VARCHAR)
 - `amount` is an exact decimal with 3 places. Arithmetic does not drift. `NaN` and infinity
   cannot be stored, and a result outside the `DECIMAL(18,3)` range raises an
   `Out of Range` error.
-- `currency` is an upper-case ISO 4217 code. Input codes are case-insensitive.
-- 10 currencies are supported: USD, EUR, GBP, JPY, CAD, AUD, CHF, CNY, INR, BRL. Any other code
-  raises `Invalid currency code`.
+- `currency` is an upper-case ISO 4217 code. Input codes are case-insensitive, and surrounding
+  whitespace is ignored (`' eur '` is `EUR`).
+- 38 currencies are supported (see [Supported currencies](#supported-currencies)). Any other code
+  raises `Invalid currency code`; wrap the call in `TRY(...)` to get `NULL` instead, e.g.
+  `TRY(money(100, 'XYZ'))` returns `NULL`.
 - A `NULL` argument returns `NULL`.
+
+## Supported currencies
+
+| Code | Currency | Decimals | Code | Currency | Decimals |
+|------|----------|----------|------|----------|----------|
+| `USD` | United States Dollar | 2 | `UAH` | Ukrainian Hryvnia | 2 |
+| `EUR` | Euro | 2 | `NZD` | New Zealand Dollar | 2 |
+| `GBP` | British Pound | 2 | `SGD` | Singapore Dollar | 2 |
+| `JPY` | Japanese Yen | 0 | `HKD` | Hong Kong Dollar | 2 |
+| `CAD` | Canadian Dollar | 2 | `KRW` | South Korean Won | 0 |
+| `AUD` | Australian Dollar | 2 | `MXN` | Mexican Peso | 2 |
+| `CHF` | Swiss Franc | 2 | `ZAR` | South African Rand | 2 |
+| `CNY` | Chinese Yuan | 2 | `ILS` | Israeli New Shekel | 2 |
+| `INR` | Indian Rupee | 2 | `AED` | United Arab Emirates Dirham | 2 |
+| `BRL` | Brazilian Real | 2 | `SAR` | Saudi Riyal | 2 |
+| `PLN` | Polish Złoty | 2 | `THB` | Thai Baht | 2 |
+| `SEK` | Swedish Krona | 2 | `IDR` | Indonesian Rupiah | 2 |
+| `DKK` | Danish Krone | 2 | `MYR` | Malaysian Ringgit | 2 |
+| `NOK` | Norwegian Krone | 2 | `PHP` | Philippine Peso | 2 |
+| `CZK` | Czech Koruna | 2 | `TWD` | New Taiwan Dollar | 2 |
+| `HUF` | Hungarian Forint | 2 | `KWD` | Kuwaiti Dinar | 3 |
+| `RON` | Romanian Leu | 2 | `BHD` | Bahraini Dinar | 3 |
+| `BGN` | Bulgarian Lev | 2 | | | |
+| `ISK` | Icelandic Króna | 0 | | | |
+| `TRY` | Turkish Lira | 2 | | | |
+| `RUB` | Russian Ruble | 2 | | | |
+
+Decimals are the ISO 4217 minor units. They set the divisor of `money_from_cents` and the number
+of decimals that `money_format` prints.
 
 ## Functions
 
@@ -72,7 +103,8 @@ money_from_cents(cents BIGINT, currency_code VARCHAR) -> MONEY
 ```
 
 Builds the value exactly from an integer amount in the currency's smallest unit. The amount is
-divided by the currency's subunits per unit: 100 for USD and EUR, 1 for JPY.
+divided by the currency's subunits per unit: 100 for USD and EUR, 1 for JPY, ISK and KRW, 1000
+for KWD and BHD.
 
 ### `money_amount`
 
@@ -125,6 +157,21 @@ SELECT money(1.0, 'XYZ');
 
 ```text
 Invalid Input Error: Invalid currency code: XYZ
+```
+
+`TRY` turns the error into `NULL`:
+
+```sql
+SELECT TRY(money(1.0, 'XYZ')) AS result;
+```
+
+```text
+┌────────────────────────────────────────────────┐
+│                     result                     │
+│ struct(amount decimal(18,3), currency varchar) │
+├────────────────────────────────────────────────┤
+│ NULL                                           │
+└────────────────────────────────────────────────┘
 ```
 
 ---
@@ -318,8 +365,8 @@ SELECT money_format(money(1234567.891, 'USD'), 'symbol') AS usd,
 
 ### `is_valid_currency`
 
-Canonical name: `anofox_tab_is_valid_currency`. Scalar function. `true` for one of the 10
-supported codes, case-insensitive.
+Canonical name: `anofox_tab_is_valid_currency`. Scalar function. `true` for one of the 38
+[supported codes](#supported-currencies), case-insensitive and ignoring surrounding whitespace.
 
 ```text
 is_valid_currency(currency_code VARCHAR) -> BOOLEAN
@@ -370,16 +417,16 @@ FROM (VALUES ('USD'), ('eur'), ('GBP'), ('JPY'), ('CAD'), ('AUD'), ('CHF'), ('CN
 ```
 
 ```sql
-SELECT is_valid_currency('SEK') AS sek, is_valid_currency('usd') AS usd;
+SELECT is_valid_currency('SEK') AS sek, is_valid_currency(' usd ') AS usd, is_valid_currency('XYZ') AS xyz;
 ```
 
 ```text
-┌─────────┬─────────┐
-│   sek   │   usd   │
-│ boolean │ boolean │
-├─────────┼─────────┤
-│ false   │ true    │
-└─────────┴─────────┘
+┌─────────┬─────────┬─────────┐
+│   sek   │   usd   │   xyz   │
+│ boolean │ boolean │ boolean │
+├─────────┼─────────┼─────────┤
+│ true    │ true    │ false   │
+└─────────┴─────────┴─────────┘
 ```
 
 ## See also

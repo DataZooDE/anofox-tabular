@@ -31,13 +31,13 @@ class CurrencyRegistry {
 public:
     static CurrencyRegistry &GetInstance();
 
-    // Look up currency by ISO code (case-insensitive)
+    // Look up currency by ISO code (case-insensitive, surrounding whitespace ignored)
     optional_ptr<const CurrencyInfo> GetCurrency(const string &iso_code) const;
 
     // Get all currencies
     const case_insensitive_map_t<unique_ptr<CurrencyInfo>> &GetAllCurrencies() const;
 
-    // Check if currency exists
+    // Check if currency exists (case-insensitive, surrounding whitespace ignored)
     bool CurrencyExists(const string &iso_code) const;
 
     // Get currency count
