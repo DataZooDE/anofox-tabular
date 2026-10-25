@@ -598,6 +598,14 @@ public:
     ) const;
 
     /**
+     * Mask a whole value as the given PII type, without detection
+     * (pii_mask_value). redact gives the type label, asterisk one '*' per
+     * character, partial the type's partial mask, hash the type's normalised
+     * hash, none the value. An empty value stays empty.
+     */
+    std::string MaskValue(const std::string &value, PIIType type, MaskStrategy strategy) const;
+
+    /**
      * Get list of supported PII types
      */
     std::vector<PIIType> GetSupportedTypes() const;

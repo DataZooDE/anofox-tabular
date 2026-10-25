@@ -2747,6 +2747,14 @@ std::string PIIEngine::ApplyMask(const PIIMatch &match, MaskStrategy strategy) c
     }
 }
 
+std::string PIIEngine::MaskValue(const std::string &value, PIIType type, MaskStrategy strategy) const {
+    // Nothing to mask in an empty value; a redact label or hash would claim one
+    if (value.empty()) {
+        return value;
+    }
+    return ApplyMask(PIIMatch(type, value, 0, value.size(), 1.0), strategy);
+}
+
 std::string PIIEngine::Mask(
     const std::string &text,
     MaskStrategy strategy,
@@ -3240,6 +3248,34 @@ struct PIIMaskColumnFunction {
 
     static ScalarFunction GetFunction() {
         return ScalarFunction("anofox_tab_pii_mask_column",
+                              {LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR},
+                              LogicalType::VARCHAR, Execute);
+    }
+};
+
+// pii_mask_value(value, pii_type, strategy) -> VARCHAR
+// Masks the whole non-NULL value as the given PII type, without detection: for
+// columns known to hold PII where detection finds nothing ('Li', '01511234567').
+// Type and strategy are read per row; a NULL argument yields NULL.
+struct PIIMaskValueFunction {
+    static void Execute(DataChunk &args, ExpressionState &state, Vector &result) {
+        auto &engine = PIIEngine::Instance();
+
+        TernaryExecutor::Execute<string_t, string_t, string_t, string_t>(
+            args.data[0], args.data[1], args.data[2], result, args.size(),
+            [&](string_t input, string_t type_str, string_t strategy_str) {
+                auto pii_type = StringToPIIType(type_str.GetString());
+                if (pii_type == PIIType::UNKNOWN) {
+                    throw InvalidInputException("Unknown PII type: %s", type_str.GetString());
+                }
+                auto strategy = ParseMaskStrategy(strategy_str.GetString());
+                return StringVector::AddString(result, engine.MaskValue(input.GetString(), pii_type, strategy));
+            }
+        );
+    }
+
+    static ScalarFunction GetFunction() {
+        return ScalarFunction("anofox_tab_pii_mask_value",
                               {LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR},
                               LogicalType::VARCHAR, Execute);
     }
@@ -4172,6 +4208,11 @@ unique_ptr<FunctionData> PIIMaskColumnBind(ClientContext &) {
     return nullptr;
 }
 
+unique_ptr<FunctionData> PIIMaskValueBind(ClientContext &) {
+    PostHogTelemetry::Instance().RecordFunctionCall("pii_mask_value");
+    return nullptr;
+}
+
 unique_ptr<FunctionData> PIIRedactColumnBind(ClientContext &) {
     PostHogTelemetry::Instance().RecordFunctionCall("pii_redact_column");
     return nullptr;
@@ -4570,6 +4611,20 @@ void RegisterPIIFunctions(ExtensionLoader &loader) {
         auto pii_mask_column_func = PIIMaskColumnFunction::GetFunction();
         pii_mask_column_func.SetBindCallback(&ScalarContextBind<PIIMaskColumnBind>::Bind);
         RegisterScalarFunctionWithAlias(loader, pii_mask_column_func, "pii_mask_column", {std::move(desc)});
+    }
+    // pii_mask_value(value, pii_type, strategy) - mask a whole value of a known type
+    {
+        FunctionDescription desc;
+        desc.description = "Masks a whole value as the given PII type, without detection: for columns known to hold "
+                           "PII ('redact', 'partial', 'asterisk', 'hash', 'none').";
+        desc.parameter_names = {"value", "pii_type", "strategy"};
+        desc.parameter_types = {LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR};
+        desc.examples = {"SELECT pii_mask_value('Li', 'NAME', 'redact');",
+                         "SELECT pii_mask_value('01511234567', 'PHONE', 'partial');"};
+        desc.categories = {"pii", "masking"};
+        auto pii_mask_value_func = PIIMaskValueFunction::GetFunction();
+        pii_mask_value_func.SetBindCallback(&ScalarContextBind<PIIMaskValueBind>::Bind);
+        RegisterScalarFunctionWithAlias(loader, pii_mask_value_func, "pii_mask_value", {std::move(desc)});
     }
     // pii_redact_column(value, strategy?) - mask all PII, optional strategy
     {

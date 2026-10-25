@@ -1,0 +1,177 @@
+# name: test/sql/anofox_pii_mask_value.test
+# description: pii_mask_value masks a whole value of a known PII type without detection (F16)
+# group: [sql]
+
+require anofox_tabular
+
+statement ok
+LOAD anofox_tabular;
+
+# A CRM table whose columns are known to hold PII, but detection finds nothing in some cells:
+# a two-letter first name, a phone number without separators
+statement ok
+CREATE TABLE crm_contacts AS
+SELECT * FROM (VALUES
+    (1, 'Li',          'Na',        '01511234567',      'li.na@example.cn',   'Rome'),
+    (2, 'Anna',        'Schmidt',   '+49 151 12345678', 'anna@example.com',   'Berlin'),
+    (3, 'Klaus-Peter', 'Müller',    NULL,               'kp.mueller@web.de',  'Frankfurt am Main'),
+    (4, NULL,          'Ødegaard',  '030 1234567',      NULL,                 'Oslo')
+) t(contact_id, first_name, last_name, phone, email, city);
+
+# Canonical name and alias
+query T
+SELECT anofox_tab_pii_mask_value('Li', 'NAME', 'redact');
+----
+[NAME]
+
+# --- redact: the type label, for every non-NULL value ---
+
+query ITTT
+SELECT contact_id,
+       pii_mask_value(first_name, 'NAME', 'redact'),
+       pii_mask_value(phone, 'PHONE', 'redact'),
+       pii_mask_value(city, 'LOCATION', 'redact')
+FROM crm_contacts ORDER BY contact_id;
+----
+1	[NAME]	[PHONE]	[LOCATION]
+2	[NAME]	[PHONE]	[LOCATION]
+3	[NAME]	NULL	[LOCATION]
+4	NULL	[PHONE]	[LOCATION]
+
+# --- asterisk: one star per character (code point) ---
+
+query ITT
+SELECT contact_id, pii_mask_value(first_name, 'NAME', 'asterisk'), pii_mask_value(last_name, 'NAME', 'asterisk')
+FROM crm_contacts ORDER BY contact_id;
+----
+1	**	**
+2	****	*******
+3	***********	******
+4	NULL	********
+
+# --- partial: the type's partial rule; short words are masked completely ---
+
+query ITTTTT
+SELECT contact_id,
+       pii_mask_value(first_name, 'NAME', 'partial'),
+       pii_mask_value(last_name, 'NAME', 'partial'),
+       pii_mask_value(phone, 'PHONE', 'partial'),
+       pii_mask_value(email, 'EMAIL', 'partial'),
+       pii_mask_value(city, 'LOCATION', 'partial')
+FROM crm_contacts ORDER BY contact_id;
+----
+1	**	**	***-***-4567	l****@*******.cn	****
+2	****	S******	+***-***-5678	a***@*******.com	Ber***
+3	K**********	M*****	NULL	k*********@***.de	Fra****** ** ****
+4	NULL	Ø*******	***-***-4567	NULL	****
+
+query TTTT
+SELECT pii_mask_value('Microsoft', 'ORGANIZATION', 'partial'),
+       pii_mask_value('SAP', 'ORGANIZATION', 'partial'),
+       pii_mask_value('Deutsche Bank AG', 'ORGANIZATION', 'partial'),
+       pii_mask_value('Paris', 'LOCATION', 'partial');
+----
+Mic******	***	Deu***** **** **	Pa***
+
+query TT
+SELECT pii_mask_value('New York', 'LOCATION', 'partial'), pii_mask_value('Oktoberfest', 'MISC', 'partial');
+----
+*** ****	Okt********
+
+# --- hash: the same pseudonym that pii_mask gives the detected value ---
+
+query I
+SELECT pii_mask_value('4111 1111 1111 1111', 'CREDIT_CARD', 'hash') = pii_mask_column('Card 4111-1111-1111-1111', 'CREDIT_CARD', 'hash')[6:];
+----
+true
+
+query I
+SELECT pii_mask_value('Anna@Example.com', 'EMAIL', 'hash') = pii_mask_value('anna@example.com', 'EMAIL', 'hash');
+----
+true
+
+query I
+SELECT pii_mask_value('01511234567', 'PHONE', 'hash') = pii_mask_value('0151 123 45 67', 'PHONE', 'hash');
+----
+true
+
+query I
+SELECT regexp_full_match(pii_mask_value('Li', 'NAME', 'hash'), '[0-9a-f]{16}');
+----
+true
+
+# --- none: unchanged ---
+
+query T
+SELECT pii_mask_value('Li', 'NAME', 'none');
+----
+Li
+
+# The whole value is masked, also when it holds other text: no detection runs
+query T
+SELECT pii_mask_value('Call me: 0151 1234567', 'PHONE', 'redact');
+----
+[PHONE]
+
+# An empty value stays empty
+query T
+SELECT pii_mask_value('', 'NAME', 'redact') = '';
+----
+true
+
+# Type names and strategies are case-insensitive and accept the aliases of pii_mask_column
+query TT
+SELECT pii_mask_value('Li', 'person', 'REDACT'), pii_mask_value('123-45-6789', 'ssn', 'Partial');
+----
+[NAME]	***-**-6789
+
+# Per-row type and strategy; a NULL argument yields NULL
+statement ok
+CREATE TABLE mask_plan AS
+SELECT * FROM (VALUES
+    ('Li',          'NAME',  'redact'),
+    ('01511234567', 'PHONE', 'partial'),
+    ('Schmidt',     'NAME',  'asterisk'),
+    ('Na',          NULL,    'redact'),
+    ('Na',          'NAME',  NULL)
+) t(val, pii_type, strategy);
+
+query T
+SELECT pii_mask_value(val, pii_type, strategy) FROM mask_plan;
+----
+[NAME]
+***-***-4567
+*******
+NULL
+NULL
+
+# Unknown type or strategy is an error
+statement error
+SELECT pii_mask_value('Li', 'FIRST_NAME', 'redact');
+----
+Unknown PII type: FIRST_NAME
+
+statement error
+SELECT pii_mask_value('Li', 'NAME', 'scramble');
+----
+Invalid mask strategy: scramble
+
+statement error
+SELECT pii_mask_value(val, 'NAME', strategy) FROM (VALUES ('Li', 'redact'), ('Na', 'blur')) t(val, strategy);
+----
+Invalid mask strategy: blur
+
+# Export recipe: known-PII columns masked with pii_mask_value
+statement ok
+CREATE TABLE crm_export AS
+SELECT contact_id,
+       pii_mask_value(first_name, 'NAME', 'redact')   AS first_name,
+       pii_mask_value(last_name, 'NAME', 'redact')    AS last_name,
+       pii_mask_value(phone, 'PHONE', 'hash')         AS phone,
+       pii_mask_value(email, 'EMAIL', 'partial')      AS email
+FROM crm_contacts;
+
+query I
+SELECT count(*) FROM crm_export WHERE first_name IN ('Li', 'Anna', 'Klaus-Peter') OR last_name IN ('Na', 'Schmidt') OR phone LIKE '%1234567%';
+----
+0
