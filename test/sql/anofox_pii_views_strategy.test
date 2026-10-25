@@ -1,0 +1,87 @@
+# name: test/sql/anofox_pii_views_strategy.test
+# description: pii_scan_table / pii_audit_table accept views (they used to crash);
+#              an unknown mask strategy is an error instead of returning the text unmasked
+# group: [sql]
+
+require anofox_tabular
+
+statement ok
+LOAD anofox_tabular;
+
+statement ok
+CREATE TABLE pv_src AS
+SELECT i AS id, 'mail user' || i || '@corp.com' AS note, i AS n
+FROM range(1, 4) r(i);
+
+statement ok
+CREATE VIEW pv AS SELECT id, note, n FROM pv_src;
+
+# --- views ---
+
+query TTI
+SELECT column_name, pii_type, match_count FROM pii_scan_table('pv');
+----
+note	EMAIL	3
+
+query ITT
+SELECT row_id, column_name, masked_value FROM pii_audit_table('pv') ORDER BY row_id;
+----
+1	note	mail [EMAIL]
+2	note	mail [EMAIL]
+3	note	mail [EMAIL]
+
+query IIT
+SELECT id, row_id, pii_type FROM pii_audit_table('pv', id_column := 'id') ORDER BY id;
+----
+1	1	EMAIL
+2	2	EMAIL
+3	3	EMAIL
+
+# a view and its table give the same result
+query I
+SELECT count(*) FROM (FROM pii_audit_table('pv') EXCEPT FROM pii_audit_table('pv_src'));
+----
+0
+
+# a missing relation is a clear error, not a crash
+statement error
+SELECT * FROM pii_scan_table('no_such_relation');
+----
+pii_scan_table: cannot read table 'no_such_relation'
+
+statement error
+SELECT * FROM pii_audit_table('no_such_relation');
+----
+pii_audit_table: cannot read table 'no_such_relation'
+
+# --- mask strategies ---
+
+query T
+SELECT pii_mask('mail jane@corp.com', 'Redact');
+----
+mail [EMAIL]
+
+query T
+SELECT pii_mask('mail jane@corp.com', 'none');
+----
+mail jane@corp.com
+
+statement error
+SELECT pii_mask('mail jane@corp.com', 'bogus');
+----
+Invalid mask strategy: bogus
+
+statement error
+SELECT pii_mask_column('mail jane@corp.com', 'EMAIL', 'bogus');
+----
+Invalid mask strategy: bogus
+
+statement error
+SELECT pii_redact_column('mail jane@corp.com', 'bogus');
+----
+Invalid mask strategy: bogus
+
+statement error
+SET anofox_pii_default_mask_strategy = 'bogus';
+----
+Invalid mask strategy: bogus

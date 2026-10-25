@@ -132,8 +132,7 @@ tables of your session:
 
 | Functions | Accept |
 |-----------|--------|
-| `isolation_forest`, `isolation_forest_mv`, `dbscan`, `dbscan_mv`, `outlier_tree`, `profile_table`, `profile_summary`, `profile_correlations` | regular tables and views, not TEMP tables |
-| `pii_scan_table`, `pii_audit_table` | regular tables only |
+| `isolation_forest`, `isolation_forest_mv`, `dbscan`, `dbscan_mv`, `outlier_tree`, `pii_scan_table`, `pii_audit_table`, `profile_table`, `profile_summary`, `profile_correlations` | regular tables and views, not TEMP tables |
 | `run_checks` | a regular checks table; the checked tables may be TEMP tables or views |
 | all other table functions | tables, views and TEMP tables |
 

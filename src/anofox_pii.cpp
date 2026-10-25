@@ -139,6 +139,17 @@ MaskStrategy StringToMaskStrategy(const std::string &str) {
     return MaskStrategy::NONE;
 }
 
+MaskStrategy ParseMaskStrategy(const std::string &str) {
+    auto parsed = StringToMaskStrategy(str);
+    auto upper = StringUtil::Upper(str);
+    StringUtil::Trim(upper);
+    if (parsed == MaskStrategy::NONE && upper != "NONE") {
+        throw InvalidInputException("Invalid mask strategy: " + str +
+                                    ". Valid values: redact, hash, partial, asterisk, none (case-insensitive)");
+    }
+    return parsed;
+}
+
 // ============================================================================
 // PII Configuration Singleton
 // ============================================================================
@@ -187,11 +198,7 @@ std::string PIIConfig::GetDefaultMaskStrategyString() const {
 }
 
 void PIIConfig::SetDefaultMaskStrategy(const std::string &strategy) {
-    auto parsed = StringToMaskStrategy(strategy);
-    if (parsed == MaskStrategy::NONE && StringUtil::Upper(strategy) != "NONE") {
-        throw InvalidInputException("Invalid mask strategy: " + strategy +
-                                    ". Valid values: REDACT, HASH, PARTIAL, ASTERISK, NONE");
-    }
+    auto parsed = ParseMaskStrategy(strategy);
     std::lock_guard<std::mutex> guard(mutex_);
     default_mask_strategy_ = parsed;
 }
@@ -1994,7 +2001,7 @@ struct PIIMaskFunction {
             args.data[0], args.data[1], result, args.size(),
             [&](string_t input, string_t strategy_str) {
                 std::string text = input.GetString();
-                MaskStrategy strategy = StringToMaskStrategy(strategy_str.GetString());
+                MaskStrategy strategy = ParseMaskStrategy(strategy_str.GetString());
 
                 std::string masked = engine.Mask(text, strategy, {}, config);
                 return StringVector::AddString(result, masked);
@@ -2345,7 +2352,7 @@ struct PIIMaskColumnFunction {
         }
 
         auto pii_type = StringToPIIType(type_arg.GetValue<std::string>());
-        auto strategy = StringToMaskStrategy(strategy_arg.GetValue<std::string>());
+        auto strategy = ParseMaskStrategy(strategy_arg.GetValue<std::string>());
 
         if (pii_type == PIIType::UNKNOWN) {
             throw InvalidInputException("Unknown PII type: %s", type_arg.GetValue<std::string>());
@@ -2383,7 +2390,7 @@ struct PIIRedactColumnFunction {
 
         MaskStrategy strategy = MaskStrategy::REDACT;
         if (!strategy_arg.IsNull()) {
-            strategy = StringToMaskStrategy(strategy_arg.GetValue<std::string>());
+            strategy = ParseMaskStrategy(strategy_arg.GetValue<std::string>());
         }
 
         UnaryExecutor::Execute<string_t, string_t>(
@@ -2644,28 +2651,32 @@ struct PIIAuditTableBindData : public TableFunctionData {
         : table_name(table), column_filter(cols) {}
 };
 
-// Resolve the VARCHAR columns of a table, optionally restricted to a filter list.
-// Shared by pii_audit_table and pii_scan_table.
-static std::vector<std::string> ResolvePIIScanColumns(ClientContext &context, const std::string &table_name,
+// Resolve the VARCHAR columns of a table or view, optionally restricted to a filter list.
+// Shared by pii_audit_table and pii_scan_table. The relation is bound with a sibling
+// connection (LIMIT 0 reads no rows), the same way the scan itself reads it; a catalog
+// lookup would only find tables, and casting a view entry to a table entry crashed.
+static std::vector<std::string> ResolvePIIScanColumns(ClientContext &context, const std::string &function_name,
+                                                      const std::string &table_name,
                                                       const std::vector<std::string> &column_filter) {
-    auto qname = QualifiedName::Parse(table_name);
-    auto &catalog = Catalog::GetCatalog(context, duckdb_compat::Ident(duckdb_compat::QualifiedCatalog(qname)));
-    auto &entry = catalog
-                      .GetEntry(context, CatalogType::TABLE_ENTRY,
-                                duckdb_compat::Ident(duckdb_compat::QualifiedSchema(qname)),
-                                duckdb_compat::Ident(duckdb_compat::QualifiedLocalName(qname)))
-                      .Cast<TableCatalogEntry>();
+    Connection con(*context.db);
+    auto result = con.Query("SELECT * FROM " + BuildQueryTableRef(table_name) + " LIMIT 0");
+    if (result->HasError()) {
+        throw InvalidInputException("%s: cannot read table '%s': %s", function_name, table_name, result->GetError());
+    }
+    auto result_names = duckdb_compat::ResultNames(*result);
+    auto &result_types = duckdb_compat::ResultTypes(*result);
 
     std::vector<std::string> columns;
-    for (auto &col : entry.GetColumns().Logical()) {
-        if (col.Type().id() != LogicalTypeId::VARCHAR) {
+    for (idx_t i = 0; i < result_names.size(); i++) {
+        if (result_types[i].id() != LogicalTypeId::VARCHAR) {
             continue;
         }
+        std::string name = result_names[i];
         if (!column_filter.empty() &&
-            std::find(column_filter.begin(), column_filter.end(), duckdb_compat::Str(col.Name())) == column_filter.end()) {
+            std::find(column_filter.begin(), column_filter.end(), name) == column_filter.end()) {
             continue;
         }
-        columns.push_back(duckdb_compat::Str(col.Name()));
+        columns.push_back(std::move(name));
     }
     return columns;
 }
@@ -2782,7 +2793,7 @@ void PIIAuditTableFunction(ClientContext &context, TableFunctionInput &input, Da
             // Resolve the VARCHAR columns to audit and snapshot the
             // configuration once for the whole scan; enabled_types and
             // min_confidence are applied centrally by PIIEngine::Detect
-            state.columns_to_scan = ResolvePIIScanColumns(context, bind_data.table_name, bind_data.column_filter);
+            state.columns_to_scan = ResolvePIIScanColumns(context, "pii_audit_table", bind_data.table_name, bind_data.column_filter);
             state.config = PIIConfig::Get().Snapshot();
             state.mask_strategy = state.config.default_mask_strategy;
         }
@@ -3033,7 +3044,7 @@ void PIIScanTableFunction(ClientContext &context, TableFunctionInput &input, Dat
             state.initialized = true;
             // Resolve the VARCHAR columns to scan and snapshot the
             // configuration once for the whole scan
-            state.columns_to_scan = ResolvePIIScanColumns(context, bind_data.table_name, bind_data.column_filter);
+            state.columns_to_scan = ResolvePIIScanColumns(context, "pii_scan_table", bind_data.table_name, bind_data.column_filter);
             state.config = PIIConfig::Get().Snapshot();
         }
 

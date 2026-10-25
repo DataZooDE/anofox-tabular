@@ -18,7 +18,7 @@ LOAD anofox_tabular;
 
 ## 1. Create sample data
 
-`pii_scan_table` and `pii_audit_table` need a regular table, not a TEMP table or a view.
+`pii_scan_table` and `pii_audit_table` read regular tables and views, not TEMP tables.
 
 ```sql
 CREATE TABLE customers AS
@@ -162,8 +162,8 @@ pattern after export.
 The `ORGANIZATION` row comes from the NER model, which reads the label `[IP_ADDRESS]` as an
 organization name. NER results are statistical, so review them before you act on them.
 
-A strategy name that is not `redact`, `partial`, `asterisk`, `hash` or `none` leaves the text
-unmasked without an error, so check the spelling.
+A strategy name that is not `redact`, `partial`, `asterisk`, `hash` or `none` is an error
+(`Invalid mask strategy: …`), so a typo never leaves the text unmasked.
 
 ## 5. Detect only some types
 

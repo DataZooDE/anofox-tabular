@@ -70,6 +70,12 @@ std::string MaskStrategyToString(MaskStrategy strategy);
 MaskStrategy StringToMaskStrategy(const std::string &str);
 
 /**
+ * Convert string to MaskStrategy (case-insensitive); throws InvalidInputException
+ * for a value that names no strategy, where StringToMaskStrategy returns NONE
+ */
+MaskStrategy ParseMaskStrategy(const std::string &str);
+
+/**
  * Result of a PII detection match
  */
 struct PIIMatch {

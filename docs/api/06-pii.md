@@ -84,8 +84,8 @@ The strategy argument is case-insensitive.
 
 `pii_mask(text)` without a strategy always redacts. The setting `anofox_pii_default_mask_strategy`
 applies only to `pii_redact_column(value)` and `pii_audit_table`. A strategy argument that
-is not one of these names is treated as `none`: the text is returned unmasked, without an error.
-Check the spelling.
+is not one of these names is an error (`Invalid mask strategy: …`), in `pii_mask`,
+`pii_mask_column`, `pii_redact_column` and in `SET anofox_pii_default_mask_strategy`.
 
 ```sql
 SELECT s AS strategy, pii_mask('SSN: 123-45-6789, mail a.b@example.com', s) AS masked
@@ -462,7 +462,7 @@ SELECT pii_is_valid_nino('AB123456C')                                  AS nino,
 Canonical name: `anofox_tab_pii_scan_table`. Table function.
 
 Scans the `VARCHAR` columns of a table and returns one row per column and PII type found.
-The table must be a regular table: TEMP tables and views are not supported (see
+It accepts regular tables and views, not TEMP tables (see
 [Conventions](00-conventions.md#table-and-column-arguments)).
 
 ```text
@@ -544,7 +544,7 @@ ORDER BY column_name, pii_type;
 Canonical name: `anofox_tab_pii_audit_table`. Table function.
 
 Returns one row per PII match, with the original and the masked value. Like `pii_scan_table` it
-needs a regular table.
+accepts regular tables and views, not TEMP tables.
 
 ```text
 pii_audit_table(table_name VARCHAR [, columns VARCHAR] [, id_column := VARCHAR]) -> TABLE(
