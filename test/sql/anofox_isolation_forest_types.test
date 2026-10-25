@@ -1,0 +1,103 @@
+# name: test/sql/anofox_isolation_forest_types.test
+# description: isolation_forest and dbscan / dbscan_mv reject non-numeric columns at bind time with
+#              a clear message instead of silently scoring categories (isolation_forest) or failing
+#              with a cast error. isolation_forest_mv keeps accepting VARCHAR columns as categorical.
+#              Column names resolve case-insensitively; unknown names are reported by name.
+# group: [anofox_tabular]
+
+require anofox_tabular
+
+statement ok
+LOAD anofox_tabular
+
+statement ok
+SET anofox_tab_trace_enabled = false
+
+# Regular table: the functions read through a sibling connection (no TEMP tables)
+statement ok
+CREATE TABLE ift_o AS
+SELECT i AS id,
+       CASE WHEN i % 3 = 0 THEN 'w' ELSE 'r' END AS seg,
+       i::VARCHAR AS amt_txt,
+       i::DOUBLE AS Amt,
+       (i % 2 = 0) AS flag,
+       DATE '2026-01-01' + i::INTEGER AS d
+FROM range(1, 101) t(i)
+
+# ---------------------------------------------------------------------------
+# isolation_forest
+# ---------------------------------------------------------------------------
+
+statement error
+SELECT * FROM isolation_forest('ift_o', 'seg')
+----
+isolation_forest: column 'seg' must be numeric, got VARCHAR
+
+statement error
+SELECT * FROM isolation_forest('ift_o', 'amt_txt', 100, 64, 0.1, 'scores', 42)
+----
+isolation_forest: column 'amt_txt' must be numeric, got VARCHAR
+
+statement error
+SELECT * FROM isolation_forest('ift_o', 'd')
+----
+isolation_forest: column 'd' must be numeric, got DATE
+
+statement error
+SELECT * FROM isolation_forest('ift_o', 'nope')
+----
+isolation_forest: column 'nope' not found in table 'ift_o'
+
+# Numeric columns resolve case-insensitively and keep working
+query TI
+SELECT status, total_count FROM isolation_forest('ift_o', 'AMT', 100, 64, 0.1, 'summary', 42)
+----
+fail	100
+
+query I
+SELECT count(*) FROM isolation_forest('ift_o', 'id', 100, 64, 0.1, 'scores', 42)
+----
+100
+
+# ---------------------------------------------------------------------------
+# isolation_forest_mv: VARCHAR stays categorical, other non-numeric types are rejected
+# ---------------------------------------------------------------------------
+
+query I
+SELECT count(*) FROM isolation_forest_mv('ift_o', 'Amt, seg', 50, 64, 0.1, 'scores', 42)
+----
+100
+
+statement error
+SELECT * FROM isolation_forest_mv('ift_o', 'amt, d', 50, 64, 0.1, 'scores', 42)
+----
+isolation_forest_mv: column 'd' must be numeric or categorical (VARCHAR), got DATE
+
+statement error
+SELECT * FROM isolation_forest_mv('ift_o', 'amt, nope', 50, 64, 0.1, 'scores', 42)
+----
+isolation_forest_mv: column 'nope' not found in table 'ift_o'
+
+# ---------------------------------------------------------------------------
+# dbscan / dbscan_mv
+# ---------------------------------------------------------------------------
+
+statement error
+SELECT * FROM dbscan('ift_o', 'seg', 1, 5, 'summary')
+----
+dbscan: column 'seg' must be numeric, got VARCHAR
+
+statement error
+SELECT * FROM dbscan_mv('ift_o', 'id, seg', 1, 5, 'summary')
+----
+dbscan_mv: column 'seg' must be numeric, got VARCHAR
+
+statement error
+SELECT * FROM dbscan('ift_o', 'nope', 1, 5, 'summary')
+----
+dbscan: column 'nope' not found in table 'ift_o'
+
+query I
+SELECT cluster_count FROM dbscan('ift_o', 'AMT', 1.5, 3, 'summary')
+----
+1

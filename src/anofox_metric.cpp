@@ -465,6 +465,32 @@ static unique_ptr<GlobalTableFunctionState> IsolationForestInit(ClientContext &,
 	return make_uniq<IsolationForestGlobalState>();
 }
 
+// Resolve the feature columns of an anomaly function at bind time: case-insensitive names
+// (the table's spelling is used from here on), unknown names are an error, and every column
+// must be numeric (BOOLEAN is cast to 0/1). With `allow_categorical` VARCHAR/ENUM columns are
+// accepted as categorical features (isolation_forest_mv). Without this check a VARCHAR column
+// was silently scored as a category (isolation_forest) or failed with a cast error (dbscan).
+static vector<string> ResolveFeatureColumns(ClientContext &context, const string &function_name,
+                                            const string &table_name, const vector<string> &requested,
+                                            bool allow_categorical) {
+	vector<string> names;
+	for (auto &column : ResolveColumns(context, function_name, table_name, requested)) {
+		auto type_id = column.type.id();
+		bool numeric = column.type.IsNumeric() || type_id == LogicalTypeId::BOOLEAN;
+		bool categorical = type_id == LogicalTypeId::VARCHAR || type_id == LogicalTypeId::ENUM;
+		if (!numeric && !(allow_categorical && categorical)) {
+			if (allow_categorical) {
+				throw BinderException("%s: column '%s' must be numeric or categorical (VARCHAR), got %s",
+				                      function_name, column.name, column.type.ToString());
+			}
+			throw BinderException("%s: column '%s' must be numeric, got %s", function_name, column.name,
+			                      column.type.ToString());
+		}
+		names.push_back(std::move(column.name));
+	}
+	return names;
+}
+
 // Shared optional-parameter handling and validation for both isolation forest bind functions.
 // Integer parameters are read as signed int64_t and range-checked BEFORE casting to size_t,
 // so negative values are rejected instead of wrapping; doubles must be finite.
@@ -560,6 +586,7 @@ static unique_ptr<FunctionData> IsolationForestBind(ClientContext &context, Tabl
 		return_types.emplace_back(LogicalType(LogicalTypeId::VARCHAR));
 	}
 
+	column_names = ResolveFeatureColumns(context, "isolation_forest", table_name, column_names, false);
 	auto id_column = BindIdColumn(context, input, "isolation_forest", table_name, output_mode == "scores", "scores");
 	InsertIdColumn(id_column, "isolation_forest", return_types, names);
 
@@ -684,6 +711,10 @@ static unique_ptr<FunctionData> IsolationForestMultivariateBind(ClientContext &c
 		return_types.emplace_back(LogicalType(LogicalTypeId::VARCHAR));
 	}
 
+	column_names = ResolveFeatureColumns(context, "isolation_forest_mv", table_name, column_names, true);
+	if (has_weight_column) {
+		weight_column = ResolveFeatureColumns(context, "isolation_forest_mv", table_name, {weight_column}, false)[0];
+	}
 	auto id_column =
 	    BindIdColumn(context, input, "isolation_forest_mv", table_name, output_mode == "scores", "scores");
 	InsertIdColumn(id_column, "isolation_forest_mv", return_types, names);
@@ -1161,6 +1192,7 @@ static unique_ptr<FunctionData> DBSCANBind(ClientContext &context, TableFunction
 	ParseDBSCANParameters(input, "dbscan", eps, min_pts, output_mode);
 
 	DefineDBSCANSchema(output_mode, /*include_value=*/true, /*include_n_columns=*/false, return_types, names);
+	column_names = ResolveFeatureColumns(context, "dbscan", table_name, column_names, false);
 	auto id_column = BindIdColumn(context, input, "dbscan", table_name, output_mode == "clusters", "clusters");
 	InsertIdColumn(id_column, "dbscan", return_types, names);
 
@@ -1189,6 +1221,7 @@ static unique_ptr<FunctionData> DBSCANMultivariateBind(ClientContext &context, T
 	ParseDBSCANParameters(input, "dbscan_mv", eps, min_pts, output_mode);
 
 	DefineDBSCANSchema(output_mode, /*include_value=*/false, /*include_n_columns=*/true, return_types, names);
+	column_names = ResolveFeatureColumns(context, "dbscan_mv", table_name, column_names, false);
 	auto id_column = BindIdColumn(context, input, "dbscan_mv", table_name, output_mode == "clusters", "clusters");
 	InsertIdColumn(id_column, "dbscan_mv", return_types, names);
 

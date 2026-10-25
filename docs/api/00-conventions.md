@@ -127,6 +127,11 @@ Column lists come in two forms. Check the signature of each function:
 | comma-separated `VARCHAR` | `'amount, quantity'` | `isolation_forest_mv`, `dbscan_mv`, `outlier_tree`, `duplicate_count`, `match_rate`, `pii_scan_table`, `pii_audit_table` |
 | `VARCHAR[]` list | `['id', 'created_at']` | `schema_check`, `values_in_set`, `rolling_values_in_set`, `profile_table`, `profile_correlations`, `diff_joindiff` |
 
+Column names match case-insensitively, like DuckDB identifiers: `'EMAIL'` finds a column
+`Email`. In `profile_table`, `profile_correlations`, `pii_scan_table`, `pii_audit_table`,
+`isolation_forest`, `isolation_forest_mv`, `dbscan` and `dbscan_mv` an unknown column name is an
+error naming the column and the table; `schema_check` reports it as missing.
+
 Some functions read the table through a second connection. That connection cannot see TEMP
 tables of your session:
 

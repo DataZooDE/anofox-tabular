@@ -68,7 +68,10 @@ reproducible results.
 
 Canonical name: `anofox_tab_isolation_forest`. Table function.
 
-Isolation Forest over a single numeric column. Rows where the column is `NULL` are skipped.
+Isolation Forest over a single numeric column. Rows where the column is `NULL` are skipped. A
+column that is not numeric (`BOOLEAN` counts as 0/1) is a binder error, for example
+`isolation_forest: column 'segment' must be numeric, got VARCHAR`; score categorical columns with
+[`isolation_forest_mv`](#isolation_forest_mv).
 
 ```text
 isolation_forest(table_name VARCHAR, column_name VARCHAR
@@ -159,7 +162,8 @@ The extended options (Extended IF, SCiForest, weights, scoring metrics) exist on
 Canonical name: `anofox_tab_isolation_forest_mv`. Table function.
 
 Isolation Forest over one or more columns. Numeric columns are split on values. `VARCHAR`
-columns are treated as categorical and split on random subsets of their categories. Rows with a
+columns are treated as categorical and split on random subsets of their categories. Columns of
+other types (`DATE`, `TIMESTAMP`, ...) are a binder error. Rows with a
 `NULL` in any selected column are skipped.
 
 ```text
@@ -320,7 +324,8 @@ the raw values, so put columns on comparable scales before you combine them.
 
 Canonical name: `anofox_tab_dbscan`. Table function.
 
-DBSCAN over a single numeric column. Rows where the column is `NULL` are skipped.
+DBSCAN over a single numeric column. Rows where the column is `NULL` are skipped. A non-numeric
+column is a binder error (`dbscan: column 'segment' must be numeric, got VARCHAR`).
 
 ```text
 dbscan(table_name VARCHAR, column_name VARCHAR
@@ -402,7 +407,8 @@ ORDER BY row_id;
 
 Canonical name: `anofox_tab_dbscan_mv`. Table function.
 
-DBSCAN over several numeric columns. Rows with a `NULL` in any selected column are skipped.
+DBSCAN over several numeric columns. Rows with a `NULL` in any selected column are skipped. A
+non-numeric column is a binder error.
 
 ```text
 dbscan_mv(table_name VARCHAR, column_names VARCHAR
