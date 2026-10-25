@@ -34,7 +34,9 @@ def resolve_table(conn: Any, table_or_df: Union[str, Any]) -> tuple[str, bool]:
         return table_or_df, False
     try:
         detect_df_type(table_or_df)  # validate type before registering
-    except TypeError:
+    except TypeError as error:
+        if "Series" in str(error):
+            raise
         raise TypeError(
             f"pass a table name or a DataFrame (pandas or polars), got {_describe(table_or_df)}"
         ) from None

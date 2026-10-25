@@ -47,6 +47,21 @@ class TestDetectDfType:
         with pytest.raises(TypeError):
             detect_df_type(None)
 
+    @pytest.mark.parametrize("lib", ["pandas", "polars"])
+    def test_raises_for_series(self, lib):
+        mod = pytest.importorskip(lib)
+        with pytest.raises(TypeError, match=r"Series.*to_frame"):
+            detect_df_type(mod.Series("email", ["ana@example.com", "bad-email"]) if lib == "polars"
+                           else mod.Series(["ana@example.com", "bad-email"], name="email"))
+
+    def test_accepts_dataframe_subclass(self):
+        import pandas as pd
+
+        class Orders(pd.DataFrame):
+            pass
+
+        assert detect_df_type(Orders({"order_id": [1, 2]})) == "pandas"
+
 
 # ---------------------------------------------------------------------------
 # register_df_as_table

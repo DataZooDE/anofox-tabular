@@ -21,13 +21,18 @@ def detect_df_type(df: Any) -> DFType:
     Return ``"pandas"`` or ``"polars"`` based on the type of *df*.
 
     Raises :class:`TypeError` if *df* is neither a pandas nor a polars
-    DataFrame.
+    DataFrame (or a subclass of one); a Series gets a ``to_frame()`` hint.
     """
-    module = type(df).__module__.split(".")[0]
-    if module == "pandas":
-        return "pandas"
-    if module == "polars":
-        return "polars"
+    for cls in type(df).__mro__:
+        library = cls.__module__.split(".")[0]
+        if library in ("pandas", "polars"):
+            if cls.__name__ == "DataFrame":
+                return library  # type: ignore[return-value]
+            if cls.__name__ == "Series":
+                raise TypeError(
+                    f"Expected a pandas or polars DataFrame, got a {library} Series; "
+                    "pass series.to_frame() instead."
+                )
     raise TypeError(
         f"Expected a pandas or polars DataFrame, got {type(df).__qualname__!r}."
     )

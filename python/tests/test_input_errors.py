@@ -73,3 +73,29 @@ class TestPiiMaskDataFrame:
         out = pii.pii_mask(conn, pl.DataFrame({"note": ["mail ana@example.com"]}), column="note")
         assert isinstance(out, pl.DataFrame)
         assert out["pii_mask"].to_list() == ["mail [EMAIL]"]
+
+
+class TestSeriesOnDataFrameMethods:
+    """A Series passed where a DataFrame is expected gets the same TypeError hint."""
+
+    @staticmethod
+    def _emails():
+        return pd.Series(["ana.lopez@example.com", "bad-email"], name="email")
+
+    def test_validate(self, conn):
+        from anofox.validate import EmailRule
+        with pytest.raises(TypeError, match=r"Series.*to_frame"):
+            conn.validate(self._emails(), {"email": EmailRule()})
+
+    def test_profile(self, conn):
+        with pytest.raises(TypeError, match=r"Series.*to_frame"):
+            conn.profile(self._emails())
+
+    def test_quality_check(self, conn):
+        with pytest.raises(TypeError, match=r"Series.*to_frame"):
+            conn.quality_check(self._emails(), {"volume": {"min_rows": 1}})
+
+    def test_table_function(self, conn):
+        from anofox import quality
+        with pytest.raises(TypeError, match=r"Series.*to_frame"):
+            quality.volume(conn, self._emails(), min_rows=1)

@@ -112,7 +112,8 @@ print(result.failures)    # DataFrame: column, row_id, value, rule
 
 - **pandas and polars.** Every function that takes a DataFrame takes either. Results that are
   DataFrames use the input's library: a polars input gives a polars result, a pandas input
-  or a table name gives pandas.
+  or a table name gives pandas. A Series is not a DataFrame and raises `TypeError`: pass
+  `series.to_frame()` (with `column=series.name` for the row-wise helpers).
 - **Row-wise results** (`email_is_valid`, `email_validate`, `phone_is_valid`, `phone_parse`,
   `pii_detect`, `pii_mask` with `column=`) are a copy of the input plus one column. They keep
   the input's index (pandas) and row order, so `df["ok"] = ...["email_is_valid"]` lines up.
