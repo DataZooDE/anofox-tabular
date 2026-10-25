@@ -297,11 +297,11 @@ SELECT list_contains(list_transform(pii_detect('4111-1111-1111-1111'), lambda x:
 ----
 true
 
-# Visa 13 digit (older format - not currently supported)
+# Visa 13 digit (older format)
 query I
 SELECT list_contains(list_transform(pii_detect('4222222222222'), lambda x: x.type), 'CREDIT_CARD');
 ----
-false
+true
 
 # --- Mastercard ---
 
@@ -335,11 +335,11 @@ SELECT list_contains(list_transform(pii_detect('5500000000000004'), lambda x: x.
 ----
 true
 
-# New 2-series Mastercard (not currently in pattern)
+# 2-series Mastercard
 query I
 SELECT list_contains(list_transform(pii_detect('2221000000000009'), lambda x: x.type), 'CREDIT_CARD');
 ----
-false
+true
 
 # --- American Express ---
 

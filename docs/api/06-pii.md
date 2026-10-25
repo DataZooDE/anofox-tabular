@@ -52,7 +52,7 @@ NER types need the NER model.
 |------|---------|--------|
 | `EMAIL` | Email addresses, also with non-ASCII letters (`jörg.k@müller-gmbh.de`); a local part of at most 64 characters and domain labels of at most 63 | pattern |
 | `PHONE` | International numbers with a `+` or `00` prefix (`+49 (0) 221 4711-0`, `0049 171 1234567`), national numbers with an area code and a space, dash or slash (`0171 1234567`, `089/12345678`, `(089) 123 456 78`) and US `(555) 123-4567`; 7 to 15 digits, starting after whitespace, `:` or `(` | pattern |
-| `CREDIT_CARD` | Visa, Mastercard, Amex and Discover numbers | pattern + Luhn checksum |
+| `CREDIT_CARD` | Card numbers of Visa, Mastercard (51-55, 2221-2720), American Express, Discover, Maestro, JCB, Diners Club and UnionPay: 13 to 19 digits, compact or in groups joined by one space, dash or dot (`4111 1111 1111 1111`, `3782-822463-10005`, `4111.1111.1111.1111`). The digits must carry a brand prefix with a length the brand issues; digits that continue a longer token (`DE89 3704 ...`, `SN4111...`, `4111...-01`) are not matched | pattern + Luhn checksum + brand prefix |
 | `US_SSN` | US Social Security Numbers `XXX-XX-XXXX` or `XXX XX XXXX`; bare 9-digit numbers are not matched | pattern + area validation |
 | `IBAN` | International Bank Account Numbers, compact or in groups of four separated by single spaces or dashes (`DE89 3704 0044 0532 0130 00`) | pattern + MOD-97 checksum |
 | `IP_ADDRESS` | IPv4 and IPv6 addresses | pattern |

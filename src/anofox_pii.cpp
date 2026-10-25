@@ -541,13 +541,186 @@ CreditCardRecognizer::CreditCardRecognizer()
     : RegexRecognizer(
         PIIType::CREDIT_CARD,
         "Credit Card",
-        // Matches major card formats: Visa, Mastercard, Amex, Discover with optional separators
-        R"(\b(?:4[0-9]{3}[\s\-]?[0-9]{4}[\s\-]?[0-9]{4}[\s\-]?[0-9]{4}|5[1-5][0-9]{2}[\s\-]?[0-9]{4}[\s\-]?[0-9]{4}[\s\-]?[0-9]{4}|3[47][0-9]{2}[\s\-]?[0-9]{6}[\s\-]?[0-9]{5}|6(?:011|5[0-9]{2})[\s\-]?[0-9]{4}[\s\-]?[0-9]{4}[\s\-]?[0-9]{4})\b)"
+        // FindMatches scans digit groups directly; the pattern only describes
+        // the accepted shape: 13-19 digits, optionally in groups joined by one
+        // space, dash or dot.
+        R"(\b\d{4}(?:[ .\-]?\d{1,6}){1,6}\b)"
     ) {}
 
 CreditCardRecognizer::~CreditCardRecognizer() {
     // Force non-inline destructor to emit vtable in this translation unit
     (void)type_;
+}
+
+namespace {
+
+bool IsAsciiDigitAt(const std::string &text, size_t pos) {
+    return pos < text.size() && std::isdigit(static_cast<unsigned char>(text[pos]));
+}
+
+bool IsAsciiWordAt(const std::string &text, size_t pos) {
+    if (pos >= text.size()) {
+        return false;
+    }
+    const auto c = static_cast<unsigned char>(text[pos]);
+    return std::isalnum(c) || c == '_';
+}
+
+// Card numbers are at most 19 digits; longer chains of digit groups (tables
+// of figures, long reference numbers) are not searched for card numbers.
+constexpr size_t CARD_MAX_CHAIN_GROUPS = 32;
+
+} // namespace
+
+std::vector<PIIMatch> CreditCardRecognizer::FindMatches(const std::string &text) const {
+    // A candidate is a chain of digit groups joined by one separator (space,
+    // dash or dot) that is the same throughout: 4111111111111111,
+    // 4111 1111 1111 1111, 3782-822463-10005, 4111.1111.1111.1111.
+    // A chain that continues a longer token (DE89 3704 ..., a decimal
+    // 1.4111..., a phone number +4111...) is skipped. Inside a chain of
+    // space-separated groups the first run of groups with 13-19 digits that
+    // passes the Luhn checksum and carries a brand prefix is a card number
+    // ("Ref 12 4111 1111 1111 1111").
+    std::vector<PIIMatch> matches;
+    const size_t n = text.size();
+    size_t pos = 0;
+    while (pos < n) {
+        if (!IsAsciiDigitAt(text, pos)) {
+            pos++;
+            continue;
+        }
+        // Collect the chain of groups as [begin, end) byte ranges
+        std::vector<std::pair<size_t, size_t>> groups;
+        char separator = 0;
+        size_t end = pos;
+        while (true) {
+            const size_t group_begin = end;
+            while (IsAsciiDigitAt(text, end)) {
+                end++;
+            }
+            groups.emplace_back(group_begin, end);
+            if (end < n && (text[end] == ' ' || text[end] == '-' || text[end] == '.') &&
+                (separator == 0 || text[end] == separator) && IsAsciiDigitAt(text, end + 1)) {
+                separator = text[end];
+                end++;
+                continue;
+            }
+            break;
+        }
+        const size_t chain_begin = pos;
+        pos = end;
+
+        // The chain must stand on its own
+        if (chain_begin > 0) {
+            const char before = text[chain_begin - 1];
+            if (IsAsciiWordAt(text, chain_begin - 1) || before == '+') {
+                continue;
+            }
+            if ((before == '.' || before == ',' || before == '-' || before == '/') && chain_begin >= 2 &&
+                IsAsciiDigitAt(text, chain_begin - 2)) {
+                continue;
+            }
+        }
+        if (IsAsciiWordAt(text, end)) {
+            continue;
+        }
+        if (end < n && (text[end] == '.' || text[end] == ',' || text[end] == '-' || text[end] == '/') &&
+            IsAsciiDigitAt(text, end + 1)) {
+            continue;
+        }
+        if (groups.size() > CARD_MAX_CHAIN_GROUPS) {
+            AnofoxTrace(AnofoxLogLevel::Trace, "pii: digit chain too long for a card number at byte " +
+                                                   std::to_string(chain_begin));
+            continue;
+        }
+
+        // Search the runs of groups [first, last], longest first. Groups
+        // joined by dashes or dots form one token ("4111111111111111-01"),
+        // which is a card number only as a whole; space-separated groups can
+        // hold a card number next to other figures.
+        const bool whole_chain_only = separator == '-' || separator == '.';
+        size_t first = 0;
+        while (first < groups.size()) {
+            bool found = false;
+            for (size_t last = groups.size(); last-- > first;) {
+                if (whole_chain_only && (first != 0 || last + 1 != groups.size())) {
+                    continue;
+                }
+                std::string digits;
+                bool shape_ok = true;
+                for (size_t g = first; g <= last; ++g) {
+                    const size_t len = groups[g].second - groups[g].first;
+                    // Separated: a 4-digit first group, 3-6 digits in the
+                    // middle groups, 1-6 in the last (4-4-4-4, 4-6-5, 4-4-4-4-3)
+                    if (last > first && ((g == first && len != 4) || (g > first && g < last && (len < 3 || len > 6)) ||
+                                         (g == last && len > 6))) {
+                        shape_ok = false;
+                        break;
+                    }
+                    digits.append(text, groups[g].first, len);
+                }
+                if (!shape_ok || digits.size() < 13 || digits.size() > 19) {
+                    continue;
+                }
+                if (!LuhnCheck(digits) || !HasCardBrandPrefix(digits)) {
+                    AnofoxTrace(AnofoxLogLevel::Trace, "pii: card candidate failed Luhn or brand check: " + digits);
+                    continue;
+                }
+                const size_t start = groups[first].first;
+                const size_t stop = groups[last].second;
+                matches.emplace_back(type_, text.substr(start, stop - start), start, stop, 1.0);
+                first = last + 1;
+                found = true;
+                break;
+            }
+            if (!found) {
+                first++;
+            }
+        }
+    }
+    return matches;
+}
+
+bool CreditCardRecognizer::HasCardBrandPrefix(const std::string &digits) {
+    // IIN ranges and issued lengths of the card brands:
+    // Visa 4 (13, 16, 19); Mastercard 51-55, 2221-2720 (16); Amex 34, 37 (15);
+    // Discover 6011, 644-649, 65 (16-19); Maestro 5018, 5020, 5038, 5893,
+    // 6304, 6759, 6761-6763 (12-19); JCB 3528-3589 (16-19); Diners Club
+    // 300-305, 36, 38, 39 (14-19); UnionPay 62 (16-19)
+    const size_t len = digits.size();
+    if (len < 4) {
+        return false;
+    }
+    const int p2 = std::stoi(digits.substr(0, 2));
+    const int p3 = std::stoi(digits.substr(0, 3));
+    const int p4 = std::stoi(digits.substr(0, 4));
+    auto in = [](int value, int low, int high) { return value >= low && value <= high; };
+
+    if (digits[0] == '4') {
+        return len == 13 || len == 16 || len == 19;
+    }
+    if (in(p2, 51, 55) || in(p4, 2221, 2720)) {
+        return len == 16;
+    }
+    if (p2 == 34 || p2 == 37) {
+        return len == 15;
+    }
+    if (p4 == 6011 || in(p3, 644, 649) || p2 == 65) {
+        return in(static_cast<int>(len), 16, 19);
+    }
+    if (p4 == 5018 || p4 == 5020 || p4 == 5038 || p4 == 5893 || p4 == 6304 || p4 == 6759 || in(p4, 6761, 6763)) {
+        return in(static_cast<int>(len), 12, 19);
+    }
+    if (in(p4, 3528, 3589)) {
+        return in(static_cast<int>(len), 16, 19);
+    }
+    if (in(p3, 300, 305) || p2 == 36 || p2 == 38 || p2 == 39) {
+        return in(static_cast<int>(len), 14, 19);
+    }
+    if (p2 == 62) {
+        return in(static_cast<int>(len), 16, 19);
+    }
+    return false;
 }
 
 bool CreditCardRecognizer::Validate(const std::string &text) const {
@@ -2862,7 +3035,7 @@ void PIIStatusFunction(ClientContext &, TableFunctionInput &input, DataChunk &ou
     static const std::unordered_map<PIIType, std::string> pattern_info = {
         {PIIType::EMAIL, "RFC 5322 email pattern"},
         {PIIType::PHONE, "International (+XX, 00XX) and national (0XX) formats"},
-        {PIIType::CREDIT_CARD, "Visa/MC/Amex/Discover with Luhn validation"},
+        {PIIType::CREDIT_CARD, "Card brand prefixes (IIN) with Luhn validation"},
         {PIIType::US_SSN, "XXX-XX-XXXX format with area validation"},
         {PIIType::IP_ADDRESS, "IPv4 and IPv6 formats"},
         {PIIType::IBAN, "ISO 13616 with MOD-97 checksum"},

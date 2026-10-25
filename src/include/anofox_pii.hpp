@@ -179,12 +179,15 @@ class CreditCardRecognizer : public RegexRecognizer {
 public:
     CreditCardRecognizer();
     ~CreditCardRecognizer() override;
+    std::vector<PIIMatch> FindMatches(const std::string &text) const override;
     bool Validate(const std::string &text) const override;
     std::string GetPartialMask(const std::string &text) const override;
     std::vector<PIIMatch> FindChecksumFailures(const std::string &text) const override;
 
 private:
     static bool LuhnCheck(const std::string &digits);
+    //! True when the digits carry a known brand prefix (IIN range) and a length that brand issues
+    static bool HasCardBrandPrefix(const std::string &digits);
 };
 
 /**
