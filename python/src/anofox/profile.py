@@ -41,12 +41,14 @@ def profile_table(
     Returns
     -------
     DataFrame (pandas, or polars for a polars input)
-        27 columns: column_name, column_type, row_count, null_count,
+        29 columns: column_name, column_type, row_count, null_count,
         null_rate, distinct_count, distinct_rate, min_val, max_val,
         mean, median, stddev, p25, p75, skewness, kurtosis, top_values,
         avg_length, min_length, max_length, pattern_summary, is_unique,
         is_constant, zero_count, negative_count, is_sampled,
-        actual_sample_size.
+        actual_sample_size, nan_count, inf_count. The numeric statistics
+        use the finite values only; NaN and Inf values are counted in
+        nan_count / inf_count.
     """
     table_name, registered = resolve_table(conn, table_or_df)
     try:

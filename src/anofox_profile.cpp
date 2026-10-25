@@ -213,7 +213,7 @@ static unique_ptr<TableRef> ProfileSummaryBindReplace(ClientContext &context,
 	if (input.inputs.empty()) {
 		throw BinderException("profile_summary requires 1 argument: table_name");
 	}
-	string table_name = input.inputs[0].ToString();
+	string table_name = RequireNonNullArgument(input, 0, "profile_summary", "table_name");
 
 	AnofoxTrace(AnofoxLogLevel::Debug,
 	            "profile: profile_summary introspecting '" + table_name + "'");
@@ -293,7 +293,7 @@ static unique_ptr<FunctionData> ProfileTableBind(ClientContext &context,
 		throw BinderException("profile_table requires at least 1 argument: table_name");
 	}
 
-	string table_name = input.inputs[0].ToString();
+	string table_name = RequireNonNullArgument(input, 0, "profile_table", "table_name");
 
 	vector<string> columns;
 	if (input.inputs.size() > 1 && !input.inputs[1].IsNull() &&
@@ -319,7 +319,7 @@ static unique_ptr<FunctionData> ProfileTableBind(ClientContext &context,
 		exact = input.inputs[3].GetValue<bool>();
 	}
 
-	// Output schema — 27 columns
+	// Output schema — 29 columns
 	names.emplace_back("column_name");        return_types.emplace_back(LogicalType(LogicalTypeId::VARCHAR));
 	names.emplace_back("column_type");        return_types.emplace_back(LogicalType(LogicalTypeId::VARCHAR));
 	names.emplace_back("row_count");          return_types.emplace_back(LogicalType(LogicalTypeId::BIGINT));
@@ -347,6 +347,8 @@ static unique_ptr<FunctionData> ProfileTableBind(ClientContext &context,
 	names.emplace_back("negative_count");     return_types.emplace_back(LogicalType(LogicalTypeId::BIGINT));
 	names.emplace_back("is_sampled");         return_types.emplace_back(LogicalType(LogicalTypeId::BOOLEAN));
 	names.emplace_back("actual_sample_size"); return_types.emplace_back(LogicalType(LogicalTypeId::BIGINT));
+	names.emplace_back("nan_count");          return_types.emplace_back(LogicalType(LogicalTypeId::BIGINT));
+	names.emplace_back("inf_count");          return_types.emplace_back(LogicalType(LogicalTypeId::BIGINT));
 
 	return make_uniq<ProfileTableBindData>(table_name, columns, sample_size, exact);
 }
@@ -375,15 +377,20 @@ static string BuildColumnProfileSQL(const string &col_name, const string &col_ty
 		return (cat == ColumnCategory::NUMERIC) ? expr : "NULL::BIGINT";
 	};
 
-	string mean_sql    = num_dbl("AVG(TRY_CAST(" + ec + " AS DOUBLE))");
-	string median_sql  = num_dbl("MEDIAN(TRY_CAST(" + ec + " AS DOUBLE))");
-	string stddev_sql  = num_dbl("STDDEV_SAMP(TRY_CAST(" + ec + " AS DOUBLE))");
-	string p25_sql     = num_dbl("PERCENTILE_CONT(0.25) WITHIN GROUP"
-	                             " (ORDER BY TRY_CAST(" + ec + " AS DOUBLE))");
-	string p75_sql     = num_dbl("PERCENTILE_CONT(0.75) WITHIN GROUP"
-	                             " (ORDER BY TRY_CAST(" + ec + " AS DOUBLE))");
-	string skewness_sql = num_dbl("SKEWNESS(TRY_CAST(" + ec + " AS DOUBLE))");
-	string kurtosis_sql = num_dbl("KURTOSIS(TRY_CAST(" + ec + " AS DOUBLE))");
+	// Moments and percentiles over the finite values only: one NaN would turn the mean into
+	// NaN, and SKEWNESS/KURTOSIS/STDDEV_SAMP raise "out of range" on NaN/Inf, failing the
+	// whole profile. NaN and Inf values are counted in nan_count / inf_count instead.
+	string dbl = "TRY_CAST(" + ec + " AS DOUBLE)";
+	string finite = "(CASE WHEN isfinite(" + dbl + ") THEN " + dbl + " END)";
+	string mean_sql    = num_dbl("AVG(" + finite + ")");
+	string median_sql  = num_dbl("MEDIAN(" + finite + ")");
+	string stddev_sql  = num_dbl("STDDEV_SAMP(" + finite + ")");
+	string p25_sql     = num_dbl("PERCENTILE_CONT(0.25) WITHIN GROUP (ORDER BY " + finite + ")");
+	string p75_sql     = num_dbl("PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY " + finite + ")");
+	string skewness_sql = num_dbl("SKEWNESS(" + finite + ")");
+	string kurtosis_sql = num_dbl("KURTOSIS(" + finite + ")");
+	string nan_sql = num_bint("CAST(COUNT(*) FILTER (WHERE isnan(" + dbl + ")) AS BIGINT)");
+	string inf_sql = num_bint("CAST(COUNT(*) FILTER (WHERE isinf(" + dbl + ")) AS BIGINT)");
 
 	// min_val / max_val — guard against MIN/MAX on complex types (undefined ordering)
 	string min_val_sql = is_complex ? "NULL::VARCHAR" : "CAST(MIN(" + ec + ") AS VARCHAR)";
@@ -500,7 +507,9 @@ static string BuildColumnProfileSQL(const string &col_name, const string &col_ty
 	       " " + zero_sql + " AS zero_count,"
 	       " " + neg_sql + " AS negative_count,"
 	       " " + is_sampled_str + "::BOOLEAN AS is_sampled,"
-	       " " + sample_size_str + "::BIGINT AS actual_sample_size"
+	       " " + sample_size_str + "::BIGINT AS actual_sample_size,"
+	       " " + nan_sql + " AS nan_count,"
+	       " " + inf_sql + " AS inf_count"
 	       " FROM src";
 }
 
@@ -645,7 +654,7 @@ static unique_ptr<FunctionData> ProfileCorrelationsBind(ClientContext &context,
 		throw BinderException("profile_correlations requires at least 1 argument: table_name");
 	}
 
-	string table_name = input.inputs[0].ToString();
+	string table_name = RequireNonNullArgument(input, 0, "profile_correlations", "table_name");
 
 	vector<string> columns;
 	if (input.inputs.size() > 1 && !input.inputs[1].IsNull() &&
@@ -734,7 +743,8 @@ static void ProfileCorrelationsExecute(ClientContext &context, TableFunctionInpu
 				       "     CAST(RANK() OVER (ORDER BY TRY_CAST(" + eb + " AS DOUBLE)) AS DOUBLE)"
 				       "       AS b_rank"
 				       "   FROM src"
-				       "   WHERE " + ea + " IS NOT NULL AND " + eb + " IS NOT NULL"
+				       // finite pairs only: one NaN/Inf turns CORR into NaN
+				       "   WHERE isfinite(TRY_CAST(" + ea + " AS DOUBLE)) AND isfinite(TRY_CAST(" + eb + " AS DOUBLE))"
 				       " ) _corr_sub";
 			}
 		}

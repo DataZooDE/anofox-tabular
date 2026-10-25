@@ -68,6 +68,7 @@ class TestProfileTable:
             "top_values", "avg_length", "min_length", "max_length",
             "pattern_summary", "is_unique", "is_constant",
             "zero_count", "negative_count", "is_sampled", "actual_sample_size",
+            "nan_count", "inf_count",
         }
         assert expected.issubset(set(result.columns))
 

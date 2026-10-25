@@ -1,0 +1,113 @@
+# name: test/sql/anofox_nan_inf.test
+# description: NaN and +/-Inf readings in numeric columns: profile_table and
+#              profile_correlations compute moments, percentiles, skew/kurtosis and
+#              correlations over the finite values and report nan_count/inf_count;
+#              zscore ignores non-finite values; agg checks over NaN fail with a message.
+# group: [anofox_tabular]
+
+require anofox_tabular
+
+statement ok
+LOAD anofox_tabular
+
+statement ok
+SET anofox_tab_trace_enabled = false
+
+# A sensor export as it arrives from the field: one reading failed (nan), one
+# humidity probe saturated (inf)
+statement ok
+COPY (SELECT * FROM (VALUES
+    ('greenhouse-1', TIMESTAMP '2026-10-24 00:00:00', 21.5::DOUBLE, 55.0::DOUBLE),
+    ('greenhouse-1', TIMESTAMP '2026-10-24 01:00:00', 'nan'::DOUBLE, 56.0),
+    ('greenhouse-1', TIMESTAMP '2026-10-24 02:00:00', 22.0, 57.5),
+    ('greenhouse-2', TIMESTAMP '2026-10-24 00:00:00', 19.0, 'inf'::DOUBLE),
+    ('greenhouse-2', TIMESTAMP '2026-10-24 01:00:00', 19.5, 60.0),
+    ('greenhouse-2', TIMESTAMP '2026-10-24 02:00:00', 20.0, 58.0)
+) t(sensor_id, read_at, temperature, humidity)) TO '{TEST_DIR}/sensor_export.csv' (HEADER)
+
+statement ok
+CREATE TABLE sensor_export AS SELECT * FROM read_csv('{TEST_DIR}/sensor_export.csv')
+
+query TT
+SELECT typeof(temperature), typeof(humidity) FROM sensor_export LIMIT 1
+----
+DOUBLE	DOUBLE
+
+# ===--------------------------------------------------------------------===
+# profile_table: finite-only statistics plus nan_count / inf_count
+# ===--------------------------------------------------------------------===
+
+query TIIRRRRRRR
+SELECT column_name, nan_count, inf_count, round(mean, 4), round(median, 4), round(stddev, 4),
+       round(p25, 4), round(p75, 4), round(skewness, 4), round(kurtosis, 4)
+FROM profile_table('sensor_export', ['temperature', 'humidity'])
+----
+temperature	1	0	20.4	20.0	1.2942	19.5	21.5	0.3633	-2.4126
+humidity	0	1	57.3	57.5	1.9235	56.0	58.0	0.3319	-0.3095
+
+# non-numeric columns report NULL counts
+query TII
+SELECT column_name, nan_count, inf_count FROM profile_table('sensor_export', ['sensor_id', 'read_at'])
+----
+sensor_id	NULL	NULL
+read_at	NULL	NULL
+
+# a clean numeric column reports zero
+statement ok
+CREATE TABLE clean_numbers AS SELECT * FROM (VALUES (1, 10.0::DOUBLE), (2, 12.5), (3, NULL)) t(id, reading)
+
+query TII
+SELECT column_name, nan_count, inf_count FROM profile_table('clean_numbers')
+----
+id	0	0
+reading	0	0
+
+# the new columns are the last two of the profile
+query T
+SELECT list(column_name)[-2:] FROM (DESCRIBE SELECT * FROM profile_table('sensor_export'))
+----
+[nan_count, inf_count]
+
+# ===--------------------------------------------------------------------===
+# profile_correlations: pairs with a non-finite value are left out
+# ===--------------------------------------------------------------------===
+
+query TTRRI
+SELECT column_a, column_b, round(pearson, 4), round(spearman, 4), n FROM profile_correlations('sensor_export')
+----
+temperature	humidity	-0.732	-0.8	4
+
+# ===--------------------------------------------------------------------===
+# zscore: non-finite values are ignored (and counted in the message)
+# ===--------------------------------------------------------------------===
+
+query TRRIIT
+SELECT status, round(mean, 4), round(stddev, 4), outlier_count, total_count, message
+FROM zscore('sensor_export', 'temperature', 3.0)
+----
+pass	20.4	1.2942	0	5	No outliers detected (z-score threshold: 3.0; 1 NaN/Inf value(s) ignored)
+
+query TI
+SELECT status, total_count FROM zscore('sensor_export', 'humidity', 1.0)
+----
+fail	5
+
+# ===--------------------------------------------------------------------===
+# agg_check: a NaN aggregate fails with a message instead of passing
+# ===--------------------------------------------------------------------===
+
+query TTT
+SELECT status, isnan(value), message FROM agg_check('sensor_export', 'temperature', 'avg', 10, NULL)
+----
+fail	true	avg value is NaN: the column contains 1 NaN/Inf value(s)
+
+query TTT
+SELECT status, isnan(value), message FROM agg_check('sensor_export', 'humidity', 'stddev', NULL, 10)
+----
+fail	true	stddev value is NaN: the column contains 1 NaN/Inf value(s)
+
+# finite columns are unaffected
+query TR
+SELECT status, value FROM agg_check('clean_numbers', 'reading', 'avg', 10, 12)
+----
+pass	11.25
