@@ -17,6 +17,26 @@ you pass a date range.
 All checks run locally. The thresholds you pass come back in the output with the type of the
 literal you passed (see [Conventions](00-conventions.md#types)).
 
+The arguments are checked when the query is bound:
+
+- A `NULL` table, column or key argument is an error such as
+  `null_rate: table_name must not be NULL`, also for a prepared statement executed with a
+  `NULL` parameter.
+- A lower bound greater than the upper bound is an error, for example
+  `volume: min_rows (100) must not be greater than max_rows (10)`.
+- Count bounds (`min_rows`, `max_distinct`, `iqr_multiplier`, ...) must not be negative, and a
+  `zscore` threshold must be positive.
+- Rates (`max_null_rate`, `min_match_rate`, `min_rate`, ...) must be between 0 and 1, for
+  example `null_rate: max_null_rate must be between 0 and 1 (got 1.5)`.
+
+Rates in the messages are rounded to three decimals (`Null rate 0.333 (2/6) ...`); the rate
+columns keep the full precision.
+
+NaN and `±Inf` values in numeric columns do not break a check. `zscore` leaves them out of the
+statistics and names how many it ignored. `agg_check`, and an `agg` check in `run_checks`,
+report a `NaN` value and fail when the column contains NaN or `±Inf` values, with the message
+`<agg> value is NaN: the column contains <n> NaN/Inf value(s)`.
+
 ## Functions
 
 | Function | Canonical name | Checks |
@@ -119,7 +139,7 @@ null_rate(table_name VARCHAR, column_name VARCHAR, max_null_rate DOUBLE)
 |-----------|------|---------|-------------|
 | `table_name` | `VARCHAR` | required | Table or view |
 | `column_name` | `VARCHAR` | required | Column to check |
-| `max_null_rate` | `DOUBLE` | required | Highest allowed share of NULLs, 0.0 to 1.0 |
+| `max_null_rate` | `DOUBLE` | required | Highest allowed share of NULLs, 0.0 to 1.0; other values are a binder error |
 
 ```sql
 SELECT status, null_count, total_count, round(null_rate, 4) AS null_rate
@@ -244,6 +264,9 @@ FROM freshness('orders', 'created_at', INTERVAL '1 day', TIMESTAMP '2026-01-31 0
 
 Without `reference_time` the check compares against the current time, `CAST(now() AS TIMESTAMP)`
 (UTC unless the ICU extension is loaded, then the session time zone). It does not need ICU.
+A `TIMESTAMP WITH TIME ZONE` column is compared as its UTC `TIMESTAMP`, so it works without ICU
+too, and `metric_value` is then the newest value in UTC. A `DATE` column is compared as
+midnight of that day.
 
 An empty table, or a column that is all `NULL`, fails with `metric_value` and `age_seconds`
 `NULL` and the message `No timestamp values found (table is empty or column is all NULL)`.
@@ -267,19 +290,23 @@ zscore(table_name VARCHAR, column_name VARCHAR, threshold DOUBLE)
 |-----------|------|---------|-------------|
 | `table_name` | `VARCHAR` | required | Table or view |
 | `column_name` | `VARCHAR` | required | Numeric column |
-| `threshold` | `DOUBLE` | required | Z-score limit, typically `3.0` |
+| `threshold` | `DOUBLE` | required | Z-score limit, typically `3.0`; must be positive |
+
+The mean, the standard deviation and the outliers use the finite values only. NaN and `±Inf`
+values are left out (`total_count` does not count them) and the message ends with
+`; <n> NaN/Inf value(s) ignored`.
 
 ```sql
 SELECT status, outlier_count, total_count, message FROM zscore('orders', 'amount', 3.0);
 ```
 
 ```text
-┌─────────┬───────────────┬─────────────┬─────────────────────────────────────────────────────────┐
-│ status  │ outlier_count │ total_count │                         message                         │
-│ varchar │     int64     │    int64    │                         varchar                         │
-├─────────┼───────────────┼─────────────┼─────────────────────────────────────────────────────────┤
-│ fail    │             1 │         292 │ 1 outlier(s) detected (0.3424657534246575% of 292 rows) │
-└─────────┴───────────────┴─────────────┴─────────────────────────────────────────────────────────┘
+┌─────────┬───────────────┬─────────────┬────────────────────────────────────────────┐
+│ status  │ outlier_count │ total_count │                  message                   │
+│ varchar │     int64     │    int64    │                  varchar                   │
+├─────────┼───────────────┼─────────────┼────────────────────────────────────────────┤
+│ fail    │             1 │         292 │ 1 outlier(s) detected (0.342% of 292 rows) │
+└─────────┴───────────────┴─────────────┴────────────────────────────────────────────┘
 ```
 
 `zscore` cannot run inside a [`run_checks`](#run_checks) suite. For row-level scores see
@@ -420,7 +447,10 @@ agg_check(table_name VARCHAR, column_name VARCHAR, agg VARCHAR, lower_threshold 
 | `lower_threshold` | `DOUBLE` | required | Lower bound; `NULL` = unbounded |
 | `upper_threshold` | `DOUBLE` | required | Upper bound; `NULL` = unbounded |
 
-An empty table or an all-NULL column gives `value = NULL` and passes.
+An empty table or an all-NULL column gives `value = NULL` and passes. When the column contains
+NaN or `±Inf` values, `value` is `NaN` and the check fails with the message
+`<agg> value is NaN: the column contains <n> NaN/Inf value(s)`; an average or a sum over such a
+column has no meaningful value.
 
 ```sql
 SELECT status, agg, round(value, 2) AS value, message
@@ -444,9 +474,10 @@ In a [`run_checks`](#run_checks) suite this check type is called `agg`.
 
 Canonical name: `anofox_tab_duplicate_count`. Table function.
 
-Passes when the number of duplicate keys is at most `max_duplicates`. Duplicates are
-`COUNT(*) - COUNT(DISTINCT key)`. For a single column, NULL values count as duplicates of each
-other.
+Passes when the number of duplicate keys is at most `max_duplicates`. Duplicates are the rows
+beyond the first of each distinct key. NULL keys are duplicates of each other only: one row with
+a NULL key is no duplicate, two such rows are one duplicate. A compound key compares its NULL
+components as equal, so `('x', NULL)` twice is one duplicate and once is none.
 
 ```text
 duplicate_count(table_name VARCHAR, column_names VARCHAR [, max_duplicates BIGINT])
@@ -963,12 +994,35 @@ in a suite; both bounds apply.
 | `pass` | `value` is within the thresholds, or `value` is NULL (nothing to evaluate; message `No value to evaluate; check passed trivially`) |
 | `fail` | `value` is outside a threshold. For `freshness` also a NULL `value` (empty table, all-NULL column or, with `identifier_column`, a group without timestamps), like the direct [`freshness`](#freshness) function; message `No timestamp values found (table is empty or column is all NULL)` |
 | `warn` | as `fail`, for a check with `monitor_only = true` |
-| `error` | the check could not run: its table does not exist, or `identifier_column` is set for a type that does not support it |
+| `error` | the check could not run; `value` is NULL and the message says why |
 
-An `error` row does not stop the other checks. Invalid parameters (an unknown `check_type`, a
-missing required `params` key, an invalid `filter_expr`) are binder errors for the whole call.
+A `NaN` value (for example an `agg` average over a column with NaN values) is `fail` (or `warn`),
+with the message `agg value is NaN: the column contains <n> NaN/Inf value(s)`.
+
+Every check produces its row. A check that cannot be built or bound gets one `error` row, with
+a NULL `identifier` also when it has an `identifier_column`, and the message
+`check '<check_name>' (<check_type>) cannot run: <cause>`. The other checks run normally. Causes
+are, for example:
+
+- the target table does not exist: `target table 'nightly_returns' does not exist`
+- a configured column (`column_name`, `identifier_column`, `date_column`, `count_column`,
+  `metric_column`, `left_keys`) is not in the table:
+  `column 'coupon_code' not found in table 'nightly_orders' (available columns: ...)`.
+  Column names match case-insensitively.
+- an `agg` check on a column that is not numeric
+- an unknown `check_type`, invalid `params` JSON or a missing required `params` key
+- a `compliance` expression or `filter_expr` that does not parse or references an unknown column
+- a `match_rate` `right_table` that does not exist
+- `lower_threshold` greater than `upper_threshold`, or a rate threshold outside 0 to 1 for
+  `null_rate`, `regex_match`, `values_in_set`, `compliance`, `match_rate` and
+  `rolling_values_in_set`
+- `identifier_column` set for a type that does not support it
+
+A runtime error inside a user-supplied `compliance` expression or `filter_expr` (for example a
+failing `CAST` on one row) still stops the whole call; `run_checks` runs all checks in one query.
 `compliance` expressions and `filter_expr` are validated like the
-[`compliance`](#compliance) expression and run with your privileges.
+[`compliance`](#compliance) expression and run with your privileges. Messages print values
+rounded to three decimals; the `value` column keeps the full precision.
 
 ### Example
 
@@ -1038,13 +1092,13 @@ ORDER BY check_name;
 ```
 
 ```text
-┌───────────────┬─────────┬─────────────────────────────────────────────────────────┐
-│  check_name   │ status  │                         message                         │
-│    varchar    │ varchar │                         varchar                         │
-├───────────────┼─────────┼─────────────────────────────────────────────────────────┤
-│ email_nulls   │ warn    │ null_rate value 0.09931506849315068 violates thresholds │
-│ missing_table │ error   │ Target table 'no_such_table' does not exist             │
-└───────────────┴─────────┴─────────────────────────────────────────────────────────┘
+┌───────────────┬─────────┬────────────────────────────────────────────────────────────────────────────────────────┐
+│  check_name   │ status  │                                        message                                         │
+│    varchar    │ varchar │                                        varchar                                         │
+├───────────────┼─────────┼────────────────────────────────────────────────────────────────────────────────────────┤
+│ email_nulls   │ warn    │ null_rate value 0.099 violates thresholds                                              │
+│ missing_table │ error   │ check 'missing_table' (volume) cannot run: target table 'no_such_table' does not exist │
+└───────────────┴─────────┴────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
 ### Persisting results

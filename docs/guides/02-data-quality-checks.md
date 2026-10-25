@@ -8,6 +8,7 @@
 - Report a check as a warning instead of a failure, and split a check by a column
 - Store the results of each run and watch them over time
 - Check daily volumes over a date range and list the failing days as events
+- Gate a nightly job: fail it when the expected load is missing
 
 Every example creates its own data. Run the blocks in order in one DuckDB session with the
 extension loaded (`LOAD anofox_tabular;`).
@@ -71,12 +72,12 @@ FROM null_rate('orders', 'email', 0.05);
 ```
 
 ```text
-┌─────────┬───────────┬─────────────────────────────────────────────────────────────┐
-│ status  │ null_rate │                           message                           │
-│ varchar │  double   │                           varchar                           │
-├─────────┼───────────┼─────────────────────────────────────────────────────────────┤
-│ fail    │     0.101 │ Null rate 0.10101010101010101 (40/396) exceeds maximum 0.05 │
-└─────────┴───────────┴─────────────────────────────────────────────────────────────┘
+┌─────────┬───────────┬───────────────────────────────────────────────┐
+│ status  │ null_rate │                    message                    │
+│ varchar │  double   │                    varchar                    │
+├─────────┼───────────┼───────────────────────────────────────────────┤
+│ fail    │     0.101 │ Null rate 0.101 (40/396) exceeds maximum 0.05 │
+└─────────┴───────────┴───────────────────────────────────────────────┘
 ```
 
 `values_in_set` also returns a few of the values that broke the rule:
@@ -229,12 +230,12 @@ WHERE status = 'error';
 ```
 
 ```text
-┌───────────────────┬─────────┬──────────────────────────────────────────────┐
-│    check_name     │ status  │                   message                    │
-│      varchar      │ varchar │                   varchar                    │
-├───────────────────┼─────────┼──────────────────────────────────────────────┤
-│ old_orders_volume │ error   │ Target table 'orders_archive' does not exist │
-└───────────────────┴─────────┴──────────────────────────────────────────────┘
+┌───────────────────┬─────────┬─────────────────────────────────────────────────────────────────────────────────────────────┐
+│    check_name     │ status  │                                           message                                           │
+│      varchar      │ varchar │                                           varchar                                           │
+├───────────────────┼─────────┼─────────────────────────────────────────────────────────────────────────────────────────────┤
+│ old_orders_volume │ error   │ check 'old_orders_volume' (volume) cannot run: target table 'orders_archive' does not exist │
+└───────────────────┴─────────┴─────────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
 ```sql
@@ -378,6 +379,82 @@ ORDER BY ds, kind;
 │ 2026-03-14 │ rolling_values_in_set │ alarm    │  0.935 │       1.0 │
 └────────────┴───────────────────────┴──────────┴────────┴───────────┘
 ```
+
+## 7. A nightly gate
+
+A nightly job should fail when the expected load did not arrive, and it should fail loudly:
+with a non-zero exit code, not only a `fail` row nobody reads.
+
+Anchor the time-aware checks to the date you expect, not to the latest date in the data. By
+default `rel_count_change` evaluates the latest day present, so a day that never arrived is
+never checked. Here the job runs on the morning of 2026-03-16 and expects the orders of
+2026-03-15, which are missing:
+
+```sql
+CREATE TABLE nightly_checks AS SELECT * FROM dq_checks LIMIT 0;
+INSERT INTO nightly_checks VALUES
+    ('orders_arrived', 'rel_count_change', 'orders', NULL,
+     '{"date_column": "order_date", "reference_date": "2026-03-15"}', -0.5, 0.5, false, NULL, NULL),
+    ('orders_fresh',   'freshness',        'orders', 'order_date',
+     '{"reference_time": "2026-03-16 06:00:00"}', NULL, 129600, false, NULL, NULL),
+    ('order_id_dupes', 'duplicate_count',  'orders', 'order_id',
+     NULL, NULL, 0, false, NULL, NULL);
+
+SELECT check_name, value, status, message FROM run_checks('nightly_checks');
+```
+
+```text
+┌────────────────┬──────────┬─────────┬─────────────────────────────────────────────────┐
+│   check_name   │  value   │ status  │                     message                     │
+│    varchar     │  double  │ varchar │                     varchar                     │
+├────────────────┼──────────┼─────────┼─────────────────────────────────────────────────┤
+│ order_id_dupes │      0.0 │ pass    │ duplicate_count value 0.0 is within thresholds  │
+│ orders_arrived │     -1.0 │ fail    │ rel_count_change value -1.0 violates thresholds │
+│ orders_fresh   │ 194400.0 │ fail    │ freshness value 194400.0 violates thresholds    │
+└────────────────┴──────────┴─────────┴─────────────────────────────────────────────────┘
+```
+
+`orders_arrived` compares the 0 orders of 2026-03-15 with the average of the 7 days before
+(`value` -1.0). `orders_fresh` measures the age of the newest `order_date` (midnight of
+2026-03-14) at 06:00 on 2026-03-16: 54 hours, more than the allowed 36 hours (129600 seconds).
+In production, write the expected date into the checks table when the job starts (`json_object`
+needs the `json` extension):
+
+```sql no-run
+UPDATE nightly_checks
+SET params = json_object('date_column', 'order_date',
+                         'reference_date', CAST(CAST(now() AS TIMESTAMP) AS DATE) - 1)
+WHERE check_name = 'orders_arrived';
+```
+
+Then turn any `fail` or `error` into a failed statement with `error()`. The DuckDB CLI exits
+with a non-zero code when a statement fails, so a scheduler (cron, Airflow, a CI job) sees the
+failure:
+
+```sql
+SELECT CASE WHEN count(*) FILTER (WHERE status IN ('fail', 'error')) > 0
+            THEN error('nightly gate failed: ' ||
+                       string_agg(check_name || '=' || status, ', ' ORDER BY check_name)
+                           FILTER (WHERE status IN ('fail', 'error')))
+            ELSE 'nightly gate passed' END AS gate
+FROM run_checks('nightly_checks');
+```
+
+```text
+Invalid Input Error: nightly gate failed: orders_arrived=fail, orders_fresh=fail
+```
+
+Store the results first (section 4) and run the gate afterwards, so the history also has the
+failing run. Keep in mind what the checks do not cover:
+
+- `schema_check` compares column names only, not their types. A column whose type changed from
+  `DOUBLE` to `VARCHAR` still passes; add a `compliance` or `agg` check on it if the type
+  matters.
+- `rolling_values_in_set` passes when its window holds no rows (nothing to evaluate), so a
+  missing load does not fail it. Pair it with a volume or `rel_count_change` check anchored to
+  the expected date, as above.
+- A check that cannot run (missing table or column) is an `error` row, not a failed query; the
+  gate above treats it like a `fail`.
 
 ## Next steps
 

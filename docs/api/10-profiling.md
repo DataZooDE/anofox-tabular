@@ -15,7 +15,7 @@ view; a TEMP table is not found. See [Conventions](00-conventions.md#table-and-c
 
 | Function | Canonical name | Kind | Returns |
 |----------|----------------|------|---------|
-| [`profile_table`](#profile_table) | `anofox_tab_profile_table` | table | one row per column, 27 columns |
+| [`profile_table`](#profile_table) | `anofox_tab_profile_table` | table | one row per column, 29 columns |
 | [`profile_summary`](#profile_summary) | `anofox_tab_profile_summary` | table | one row, 11 columns |
 | [`profile_correlations`](#profile_correlations) | `anofox_tab_profile_correlations` | table | one row per pair of numeric columns |
 
@@ -46,7 +46,7 @@ profile_table(
     [, columns     VARCHAR[]
     [, sample_size BIGINT
     [, exact       BOOLEAN ]]]
-) -> TABLE(column_name VARCHAR, column_type VARCHAR, ... 27 columns)
+) -> TABLE(column_name VARCHAR, column_type VARCHAR, ... 29 columns)
 ```
 
 | Parameter | Type | Default | Description |
@@ -69,13 +69,13 @@ Output columns:
 | `distinct_rate` | `DOUBLE` | `distinct_count / row_count` |
 | `min_val` | `VARCHAR` | Minimum as text; `NULL` for `STRUCT`, `MAP` and `UNION` |
 | `max_val` | `VARCHAR` | Maximum as text; `NULL` for `STRUCT`, `MAP` and `UNION` |
-| `mean` | `DOUBLE` | Numeric columns only |
-| `median` | `DOUBLE` | Numeric columns only |
-| `stddev` | `DOUBLE` | Numeric columns only |
-| `p25` | `DOUBLE` | 25th percentile, numeric columns only |
-| `p75` | `DOUBLE` | 75th percentile, numeric columns only |
-| `skewness` | `DOUBLE` | Numeric columns only |
-| `kurtosis` | `DOUBLE` | Numeric columns only |
+| `mean` | `DOUBLE` | Numeric columns only; finite values only |
+| `median` | `DOUBLE` | Numeric columns only; finite values only |
+| `stddev` | `DOUBLE` | Numeric columns only; finite values only |
+| `p25` | `DOUBLE` | 25th percentile, numeric columns only; finite values only |
+| `p75` | `DOUBLE` | 75th percentile, numeric columns only; finite values only |
+| `skewness` | `DOUBLE` | Numeric columns only; finite values only |
+| `kurtosis` | `DOUBLE` | Numeric columns only; finite values only |
 | `top_values` | `STRUCT(value VARCHAR, count BIGINT)[]` | The 5 most frequent values, most frequent first; values with equal counts in ascending order (compared as text) |
 | `avg_length` | `DOUBLE` | String length; element count for lists; cardinality for maps |
 | `min_length` | `BIGINT` | As `avg_length` |
@@ -87,6 +87,29 @@ Output columns:
 | `negative_count` | `BIGINT` | Negative values, numeric columns only |
 | `is_sampled` | `BOOLEAN` | `true` when a sample was profiled |
 | `actual_sample_size` | `BIGINT` | Rows actually scanned |
+| `nan_count` | `BIGINT` | `NaN` values, numeric columns only |
+| `inf_count` | `BIGINT` | `Inf` and `-Inf` values, numeric columns only |
+
+NaN and `±Inf` values (for example `nan` and `inf` in a CSV file) are left out of `mean`,
+`median`, `stddev`, `p25`, `p75`, `skewness` and `kurtosis`; `nan_count` and `inf_count` count
+them. `min_val` and `max_val` are taken over all values, so they can be `nan` or `inf`.
+
+```sql
+CREATE TABLE sensor_readings AS
+SELECT * FROM (VALUES (21.5::DOUBLE), ('nan'), (22.0), ('inf'), (19.5)) t(temperature);
+
+SELECT column_name, round(mean, 2) AS mean, round(stddev, 2) AS stddev, nan_count, inf_count, max_val
+FROM profile_table('sensor_readings');
+```
+
+```text
+┌─────────────┬────────┬────────┬───────────┬───────────┬─────────┐
+│ column_name │  mean  │ stddev │ nan_count │ inf_count │ max_val │
+│   varchar   │ double │ double │   int64   │   int64   │ varchar │
+├─────────────┼────────┼────────┼───────────┼───────────┼─────────┤
+│ temperature │   21.0 │   1.32 │         1 │         1 │ nan     │
+└─────────────┴────────┴────────┴───────────┴───────────┴─────────┘
+```
 
 `pattern_summary` for string columns is the first of `email`, `phone`, `uuid`, `url`,
 `ip_address`, `iso_date` and `numeric_string` that at least 80% of the non-`NULL` values match,
@@ -217,7 +240,7 @@ FROM profile_summary('orders');
 Canonical name: `anofox_tab_profile_correlations`. Table function.
 
 Computes the Pearson and Spearman correlation of every pair of numeric columns. Each pair appears
-once.
+once. Rows where either value is `NULL`, NaN or `±Inf` are left out of the pair.
 
 ```text
 profile_correlations(table_name VARCHAR [, columns VARCHAR[]])
@@ -235,7 +258,7 @@ profile_correlations(table_name VARCHAR [, columns VARCHAR[]])
 | `column_b` | `VARCHAR` | Second column of the pair |
 | `pearson` | `DOUBLE` | Pearson correlation, -1 to 1 |
 | `spearman` | `DOUBLE` | Spearman rank correlation, -1 to 1 |
-| `n` | `BIGINT` | Rows where both values are non-`NULL` |
+| `n` | `BIGINT` | Rows where both values are finite (not `NULL`, NaN or `±Inf`) |
 
 The function is tagged as a `matrix` producer of the
 [integration contract](11-integration-contract.md).

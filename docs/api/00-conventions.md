@@ -131,7 +131,25 @@ Column lists come in two forms. Check the signature of each function:
 Column names match case-insensitively, like DuckDB identifiers: `'EMAIL'` finds a column
 `Email`. In `profile_table`, `profile_correlations`, `pii_scan_table`, `pii_audit_table`,
 `isolation_forest`, `isolation_forest_mv`, `dbscan` and `dbscan_mv` an unknown column name is an
-error naming the column and the table; `schema_check` reports it as missing.
+error naming the column and the table; `run_checks` reports it in an `error` row of that check;
+`schema_check` reports it as missing.
+
+The table, column and key arguments of a table function are required: a `NULL` there is a
+binder error `<function>: <argument> must not be NULL`, also when it comes from a `NULL`
+parameter of a prepared statement. A `NULL` `id_column` means "no id column", like leaving it
+out.
+
+```sql
+SELECT * FROM null_rate(NULL, 'v', 0.1);
+```
+
+```text
+Binder Error: null_rate: table_name must not be NULL
+-> Unexpected? Please report it: https://github.com/DataZooDE/anofox-tabular/issues
+
+LINE 1: SELECT * FROM null_rate(NULL, 'v', 0.1);
+                      ^^^^^^^^^^^^^^^^^^^^^^^^^
+```
 
 Some functions read the table through a second connection. That connection cannot see TEMP
 tables of your session:
@@ -158,7 +176,11 @@ type of the value you pass, so `0.05` comes back as `DECIMAL(3,2)`, not `DOUBLE`
 - The one-row checks (`volume`, `null_rate`, `regex_match`, ...) always return one row, also for
   an empty table. Empty input passes, with a message that says so.
 - Functions with an `output_mode` (`'summary'`, `'scores'`, `'clusters'`, `'outliers'`) return one
-  summary row or one row per input row. The module pages list both shapes.
+  summary row or one row per input row. The module pages list both shapes. `output_mode` and
+  the other option strings (`agg`, `mode`) are case-insensitive: `'SCORES'` works like `'scores'`.
+- NaN and `±Inf` values in numeric columns are counted, not averaged: `profile_table` reports
+  them in `nan_count` / `inf_count` and computes its statistics over the finite values,
+  `zscore` and `profile_correlations` leave them out, and `agg_check` fails with a `NaN` value.
 
 ## Errors and `TRY()`
 
