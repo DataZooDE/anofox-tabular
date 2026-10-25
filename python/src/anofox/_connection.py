@@ -229,7 +229,7 @@ class AnofoxConnection:
                 checks.append((col, "anofox_tab_email_is_valid", mode, f"email({mode})"))
             elif isinstance(rule, PhoneRule):
                 region = rule.region
-                checks.append((col, "anofox_tab_phonenumber_is_valid", region, f"phone({region})"))
+                checks.append((col, "anofox_tab_phonenumber_is_valid", region, f"phone({region or 'default region'})"))
             else:
                 raise TypeError(
                     f"unsupported rule for column {col!r}: got {rule!r}; "

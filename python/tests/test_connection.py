@@ -198,3 +198,20 @@ class TestValidateRules:
         result = conn.validate(self._contacts(), {"email": EmailRule(), "phone": PhoneRule(region="DE")})
         assert result.passed is False
         assert sorted(result.failures["column"].tolist()) == ["email", "phone"]
+
+
+class TestPhoneRuleDefaultRegion:
+    """PhoneRule() leaves the region to anofox_tab_phonenumber_default_region,
+    like the phone helpers (it used to hard-code 'US')."""
+
+    def test_default_region_follows_the_setting(self, conn):
+        import pandas as pd
+        from anofox.validate import PhoneRule
+
+        assert PhoneRule().region is None
+        conn.execute("SET anofox_tab_phonenumber_default_region = 'DE'").fetchall()
+        try:
+            df = pd.DataFrame({"phone": ["030 12345678"]})
+            assert conn.validate(df, {"phone": PhoneRule()}).passed
+        finally:
+            conn.execute("RESET anofox_tab_phonenumber_default_region").fetchall()

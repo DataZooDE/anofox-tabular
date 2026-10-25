@@ -25,8 +25,13 @@ class EmailRule:
 
 
 class PhoneRule:
-    """Validation rule for phone columns."""
-    def __init__(self, region: str = "US") -> None:
+    """Validation rule for phone columns.
+
+    ``region`` is the region hint for numbers without ``+``; ``None`` (the
+    default) uses the ``anofox_tab_phonenumber_default_region`` setting, like
+    the phone helpers.
+    """
+    def __init__(self, region: Optional[str] = None) -> None:
         self.region = region
 
 
