@@ -49,7 +49,7 @@ FROM duckdb_functions() WHERE function_name = 'anofox_tab_postal_parse_address';
 
 The setting `anofox_tab_postal_data_path` sets the data directory. Its default,
 `.duckdb/extensions/libpostal`, is relative to the working directory of the DuckDB process.
-The directory is created if it does not exist, but its parent must exist. A path that starts
+The directory and any missing parent directories are created. A path that starts
 with `~` is expanded to your home directory. Set the path before the first postal call:
 
 ```sql no-run

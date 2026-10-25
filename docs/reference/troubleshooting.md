@@ -98,9 +98,9 @@ FROM freshness('events', 'created_at', INTERVAL '1 hour', TIMESTAMP '2026-03-01 
 SELECT postal_load_data();
 ```
 
-If the download fails with `Failed to create directory ".duckdb/extensions/libpostal"`, the
-parent directory does not exist. The default path is relative to the working directory of the
-process. Point the setting at a directory whose parent exists, then load again:
+The data goes to `anofox_tab_postal_data_path`, by default relative to the working directory of
+the process. To keep one copy for every working directory, set an absolute path before the first
+postal call:
 
 ```sql no-run
 SET anofox_tab_postal_data_path = '~/.duckdb/extensions/libpostal';

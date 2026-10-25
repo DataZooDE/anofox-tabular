@@ -253,7 +253,7 @@ void PostalManager::LoadDataInternal(ClientContext &context) {
 	auto &fs = FileSystem::GetFileSystem(context);
 	auto data_dir = fs.ExpandPath(data_directory);
 	if (!fs.DirectoryExists(data_dir)) {
-		fs.CreateDirectory(data_dir);
+		fs.CreateDirectoriesRecursive(data_dir);
 	}
 	if (GetStatusInternal(context).data_present) {
 		return;
