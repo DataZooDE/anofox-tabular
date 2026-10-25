@@ -238,6 +238,7 @@ class IPAddressRecognizer : public RegexRecognizer {
 public:
     IPAddressRecognizer();
     ~IPAddressRecognizer() override;
+    std::vector<PIIMatch> FindMatches(const std::string &text) const override;
     std::string GetPartialMask(const std::string &text) const override;
 };
 
@@ -269,6 +270,7 @@ class MACAddressRecognizer : public RegexRecognizer {
 public:
     MACAddressRecognizer();
     ~MACAddressRecognizer() override;
+    std::vector<PIIMatch> FindMatches(const std::string &text) const override;
     std::string GetPartialMask(const std::string &text) const override;
 };
 

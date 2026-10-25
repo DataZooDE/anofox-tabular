@@ -1,0 +1,78 @@
+# name: test/sql/anofox_pii_ipv6_mac.test
+# description: IPv6 addresses in all RFC 4291 text forms are IP_ADDRESS matches; dotted digit groups are not MAC addresses
+# group: [anofox_tabular]
+
+require anofox_tabular
+
+statement ok
+LOAD anofox_tabular
+
+statement ok
+SET anofox_pii_enabled_types = 'IP_ADDRESS,MAC_ADDRESS,CREDIT_CARD,PHONE,URL';
+
+# Firewall and server log lines
+query I
+SELECT list_transform(pii_detect(line), lambda m: m.type || ':' || m.text) FROM (VALUES
+    ('Oct 25 10:14:03 fw01 DROP SRC=2001:db8::1 DST=2001:db8:85a3::8a2e:370:7334 PROTO=TCP'),
+    ('sshd[812]: Accepted publickey for deploy from 2001:0db8:85a3:0000:0000:8a2e:0370:7334 port 52144'),
+    ('Link-local neighbour fe80::1%eth0 is reachable'),
+    ('client ::ffff:192.0.2.128 connected'),
+    ('Loopback ::1 and unspecified :: in the config'),
+    ('Request from [2001:db8::42]:8443 rejected.'),
+    ('IP:2001:db8:0:0:1::7, IPv4 198.51.100.23'),
+    ('Device 0026.5e8b.1c2a on port Gi1/0/12, uplink 00:1A:2B:3C:4D:5E')
+) v(line);
+----
+['IP_ADDRESS:2001:db8::1', 'IP_ADDRESS:2001:db8:85a3::8a2e:370:7334']
+['IP_ADDRESS:2001:0db8:85a3:0000:0000:8a2e:0370:7334']
+['IP_ADDRESS:fe80::1%eth0']
+['IP_ADDRESS:::ffff:192.0.2.128']
+['IP_ADDRESS:::1']
+['IP_ADDRESS:2001:db8::42']
+['IP_ADDRESS:2001:db8:0:0:1::7', 'IP_ADDRESS:198.51.100.23']
+['MAC_ADDRESS:0026.5e8b.1c2a', 'MAC_ADDRESS:00:1A:2B:3C:4D:5E']
+
+query I
+SELECT pii_mask('Ping 2001:db8::1 ok');
+----
+Ping [IP_ADDRESS] ok
+
+query I
+SELECT list_transform(pii_detect('2001:db8::1'), lambda m: m.type);
+----
+[IP_ADDRESS]
+
+# Not IPv6: times, MAC addresses, C++ and Rust paths, words, malformed groups
+query I
+SELECT count(*) FROM (VALUES
+    ('Meeting 10:30:45 im Raum B'),
+    ('Use std::vector or crate::de::Deserialize'),
+    ('cafe::beef'),
+    ('1:2:3:4:5:6:7:8:9'),
+    ('2001:db8:::1'),
+    ('2001::db8::1'),
+    ('12345::1'),
+    ('2001:db8::1g')
+) v(s) WHERE list_contains(list_transform(pii_detect(s), lambda m: m.type), 'IP_ADDRESS');
+----
+0
+
+# Dotted digit groups are no MAC address: a dotted card number is a card
+query I
+SELECT pii_mask('Karte 4111.1111.1111.1111');
+----
+Karte [CREDIT_CARD]
+
+query I
+SELECT count(*) FROM (VALUES
+    ('Artikel 1234.5678.9012'),
+    ('Konto 1111.2222.3333.4444'),
+    ('Release 2026.1025.1430'),
+    ('aabb.ccdd.eeff.0011')
+) v(s) WHERE list_contains(list_transform(pii_detect(s), lambda m: m.type), 'MAC_ADDRESS');
+----
+0
+
+# Restore the process-wide PII settings for the tests that follow
+statement ok
+SET anofox_pii_enabled_types = '';

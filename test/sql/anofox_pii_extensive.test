@@ -694,7 +694,7 @@ SELECT list_contains(list_transform(pii_detect('255.255.255.255'), lambda x: x.t
 ----
 true
 
-# --- IPv6 Addresses (limited support) ---
+# --- IPv6 Addresses ---
 
 # Full IPv6
 query I
@@ -702,17 +702,17 @@ SELECT list_contains(list_transform(pii_detect('2001:0db8:85a3:0000:0000:8a2e:03
 ----
 true
 
-# Compressed IPv6 (not currently supported)
+# Compressed IPv6
 query I
 SELECT list_contains(list_transform(pii_detect('2001:db8:85a3::8a2e:370:7334'), lambda x: x.type), 'IP_ADDRESS');
 ----
-false
+true
 
-# Loopback IPv6 (not currently supported - too short)
+# Loopback IPv6
 query I
 SELECT list_contains(list_transform(pii_detect('::1'), lambda x: x.type), 'IP_ADDRESS');
 ----
-false
+true
 
 # --- IP in Context ---
 

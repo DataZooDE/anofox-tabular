@@ -1034,12 +1034,157 @@ IPAddressRecognizer::IPAddressRecognizer()
     : RegexRecognizer(
         PIIType::IP_ADDRESS,
         "IP Address",
-        // IPv4 and simplified IPv6
-        R"(\b(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\b|)"  // IPv4
-        R"(\b(?:[0-9a-fA-F]{1,4}:){7}[0-9a-fA-F]{1,4}\b)"  // Full IPv6
+        // IPv4; IPv6 is found by FindMatches
+        R"(\b(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\b)"
     ) {}
 
 IPAddressRecognizer::~IPAddressRecognizer() {}
+
+namespace {
+
+bool IsHexDigitChar(char c) {
+    return std::isxdigit(static_cast<unsigned char>(c)) != 0;
+}
+
+bool IsValidIPv4(const std::string &text) {
+    size_t octets = 0;
+    size_t pos = 0;
+    while (pos <= text.size()) {
+        const size_t dot = std::min(text.find('.', pos), text.size());
+        const std::string octet = text.substr(pos, dot - pos);
+        if (octet.empty() || octet.size() > 3 ||
+            !std::all_of(octet.begin(), octet.end(), [](char c) { return std::isdigit(static_cast<unsigned char>(c)); }) ||
+            std::stoi(octet) > 255) {
+            return false;
+        }
+        octets++;
+        pos = dot + 1;
+    }
+    return octets == 4;
+}
+
+// RFC 4291 text forms: eight groups of 1-4 hex digits, one "::" for a run of
+// zero groups, and an IPv4 address in place of the last two groups
+// (::ffff:192.0.2.1). Addresses without any decimal digit (cafe::beef, and
+// C++ or Rust paths such as a::b) are not reported.
+bool IsValidIPv6(const std::string &text) {
+    if (text.size() < 3 || text.find(":::") != std::string::npos ||
+        std::none_of(text.begin(), text.end(), [](char c) { return std::isdigit(static_cast<unsigned char>(c)); })) {
+        return false;
+    }
+    const size_t compressed = text.find("::");
+    if (compressed != std::string::npos && text.find("::", compressed + 1) != std::string::npos) {
+        return false;
+    }
+    std::vector<std::string> parts;
+    auto split = [&parts](const std::string &side) {
+        if (side.empty()) {
+            return;
+        }
+        size_t pos = 0;
+        while (pos <= side.size()) {
+            const size_t colon = std::min(side.find(':', pos), side.size());
+            parts.push_back(side.substr(pos, colon - pos));
+            pos = colon + 1;
+        }
+    };
+    if (compressed == std::string::npos) {
+        split(text);
+    } else {
+        split(text.substr(0, compressed));
+        split(text.substr(compressed + 2));
+    }
+    size_t group_count = 0;
+    for (size_t i = 0; i < parts.size(); ++i) {
+        const auto &part = parts[i];
+        if (part.find('.') != std::string::npos) {
+            if (i + 1 != parts.size() || !IsValidIPv4(part)) {
+                return false;
+            }
+            group_count += 2;
+            continue;
+        }
+        if (part.empty() || part.size() > 4 || !std::all_of(part.begin(), part.end(), IsHexDigitChar)) {
+            return false;
+        }
+        group_count++;
+    }
+    return compressed == std::string::npos ? group_count == 8 : (group_count >= 1 && group_count <= 7);
+}
+
+} // namespace
+
+std::vector<PIIMatch> IPAddressRecognizer::FindMatches(const std::string &text) const {
+    std::vector<PIIMatch> ipv6_matches;
+    const size_t n = text.size();
+    auto is_ipv6_char = [&text](size_t pos) {
+        return IsHexDigitChar(text[pos]) || text[pos] == ':' || text[pos] == '.';
+    };
+    size_t pos = 0;
+    while (pos < n) {
+        if (!is_ipv6_char(pos)) {
+            pos++;
+            continue;
+        }
+        size_t begin = pos;
+        size_t end = pos;
+        while (end < n && is_ipv6_char(end)) {
+            end++;
+        }
+        pos = end;
+        if (std::count(text.begin() + static_cast<std::ptrdiff_t>(begin), text.begin() + static_cast<std::ptrdiff_t>(end), ':') < 2) {
+            continue;
+        }
+        // A label colon or sentence punctuation around the address is not
+        // part of it ("IP:2001:db8::1.", "2001:db8::1: unreachable")
+        if (text[begin] == ':' && (begin + 1 >= end || text[begin + 1] != ':')) {
+            begin++;
+        } else if (begin > 0 && IsAsciiWordAt(text, begin - 1)) {
+            continue;
+        }
+        while (end > begin && text[end - 1] == '.') {
+            end--;
+        }
+        if (end - begin >= 2 && text[end - 1] == ':' && text[end - 2] != ':') {
+            end--;
+        }
+        if (IsAsciiWordAt(text, pos) && text[pos] != '%') {
+            continue;
+        }
+        std::string candidate = text.substr(begin, end - begin);
+        if (!IsValidIPv6(candidate)) {
+            AnofoxTrace(AnofoxLogLevel::Trace, "pii: IPv6 candidate rejected: " + candidate);
+            continue;
+        }
+        // Zone index of a link-local address: fe80::1%eth0
+        if (end == pos && end < n && text[end] == '%') {
+            size_t zone_end = end + 1;
+            while (zone_end < n && (IsAsciiWordAt(text, zone_end) || text[zone_end] == '-' || text[zone_end] == '.')) {
+                zone_end++;
+            }
+            if (zone_end > end + 1) {
+                end = zone_end;
+                pos = zone_end;
+            }
+        }
+        ipv6_matches.emplace_back(type_, text.substr(begin, end - begin), begin, end, 1.0);
+    }
+
+    // IPv4, except the IPv4 tail of an IPv6 address (::ffff:192.0.2.1)
+    std::vector<PIIMatch> matches;
+    for (auto &match : RegexRecognizer::FindMatches(text)) {
+        const bool inside_ipv6 = std::any_of(ipv6_matches.begin(), ipv6_matches.end(), [&match](const PIIMatch &v6) {
+            return match.start_pos < v6.end_pos && v6.start_pos < match.end_pos;
+        });
+        if (!inside_ipv6) {
+            matches.push_back(std::move(match));
+        }
+    }
+    matches.insert(matches.end(), ipv6_matches.begin(), ipv6_matches.end());
+    std::sort(matches.begin(), matches.end(),
+              [](const PIIMatch &a, const PIIMatch &b) { return a.start_pos < b.start_pos; });
+    return matches;
+}
 
 std::string IPAddressRecognizer::GetPartialMask(const std::string &text) const {
     // For IPv4: show first octet, mask rest: 192.***.***.**
@@ -1215,12 +1360,30 @@ MACAddressRecognizer::MACAddressRecognizer()
         // letter A-F and one digit, so plain 12-digit numbers (e.g. the
         // digits of +491711234567) are not MACs; a Dutch VAT number body
         // (9 digits, B, 2 digits as in NL 004495445B01) is excluded as well.
-        R"(\b(?:[0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}\b|\b(?:[0-9A-Fa-f]{4}\.){2}[0-9A-Fa-f]{4}\b|)"
+        // The dotted form is exactly three groups with at least one letter
+        // A-F: digit-only groups are card, account or reference numbers
+        // (4111.1111.1111.1111), not MACs.
+        R"(\b(?:[0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}\b|)"
+        R"(\b(?=[0-9.]{0,13}[A-Fa-f])(?:[0-9A-Fa-f]{4}\.){2}[0-9A-Fa-f]{4}\b(?!\.[0-9A-Fa-f])|)"
         R"(\b(?!\d{9}B\d{2}\b)(?=[0-9A-F]*[A-F])(?=[A-F]*\d)[0-9A-F]{12}\b)"
     ) {}
 
 MACAddressRecognizer::~MACAddressRecognizer() {
     (void)type_;
+}
+
+std::vector<PIIMatch> MACAddressRecognizer::FindMatches(const std::string &text) const {
+    // The pattern cannot look behind: drop a dotted match that continues
+    // earlier groups ("aabb.ccdd.eeff.0011" has four groups, no MAC has)
+    auto matches = RegexRecognizer::FindMatches(text);
+    matches.erase(std::remove_if(matches.begin(), matches.end(),
+                                 [&text](const PIIMatch &match) {
+                                     return match.matched_text.size() == 14 && match.matched_text[4] == '.' &&
+                                            match.start_pos >= 2 && text[match.start_pos - 1] == '.' &&
+                                            std::isxdigit(static_cast<unsigned char>(text[match.start_pos - 2]));
+                                 }),
+                  matches.end());
+    return matches;
 }
 
 std::string MACAddressRecognizer::GetPartialMask(const std::string &text) const {

@@ -55,9 +55,9 @@ NER types need the NER model.
 | `CREDIT_CARD` | Card numbers of Visa, Mastercard (51-55, 2221-2720), American Express, Discover, Maestro, JCB, Diners Club and UnionPay: 13 to 19 digits, compact or in groups joined by one space, dash or dot (`4111 1111 1111 1111`, `3782-822463-10005`, `4111.1111.1111.1111`). The digits must carry a brand prefix with a length the brand issues; digits that continue a longer token (`DE89 3704 ...`, `SN4111...`, `4111...-01`) are not matched | pattern + Luhn checksum + brand prefix |
 | `US_SSN` | US Social Security Numbers `XXX-XX-XXXX` or `XXX XX XXXX`; bare 9-digit numbers are not matched | pattern + area validation |
 | `IBAN` | International Bank Account Numbers, compact or in groups of four separated by single spaces or dashes (`DE89 3704 0044 0532 0130 00`) | pattern + MOD-97 checksum |
-| `IP_ADDRESS` | IPv4 and IPv6 addresses | pattern |
+| `IP_ADDRESS` | IPv4 and IPv6 addresses. IPv6 in all RFC 4291 text forms: full, compressed with `::` (`2001:db8::1`, `::1`), with an IPv4 tail (`::ffff:192.0.2.1`) and with a zone (`fe80::1%eth0`); an IPv6 address needs at least one decimal digit, so `cafe::beef` and `std::vector` are not matched | pattern |
 | `URL` | HTTP and HTTPS URLs | pattern |
-| `MAC_ADDRESS` | MAC addresses with colons, hyphens or dots; without separators only a standalone 12-character hex token with at least one letter A-F and one digit | pattern |
+| `MAC_ADDRESS` | MAC addresses with colons or hyphens (`00:1A:2B:3C:4D:5E`) or dots (`0026.5e8b.1c2a`: exactly three groups of four with at least one letter A-F, so `4111.1111.1111.1111` is no MAC); without separators only a standalone 12-character hex token with at least one letter A-F and one digit | pattern |
 | `UK_NINO` | UK National Insurance Numbers | pattern |
 | `US_PASSPORT` | A letter and 8 digits (`C12345678`) | pattern |
 | `DE_TAX_ID` | German tax ID (Steueridentifikationsnummer, 11 digits) | pattern + checksum |
