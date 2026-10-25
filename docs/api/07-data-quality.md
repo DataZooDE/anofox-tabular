@@ -1018,8 +1018,11 @@ are, for example:
   `rolling_values_in_set`
 - `identifier_column` set for a type that does not support it
 
-A runtime error inside a user-supplied `compliance` expression or `filter_expr` (for example a
-failing `CAST` on one row) still stops the whole call; `run_checks` runs all checks in one query.
+A user-supplied `compliance` expression or `filter_expr` that fails at runtime on some rows (for
+example a `CAST` of free text such as `'n/a'`) does not stop the call: such rows count as not
+compliant in a `compliance` check and are left out by `filter_expr`, as if the expression were
+wrapped in `TRY()`. Check the expression on its own when a rate looks too low. The standalone
+[`compliance`](#compliance) function does not do this; there a failing expression is an error.
 `compliance` expressions and `filter_expr` are validated like the
 [`compliance`](#compliance) expression and run with your privileges. Messages print values
 rounded to three decimals; the `value` column keeps the full precision.

@@ -413,8 +413,10 @@ static CheckBranch BuildCheckBranch(ClientContext &context, const CheckSpec &spe
 	} else if (spec.check_type == "compliance") {
 		RequireParam(spec, spec.expression, "expression");
 		ValidateBooleanExpression(context, spec.expression, "params.expression");
-		value_expr = "CAST(SUM(CASE WHEN COALESCE((" + spec.expression +
-		             "), FALSE) THEN 1 ELSE 0 END) AS DOUBLE) / NULLIF(COUNT(*), 0)";
+		// TRY(): a row on which the user's expression fails at runtime (e.g. a
+		// CAST of free text) counts as non-compliant instead of aborting the suite
+		value_expr = "CAST(SUM(CASE WHEN COALESCE(TRY((" + spec.expression +
+		             ")), FALSE) THEN 1 ELSE 0 END) AS DOUBLE) / NULLIF(COUNT(*), 0)";
 	} else if (spec.check_type == "freshness") {
 		RequireColumn(spec);
 		string col = QuoteSqlIdentifier(spec.column_name);
@@ -728,6 +730,9 @@ static string BuildValidatedCheckSQL(ClientContext &context, const CheckSpec &sp
 	if (!spec.filter_expr.empty()) {
 		filter_sql = SubstituteDateTokens(spec.filter_expr, spec.check_name);
 		ValidateBooleanExpression(context, filter_sql, "filter_expr");
+		// A row on which the filter fails at runtime is filtered out instead of
+		// aborting the suite
+		filter_sql = "COALESCE(TRY((" + filter_sql + ")), FALSE)";
 	}
 	auto sql = BuildBranchSQL(spec, BuildCheckBranch(context, spec, filter_sql));
 	BindProbe(context, sql);

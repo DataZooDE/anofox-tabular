@@ -1,0 +1,42 @@
+# name: test/sql/anofox_check_suite_try.test
+# description: A user expression that fails at runtime on some rows (here a CAST of free text)
+#              no longer aborts run_checks: in a compliance expression such rows count as
+#              non-compliant, in filter_expr they are filtered out; every other check still runs.
+# group: [anofox_tabular]
+
+require anofox_tabular
+
+statement ok
+LOAD anofox_tabular
+
+# An order import where the amount arrives as text and two rows are not numbers
+statement ok
+CREATE TABLE order_import AS SELECT * FROM (VALUES
+  (1001, '129.90', 'DE', DATE '2026-10-20'),
+  (1002, '45.00',  'AT', DATE '2026-10-20'),
+  (1003, 'n/a',    'DE', DATE '2026-10-21'),
+  (1004, '310.50', 'CH', DATE '2026-10-21'),
+  (1005, '1.299,00', 'DE', DATE '2026-10-22'),
+  (1006, '18.75',  'NL', DATE '2026-10-22')
+) t(order_id, amount_txt, country, order_date)
+
+statement ok
+CREATE TABLE nightly_checks(check_name VARCHAR, check_type VARCHAR, table_name VARCHAR,
+  column_name VARCHAR, params VARCHAR, lower_threshold DOUBLE, upper_threshold DOUBLE,
+  monitor_only BOOLEAN, identifier_column VARCHAR, filter_expr VARCHAR)
+
+statement ok
+INSERT INTO nightly_checks VALUES
+  ('rows_loaded',      'volume',     'order_import', NULL, NULL, 1, NULL, false, NULL, NULL),
+  ('amount_positive',  'compliance', 'order_import', NULL,
+     '{"expression": "CAST(amount_txt AS DOUBLE) > 0"}', 0.9, NULL, false, NULL, NULL),
+  ('big_orders_from_de', 'volume',   'order_import', NULL, NULL, 1, NULL, false, NULL,
+     'CAST(amount_txt AS DOUBLE) > 100 AND country = ''DE''')
+
+# 4 of 6 amounts parse and are positive: rate 0.667, below 0.9 -> fail, not an abort
+query TTR
+SELECT check_name, status, round(value, 3) FROM run_checks('nightly_checks') ORDER BY check_name
+----
+amount_positive	fail	0.667
+big_orders_from_de	pass	1.0
+rows_loaded	pass	6.0
