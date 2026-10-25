@@ -52,12 +52,14 @@ SELECT status FROM isolation_forest('scratch', 'v');
 ```
 
 ```text
-Invalid Input Error: Failed to query source table: Catalog Error: Table with name scratch does not exist!
+Binder Error: isolation_forest: cannot read table 'scratch': Catalog Error: Table with name scratch does not exist!
 Did you mean "sqlite_schema"?
 
-LINE 1: SELECT "v" FROM query_table('scratch') LIMIT 0
-                        ^
--> Unexpected? Please report it: https://github.com/DataZooDE/anofox-tabular/issues
+LINE 1: SELECT * FROM query_table('scratch') LIMIT 0
+                      ^
+
+LINE 1: SELECT status FROM isolation_forest('scratch', 'v');
+                           ^
 ```
 
 Use a regular table (`CREATE TABLE`) instead. The functions that need one are listed in

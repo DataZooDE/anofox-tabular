@@ -99,13 +99,15 @@ SELECT key, value FROM email_config() WHERE key LIKE 'dns%';
 ```
 
 ```text
-┌────────────────┬─────────┐
-│      key       │  value  │
-│    varchar     │ varchar │
-├────────────────┼─────────┤
-│ dns_timeout_ms │ 2000    │
-│ dns_tries      │ 1       │
-└────────────────┴─────────┘
+┌───────────────────────┬─────────┐
+│          key          │  value  │
+│        varchar        │ varchar │
+├───────────────────────┼─────────┤
+│ dns_timeout_ms        │ 2000    │
+│ dns_tries             │ 1       │
+│ dns_cache_ttl_s       │ 300     │
+│ dns_cache_max_entries │ 10000   │
+└───────────────────────┴─────────┘
 ```
 
 ## Phone
