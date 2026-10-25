@@ -27,6 +27,8 @@ def make_money(conn: Any, amount: float, currency: str) -> dict:
     amount:
         Monetary amount. Must be finite (NaN/Inf raise) and within the
         DECIMAL(18,3) range; it is rounded half away from zero to 3 decimals.
+        A :class:`decimal.Decimal` is kept exact; a ``float`` holds about 15
+        significant digits.
     currency:
         ISO 4217 currency code, e.g. ``"USD"`` or ``"EUR"``.
 
@@ -98,7 +100,7 @@ def is_valid_currency(conn: Any, code: str) -> bool:
 
 
 def currency_symbol(conn: Any, code: str) -> str:
-    """Return the currency symbol for an ISO 4217 code (e.g. ``"$"`` for ``"USD"``)."""
+    """Return the currency symbol for an ISO 4217 code (e.g. ``"$"`` for ``"USD"``); ``""`` for an unsupported code."""
     result = fetch_row(
         conn,
         "SELECT anofox_tab_currency_symbol(?)", [code]
@@ -107,7 +109,7 @@ def currency_symbol(conn: Any, code: str) -> str:
 
 
 def currency_name(conn: Any, code: str) -> str:
-    """Return the full name of a currency (e.g. ``"US Dollar"`` for ``"USD"``)."""
+    """Return the full name of a currency (e.g. ``"United States Dollar"`` for ``"USD"``); ``""`` for an unsupported code."""
     result = fetch_row(
         conn,
         "SELECT anofox_tab_currency_name(?)", [code]

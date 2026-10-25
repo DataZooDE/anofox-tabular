@@ -89,10 +89,45 @@ All are scalar functions. In the signatures below, `MONEY` stands for
 Canonical name: `anofox_tab_money`. Scalar function.
 
 ```text
+money(amount DECIMAL(18,3), currency_code VARCHAR) -> MONEY
 money(amount DOUBLE, currency_code VARCHAR) -> MONEY
 ```
 
-The amount must be finite. It is rounded half away from zero to 3 decimal places.
+- **DECIMAL amounts are exact.** A `DECIMAL` argument of any width and scale, including a literal
+  such as `19.99`, uses the `DECIMAL(18,3)` overload: every digit is kept, more than 3 decimal
+  places are rounded half away from zero, and a value outside ±999,999,999,999,999.999 raises a
+  conversion error.
+- **DOUBLE amounts** (and integer amounts, which DuckDB passes as `DOUBLE`) must be finite. They
+  are rounded half away from zero to 3 decimal places. A `DOUBLE` holds about 15 significant
+  digits, so amounts with more digits than that are not stored exactly: cast them to `DECIMAL`
+  first, e.g. `money(amount::DECIMAL(18,3), 'EUR')`. Whole numbers up to the maximum are exact.
+  A value that rounds outside the range raises `Out of Range`.
+
+```sql
+SELECT money_amount(money(123456789012345.678, 'EUR')) AS from_decimal,
+       money_amount(money(123456789012345.678::DOUBLE, 'EUR')) AS from_double,
+       money_amount(money(999999999999999.999, 'EUR')) AS maximum;
+```
+
+```text
+┌─────────────────────┬─────────────────────┬─────────────────────┐
+│    from_decimal     │     from_double     │       maximum       │
+│    decimal(18,3)    │    decimal(18,3)    │    decimal(18,3)    │
+├─────────────────────┼─────────────────────┼─────────────────────┤
+│ 123456789012345.678 │ 123456789012345.672 │ 999999999999999.999 │
+└─────────────────────┴─────────────────────┴─────────────────────┘
+```
+
+```sql
+SELECT money(1000000000000000.000, 'EUR');
+```
+
+```text
+Conversion Error: Casting value "1000000000000000.000" to type DECIMAL(18,3) failed: value is out of range!
+
+LINE 1: SELECT money(1000000000000000.000, 'EUR');
+                     ^^^^^^^^^^^^^^^^^^^^
+```
 
 ### `money_from_cents`
 
@@ -335,12 +370,12 @@ money_format(money MONEY, format_style VARCHAR) -> VARCHAR
 
 | Style | Example | Description |
 |-------|---------|-------------|
-| `symbol` | `$1,234,567.89`, `1.234.567,89 €` | Currency symbol, with the currency's thousands separator and decimal mark |
+| `symbol` | `$1,234,567.89`, `1.234.567,89 €` | Currency symbol, with the currency's thousands separator and decimal mark. A negative amount puts the minus sign first: `-$42.50`, `-42,50 €` |
 | `long` | `1.234,50 Euro` | Currency name, localized number |
 | `code` | `1234.50 EUR` | ISO code, dot as decimal mark, no grouping |
 
 The number of decimals follows the currency: 2 for USD and EUR, none for JPY. Any other style
-string is formatted like `code`.
+string is formatted like `code`. The style names are case-sensitive.
 
 ```sql
 SELECT money_format(money(1234567.891, 'USD'), 'symbol') AS usd,
@@ -357,6 +392,24 @@ SELECT money_format(money(1234567.891, 'USD'), 'symbol') AS usd,
 ├───────────────┼────────────────┼─────────┼───────────────┼─────────────┤
 │ $1,234,567.89 │ 1.234.567,89 € │ ¥1,235  │ 1.234,50 Euro │ 1234.50 EUR │
 └───────────────┴────────────────┴─────────┴───────────────┴─────────────┘
+```
+
+Negative amounts:
+
+```sql
+SELECT money_format(money(-42.5, 'USD'), 'symbol') AS usd,
+       money_format(money(-42.5, 'EUR'), 'symbol') AS eur,
+       money_format(money(-42.5, 'EUR'), 'long') AS eur_long,
+       money_format(money(-42.5, 'EUR'), 'code') AS eur_code;
+```
+
+```text
+┌─────────┬──────────┬─────────────┬────────────┐
+│   usd   │   eur    │  eur_long   │  eur_code  │
+│ varchar │ varchar  │   varchar   │  varchar   │
+├─────────┼──────────┼─────────────┼────────────┤
+│ -$42.50 │ -42,50 € │ -42,50 Euro │ -42.50 EUR │
+└─────────┴──────────┴─────────────┴────────────┘
 ```
 
 ---
@@ -388,8 +441,21 @@ Canonical name: `anofox_tab_currency_name`. Scalar function.
 currency_name(currency_code VARCHAR) -> VARCHAR
 ```
 
-`currency_symbol` and `currency_name` raise an error for an unsupported code. Test with
-`is_valid_currency` first when the input is not clean.
+`currency_symbol` and `currency_name` return `NULL` for an unsupported code, like
+`vat_country_name`, so they run over unclean columns without `TRY`:
+
+```sql
+SELECT currency_symbol('BTC') AS symbol, currency_name('BTC') AS name;
+```
+
+```text
+┌─────────┬─────────┐
+│ symbol  │  name   │
+│ varchar │ varchar │
+├─────────┼─────────┤
+│ NULL    │ NULL    │
+└─────────┴─────────┘
+```
 
 ```sql
 SELECT code, currency_symbol(code) AS symbol, currency_name(code) AS currency

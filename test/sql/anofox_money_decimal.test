@@ -150,11 +150,11 @@ SELECT anofox_tab_money_format(anofox_tab_money(1234.56, 'CHF'), 'symbol');
 ----
 1'234.56 CHF
 
-# Grouping applies to the integer digits only, the sign stays with the amount
+# Grouping applies to the integer digits only; the minus sign goes before a leading symbol
 query T
 SELECT anofox_tab_money_format(anofox_tab_money(-1234.56, 'USD'), 'symbol');
 ----
-$-1,234.56
+-$1,234.56
 
 # 'long' style localizes the amount the same way as 'symbol'
 query T
