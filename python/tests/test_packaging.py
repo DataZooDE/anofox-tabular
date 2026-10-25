@@ -29,3 +29,23 @@ def test_python_classifiers_match_requires_python():
         version = classifier.removeprefix("Programming Language :: Python :: ")
         if version != classifier and "." in version:
             assert tuple(int(p) for p in version.split(".")) >= minimum, classifier
+
+
+def test_wheel_ships_py_typed(tmp_path):
+    # PEP 561: the marker tells type checkers to use the package's inline annotations.
+    import shutil
+    import subprocess
+    import zipfile
+
+    uv = shutil.which("uv")
+    if uv is None:
+        pytest.skip("uv is not installed")
+    subprocess.run(
+        [uv, "build", "--wheel", "--out-dir", str(tmp_path), "--quiet", str(PYTHON_DIR)],
+        check=True,
+        timeout=300,
+    )
+    (wheel,) = tmp_path.glob("*.whl")
+    names = zipfile.ZipFile(wheel).namelist()
+    assert "anofox/py.typed" in names
+    assert not any("__pycache__" in name for name in names)

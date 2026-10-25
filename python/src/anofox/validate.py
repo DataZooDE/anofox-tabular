@@ -11,8 +11,7 @@ import json
 from typing import Any, Optional, Union
 
 from ._sql import fetch_one, quote_ident
-from ._table import apply_scalar
-from ._utils import detect_df_type
+from ._table import apply_scalar, check_row_input
 
 
 # ---------------------------------------------------------------------------
@@ -68,9 +67,7 @@ def email_is_valid(
         return bool(fetch_one(conn, "SELECT anofox_tab_email_is_valid(?, ?)", [email_or_df, mode]))
 
     # DataFrame path
-    df_type = detect_df_type(email_or_df)
-    if column is None:
-        raise ValueError("'column' is required when passing a DataFrame.")
+    df_type = check_row_input(email_or_df, column)
 
     return apply_scalar(
         conn, email_or_df, df_type,
@@ -117,9 +114,7 @@ def email_validate(
         return {"raw": str(raw)}
 
     # DataFrame path
-    df_type = detect_df_type(email_or_df)
-    if column is None:
-        raise ValueError("'column' is required when passing a DataFrame.")
+    df_type = check_row_input(email_or_df, column)
 
     return apply_scalar(
         conn, email_or_df, df_type,
@@ -160,9 +155,7 @@ def phone_is_valid(
     if isinstance(phone_or_df, str):
         return bool(fetch_one(conn, "SELECT anofox_tab_phonenumber_is_valid(?, ?)", [phone_or_df, *region_params]))
 
-    df_type = detect_df_type(phone_or_df)
-    if column is None:
-        raise ValueError("'column' is required when passing a DataFrame.")
+    df_type = check_row_input(phone_or_df, column)
 
     return apply_scalar(
         conn, phone_or_df, df_type,
@@ -208,9 +201,7 @@ def phone_parse(
                 return {"raw": raw}
         return {"raw": str(raw)}
 
-    df_type = detect_df_type(phone_or_df)
-    if column is None:
-        raise ValueError("'column' is required when passing a DataFrame.")
+    df_type = check_row_input(phone_or_df, column)
 
     return apply_scalar(
         conn, phone_or_df, df_type,

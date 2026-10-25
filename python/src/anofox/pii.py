@@ -8,8 +8,14 @@ import json
 from typing import Any, Optional, Sequence, Union
 
 from ._sql import fetch_frame, fetch_one, id_column_arg, quote_ident
-from ._table import TableLike, apply_scalar, cleanup_table, output_df_type, resolve_table
-from ._utils import detect_df_type
+from ._table import (
+    TableLike,
+    apply_scalar,
+    check_row_input,
+    cleanup_table,
+    output_df_type,
+    resolve_table,
+)
 
 
 def pii_detect(
@@ -40,9 +46,7 @@ def pii_detect(
         raw = fetch_one(conn, "SELECT anofox_tab_pii_detect(?)", [text_or_df])
         return _parse_json_list(raw)
 
-    df_type = detect_df_type(text_or_df)
-    if column is None:
-        raise ValueError("'column' is required when passing a DataFrame.")
+    df_type = check_row_input(text_or_df, column)
 
     return apply_scalar(
         conn, text_or_df, df_type,
@@ -52,29 +56,43 @@ def pii_detect(
 
 def pii_mask(
     conn: Any,
-    text: str,
+    text_or_df: Union[str, Any],
     strategy: str = "redact",
-) -> str:
+    column: Optional[str] = None,
+) -> Union[str, Any]:
     """
-    Mask all detected PII in *text*.
+    Mask all detected PII in a text or in a DataFrame column.
 
     Parameters
     ----------
     conn:
         An :class:`~anofox.AnofoxConnection`.
-    text:
-        Input text containing potential PII.
+    text_or_df:
+        Input text containing potential PII, or a pandas/polars DataFrame.
     strategy:
         Masking strategy: ``"redact"`` (default), ``"hash"``,
         ``"partial"``, or ``"asterisk"``.
+    column:
+        Column name when *text_or_df* is a DataFrame.
 
     Returns
     -------
     str
-        Text with PII replaced according to *strategy*.
+        When *text_or_df* is a string: the text with PII replaced according to
+        *strategy*.
+    DataFrame
+        When *text_or_df* is a DataFrame: a copy with an added ``pii_mask``
+        column (same index and row order as the input).
     """
-    value = fetch_one(conn, "SELECT anofox_tab_pii_mask(?, ?)", [text, strategy])
-    return str(value) if value is not None else ""
+    if isinstance(text_or_df, str):
+        value = fetch_one(conn, "SELECT anofox_tab_pii_mask(?, ?)", [text_or_df, strategy])
+        return str(value) if value is not None else ""
+
+    df_type = check_row_input(text_or_df, column)
+    return apply_scalar(
+        conn, text_or_df, df_type,
+        f"anofox_tab_pii_mask({quote_ident(column)}, ?)", [strategy], "pii_mask",
+    )
 
 
 def pii_contains(

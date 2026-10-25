@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import functools
 import inspect
-from typing import Any, Callable, TypeVar, Union
+from typing import Any, Callable, Optional, TypeVar, Union
 
 from ._sql import quote_ident
 from ._utils import (
@@ -40,6 +40,35 @@ def resolve_table(conn: Any, table_or_df: Union[str, Any]) -> tuple[str, bool]:
         ) from None
     table_name = register_df_as_table(conn.native, table_or_df)
     return table_name, True
+
+
+def check_row_input(value: Any, column: Optional[str]) -> str:
+    """
+    Validate the DataFrame input of a row-wise wrapper and return its type.
+
+    Raises TypeError for a Series, None or any other non-DataFrame object, and
+    ValueError when *column* is missing or not a column of the DataFrame.
+    """
+    if type(value).__name__ == "Series" and type(value).__module__.split(".")[0] in ("pandas", "polars"):
+        raise TypeError(
+            "expected a string or a pandas/polars DataFrame, got a Series; "
+            "pass series.to_frame() with column=series.name"
+        )
+    try:
+        df_type = detect_df_type(value)
+    except TypeError:
+        raise TypeError(
+            f"expected a string or a pandas/polars DataFrame, got {_describe(value)}"
+        ) from None
+    if column is None:
+        raise ValueError("'column' is required when passing a DataFrame.")
+    columns = [str(c) for c in value.columns]
+    if column not in columns:
+        raise ValueError(
+            f"column {column!r} not found in the DataFrame; its columns are "
+            f"{', '.join(map(repr, columns))}"
+        )
+    return df_type
 
 
 def accepts_dataframes(*param_names: str) -> Callable[[F], F]:
