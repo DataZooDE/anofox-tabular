@@ -1,12 +1,12 @@
 """
 Data quality metric wrappers.
 
-All functions accept a *table_name* string referencing a DuckDB table or view.
-To use a DataFrame, register it first::
+The check functions take a *table_name*: the name of a DuckDB table or view,
+or a pandas/polars DataFrame, which is copied into a temporary table for the
+call (on a file-backed connection, into that database file) and dropped
+afterwards::
 
-    name = anofox._utils.register_df_as_table(conn.native, df)
-    result = quality.volume(conn, name, min_rows=10)
-    conn.native.unregister(name)
+    result = quality.volume(conn, df, min_rows=10)
 """
 
 from __future__ import annotations
@@ -15,13 +15,15 @@ import json
 from typing import Any, Optional, Union
 
 from ._sql import quote_ident
+from ._table import TableLike, accepts_dataframes
 
 _MAX_BIGINT = 9223372036854775807
 
 
+@accepts_dataframes("table_name")
 def volume(
     conn: Any,
-    table_name: str,
+    table_name: TableLike,
     min_rows: int,
     max_rows: Optional[int] = None,
 ) -> dict:
@@ -33,7 +35,7 @@ def volume(
     conn:
         An :class:`~anofox.AnofoxConnection`.
     table_name:
-        Name of the DuckDB table or view.
+        Name of the DuckDB table or view, or a pandas/polars DataFrame.
     min_rows:
         Minimum acceptable row count.
     max_rows:
@@ -57,9 +59,10 @@ def volume(
     return _parse_table_result(rows, {"min_rows": min_rows, "max_rows": max_rows})
 
 
+@accepts_dataframes("table_name")
 def null_rate(
     conn: Any,
-    table_name: str,
+    table_name: TableLike,
     column_name: str,
     max_null_rate: float = 0.0,
 ) -> dict:
@@ -71,7 +74,7 @@ def null_rate(
     conn:
         An :class:`~anofox.AnofoxConnection`.
     table_name:
-        Name of the DuckDB table or view.
+        Name of the DuckDB table or view, or a pandas/polars DataFrame.
     column_name:
         Column to inspect.
     max_null_rate:
@@ -88,9 +91,10 @@ def null_rate(
     return _parse_table_result(rows, {"column": column_name, "max_null_rate": max_null_rate})
 
 
+@accepts_dataframes("table_name")
 def distinct_count(
     conn: Any,
-    table_name: str,
+    table_name: TableLike,
     column_name: str,
     min_distinct: int,
     max_distinct: Optional[int] = None,
@@ -103,7 +107,7 @@ def distinct_count(
     conn:
         An :class:`~anofox.AnofoxConnection`.
     table_name:
-        Name of the DuckDB table or view.
+        Name of the DuckDB table or view, or a pandas/polars DataFrame.
     column_name:
         Column to inspect.
     min_distinct:
@@ -126,9 +130,10 @@ def distinct_count(
     )
 
 
+@accepts_dataframes("table_name")
 def freshness(
     conn: Any,
-    table_name: str,
+    table_name: TableLike,
     timestamp_column: str,
     max_age: str,
     warn_age: Optional[str] = None,
@@ -141,7 +146,7 @@ def freshness(
     conn:
         An :class:`~anofox.AnofoxConnection`.
     table_name:
-        Name of the DuckDB table or view.
+        Name of the DuckDB table or view, or a pandas/polars DataFrame.
     timestamp_column:
         Name of the timestamp column.
     max_age:
@@ -169,9 +174,10 @@ def freshness(
     )
 
 
+@accepts_dataframes("table_name")
 def zscore(
     conn: Any,
-    table_name: str,
+    table_name: TableLike,
     column_name: str,
     threshold: float = 3.0,
 ) -> dict:
@@ -183,7 +189,7 @@ def zscore(
     conn:
         An :class:`~anofox.AnofoxConnection`.
     table_name:
-        Name of the DuckDB table or view.
+        Name of the DuckDB table or view, or a pandas/polars DataFrame.
     column_name:
         Numeric column to inspect.
     threshold:
@@ -200,9 +206,10 @@ def zscore(
     return _parse_table_result(rows, {"column": column_name, "threshold": threshold})
 
 
+@accepts_dataframes("table_name")
 def iqr(
     conn: Any,
-    table_name: str,
+    table_name: TableLike,
     column_name: str,
     multiplier: float = 1.5,
 ) -> dict:
@@ -214,7 +221,7 @@ def iqr(
     conn:
         An :class:`~anofox.AnofoxConnection`.
     table_name:
-        Name of the DuckDB table or view.
+        Name of the DuckDB table or view, or a pandas/polars DataFrame.
     column_name:
         Numeric column to inspect.
     multiplier:
@@ -231,9 +238,10 @@ def iqr(
     return _parse_table_result(rows, {"column": column_name, "multiplier": multiplier})
 
 
+@accepts_dataframes("table_name")
 def schema_check(
     conn: Any,
-    table_name: str,
+    table_name: TableLike,
     required_columns: list[str],
 ) -> dict:
     """
@@ -244,7 +252,7 @@ def schema_check(
     conn:
         An :class:`~anofox.AnofoxConnection`.
     table_name:
-        Name of the DuckDB table or view.
+        Name of the DuckDB table or view, or a pandas/polars DataFrame.
     required_columns:
         List of column names that must be present.
 
@@ -260,9 +268,10 @@ def schema_check(
     return _parse_table_result(rows, {"required_columns": required_columns})
 
 
+@accepts_dataframes("table_name")
 def regex_match(
     conn: Any,
-    table_name: str,
+    table_name: TableLike,
     column_name: str,
     pattern: str,
     min_match_rate: float = 1.0,
@@ -276,7 +285,7 @@ def regex_match(
     conn:
         An :class:`~anofox.AnofoxConnection`.
     table_name:
-        Name of the DuckDB table or view.
+        Name of the DuckDB table or view, or a pandas/polars DataFrame.
     column_name:
         Column to inspect.
     pattern:
@@ -312,9 +321,10 @@ def regex_match(
     )
 
 
+@accepts_dataframes("table_name")
 def values_in_set(
     conn: Any,
-    table_name: str,
+    table_name: TableLike,
     column_name: str,
     allowed_values: list[str],
     min_rate: float = 1.0,
@@ -327,7 +337,7 @@ def values_in_set(
     conn:
         An :class:`~anofox.AnofoxConnection`.
     table_name:
-        Name of the DuckDB table or view.
+        Name of the DuckDB table or view, or a pandas/polars DataFrame.
     column_name:
         Column to inspect (values are compared as strings).
     allowed_values:
@@ -349,9 +359,10 @@ def values_in_set(
     )
 
 
+@accepts_dataframes("table_name")
 def agg_check(
     conn: Any,
-    table_name: str,
+    table_name: TableLike,
     column_name: str,
     agg: str,
     lower_threshold: Optional[float] = None,
@@ -365,7 +376,7 @@ def agg_check(
     conn:
         An :class:`~anofox.AnofoxConnection`.
     table_name:
-        Name of the DuckDB table or view.
+        Name of the DuckDB table or view, or a pandas/polars DataFrame.
     column_name:
         Numeric column to aggregate.
     agg:
@@ -397,9 +408,10 @@ def agg_check(
     )
 
 
+@accepts_dataframes("table_name")
 def duplicate_count(
     conn: Any,
-    table_name: str,
+    table_name: TableLike,
     column_names: str | list[str],
     max_duplicates: int = 0,
 ) -> dict:
@@ -411,7 +423,7 @@ def duplicate_count(
     conn:
         An :class:`~anofox.AnofoxConnection`.
     table_name:
-        Name of the DuckDB table or view.
+        Name of the DuckDB table or view, or a pandas/polars DataFrame.
     column_names:
         A column name, comma-separated column names, or a list of column names.
     max_duplicates:
@@ -432,9 +444,10 @@ def duplicate_count(
     return _parse_table_result(rows, {"columns": cols, "max_duplicates": max_duplicates})
 
 
+@accepts_dataframes("table_name")
 def occurrence(
     conn: Any,
-    table_name: str,
+    table_name: TableLike,
     column_name: str,
     mode: str = "max",
     lower_threshold: Optional[int] = None,
@@ -448,7 +461,7 @@ def occurrence(
     conn:
         An :class:`~anofox.AnofoxConnection`.
     table_name:
-        Name of the DuckDB table or view.
+        Name of the DuckDB table or view, or a pandas/polars DataFrame.
     column_name:
         Column to inspect.
     mode:
@@ -480,10 +493,11 @@ def occurrence(
     )
 
 
+@accepts_dataframes("left_table", "right_table")
 def match_rate(
     conn: Any,
-    left_table: str,
-    right_table: str,
+    left_table: TableLike,
+    right_table: TableLike,
     left_keys: str | list[str],
     right_keys: str | list[str],
     min_rate: float = 1.0,
@@ -498,9 +512,9 @@ def match_rate(
     conn:
         An :class:`~anofox.AnofoxConnection`.
     left_table:
-        Name of the left DuckDB table or view (every row is checked).
+        Name of the left DuckDB table or view, or a DataFrame (every row is checked).
     right_table:
-        Name of the right DuckDB table or view (deduplicated on its key columns).
+        Name of the right DuckDB table or view, or a DataFrame (deduplicated on its key columns).
     left_keys:
         Join key column(s) on the left table (string or list).
     right_keys:
@@ -524,9 +538,10 @@ def match_rate(
     )
 
 
+@accepts_dataframes("table_name")
 def compliance(
     conn: Any,
-    table_name: str,
+    table_name: TableLike,
     expression: str,
     min_rate: float = 1.0,
 ) -> dict:
@@ -542,7 +557,7 @@ def compliance(
     conn:
         An :class:`~anofox.AnofoxConnection`.
     table_name:
-        Name of the DuckDB table or view.
+        Name of the DuckDB table or view, or a pandas/polars DataFrame.
     expression:
         SQL boolean expression evaluated per row; NULL counts as non-compliant.
     min_rate:
@@ -559,9 +574,10 @@ def compliance(
     return _parse_table_result(rows, {"expression": expression, "min_rate": min_rate})
 
 
+@accepts_dataframes("table_name")
 def rel_count_change(
     conn: Any,
-    table_name: str,
+    table_name: TableLike,
     date_column: str,
     count_column: Optional[str] = None,
     window_days: int = 7,
@@ -579,7 +595,7 @@ def rel_count_change(
     conn:
         An :class:`~anofox.AnofoxConnection`.
     table_name:
-        Name of the DuckDB table or view.
+        Name of the DuckDB table or view, or a pandas/polars DataFrame.
     date_column:
         Date or timestamp column defining the daily grain.
     count_column:
@@ -622,9 +638,10 @@ def rel_count_change(
     )
 
 
+@accepts_dataframes("table_name")
 def metric_anomaly_iqr(
     conn: Any,
-    table_name: str,
+    table_name: TableLike,
     date_column: str,
     metric_column: Optional[str] = None,
     window_days: int = 30,
@@ -642,7 +659,7 @@ def metric_anomaly_iqr(
     conn:
         An :class:`~anofox.AnofoxConnection`.
     table_name:
-        Name of the DuckDB table or view.
+        Name of the DuckDB table or view, or a pandas/polars DataFrame.
     date_column:
         Date or timestamp column defining the daily grain.
     metric_column:
@@ -690,9 +707,10 @@ def metric_anomaly_iqr(
     )
 
 
+@accepts_dataframes("table_name")
 def rolling_values_in_set(
     conn: Any,
-    table_name: str,
+    table_name: TableLike,
     column_name: str,
     allowed_values: list[str],
     date_column: str,
@@ -710,7 +728,7 @@ def rolling_values_in_set(
     conn:
         An :class:`~anofox.AnofoxConnection`.
     table_name:
-        Name of the DuckDB table or view.
+        Name of the DuckDB table or view, or a pandas/polars DataFrame.
     column_name:
         Column to inspect (values are compared as strings).
     allowed_values:

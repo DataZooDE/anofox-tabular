@@ -8,7 +8,7 @@ import json
 from typing import Any, Optional, Sequence, Union
 
 from ._sql import fetch_frame, fetch_one, id_column_arg, quote_ident
-from ._table import apply_scalar
+from ._table import TableLike, apply_scalar, cleanup_table, output_df_type, resolve_table
 from ._utils import detect_df_type
 
 
@@ -96,34 +96,43 @@ def pii_contains(
 
 def pii_scan_table(
     conn: Any,
-    table_name: str,
+    table_name: TableLike,
     columns: Union[str, Sequence[str], None] = None,
 ) -> Any:
     """
     Scan all (or selected) string columns of a table for PII.
 
-    Returns a pandas DataFrame summarising PII found per column.
+    Returns a DataFrame summarising PII found per column: polars for a polars
+    input, else pandas.
 
     Parameters
     ----------
     conn:
         An :class:`~anofox.AnofoxConnection`.
     table_name:
-        Name of the DuckDB table or view.
+        Name of the DuckDB table or view, or a pandas/polars DataFrame (copied
+        into a temporary table for the call).
     columns:
-        Specific columns to scan, as a list or a comma-separated string.  When *None* all text columns are
-        scanned (extension default behaviour).
+        Specific columns to scan, as a list or a comma-separated string. When
+        *None* all text columns are scanned (extension default behaviour).
     """
-    params: list = [table_name]
-    if columns is not None:
-        params.append(columns if isinstance(columns, str) else ",".join(columns))
-    placeholders = ", ".join("?" for _ in params)
-    return fetch_frame(conn, f"SELECT * FROM anofox_tab_pii_scan_table({placeholders})", params)
+    resolved, registered = resolve_table(conn, table_name)
+    try:
+        params: list = [resolved]
+        if columns is not None:
+            params.append(columns if isinstance(columns, str) else ",".join(columns))
+        placeholders = ", ".join("?" for _ in params)
+        return fetch_frame(
+            conn, f"SELECT * FROM anofox_tab_pii_scan_table({placeholders})", params,
+            output_df_type(table_name),
+        )
+    finally:
+        cleanup_table(conn, resolved, registered)
 
 
 def pii_audit_table(
     conn: Any,
-    table_name: str,
+    table_name: TableLike,
     columns: Union[str, Sequence[str], None] = None,
     id_column: Optional[str] = None,
 ) -> Any:
@@ -135,7 +144,8 @@ def pii_audit_table(
     conn:
         An :class:`~anofox.AnofoxConnection`.
     table_name:
-        Name of the DuckDB table or view.
+        Name of the DuckDB table or view, or a pandas/polars DataFrame (copied
+        into a temporary table for the call).
     columns:
         Specific columns to audit, as a list or a comma-separated string.
     id_column:
@@ -144,17 +154,23 @@ def pii_audit_table(
 
     Returns
     -------
-    pd.DataFrame
-        Row-level PII audit with original/masked values.
+    DataFrame
+        Row-level PII audit with original/masked values (polars for a polars
+        input, else pandas).
     """
-    params: list = [table_name]
-    if columns is not None:
-        params.append(columns if isinstance(columns, str) else ",".join(columns))
-    placeholders = ", ".join("?" for _ in params)
-    id_arg = id_column_arg(id_column, params)
-    return fetch_frame(
-        conn, f"SELECT * FROM anofox_tab_pii_audit_table({placeholders}{id_arg})", params
-    )
+    resolved, registered = resolve_table(conn, table_name)
+    try:
+        params: list = [resolved]
+        if columns is not None:
+            params.append(columns if isinstance(columns, str) else ",".join(columns))
+        placeholders = ", ".join("?" for _ in params)
+        id_arg = id_column_arg(id_column, params)
+        return fetch_frame(
+            conn, f"SELECT * FROM anofox_tab_pii_audit_table({placeholders}{id_arg})", params,
+            output_df_type(table_name),
+        )
+    finally:
+        cleanup_table(conn, resolved, registered)
 
 
 # ---------------------------------------------------------------------------

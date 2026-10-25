@@ -4,7 +4,9 @@ Shared table lifecycle helpers for wrappers that accept table names or DataFrame
 
 from __future__ import annotations
 
-from typing import Any, Union
+import functools
+import inspect
+from typing import Any, Callable, TypeVar, Union
 
 from ._sql import quote_ident
 from ._utils import (
@@ -16,6 +18,12 @@ from ._utils import (
 )
 
 
+F = TypeVar("F", bound=Callable[..., Any])
+
+#: A table name, or a pandas/polars DataFrame standing in for one.
+TableLike = Union[str, Any]
+
+
 def resolve_table(conn: Any, table_or_df: Union[str, Any]) -> tuple[str, bool]:
     """
     Return ``(table_name, was_registered)``.
@@ -24,9 +32,55 @@ def resolve_table(conn: Any, table_or_df: Union[str, Any]) -> tuple[str, bool]:
     """
     if isinstance(table_or_df, str):
         return table_or_df, False
-    detect_df_type(table_or_df)  # validate type before registering
+    try:
+        detect_df_type(table_or_df)  # validate type before registering
+    except TypeError:
+        raise TypeError(
+            f"pass a table name or a DataFrame (pandas or polars), got {_describe(table_or_df)}"
+        ) from None
     table_name = register_df_as_table(conn.native, table_or_df)
     return table_name, True
+
+
+def accepts_dataframes(*param_names: str) -> Callable[[F], F]:
+    """
+    Decorator: let the parameters *param_names* (table names) also take a
+    pandas or polars DataFrame.
+
+    Each DataFrame is copied into a temporary table (see :func:`resolve_table`)
+    for the duration of the call and dropped afterwards.
+    """
+    def decorator(func: F) -> F:
+        signature = inspect.signature(func)
+
+        @functools.wraps(func)
+        def wrapper(conn: Any, *args: Any, **kwargs: Any) -> Any:
+            bound = signature.bind(conn, *args, **kwargs)
+            registered: list[str] = []
+            try:
+                for name in param_names:
+                    if name in bound.arguments:
+                        table_name, was_registered = resolve_table(conn, bound.arguments[name])
+                        bound.arguments[name] = table_name
+                        if was_registered:
+                            registered.append(table_name)
+                return func(*bound.args, **bound.kwargs)
+            finally:
+                for table_name in registered:
+                    cleanup_table(conn, table_name, True)
+
+        return wrapper  # type: ignore[return-value]
+
+    return decorator
+
+
+def _describe(value: Any) -> str:
+    """Short description of *value*'s type for error messages."""
+    if value is None:
+        return "None"
+    cls = type(value)
+    module = cls.__module__.split(".")[0]
+    return f"{module}.{cls.__qualname__}" if module != "builtins" else cls.__qualname__
 
 
 def output_df_type(*inputs: Any) -> str:
