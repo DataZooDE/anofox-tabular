@@ -3042,9 +3042,10 @@ struct PIIScanTableResult {
     PIIType pii_type;
     int64_t match_count;
     std::vector<std::string> sample_values;
-    double confidence;
+    double confidence;       // mean match confidence, set once the column is scanned
+    double confidence_sum;   // running sum of match confidences
 
-    PIIScanTableResult() : pii_type(PIIType::UNKNOWN), match_count(0), confidence(1.0) {}
+    PIIScanTableResult() : pii_type(PIIType::UNKNOWN), match_count(0), confidence(1.0), confidence_sum(0.0) {}
 };
 
 // Streaming scan state: columns are scanned one at a time with streamed
@@ -3191,7 +3192,7 @@ void PIIScanTableFunction(ClientContext &context, TableFunctionInput &input, Dat
                         if (res.sample_values.size() < 5) {
                             res.sample_values.push_back(match.matched_text);
                         }
-                        res.confidence = 1.0;  // Regex matches have full confidence
+                        res.confidence_sum += match.confidence;
                     }
                 }
             }
@@ -3200,10 +3201,19 @@ void PIIScanTableFunction(ClientContext &context, TableFunctionInput &input, Dat
                 continue;
             }
 
-            // Stage this column's aggregates for emission
+            // Stage this column's aggregates for emission, ordered by
+            // pii_type so the output order does not depend on hash order.
+            // confidence is the mean of the match confidences (1.0 for
+            // regex matches, the model score for NER matches)
+            const size_t first_pending = state.pending.size();
             for (auto &[type, res] : col_results) {
+                res.confidence = res.confidence_sum / static_cast<double>(res.match_count);
                 state.pending.push_back(std::move(res));
             }
+            std::sort(state.pending.begin() + static_cast<std::ptrdiff_t>(first_pending), state.pending.end(),
+                      [](const PIIScanTableResult &a, const PIIScanTableResult &b) {
+                          return PIITypeToString(a.pii_type) < PIITypeToString(b.pii_type);
+                      });
         }
     } catch (const std::exception &e) {
         throw InvalidInputException("pii_scan_table: Failed to scan table - %s", e.what());
