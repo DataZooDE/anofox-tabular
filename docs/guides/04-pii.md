@@ -207,11 +207,21 @@ Leaving out `NAME`, `ORGANIZATION`, `LOCATION` and `MISC` also makes scans much 
 model takes in the order of tens of milliseconds per row, pattern matching a tiny fraction of
 that (see [Throughput](../api/06-pii.md#throughput)).
 
-Set it back to all types:
+Set it back to the default types:
 
 ```sql
 RESET anofox_pii_enabled_types;
 ```
+
+`POSTAL_CODE` is not among the default types. Add it with
+`SET anofox_pii_enabled_types = 'DEFAULT,POSTAL_CODE'` when addresses have to be masked too.
+
+For German customer and claims data, `DATE_OF_BIRTH` (a date after `geb.`, `Geburtsdatum`,
+`DOB`, ...), `DE_SVNR` (Rentenversicherungsnummer) and `DE_ID_CARD` (Personalausweis and
+Reisepass numbers) are detected by default. Invoice dates and order numbers without such a
+keyword or check digit are left alone. If mistyped IBANs and card numbers must be masked as well,
+`SET anofox_pii_require_checksum = false` reports them at confidence 0.6 (see
+[Settings](../api/06-pii.md#settings)).
 
 ## 6. Run without network access
 

@@ -573,9 +573,10 @@ true
 # PII Status Table Function Tests
 # ============================================================================
 
-# Returns all 17 PII types (14 original + ORGANIZATION, LOCATION, MISC)
+# Returns all 21 PII types (14 original + ORGANIZATION, LOCATION, MISC
+# + DATE_OF_BIRTH, DE_SVNR, DE_ID_CARD, POSTAL_CODE)
 query I
-SELECT COUNT(*) = 17 FROM pii_status();
+SELECT COUNT(*) = 21 FROM pii_status();
 ----
 true
 
@@ -597,11 +598,11 @@ SELECT COUNT(*) FROM pii_status() WHERE pii_type = 'CRYPTO_ADDRESS';
 ----
 1
 
-# All recognizers are enabled
+# All recognizers are enabled by default, except the opt-in POSTAL_CODE
 query I
-SELECT COUNT(*) FROM pii_status() WHERE enabled = false;
+SELECT list(pii_type) FROM pii_status() WHERE enabled = false;
 ----
-0
+[POSTAL_CODE]
 
 # No empty pattern_info
 query I
@@ -924,11 +925,11 @@ DROP TABLE business_data;
 # PII Configuration Tests
 # ============================================================================
 
-# Test pii_config table function returns 4 configuration options
+# Test pii_config table function returns 5 configuration options
 query I
 SELECT COUNT(*) FROM pii_config();
 ----
-4
+5
 
 # Verify default min_confidence is 0.5
 query II
@@ -946,7 +947,7 @@ anofox_pii_default_mask_strategy	REDACT
 query II
 SELECT option_name, option_value FROM pii_config() WHERE option_name = 'anofox_pii_enabled_types';
 ----
-anofox_pii_enabled_types	(all types)
+anofox_pii_enabled_types	(all types except POSTAL_CODE)
 
 # Test setting min_confidence
 statement ok
@@ -989,7 +990,7 @@ SET anofox_pii_enabled_types = '';
 query II
 SELECT option_name, option_value FROM pii_config() WHERE option_name = 'anofox_pii_enabled_types';
 ----
-anofox_pii_enabled_types	(all types)
+anofox_pii_enabled_types	(all types except POSTAL_CODE)
 
 # Test invalid min_confidence (too low) - should error
 statement error

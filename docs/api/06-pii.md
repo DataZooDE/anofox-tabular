@@ -1,6 +1,7 @@
 # PII Detection and Masking
 
-> Find, validate and mask personal data such as emails, card numbers, IBANs and names in text.
+> Find, validate and mask personal data such as emails, card numbers, IBANs, dates of birth,
+> German social insurance and ID card numbers, and names in text.
 
 **Use this page to:**
 - Detect PII in a text value and get its type, position and confidence
@@ -62,6 +63,10 @@ NER types need the NER model.
 | `DE_TAX_ID` | German tax ID (Steueridentifikationsnummer, 11 digits) | pattern + checksum |
 | `API_KEY` | AWS and GitHub tokens, high-entropy strings | pattern + entropy |
 | `CRYPTO_ADDRESS` | Bitcoin (P2PKH, P2SH, SegWit) and Ethereum addresses | pattern + checksum where available |
+| `DATE_OF_BIRTH` | A date (`12.03.1985`, `3.7.1962`, `1985-03-12`, `12/03/1985`, `12. März 1985`, `March 12, 1985`) that follows a birth keyword (`geboren`, `geb.`, `Geburtsdatum`, `Geburtstag`, `DOB`, `D.O.B.`, `date of birth`, `birthday`, `born`) with at most three words and no comma or sentence end in between. A date without a keyword is not matched. It must be a real calendar date from 1900 up to today | pattern + keyword + date check |
+| `DE_SVNR` | German pension insurance number (Rentenversicherungsnummer, often called Sozialversicherungsnummer): area, birth date `DDMMYY`, initial letter, serial, check digit, with or without spaces (`65 170839 J 003`, `65170839J003`) | pattern + check digit |
+| `DE_ID_CARD` | German Personalausweis or Reisepass number: a letter and 8 characters from `CFGHJKLMNPRTVWXYZ0-9` with at least one digit, optionally followed by the check digit (`T220001293`). With a valid ICAO 9303 check digit it is matched anywhere; without it only after a keyword (`Personalausweis`, `Ausweis`, `Ausweis-Nr.`, `Reisepass`, `Passnummer`, `ID card`, `passport`) | pattern + check digit or keyword |
+| `POSTAL_CODE` | Off by default (see below). DE 5-digit, AT/CH 4-digit codes followed by a town (`80331 München`) after a street and house number, at the start of a line or after a comma, or with a `D-`/`A-`/`CH-` prefix; NL `1015 CJ` followed by a town; UK postcodes (`SW1A 2AA`) at the end of an address line; any of these after `PLZ`, `Postleitzahl`, `postcode` or `zip` | pattern + address context |
 | `NAME` | Person names | NER; a name dictionary when the model is not available |
 | `ORGANIZATION` | Organization names | NER only |
 | `LOCATION` | Places | NER only |
@@ -69,6 +74,73 @@ NER types need the NER model.
 
 Detection skips a bare 9-digit number such as `123456789`. It is neither a `US_SSN` nor a
 `US_PASSPORT`, because contract, order and claim numbers have the same shape.
+
+The German types need context or a check digit, because claims notes and invoices are full of
+dates, order numbers and amounts. Invoice and claim dates, amounts, quantities (`12345 Stück`)
+and plain 5-digit numbers are not matched. A 9-character document number such as `T22000129`
+is a `DE_ID_CARD` after an ID keyword and a `US_PASSPORT` (a letter and 8 digits) without one.
+
+```sql
+SET anofox_pii_enabled_types = 'DATE_OF_BIRTH,DE_SVNR,DE_ID_CARD';
+SELECT pii_mask('VN geb. 12.03.1985, Ausweis-Nr. T220001293, SV-Nr. 65 170839 J 003; Schaden vom 15.08.2024, Rechnung 4711081512') AS masked;
+```
+
+```text
+┌──────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│                                                      masked                                                      │
+│                                                     varchar                                                      │
+├──────────────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+│ VN geb. [DATE_OF_BIRTH], Ausweis-Nr. [DE_ID_CARD], SV-Nr. [DE_SVNR]; Schaden vom 15.08.2024, Rechnung 4711081512 │
+└──────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+```
+
+```sql
+SELECT pii_mask_column('VN geb. 12.03.1985', 'DATE_OF_BIRTH', 'partial') AS dob,
+       pii_mask_column('SV-Nr. 65 170839 J 003', 'DE_SVNR', 'partial') AS svnr,
+       pii_mask_column('Ausweis-Nr. T220001293', 'DE_ID_CARD', 'partial') AS id_card;
+```
+
+```text
+┌────────────────────┬────────────────────────┬────────────────────────┐
+│        dob         │          svnr          │        id_card         │
+│      varchar       │        varchar         │        varchar         │
+├────────────────────┼────────────────────────┼────────────────────────┤
+│ VN geb. **.**.1985 │ SV-Nr. 65 ****** * *** │ Ausweis-Nr. T********* │
+└────────────────────┴────────────────────────┴────────────────────────┘
+```
+
+```sql
+RESET anofox_pii_enabled_types;
+```
+
+`POSTAL_CODE` is off by default: even with the address rules a postal code is rarely the PII
+you need to find, and it is weak evidence on its own. It is detected only when you name it,
+in `anofox_pii_enabled_types` or as the type argument of `pii_mask_column`. `DEFAULT` in
+`anofox_pii_enabled_types` stands for all default types, so `'DEFAULT,POSTAL_CODE'` adds postal
+codes to them:
+
+```sql
+SET anofox_pii_enabled_types = 'POSTAL_CODE';
+SELECT a AS address, pii_mask(a) AS masked
+FROM (VALUES ('Musterstraße 12, 80331 München'), ('Keizersgracht 123, 1015 CJ Amsterdam'),
+             ('10 Downing Street, London SW1A 2AA'), ('Auftrag 12345 Stück, Vertragsnummer 80331')) t(a);
+```
+
+```text
+┌───────────────────────────────────────────┬────────────────────────────────────────────┐
+│                  address                  │                   masked                   │
+│                  varchar                  │                  varchar                   │
+├───────────────────────────────────────────┼────────────────────────────────────────────┤
+│ Musterstraße 12, 80331 München            │ Musterstraße 12, [POSTAL_CODE] München     │
+│ Keizersgracht 123, 1015 CJ Amsterdam      │ Keizersgracht 123, [POSTAL_CODE] Amsterdam │
+│ 10 Downing Street, London SW1A 2AA        │ 10 Downing Street, London [POSTAL_CODE]    │
+│ Auftrag 12345 Stück, Vertragsnummer 80331 │ Auftrag 12345 Stück, Vertragsnummer 80331  │
+└───────────────────────────────────────────┴────────────────────────────────────────────┘
+```
+
+```sql
+RESET anofox_pii_enabled_types;
+```
 
 ## Masking strategies
 
@@ -120,7 +192,7 @@ so hashed columns can still be joined and counted:
 | Type | Normalisation before hashing |
 |------|------------------------------|
 | `PHONE`, `CREDIT_CARD`, `US_SSN`, `DE_TAX_ID` | Spaces, `-`, `.`, `/`, `(` and `)` removed (a leading `+` is kept) |
-| `IBAN`, `UK_NINO` | Same separators removed, upper-cased |
+| `IBAN`, `UK_NINO`, `DE_SVNR`, `DE_ID_CARD` | Same separators removed, upper-cased |
 | `EMAIL` | Lower-cased |
 | all other types | None: the matched text is hashed as it is |
 
@@ -163,7 +235,7 @@ STRUCT(type VARCHAR, text VARCHAR, start_pos BIGINT, end_pos BIGINT, confidence 
 The offsets count bytes of the UTF-8 encoding, not characters, so after a non-ASCII character
 they are larger than the character position that `substr` expects. For ASCII text the two are
 the same.
-| `confidence` | `DOUBLE` | `1.0` for pattern matches; the model score for NER matches |
+| `confidence` | `DOUBLE` | `1.0` for pattern matches; `0.6` for an IBAN or card number that fails its checksum (only with `anofox_pii_require_checksum = false`); the model score for NER matches |
 
 ---
 
@@ -533,7 +605,7 @@ pii_scan_table(table_name VARCHAR [, columns VARCHAR]) -> TABLE(
 | `pii_type` | `VARCHAR` | The PII type found |
 | `match_count` | `BIGINT` | Number of matches |
 | `sample_values` | `VARCHAR[]` | Up to 5 matched values |
-| `confidence` | `DOUBLE` | Mean confidence of the matches: `1.0` for pattern types, the mean model score for NER types |
+| `confidence` | `DOUBLE` | Mean confidence of the matches: `1.0` for pattern types (lower when `anofox_pii_require_checksum = false` adds checksum failures at `0.6`), the mean model score for NER types |
 
 Rows come in table column order and, within a column, ordered by `pii_type`.
 
@@ -675,7 +747,9 @@ ORDER BY customer_id, column_name;
 
 Canonical name: `anofox_tab_pii_status`. Table function.
 
-Lists the registered recognizers.
+Lists the registered recognizers. `enabled` tells whether the type is detected under the
+current `anofox_pii_enabled_types`; with the default (empty) setting every type except
+`POSTAL_CODE` is enabled.
 
 ```text
 pii_status() -> TABLE(pii_type VARCHAR, recognizer_name VARCHAR, enabled BOOLEAN, pattern_info VARCHAR)
@@ -686,29 +760,33 @@ SELECT pii_type, recognizer_name, pattern_info FROM pii_status() ORDER BY pii_ty
 ```
 
 ```text
-┌────────────────┬─────────────────┬───────────────────────────────────────────────────────┐
-│    pii_type    │ recognizer_name │                     pattern_info                      │
-│    varchar     │     varchar     │                        varchar                        │
-├────────────────┼─────────────────┼───────────────────────────────────────────────────────┤
-│ API_KEY        │ API Key         │ AWS/GitHub tokens and high-entropy strings            │
-│ CREDIT_CARD    │ Credit Card     │ Visa/MC/Amex/Discover with Luhn validation            │
-│ CRYPTO_ADDRESS │ Crypto Address  │ Bitcoin (P2PKH/P2SH/SegWit) and Ethereum              │
-│ DE_TAX_ID      │ German Tax ID   │ 11-digit Steueridentifikationsnummer                  │
-│ EMAIL          │ Email           │ RFC 5322 email pattern                                │
-│ IBAN           │ IBAN            │ ISO 13616 with MOD-97 checksum                        │
-│ IP_ADDRESS     │ IP Address      │ IPv4 and IPv6 formats                                 │
-│ LOCATION       │ Unknown         │ No description                                        │
-│ MAC_ADDRESS    │ MAC Address     │ Colon/hyphen/dot formats; bare hex needs letter+digit │
-│ MISC           │ Unknown         │ No description                                        │
-│ NAME           │ Person Name     │ OpenVINO DistilBERT NER (92% F1)                      │
-│ ORGANIZATION   │ Unknown         │ No description                                        │
-│ PHONE          │ Phone           │ International (+XX, 00XX) and national (0XX) formats  │
-│ UK_NINO        │ UK NINO         │ UK National Insurance Number format                   │
-│ URL            │ URL             │ HTTP/HTTPS URLs                                       │
-│ US_PASSPORT    │ US Passport     │ Letter + 8 digits                                     │
-│ US_SSN         │ US SSN          │ XXX-XX-XXXX format with area validation               │
-└────────────────┴─────────────────┴───────────────────────────────────────────────────────┘
-  17 rows                                                                        3 columns
+┌────────────────┬────────────────────────────────┬───────────────────────────────────────────────────────────────────────────────────────────┐
+│    pii_type    │        recognizer_name         │                                       pattern_info                                        │
+│    varchar     │            varchar             │                                          varchar                                          │
+├────────────────┼────────────────────────────────┼───────────────────────────────────────────────────────────────────────────────────────────┤
+│ API_KEY        │ API Key                        │ AWS/GitHub tokens and high-entropy strings                                                │
+│ CREDIT_CARD    │ Credit Card                    │ Visa/MC/Amex/Discover with Luhn validation                                                │
+│ CRYPTO_ADDRESS │ Crypto Address                 │ Bitcoin (P2PKH/P2SH/SegWit) and Ethereum                                                  │
+│ DATE_OF_BIRTH  │ Date of Birth                  │ Date after a birth keyword (geb., Geburtsdatum, DOB, born on), real calendar date         │
+│ DE_ID_CARD     │ German ID Card / Passport      │ 9-character document number; check digit or keyword (Personalausweis, Reisepass) required │
+│ DE_SVNR        │ German Social Insurance Number │ Rentenversicherungsnummer with check digit                                                │
+│ DE_TAX_ID      │ German Tax ID                  │ 11-digit Steueridentifikationsnummer                                                      │
+│ EMAIL          │ Email                          │ RFC 5322 email pattern                                                                    │
+│ IBAN           │ IBAN                           │ ISO 13616 with MOD-97 checksum                                                            │
+│ IP_ADDRESS     │ IP Address                     │ IPv4 and IPv6 formats                                                                     │
+│ LOCATION       │ Unknown                        │ No description                                                                            │
+│ MAC_ADDRESS    │ MAC Address                    │ Colon/hyphen/dot formats; bare hex needs letter+digit                                     │
+│ MISC           │ Unknown                        │ No description                                                                            │
+│ NAME           │ Person Name                    │ OpenVINO DistilBERT NER (92% F1)                                                          │
+│ ORGANIZATION   │ Unknown                        │ No description                                                                            │
+│ PHONE          │ Phone                          │ International (+XX, 00XX) and national (0XX) formats                                      │
+│ POSTAL_CODE    │ Postal Code                    │ DE/AT/CH, NL and UK postcodes next to an address (off by default)                         │
+│ UK_NINO        │ UK NINO                        │ UK National Insurance Number format                                                       │
+│ URL            │ URL                            │ HTTP/HTTPS URLs                                                                           │
+│ US_PASSPORT    │ US Passport                    │ Letter + 8 digits                                                                         │
+│ US_SSN         │ US SSN                         │ XXX-XX-XXXX format with area validation                                                   │
+└────────────────┴────────────────────────────────┴───────────────────────────────────────────────────────────────────────────────────────────┘
+  21 rows                                                                                                                           3 columns
 ```
 
 ---
@@ -728,15 +806,16 @@ SELECT option_name, option_value FROM pii_config();
 ```
 
 ```text
-┌──────────────────────────────────┬──────────────┐
-│           option_name            │ option_value │
-│             varchar              │   varchar    │
-├──────────────────────────────────┼──────────────┤
-│ anofox_pii_min_confidence        │ 0.500000     │
-│ anofox_pii_default_mask_strategy │ REDACT       │
-│ anofox_pii_enabled_types         │ (all types)  │
-│ anofox_pii_deep_validation       │ false        │
-└──────────────────────────────────┴──────────────┘
+┌──────────────────────────────────┬────────────────────────────────┐
+│           option_name            │          option_value          │
+│             varchar              │            varchar             │
+├──────────────────────────────────┼────────────────────────────────┤
+│ anofox_pii_min_confidence        │ 0.500000                       │
+│ anofox_pii_default_mask_strategy │ REDACT                         │
+│ anofox_pii_enabled_types         │ (all types except POSTAL_CODE) │
+│ anofox_pii_deep_validation       │ false                          │
+│ anofox_pii_require_checksum      │ true                           │
+└──────────────────────────────────┴────────────────────────────────┘
 ```
 
 ---
@@ -830,7 +909,8 @@ need it, or on a sample first.
 
 | Setting | Purpose |
 |---------|---------|
-| `anofox_pii_enabled_types` | Comma-separated list of types to detect; empty means all. An unknown type is an error. |
+| `anofox_pii_enabled_types` | Comma-separated list of types to detect; empty means all types except `POSTAL_CODE`. `DEFAULT` stands for that default set (`'DEFAULT,POSTAL_CODE'`). An unknown type is an error. |
+| `anofox_pii_require_checksum` | `true` (default): an IBAN or card number must pass its checksum. `false`: values of the right shape that fail it are reported too, at confidence `0.6`, so mistyped account and card numbers are masked as well |
 | `anofox_pii_default_mask_strategy` | The strategy of `pii_redact_column(value)` and of `masked_value` in `pii_audit_table`; `none` is rejected |
 | `anofox_pii_min_confidence` | Minimum confidence of a match; dictionary name matches have 0.5, pattern matches 1.0 |
 | `anofox_pii_deep_validation` | Validate detected phone numbers with the built-in phone module |
@@ -856,6 +936,33 @@ SELECT pii_mask('anna@example.com, 123-45-6789, +1 (415) 555-1234') AS masked;
 ```
 
 ```sql
+RESET anofox_pii_enabled_types;
+```
+
+A mistyped IBAN (last digit wrong) or card number fails its checksum and is left in clear text.
+For masking before an export, turn the checksum requirement off. An IBAN must then still have
+the length registered for its country, which also decides where it ends; the validation
+functions (`pii_is_valid_iban`, ...) stay strict:
+
+```sql
+SET anofox_pii_enabled_types = 'IBAN,CREDIT_CARD';
+SET anofox_pii_require_checksum = false;
+SELECT m.type, m.text, m.confidence
+FROM (SELECT unnest(pii_detect('Erstattung auf DE89 3704 0044 0532 0130 01, Karte 4111 1111 1111 1112')) AS m);
+```
+
+```text
+┌─────────────┬─────────────────────────────┬────────────┐
+│    type     │            text             │ confidence │
+│   varchar   │           varchar           │   double   │
+├─────────────┼─────────────────────────────┼────────────┤
+│ IBAN        │ DE89 3704 0044 0532 0130 01 │        0.6 │
+│ CREDIT_CARD │ 4111 1111 1111 1112         │        0.6 │
+└─────────────┴─────────────────────────────┴────────────┘
+```
+
+```sql
+RESET anofox_pii_require_checksum;
 RESET anofox_pii_enabled_types;
 ```
 

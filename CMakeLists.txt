@@ -193,6 +193,7 @@ set(EXTENSION_SOURCES
         src/anofox_vat_country.cpp
         src/anofox_vat_checksum.cpp
         src/anofox_pii.cpp
+        src/anofox_pii_recognizers_extra.cpp
         src/anofox_ner.cpp
         src/anofox_curl_ca.cpp
 )

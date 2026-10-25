@@ -25,6 +25,9 @@ enum class PIIType {
     IP_ADDRESS,      // IPv4 and IPv6 addresses
     IBAN,            // International Bank Account Numbers
     DE_TAX_ID,       // German Tax ID (Steueridentifikationsnummer)
+    DATE_OF_BIRTH,   // A date following a birth keyword (geb., Geburtsdatum, DOB, born on)
+    DE_SVNR,         // German pension insurance number (Rentenversicherungsnummer)
+    DE_ID_CARD,      // German Personalausweis / Reisepass document number
     URL,             // HTTP/HTTPS URLs
     NAME,            // Person names (NER-based detection, PER entities)
     ORGANIZATION,    // Organization/company names (NER-based, ORG entities)
@@ -35,6 +38,7 @@ enum class PIIType {
     UK_NINO,
     MAC_ADDRESS,     // Network hardware addresses
     API_KEY,         // API keys (AWS, GitHub, generic)
+    POSTAL_CODE,     // DE/AT/CH, NL and UK postcodes in an address context (opt-in)
     UNKNOWN
 };
 
@@ -47,6 +51,12 @@ std::string PIITypeToString(PIIType type);
  * Convert string to PIIType (case-insensitive)
  */
 PIIType StringToPIIType(const std::string &str);
+
+/**
+ * True for types that are only detected when named explicitly (in
+ * anofox_pii_enabled_types or as a type argument), never by default
+ */
+bool IsOptInPIIType(PIIType type);
 
 /**
  * Masking strategies for PII
@@ -131,6 +141,15 @@ public:
      * @return Partially masked text (e.g., ***-**-1234 for SSN)
      */
     virtual std::string GetPartialMask(const std::string &text) const = 0;
+
+    /**
+     * Find values that have the shape of this type but fail its checksum.
+     * Only used when anofox_pii_require_checksum is false; the matches carry
+     * a lowered confidence. Default: none (types without a checksum).
+     */
+    virtual std::vector<PIIMatch> FindChecksumFailures(const std::string &text) const {
+        return {};
+    }
 };
 
 /**
@@ -162,6 +181,7 @@ public:
     ~CreditCardRecognizer() override;
     bool Validate(const std::string &text) const override;
     std::string GetPartialMask(const std::string &text) const override;
+    std::vector<PIIMatch> FindChecksumFailures(const std::string &text) const override;
 
 private:
     static bool LuhnCheck(const std::string &digits);
@@ -188,6 +208,7 @@ public:
     std::vector<PIIMatch> FindMatches(const std::string &text) const override;
     bool Validate(const std::string &text) const override;
     std::string GetPartialMask(const std::string &text) const override;
+    std::vector<PIIMatch> FindChecksumFailures(const std::string &text) const override;
 
 private:
     static bool Mod97Check(const std::string &iban);
@@ -311,6 +332,70 @@ private:
 };
 
 /**
+ * Date of birth recognizer: a date (DD.MM.YYYY, YYYY-MM-DD, DD/MM/YYYY,
+ * "12. März 1985", "March 12, 1985") that follows a birth keyword within a few
+ * words. Plain dates are not matched. Implemented in
+ * anofox_pii_recognizers_extra.cpp.
+ */
+class DateOfBirthRecognizer : public RegexRecognizer {
+public:
+    DateOfBirthRecognizer();
+    ~DateOfBirthRecognizer() override;
+    std::vector<PIIMatch> FindMatches(const std::string &text) const override;
+    bool Validate(const std::string &text) const override;
+    std::string GetPartialMask(const std::string &text) const override;
+
+private:
+    std::regex keyword_;
+};
+
+/**
+ * German pension insurance number (Rentenversicherungsnummer, often called
+ * Sozialversicherungsnummer): area, birth date, initial, serial, check digit
+ */
+class DESVNRRecognizer : public RegexRecognizer {
+public:
+    DESVNRRecognizer();
+    ~DESVNRRecognizer() override;
+    bool Validate(const std::string &text) const override;
+    std::string GetPartialMask(const std::string &text) const override;
+};
+
+/**
+ * German Personalausweis / Reisepass document number with the ICAO 9303
+ * check digit; without the check digit a keyword must precede it
+ */
+class DEIDCardRecognizer : public RegexRecognizer {
+public:
+    DEIDCardRecognizer();
+    ~DEIDCardRecognizer() override;
+    std::vector<PIIMatch> FindMatches(const std::string &text) const override;
+    bool Validate(const std::string &text) const override;
+    std::string GetPartialMask(const std::string &text) const override;
+
+private:
+    std::regex keyword_;
+};
+
+/**
+ * Postal codes (DE/AT/CH, NL, UK) in an address context. Opt-in type.
+ */
+class PostalCodeRecognizer : public RegexRecognizer {
+public:
+    PostalCodeRecognizer();
+    ~PostalCodeRecognizer() override;
+    std::vector<PIIMatch> FindMatches(const std::string &text) const override;
+    std::string GetPartialMask(const std::string &text) const override;
+
+private:
+    std::regex dach_;
+    std::regex nl_;
+    std::regex uk_;
+    std::regex keyword_;
+    std::regex street_;
+};
+
+/**
  * Person Name recognizer (NER-based detection, PER entities)
  * Uses OpenVINO DistilBERT NER model with dictionary fallback
  */
@@ -400,6 +485,7 @@ struct PIIConfigSnapshot {
     MaskStrategy default_mask_strategy = MaskStrategy::REDACT;
     std::vector<PIIType> enabled_types;  // Empty = all types enabled
     bool deep_validation = false;
+    bool require_checksum = true;  // false: report checksum failures (IBAN, card) at lower confidence
 
     bool IsTypeEnabled(PIIType type) const;
 };
@@ -606,6 +692,9 @@ public:
     bool IsDeepValidationEnabled() const;
     void SetDeepValidation(bool enabled);
 
+    // Checksum gate for IBAN and credit card matches
+    void SetRequireChecksum(bool enabled);
+
     // Configuration limits
     static constexpr double MIN_CONFIDENCE = 0.0;
     static constexpr double MAX_CONFIDENCE = 1.0;
@@ -623,6 +712,7 @@ private:
     MaskStrategy default_mask_strategy_;
     std::vector<PIIType> enabled_types_;  // Empty = all types
     bool deep_validation_ = false;        // Use email/phone validators
+    bool require_checksum_ = true;        // Drop IBAN/card matches failing the checksum
 };
 
 /**

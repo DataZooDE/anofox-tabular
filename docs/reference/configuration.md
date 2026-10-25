@@ -60,10 +60,11 @@ ORDER BY name;
 | `anofox_tab_postal_data_path` | `VARCHAR` | `.duckdb/extensions/libpostal` | [Postal](#postal) |
 | `anofox_tab_trace_enabled` | `BOOLEAN` | `true` | [Tracing](#tracing) |
 | `anofox_tab_trace_level` | `VARCHAR` | `info` | [Tracing](#tracing) |
-| `anofox_pii_enabled_types` | `VARCHAR` | empty (all types) | [PII](#pii) |
+| `anofox_pii_enabled_types` | `VARCHAR` | empty (all types except `POSTAL_CODE`) | [PII](#pii) |
 | `anofox_pii_min_confidence` | `DOUBLE` | `0.5` | [PII](#pii) |
 | `anofox_pii_default_mask_strategy` | `VARCHAR` | `redact` | [PII](#pii) |
 | `anofox_pii_deep_validation` | `BOOLEAN` | `false` | [PII](#pii) |
+| `anofox_pii_require_checksum` | `BOOLEAN` | `true` | [PII](#pii) |
 | `anofox_ner_auto_download` | `BOOLEAN` | `true` | [NER](#ner) |
 | `anofox_ner_model` | `VARCHAR` | `distilbert-en` | [NER](#ner) |
 | `anofox_ner_device` | `VARCHAR` | `AUTO` | [NER](#ner) |
@@ -154,10 +155,11 @@ Used by the [PII functions](../api/06-pii.md).
 
 | Setting | Effect |
 |---------|--------|
-| `anofox_pii_enabled_types` | Comma-separated list of PII types to detect, e.g. `'EMAIL,US_SSN'`. Empty means all types. All PII functions honor it, including `pii_mask`, `pii_scan_table` and `pii_audit_table`. |
+| `anofox_pii_enabled_types` | Comma-separated list of PII types to detect, e.g. `'EMAIL,US_SSN'`. Empty means all types except `POSTAL_CODE`, which is detected only when listed. `DEFAULT` stands for the default set, so `'DEFAULT,POSTAL_CODE'` adds postal codes. All PII functions honor it, including `pii_mask`, `pii_scan_table` and `pii_audit_table`; an explicit type argument (`pii_mask_column`) overrides it. |
 | `anofox_pii_min_confidence` | Matches below this confidence (0.0 to 1.0) are dropped. Pattern matches have confidence 1.0; dictionary name matches have 0.5. |
 | `anofox_pii_default_mask_strategy` | Strategy of `pii_redact_column(value)` without a strategy argument and of the `masked_value` column of `pii_audit_table`: `redact`, `hash`, `partial` or `asterisk` (case-insensitive). `none` is rejected, because a default that turns masking off would expose raw PII; pass `'none'` as an explicit argument instead. `pii_mask(text)` always redacts. |
 | `anofox_pii_deep_validation` | `true` validates detected phone numbers with the phone module |
+| `anofox_pii_require_checksum` | `true` (default) reports an IBAN or credit card number only when its checksum (MOD-97, Luhn) holds. `false` also reports values of the right shape whose checksum fails, at confidence `0.6`, so mistyped numbers are masked too; an IBAN must still have its country's length. `pii_is_valid_iban` and `pii_is_valid_credit_card` stay strict. A `anofox_pii_min_confidence` above 0.6 drops these matches again. |
 
 `pii_config()` lists the current PII values.
 

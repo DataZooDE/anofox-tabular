@@ -27,6 +27,7 @@
 #include <sstream>
 #include <iomanip>
 #include <cctype>
+#include <iterator>
 #include <cmath>
 #include <string_view>
 #include <openssl/sha.h>
@@ -168,8 +169,11 @@ std::string NormalizeForHash(PIIType type, const std::string &text) {
     case PIIType::US_SSN:
     case PIIType::DE_TAX_ID:
     case PIIType::IBAN:
-    case PIIType::UK_NINO: {
-        const bool upper = type == PIIType::IBAN || type == PIIType::UK_NINO;
+    case PIIType::UK_NINO:
+    case PIIType::DE_SVNR:
+    case PIIType::DE_ID_CARD: {
+        const bool upper = type == PIIType::IBAN || type == PIIType::UK_NINO || type == PIIType::DE_SVNR ||
+                           type == PIIType::DE_ID_CARD;
         std::string normalized;
         normalized.reserve(text.size());
         for (char c : text) {
@@ -215,6 +219,10 @@ std::string PIITypeToString(PIIType type) {
         case PIIType::UK_NINO: return "UK_NINO";
         case PIIType::MAC_ADDRESS: return "MAC_ADDRESS";
         case PIIType::API_KEY: return "API_KEY";
+        case PIIType::DATE_OF_BIRTH: return "DATE_OF_BIRTH";
+        case PIIType::DE_SVNR: return "DE_SVNR";
+        case PIIType::DE_ID_CARD: return "DE_ID_CARD";
+        case PIIType::POSTAL_CODE: return "POSTAL_CODE";
         default: return "UNKNOWN";
     }
 }
@@ -240,6 +248,10 @@ PIIType StringToPIIType(const std::string &str) {
     if (upper == "UK_NINO" || upper == "NINO") return PIIType::UK_NINO;
     if (upper == "MAC_ADDRESS" || upper == "MAC") return PIIType::MAC_ADDRESS;
     if (upper == "API_KEY" || upper == "APIKEY" || upper == "KEY") return PIIType::API_KEY;
+    if (upper == "DATE_OF_BIRTH" || upper == "DOB" || upper == "BIRTH_DATE") return PIIType::DATE_OF_BIRTH;
+    if (upper == "DE_SVNR" || upper == "SVNR" || upper == "RVNR") return PIIType::DE_SVNR;
+    if (upper == "DE_ID_CARD" || upper == "PERSONALAUSWEIS") return PIIType::DE_ID_CARD;
+    if (upper == "POSTAL_CODE" || upper == "POSTCODE" || upper == "ZIP" || upper == "PLZ") return PIIType::POSTAL_CODE;
     return PIIType::UNKNOWN;
 }
 
@@ -279,9 +291,14 @@ MaskStrategy ParseMaskStrategy(const std::string &str) {
 // PII Configuration Singleton
 // ============================================================================
 
+bool IsOptInPIIType(PIIType type) {
+    // POSTAL_CODE: too many plain 4-5 digit numbers look like one
+    return type == PIIType::POSTAL_CODE;
+}
+
 bool PIIConfigSnapshot::IsTypeEnabled(PIIType type) const {
     if (enabled_types.empty()) {
-        return true;  // All types enabled when empty
+        return !IsOptInPIIType(type);  // Default set: all types except opt-in ones
     }
     return std::find(enabled_types.begin(), enabled_types.end(), type) != enabled_types.end();
 }
@@ -304,6 +321,7 @@ PIIConfigSnapshot PIIConfig::Snapshot() const {
     snapshot.default_mask_strategy = default_mask_strategy_;
     snapshot.enabled_types = enabled_types_;
     snapshot.deep_validation = deep_validation_;
+    snapshot.require_checksum = require_checksum_;
     return snapshot;
 }
 
@@ -351,11 +369,25 @@ void PIIConfig::SetEnabledTypes(const std::string &types_csv) {
         StringUtil::Trim(token);
         if (token.empty()) continue;
 
+        // DEFAULT expands to the default set (every type except opt-in ones),
+        // so 'DEFAULT,POSTAL_CODE' adds an opt-in type to it
+        if (StringUtil::Upper(token) == "DEFAULT") {
+            for (int t = 0; t < static_cast<int>(PIIType::UNKNOWN); t++) {
+                const auto type = static_cast<PIIType>(t);
+                if (!IsOptInPIIType(type) &&
+                    std::find(parsed_types.begin(), parsed_types.end(), type) == parsed_types.end()) {
+                    parsed_types.push_back(type);
+                }
+            }
+            continue;
+        }
         auto pii_type = StringToPIIType(token);
         if (pii_type == PIIType::UNKNOWN) {
             throw InvalidInputException("Unknown PII type: " + token);
         }
-        parsed_types.push_back(pii_type);
+        if (std::find(parsed_types.begin(), parsed_types.end(), pii_type) == parsed_types.end()) {
+            parsed_types.push_back(pii_type);
+        }
     }
 
     std::lock_guard<std::mutex> guard(mutex_);
@@ -370,6 +402,11 @@ bool PIIConfig::IsDeepValidationEnabled() const {
 void PIIConfig::SetDeepValidation(bool enabled) {
     std::lock_guard<std::mutex> guard(mutex_);
     deep_validation_ = enabled;
+}
+
+void PIIConfig::SetRequireChecksum(bool enabled) {
+    std::lock_guard<std::mutex> guard(mutex_);
+    require_checksum_ = enabled;
 }
 
 // ============================================================================
@@ -1904,6 +1941,12 @@ void PIIEngine::InitializeDefaultRecognizers() {
     recognizers_.push_back(std::make_unique<CryptoAddressRecognizer>());
     recognizers_.push_back(std::make_unique<APIKeyRecognizer>());
 
+    // German insurance data (F24): context-gated or checksum-validated
+    recognizers_.push_back(std::make_unique<DateOfBirthRecognizer>());
+    recognizers_.push_back(std::make_unique<DESVNRRecognizer>());
+    recognizers_.push_back(std::make_unique<DEIDCardRecognizer>());
+    recognizers_.push_back(std::make_unique<PostalCodeRecognizer>());  // opt-in
+
     // NER-based recognizers (Person, Organization, Location, Misc entities)
     recognizers_.push_back(std::make_unique<NameRecognizer>());          // PER entities
     recognizers_.push_back(std::make_unique<OrganizationRecognizer>());  // ORG entities
@@ -1972,14 +2015,21 @@ std::vector<PIIMatch> PIIEngine::Detect(
     std::vector<PIIMatch> all_matches;
 
     for (const auto &recognizer : recognizers_) {
-        // Filter by types if specified
-        if (!effective_types.empty() &&
-            std::find(effective_types.begin(), effective_types.end(),
-                      recognizer->GetType()) == effective_types.end()) {
+        // Filter by types if specified; without a filter, opt-in types stay off
+        const auto type = recognizer->GetType();
+        if (effective_types.empty() ? IsOptInPIIType(type)
+                                    : std::find(effective_types.begin(), effective_types.end(), type) ==
+                                          effective_types.end()) {
             continue;
         }
 
         auto matches = recognizer->FindMatches(text);
+        if (!config.require_checksum) {
+            // anofox_pii_require_checksum = false: also report values whose
+            // checksum fails (mistyped IBANs, card numbers) at lower confidence
+            auto failures = recognizer->FindChecksumFailures(text);
+            std::move(failures.begin(), failures.end(), std::back_inserter(matches));
+        }
         for (auto &match : matches) {
             // Apply the configured minimum confidence threshold centrally
             if (match.confidence < config.min_confidence) {
@@ -2725,6 +2775,10 @@ void PIIStatusFunction(ClientContext &, TableFunctionInput &input, DataChunk &ou
         {PIIType::UK_NINO, "UK NINO"},
         {PIIType::MAC_ADDRESS, "MAC Address"},
         {PIIType::API_KEY, "API Key"},
+        {PIIType::DATE_OF_BIRTH, "Date of Birth"},
+        {PIIType::DE_SVNR, "German Social Insurance Number"},
+        {PIIType::DE_ID_CARD, "German ID Card / Passport"},
+        {PIIType::POSTAL_CODE, "Postal Code"},
         {PIIType::UNKNOWN, "Unknown"}
     };
 
@@ -2747,8 +2801,14 @@ void PIIStatusFunction(ClientContext &, TableFunctionInput &input, DataChunk &ou
         {PIIType::UK_NINO, "UK National Insurance Number format"},
         {PIIType::MAC_ADDRESS, "Colon/hyphen/dot formats; bare hex needs letter+digit"},
         {PIIType::API_KEY, "AWS/GitHub tokens and high-entropy strings"},
+        {PIIType::DATE_OF_BIRTH, "Date after a birth keyword (geb., Geburtsdatum, DOB, born on), real calendar date"},
+        {PIIType::DE_SVNR, "Rentenversicherungsnummer with check digit"},
+        {PIIType::DE_ID_CARD, "9-character document number; check digit or keyword (Personalausweis, Reisepass) required"},
+        {PIIType::POSTAL_CODE, "DE/AT/CH, NL and UK postcodes next to an address (off by default)"},
         {PIIType::UNKNOWN, "Unknown pattern"}
     };
+
+    const auto config = PIIConfig::Get().Snapshot();
 
     // Calculate how many rows to output in this batch
     idx_t remaining = state.types.size() - state.current_index;
@@ -2767,8 +2827,8 @@ void PIIStatusFunction(ClientContext &, TableFunctionInput &input, DataChunk &ou
         std::string name = (name_it != recognizer_names.end()) ? name_it->second : "Unknown";
         output.SetValue(1, i, Value(name));
 
-        // Column 2: enabled (always true - no disable mechanism)
-        output.SetValue(2, i, Value::BOOLEAN(true));
+        // Column 2: enabled under anofox_pii_enabled_types (opt-in types are off by default)
+        output.SetValue(2, i, Value::BOOLEAN(config.IsTypeEnabled(type)));
 
         // Column 3: pattern_info
         auto info_it = pattern_info.find(type);
@@ -3583,6 +3643,13 @@ void SetPIIEnabledTypesOption(ClientContext &, SetScope, Value &parameter) {
     parameter = Value(PIIConfig::Get().GetEnabledTypesString());
 }
 
+void SetPIIRequireChecksumOption(ClientContext &, SetScope, Value &parameter) {
+    if (parameter.IsNull()) {
+        throw InvalidInputException("anofox_pii_require_checksum cannot be NULL");
+    }
+    PIIConfig::Get().SetRequireChecksum(BooleanValue::Get(parameter));
+}
+
 void SetPIIDeepValidationOption(ClientContext &, SetScope, Value &parameter) {
     if (parameter.IsNull()) {
         throw InvalidInputException("anofox_pii_deep_validation cannot be NULL");
@@ -3641,11 +3708,14 @@ void PIIConfigFunction(ClientContext &, TableFunctionInput &input, DataChunk &ou
          MaskStrategyToString(config.default_mask_strategy),
          "Default masking strategy (REDACT, HASH, PARTIAL, ASTERISK; NONE is rejected)"},
         {"anofox_pii_enabled_types",
-         enabled_types_str.empty() ? "(all types)" : enabled_types_str,
-         "Comma-separated list of PII types to detect (empty = all)"},
+         enabled_types_str.empty() ? "(all types except POSTAL_CODE)" : enabled_types_str,
+         "Comma-separated list of PII types to detect (empty = all types except POSTAL_CODE)"},
         {"anofox_pii_deep_validation",
          config.deep_validation ? "true" : "false",
-         "Enable deep validation using libphonenumber for phone numbers"}
+         "Enable deep validation using libphonenumber for phone numbers"},
+        {"anofox_pii_require_checksum",
+         config.require_checksum ? "true" : "false",
+         "Drop IBAN and credit card matches that fail their checksum (false: report them at confidence 0.6)"}
     };
 
     if (state.current_row >= options.size()) {
@@ -3693,7 +3763,7 @@ void RegisterPIIOptions(ExtensionLoader &loader) {
                               SetPIIDefaultMaskStrategyOption);
 
     config.AddExtensionOption("anofox_pii_enabled_types",
-                              "Comma-separated list of PII types to detect (empty = all)",
+                              "Comma-separated list of PII types to detect (empty = all types except POSTAL_CODE)",
                               LogicalTypeId::VARCHAR,
                               Value(""),
                               SetPIIEnabledTypesOption);
@@ -3703,6 +3773,13 @@ void RegisterPIIOptions(ExtensionLoader &loader) {
                               LogicalTypeId::BOOLEAN,
                               Value::BOOLEAN(false),
                               SetPIIDeepValidationOption);
+
+    config.AddExtensionOption("anofox_pii_require_checksum",
+                              "Drop IBAN and credit card matches that fail their checksum (false: report them "
+                              "at confidence 0.6 so mistyped values can still be masked)",
+                              LogicalTypeId::BOOLEAN,
+                              Value::BOOLEAN(true),
+                              SetPIIRequireChecksumOption);
 
     AnofoxTrace(AnofoxLogLevel::Info, "PII configuration options registered");
 }
