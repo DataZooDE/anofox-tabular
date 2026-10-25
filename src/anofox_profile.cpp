@@ -99,8 +99,11 @@ static bool IsComplexCategory(ColumnCategory cat) {
 // Schema introspection
 //===--------------------------------------------------------------------===//
 
-static vector<pair<string, string>> IntrospectColumns(Connection &con, const string &table_name,
-                                                       const vector<string> &filter) {
+// The columns of `table_name` (name, type) in table order. A non-empty `filter` restricts
+// them to the named columns; names match case-insensitively like DuckDB identifiers, and an
+// unknown name is an error naming `function_name` instead of a silent miss.
+static vector<pair<string, string>> IntrospectColumns(Connection &con, const string &function_name,
+                                                       const string &table_name, const vector<string> &filter) {
 	vector<pair<string, string>> result;
 
 	string sql = "SELECT * FROM query_table('" + EscapeStringLiteral(table_name) + "') LIMIT 0";
@@ -111,17 +114,16 @@ static vector<pair<string, string>> IntrospectColumns(Connection &con, const str
 	}
 
 	auto res_names = duckdb_compat::ResultNames(*res);
-	for (idx_t i = 0; i < res_names.size(); i++) {
-		string col_name = res_names[i];
-		string col_type = duckdb_compat::ResultTypes(*res)[i].ToString();
-
-		if (!filter.empty()) {
-			bool found = std::find(filter.begin(), filter.end(), col_name) != filter.end();
-			if (!found) {
-				continue;
-			}
+	vector<string> available_names(res_names.begin(), res_names.end());
+	vector<bool> selected(available_names.size(), filter.empty());
+	for (auto idx : MatchColumnNames(function_name, table_name, available_names, filter)) {
+		selected[idx] = true;
+	}
+	for (idx_t i = 0; i < available_names.size(); i++) {
+		if (!selected[i]) {
+			continue;
 		}
-		result.push_back({col_name, col_type});
+		result.push_back({available_names[i], duckdb_compat::ResultTypes(*res)[i].ToString()});
 	}
 
 	return result;
@@ -218,7 +220,7 @@ static unique_ptr<TableRef> ProfileSummaryBindReplace(ClientContext &context,
 
 	// Open a sibling connection to introspect columns and compute null counts at bind time.
 	Connection con(*context.db);
-	auto columns = IntrospectColumns(con, table_name, {});
+	auto columns = IntrospectColumns(con, "profile_summary", table_name, {});
 
 	int64_t column_count = 0;
 	int64_t numeric_columns = 0;
@@ -561,7 +563,7 @@ static void ProfileTableExecute(ClientContext &context, TableFunctionInput &data
 		int64_t actual_sample_size = is_sampled ? bind_data.sample_size : actual_row_count;
 
 		// Introspect columns
-		auto columns = IntrospectColumns(con, bind_data.table_name, bind_data.columns);
+		auto columns = IntrospectColumns(con, "profile_table", bind_data.table_name, bind_data.columns);
 		if (columns.empty()) {
 			return;
 		}
@@ -684,7 +686,7 @@ static void ProfileCorrelationsExecute(ClientContext &context, TableFunctionInpu
 		Connection con(*context.db);
 
 		// Get all (or filtered) numeric columns
-		auto all_cols = IntrospectColumns(con, bind_data.table_name, bind_data.columns);
+		auto all_cols = IntrospectColumns(con, "profile_correlations", bind_data.table_name, bind_data.columns);
 		vector<string> numeric_cols;
 		for (auto &[name, type] : all_cols) {
 			if (ClassifyColumn(type) == ColumnCategory::NUMERIC) {

@@ -2631,7 +2631,9 @@ struct PIIAuditTableBindData : public TableFunctionData {
         : table_name(table), column_filter(cols) {}
 };
 
-// Resolve the VARCHAR columns of a table or view, optionally restricted to a filter list.
+// Resolve the columns to scan of a table or view. Without a filter: every VARCHAR column
+// (JSON included). With a filter: exactly the named columns, matched case-insensitively and of
+// any type (the scan queries cast them to VARCHAR); an unknown name is an error.
 // Shared by pii_audit_table and pii_scan_table. The relation is bound with a sibling
 // connection (LIMIT 0 reads no rows), the same way the scan itself reads it; a catalog
 // lookup would only find tables, and casting a view entry to a table entry crashed.
@@ -2645,18 +2647,25 @@ static std::vector<std::string> ResolvePIIScanColumns(ClientContext &context, co
     }
     auto result_names = duckdb_compat::ResultNames(*result);
     auto &result_types = duckdb_compat::ResultTypes(*result);
+    vector<std::string> available_names(result_names.begin(), result_names.end());
+
+    std::vector<bool> selected(available_names.size(), false);
+    if (column_filter.empty()) {
+        for (idx_t i = 0; i < available_names.size(); i++) {
+            selected[i] = result_types[i].id() == LogicalTypeId::VARCHAR;
+        }
+    } else {
+        for (auto idx : MatchColumnNames(function_name, table_name, available_names,
+                                             vector<std::string>(column_filter.begin(), column_filter.end()))) {
+            selected[idx] = true;
+        }
+    }
 
     std::vector<std::string> columns;
-    for (idx_t i = 0; i < result_names.size(); i++) {
-        if (result_types[i].id() != LogicalTypeId::VARCHAR) {
-            continue;
+    for (idx_t i = 0; i < available_names.size(); i++) {
+        if (selected[i]) {
+            columns.push_back(available_names[i]);
         }
-        std::string name = result_names[i];
-        if (!column_filter.empty() &&
-            std::find(column_filter.begin(), column_filter.end(), name) == column_filter.end()) {
-            continue;
-        }
-        columns.push_back(std::move(name));
     }
     return columns;
 }
@@ -2727,6 +2736,11 @@ unique_ptr<FunctionData> PIIAuditTableBind(ClientContext &context, TableFunction
             }
         }
     }
+    // Resolve the filter now so an unknown column is a bind error; the scan uses the
+    // table's own spelling of each name
+    if (!column_filter.empty()) {
+        column_filter = ResolvePIIScanColumns(context, "pii_audit_table", table_name, column_filter);
+    }
 
     // Define output columns matching PIIAuditResult struct
     names.emplace_back("row_id");
@@ -2792,7 +2806,8 @@ void PIIAuditTableFunction(ClientContext &context, TableFunctionInput &input, Da
                 const auto &col_name = state.columns_to_scan[state.column_idx];
                 // The id column (if any) is read in the same query as the
                 // audited column, so each id stays with its own row
-                std::string query = "SELECT " + QuoteSqlIdentifier(col_name) + bind_data.id_column.SelectSuffix() +
+                std::string query = "SELECT CAST(" + QuoteSqlIdentifier(col_name) + " AS VARCHAR)" +
+                                    bind_data.id_column.SelectSuffix() +
                                     " FROM " + BuildQueryTableRef(bind_data.table_name);
 
                 // Execute as a streaming query on a dedicated connection
@@ -2994,6 +3009,11 @@ unique_ptr<FunctionData> PIIScanTableBind(ClientContext &context, TableFunctionB
             }
         }
     }
+    // Resolve the filter now so an unknown column is a bind error; the scan uses the
+    // table's own spelling of each name
+    if (!column_filter.empty()) {
+        column_filter = ResolvePIIScanColumns(context, "pii_scan_table", table_name, column_filter);
+    }
 
     // Define output columns
     names.emplace_back("column_name");
@@ -3040,7 +3060,7 @@ void PIIScanTableFunction(ClientContext &context, TableFunctionInput &input, Dat
             state.column_idx++;
 
             // Build query to get the non-NULL column values
-            std::string query = "SELECT " + QuoteSqlIdentifier(col_name) + " FROM " +
+            std::string query = "SELECT CAST(" + QuoteSqlIdentifier(col_name) + " AS VARCHAR) FROM " +
                                 BuildQueryTableRef(bind_data.table_name) + " WHERE " +
                                 QuoteSqlIdentifier(col_name) + " IS NOT NULL";
 

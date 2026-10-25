@@ -236,9 +236,9 @@ static string GenerateSchemaSQL(const string &table_name, const vector<string> &
 	       "  SELECT column_name"
 	       "  FROM (DESCRIBE SELECT * FROM " + BuildQueryTableRef(table_name) + ")"
 	       "), missing AS ("
-	       "  SELECT col FROM required"
-	       "  EXCEPT"
-	       "  SELECT col FROM actual"
+	       // Column names match case-insensitively, like DuckDB identifiers
+	       "  SELECT DISTINCT col FROM required r"
+	       "  WHERE NOT EXISTS (SELECT 1 FROM actual a WHERE lower(a.col) = lower(r.col))"
 	       "), missing_stats AS ("
 	       "  SELECT"
 	       "    COALESCE(COUNT(*), 0) AS missing_count,"

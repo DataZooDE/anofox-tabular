@@ -32,5 +32,24 @@ void ValidateFiniteDouble(const Value &value, const string &function_name, const
 // Parse a comma-separated column list, trimming whitespace and surrounding quotes.
 vector<string> ParseCommaSeparatedColumns(const string &columns_str);
 
+// A column of a table as resolved by ResolveColumns: the table's own spelling and its type.
+struct ResolvedColumn {
+	string name;
+	LogicalType type;
+};
+
+// Match `requested` column names against the columns of a relation (`available_names`)
+// case-insensitively, like DuckDB's own identifier resolution. Returns the index into
+// `available_names` of each requested name, in request order. An unknown name throws
+// BinderException("<function_name>: column '<name>' not found in table '<table_name>' ...").
+vector<idx_t> MatchColumnNames(const string &function_name, const string &table_name,
+                               const vector<string> &available_names, const vector<string> &requested);
+
+// Resolve `requested` column names of `table_name` (see MatchColumnNames). The relation is
+// bound with a sibling connection (LIMIT 0 reads no rows), so like the functions that read
+// through such a connection it cannot see TEMP tables of the calling connection.
+vector<ResolvedColumn> ResolveColumns(ClientContext &context, const string &function_name, const string &table_name,
+                                      const vector<string> &requested);
+
 } // namespace anofox
 } // namespace duckdb

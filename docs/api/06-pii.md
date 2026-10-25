@@ -481,7 +481,7 @@ pii_scan_table(table_name VARCHAR [, columns VARCHAR]) -> TABLE(
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `table_name` | `VARCHAR` | required | The table to scan |
-| `columns` | `VARCHAR` | all `VARCHAR` columns | Comma-separated column names |
+| `columns` | `VARCHAR` | all `VARCHAR` columns (`JSON` included) | Comma-separated column names. Names match case-insensitively; an unknown name is an error. A named column of another type (`BIGINT`, `STRUCT`, `LIST`, ...) is cast to `VARCHAR` and scanned |
 
 | Column | Type | Description |
 |--------|------|-------------|
@@ -566,7 +566,7 @@ pii_audit_table(table_name VARCHAR [, columns VARCHAR] [, id_column := VARCHAR])
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `table_name` | `VARCHAR` | required | The table to audit |
-| `columns` | `VARCHAR` | all `VARCHAR` columns | Comma-separated column names |
+| `columns` | `VARCHAR` | all `VARCHAR` columns (`JSON` included) | Comma-separated column names. Names match case-insensitively; an unknown name is an error. A named column of another type (`BIGINT`, `STRUCT`, `LIST`, ...) is cast to `VARCHAR` and scanned |
 | `id_column` | `VARCHAR`, named only | none | A column whose value is added after `row_id`, under its own name and type |
 
 | Column | Type | Description |

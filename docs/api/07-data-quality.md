@@ -184,7 +184,7 @@ schema_check(table_name VARCHAR, required_columns VARCHAR[])
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `table_name` | `VARCHAR` | required | Table or view |
-| `required_columns` | `VARCHAR[]` | required | Column names that must exist |
+| `required_columns` | `VARCHAR[]` | required | Column names that must exist; matched case-insensitively, like DuckDB identifiers |
 
 ```sql
 SELECT * FROM schema_check('orders', ['order_id', 'order_date', 'discount']);

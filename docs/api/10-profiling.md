@@ -52,7 +52,7 @@ profile_table(
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `table_name` | `VARCHAR` | required | Table or view to profile |
-| `columns` | `VARCHAR[]` | all columns | Columns to profile. `NULL` keeps the default |
+| `columns` | `VARCHAR[]` | all columns | Columns to profile, in table order. Names match case-insensitively; an unknown name is an error. `NULL` keeps the default |
 | `sample_size` | `BIGINT` | `1000000` | Profile a sample of this many rows when the table is larger. Must be positive. `NULL` keeps the default |
 | `exact` | `BOOLEAN` | `false` | `true` scans every row even when the table is larger than `sample_size` |
 
@@ -227,7 +227,7 @@ profile_correlations(table_name VARCHAR [, columns VARCHAR[]])
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `table_name` | `VARCHAR` | required | Table or view |
-| `columns` | `VARCHAR[]` | all numeric columns | Columns to correlate |
+| `columns` | `VARCHAR[]` | all numeric columns | Columns to correlate; non-numeric ones are skipped. Names match case-insensitively; an unknown name is an error |
 
 | Column | Type | Description |
 |--------|------|-------------|

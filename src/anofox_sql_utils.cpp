@@ -1,7 +1,11 @@
 #include "anofox_sql_utils.hpp"
 
+#include "anofox_trace.hpp"
 #include "duckdb/common/exception.hpp"
+#include "duckdb/common/string_util.hpp"
+#include "duckdb_compat.hpp"
 
+#include <algorithm>
 #include <cmath>
 
 namespace duckdb {
@@ -111,6 +115,42 @@ vector<string> ParseCommaSeparatedColumns(const string &columns_str) {
 		}
 	}
 	return column_names;
+}
+
+vector<idx_t> MatchColumnNames(const string &function_name, const string &table_name,
+                               const vector<string> &available_names, const vector<string> &requested) {
+	vector<idx_t> indexes;
+	indexes.reserve(requested.size());
+	for (const auto &name : requested) {
+		auto match = std::find_if(available_names.begin(), available_names.end(),
+		                          [&](const string &candidate) { return StringUtil::CIEquals(candidate, name); });
+		if (match == available_names.end()) {
+			throw BinderException("%s: column '%s' not found in table '%s' (available columns: %s)", function_name,
+			                      name, table_name, StringUtil::Join(available_names, ", "));
+		}
+		indexes.push_back(static_cast<idx_t>(match - available_names.begin()));
+	}
+	return indexes;
+}
+
+vector<ResolvedColumn> ResolveColumns(ClientContext &context, const string &function_name, const string &table_name,
+                                      const vector<string> &requested) {
+	Connection con(*context.db);
+	auto result = con.Query("SELECT * FROM " + BuildQueryTableRef(table_name) + " LIMIT 0");
+	if (result->HasError()) {
+		throw BinderException("%s: cannot read table '%s': %s", function_name, table_name, result->GetError());
+	}
+	auto result_names = duckdb_compat::ResultNames(*result);
+	vector<string> available_names(result_names.begin(), result_names.end());
+	auto &result_types = duckdb_compat::ResultTypes(*result);
+
+	vector<ResolvedColumn> columns;
+	for (auto idx : MatchColumnNames(function_name, table_name, available_names, requested)) {
+		columns.push_back({available_names[idx], result_types[idx]});
+	}
+	AnofoxTrace(AnofoxLogLevel::Debug, function_name + ": resolved " + std::to_string(columns.size()) +
+	                                       " column(s) of '" + table_name + "'");
+	return columns;
 }
 
 } // namespace anofox
