@@ -5,7 +5,7 @@ PII detection, masking, and scanning wrappers.
 from __future__ import annotations
 
 import json
-from typing import Any, Optional, Union
+from typing import Any, Optional, Sequence, Union
 
 from ._sql import fetch_frame, fetch_one, id_column_arg, quote_ident
 from ._table import apply_scalar
@@ -97,7 +97,7 @@ def pii_contains(
 def pii_scan_table(
     conn: Any,
     table_name: str,
-    columns: Optional[list[str]] = None,
+    columns: Union[str, Sequence[str], None] = None,
 ) -> Any:
     """
     Scan all (or selected) string columns of a table for PII.
@@ -111,12 +111,12 @@ def pii_scan_table(
     table_name:
         Name of the DuckDB table or view.
     columns:
-        Specific columns to scan.  When *None* all text columns are
+        Specific columns to scan, as a list or a comma-separated string.  When *None* all text columns are
         scanned (extension default behaviour).
     """
     params: list = [table_name]
     if columns is not None:
-        params.append(",".join(columns))
+        params.append(columns if isinstance(columns, str) else ",".join(columns))
     placeholders = ", ".join("?" for _ in params)
     return fetch_frame(conn, f"SELECT * FROM anofox_tab_pii_scan_table({placeholders})", params)
 
@@ -124,7 +124,7 @@ def pii_scan_table(
 def pii_audit_table(
     conn: Any,
     table_name: str,
-    columns: Optional[list[str]] = None,
+    columns: Union[str, Sequence[str], None] = None,
     id_column: Optional[str] = None,
 ) -> Any:
     """
@@ -137,7 +137,7 @@ def pii_audit_table(
     table_name:
         Name of the DuckDB table or view.
     columns:
-        Specific columns to audit.
+        Specific columns to audit, as a list or a comma-separated string.
     id_column:
         Optional identifier column whose value is added to every audit row,
         directly after ``row_id``.
@@ -149,7 +149,7 @@ def pii_audit_table(
     """
     params: list = [table_name]
     if columns is not None:
-        params.append(",".join(columns))
+        params.append(columns if isinstance(columns, str) else ",".join(columns))
     placeholders = ", ".join("?" for _ in params)
     id_arg = id_column_arg(id_column, params)
     return fetch_frame(

@@ -133,3 +133,17 @@ class TestPiiAuditTable:
         assert list(result.columns[:2]) == ["row_id", "id"]
         # Only row 1 contains PII
         assert set(result["id"]) == {1}
+
+
+class TestPiiTableColumnsArgument:
+    def test_scan_columns_as_string(self, conn, text_table):
+        from anofox import pii
+        as_list = pii.pii_scan_table(conn, text_table, columns=["text"])
+        as_string = pii.pii_scan_table(conn, text_table, columns="text")
+        assert as_string.equals(as_list)
+
+    def test_audit_columns_as_string(self, conn, text_table):
+        from anofox import pii
+        as_list = pii.pii_audit_table(conn, text_table, columns=["text"])
+        as_string = pii.pii_audit_table(conn, text_table, columns="text")
+        assert as_string.equals(as_list)

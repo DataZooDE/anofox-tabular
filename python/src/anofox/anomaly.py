@@ -9,7 +9,7 @@ pandas otherwise.
 
 from __future__ import annotations
 
-from typing import Any, Optional, Union
+from typing import Any, Optional, Sequence, Union
 
 from ._sql import fetch_frame, id_column_arg
 from ._table import cleanup_table, output_df_type, resolve_table
@@ -74,7 +74,7 @@ def isolation_forest(
 def isolation_forest_mv(
     conn: Any,
     table_or_df: Union[str, Any],
-    columns: list[str],
+    columns: Union[str, Sequence[str]],
     output_mode: str = "summary",
     n_trees: int = 100,
     sample_size: Optional[int] = None,
@@ -93,7 +93,8 @@ def isolation_forest_mv(
     table_or_df:
         Table name string or a pandas/polars DataFrame.
     columns:
-        List of numeric column names to include.
+        Column names as a list, or as one comma-separated string such as
+        ``"amount, items"``.
     output_mode:
         ``"summary"`` → dict; ``"scores"`` → DataFrame.
     n_trees:
@@ -116,7 +117,7 @@ def isolation_forest_mv(
     """
     _check_output_mode("isolation_forest_mv", output_mode)
     table_name, registered = resolve_table(conn, table_or_df)
-    cols_csv = ",".join(columns)
+    cols_csv = _columns_csv(columns)
     try:
         params = [table_name, cols_csv, n_trees, sample_size, contamination, output_mode, seed, ndim]
         query = (
@@ -180,7 +181,7 @@ def dbscan(
 def dbscan_mv(
     conn: Any,
     table_or_df: Union[str, Any],
-    columns: list[str],
+    columns: Union[str, Sequence[str]],
     output_mode: str = "summary",
     epsilon: float = 0.5,
     min_points: int = 5,
@@ -196,7 +197,7 @@ def dbscan_mv(
     table_or_df:
         Table name string or a pandas/polars DataFrame.
     columns:
-        List of numeric column names.
+        Numeric column names as a list, or as one comma-separated string.
     output_mode:
         ``"summary"`` → dict; ``"scores"`` (or ``"clusters"``) → DataFrame
         with one row per input row.
@@ -211,7 +212,7 @@ def dbscan_mv(
     """
     _check_output_mode("dbscan_mv", output_mode)
     table_name, registered = resolve_table(conn, table_or_df)
-    cols_csv = ",".join(columns)
+    cols_csv = _columns_csv(columns)
     sql_mode = "clusters" if output_mode == "scores" else output_mode
     try:
         params = [table_name, cols_csv, epsilon, min_points, sql_mode]
@@ -227,7 +228,7 @@ def dbscan_mv(
 def outlier_tree(
     conn: Any,
     table_or_df: Union[str, Any],
-    columns: Union[str, list[str]],
+    columns: Union[str, Sequence[str]],
     output_mode: str = "summary",
     max_depth: Optional[int] = None,
     max_perc_outliers: Optional[float] = None,
@@ -247,7 +248,7 @@ def outlier_tree(
     table_or_df:
         Table name string or a pandas/polars DataFrame.
     columns:
-        Column name or list of column names to analyse.
+        Column names as a list, or as one comma-separated string.
     output_mode:
         ``"summary"`` → dict with counts; ``"outliers"`` → DataFrame with
         per-row explanations.
@@ -279,10 +280,7 @@ def outlier_tree(
     """
     _check_output_mode("outlier_tree", output_mode)
     table_name, registered = resolve_table(conn, table_or_df)
-    if isinstance(columns, list):
-        cols_csv = ",".join(columns)
-    else:
-        cols_csv = columns
+    cols_csv = _columns_csv(columns)
     try:
         params = [table_name, cols_csv, output_mode, max_depth, max_perc_outliers,
                   min_size_numeric, min_size_categ, z_norm, z_outlier]
@@ -294,6 +292,13 @@ def outlier_tree(
         return _execute_anomaly(conn, query, params, output_mode, output_df_type(table_or_df))
     finally:
         cleanup_table(conn, table_name, registered)
+
+
+def _columns_csv(columns: Union[str, Sequence[str]]) -> str:
+    """The comma-separated column list the extension expects, from a string or a sequence."""
+    if isinstance(columns, str):
+        return columns
+    return ",".join(columns)
 
 
 _OUTPUT_MODES = {

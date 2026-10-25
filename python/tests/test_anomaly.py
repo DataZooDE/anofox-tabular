@@ -287,3 +287,34 @@ class TestIsolationForestSeed:
         ).fetchall()
         py = anomaly.isolation_forest_mv(conn, numeric_table, ["x", "y"], output_mode="scores", seed=5, ndim=2)
         assert py["anomaly_score"].tolist() == [r[0] for r in sql]
+
+
+@pytest.fixture(scope="module")
+def orders_table(conn):
+    conn.execute(
+        "CREATE OR REPLACE TABLE _orders AS "
+        "SELECT i::DOUBLE AS amount, (i % 7)::DOUBLE AS items FROM range(1, 61) t(i)"
+    )
+    yield "_orders"
+    conn.execute("DROP TABLE IF EXISTS _orders")
+
+
+class TestColumnsArgument:
+    """The multi-column functions take a list or a comma-separated string."""
+
+    @pytest.mark.parametrize("func,extra", [
+        ("isolation_forest_mv", {"seed": 1}),
+        ("dbscan_mv", {}),
+        ("outlier_tree", {}),
+    ])
+    def test_string_equals_list(self, conn, orders_table, func, extra):
+        from anofox import anomaly
+        f = getattr(anomaly, func)
+        as_list = f(conn, orders_table, ["amount", "items"], **extra)
+        as_string = f(conn, orders_table, "amount,items", **extra)
+        assert as_string == as_list
+        assert as_string.get("n_columns", as_string.get("columns_analyzed")) == 2
+
+    def test_tuple_is_accepted(self, conn, orders_table):
+        from anofox import anomaly
+        assert anomaly.dbscan_mv(conn, orders_table, ("amount", "items"))["n_columns"] == 2
