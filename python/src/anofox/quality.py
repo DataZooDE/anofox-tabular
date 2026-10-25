@@ -141,10 +141,10 @@ def freshness(
     table_name: TableLike,
     timestamp_column: str,
     max_age: str,
-    warn_age: Optional[str] = None,
+    reference_time: Optional[str] = None,
 ) -> dict:
     """
-    Check that a timestamp column is sufficiently fresh.
+    Check that the newest value of a timestamp column is recent enough.
 
     Parameters
     ----------
@@ -155,27 +155,32 @@ def freshness(
     timestamp_column:
         Name of the timestamp column.
     max_age:
-        Maximum acceptable age as an interval string, e.g. ``"24 hours"``.
-    warn_age:
-        Warning threshold age (optional).
+        Largest allowed age of the newest row, as an interval string, e.g. ``"24 hours"``.
+    reference_time:
+        Time the age is measured from, as a timestamp string or
+        :class:`datetime.datetime` (default: now).
 
     Returns
     -------
     dict
-        ``{"status": "pass"|"fail", ...}``
+        ``{"status": "pass"|"fail", "metric_value": datetime, "threshold": datetime,
+        "age_seconds": int, "message": str, ...}``. ``threshold`` is returned as a
+        naive timestamp in the session time zone.
     """
-    if warn_age is not None:
-        cursor = conn.execute(
-            "SELECT * FROM anofox_tab_freshness(?, ?, ?::INTERVAL, ?::INTERVAL)",
-            [table_name, timestamp_column, max_age, warn_age],
-        )
-    else:
-        cursor = conn.execute(
-            "SELECT * FROM anofox_tab_freshness(?, ?, ?::INTERVAL)",
-            [table_name, timestamp_column, max_age],
-        )
+    params: list = [table_name, timestamp_column, max_age]
+    reference_sql = ""
+    if reference_time is not None:
+        reference_sql = ", ?::TIMESTAMP"
+        params.append(reference_time)
+    # Without reference_time the extension returns threshold as TIMESTAMPTZ, which the
+    # duckdb Python client converts only with pytz installed; return it as TIMESTAMP.
+    cursor = conn.execute(
+        "SELECT status, metric_value, threshold::TIMESTAMP AS threshold, age_seconds, message "
+        f"FROM anofox_tab_freshness(?, ?, ?::INTERVAL{reference_sql})",
+        params,
+    )
     return _parse_table_result(
-        cursor, {"column": timestamp_column, "max_age": max_age, "warn_age": warn_age}
+        cursor, {"column": timestamp_column, "max_age": max_age, "reference_time": reference_time}
     )
 
 

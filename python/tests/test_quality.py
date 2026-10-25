@@ -516,3 +516,31 @@ class TestNamedResultFields:
     def test_range_rows_have_no_decimal(self, conn, sparse_table):
         from anofox import quality
         assert self._no_decimal(quality.iqr(conn, sparse_table, "val"))
+
+
+class TestFreshness:
+    """freshness works without pytz and takes the SQL reference_time."""
+
+    @pytest.fixture
+    def events(self, conn):
+        conn.execute(
+            "CREATE OR REPLACE TABLE _events AS "
+            "SELECT TIMESTAMP '2026-01-30 10:00:00' - INTERVAL (i) HOUR AS created_at FROM range(5) t(i)"
+        )
+        yield "_events"
+        conn.execute("DROP TABLE IF EXISTS _events")
+
+    def test_against_now(self, conn, events):
+        from anofox import quality
+        result = quality.freshness(conn, events, "created_at", "1 day")
+        assert result["status"] == "fail"
+        assert result["age_seconds"] > 0
+
+    def test_reference_time(self, conn, events):
+        import datetime
+        from anofox import quality
+        result = quality.freshness(conn, events, "created_at", "1 day", reference_time="2026-01-31 08:00:00")
+        assert result["status"] == "pass"
+        assert result["age_seconds"] == 79200
+        assert result["metric_value"] == datetime.datetime(2026, 1, 30, 10, 0)
+        assert result["threshold"] == datetime.datetime(2026, 1, 30, 8, 0)
