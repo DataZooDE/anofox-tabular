@@ -134,8 +134,9 @@ def email_validate(
 def phone_is_valid(
     conn: Any,
     phone_or_df: Union[str, Any],
-    region: str = "US",
+    region: Optional[str] = None,
     column: Optional[str] = None,
+    region_column: Optional[str] = None,
 ) -> Union[bool, Any]:
     """
     Return True if *phone_or_df* is a valid phone number for *region*.
@@ -147,12 +148,17 @@ def phone_is_valid(
     phone_or_df:
         A single phone string or a DataFrame.
     region:
-        ISO 3166-1 alpha-2 region code, e.g. ``"DE"`` or ``"US"``.
+        ISO 3166-1 alpha-2 region code used for every value, e.g. ``"DE"``.
+        Defaults to ``"US"`` when neither *region* nor *region_column* is given.
     column:
         Column name when a DataFrame is passed.
+    region_column:
+        DataFrame only: column holding the region code of each row. Cannot be
+        combined with *region*.
     """
+    region_sql, region_params = _region_arg(region, region_column, isinstance(phone_or_df, str))
     if isinstance(phone_or_df, str):
-        return bool(fetch_one(conn, "SELECT anofox_tab_phonenumber_is_valid(?, ?)", [phone_or_df, region]))
+        return bool(fetch_one(conn, "SELECT anofox_tab_phonenumber_is_valid(?, ?)", [phone_or_df, *region_params]))
 
     df_type = detect_df_type(phone_or_df)
     if column is None:
@@ -160,15 +166,17 @@ def phone_is_valid(
 
     return apply_scalar(
         conn, phone_or_df, df_type,
-        f"anofox_tab_phonenumber_is_valid({quote_ident(column)}, ?)", [region], "phone_is_valid",
+        f"anofox_tab_phonenumber_is_valid({quote_ident(column)}, {region_sql})", region_params,
+        "phone_is_valid",
     )
 
 
 def phone_parse(
     conn: Any,
     phone_or_df: Union[str, Any],
-    region: str = "US",
+    region: Optional[str] = None,
     column: Optional[str] = None,
+    region_column: Optional[str] = None,
 ) -> Union[dict, Any]:
     """
     Parse a phone number and return structured information.
@@ -180,12 +188,17 @@ def phone_parse(
     phone_or_df:
         A single phone string or a DataFrame.
     region:
-        Default region hint for parsing, e.g. ``"DE"``.
+        Region hint for parsing every value, e.g. ``"DE"``. Defaults to
+        ``"US"`` when neither *region* nor *region_column* is given.
     column:
         Column name when a DataFrame is passed.
+    region_column:
+        DataFrame only: column holding the region hint of each row. Cannot be
+        combined with *region*.
     """
+    region_sql, region_params = _region_arg(region, region_column, isinstance(phone_or_df, str))
     if isinstance(phone_or_df, str):
-        raw = fetch_one(conn, "SELECT anofox_tab_phonenumber_parse(?, ?)", [phone_or_df, region])
+        raw = fetch_one(conn, "SELECT anofox_tab_phonenumber_parse(?, ?)", [phone_or_df, *region_params])
         if isinstance(raw, dict):
             return raw
         if isinstance(raw, str):
@@ -201,7 +214,8 @@ def phone_parse(
 
     return apply_scalar(
         conn, phone_or_df, df_type,
-        f"anofox_tab_phonenumber_parse({quote_ident(column)}, ?)", [region], "phone_parse",
+        f"anofox_tab_phonenumber_parse({quote_ident(column)}, {region_sql})", region_params,
+        "phone_parse",
     )
 
 
@@ -260,3 +274,19 @@ def phone_region(
     value = fetch_one(conn, "SELECT anofox_tab_phonenumber_region(?, ?)", [phone, hint])
     return str(value) if value is not None else ""
 
+
+# ---------------------------------------------------------------------------
+# Internal helpers
+# ---------------------------------------------------------------------------
+
+def _region_arg(
+    region: Optional[str], region_column: Optional[str], scalar_input: bool
+) -> tuple[str, list]:
+    """Return the SQL and bound parameters of the region argument of a phone function."""
+    if region is not None and region_column is not None:
+        raise ValueError("pass either 'region' or 'region_column', not both.")
+    if region_column is not None:
+        if scalar_input:
+            raise ValueError("'region_column' requires a DataFrame input.")
+        return quote_ident(region_column), []
+    return "?", [region if region is not None else "US"]

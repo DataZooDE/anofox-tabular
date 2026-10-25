@@ -159,3 +159,47 @@ class TestPhoneRegion:
         from anofox.validate import phone_region
         result = phone_region(conn, "+14155552671", "US")
         assert result == "US"
+
+
+class TestPhoneRegionColumn:
+    """region_column= reads the region hint per row instead of one region for all rows."""
+
+    @staticmethod
+    def _df():
+        import pandas as pd
+        return pd.DataFrame({
+            "phone": ["4155552671", "01 42 68 53 00", "4155552671"],
+            "country": ["US", "FR", "FR"],
+        })
+
+    def test_phone_is_valid_per_row_region(self, conn):
+        from anofox.validate import phone_is_valid
+        out = phone_is_valid(conn, self._df(), column="phone", region_column="country")
+        assert out["phone_is_valid"].tolist() == [True, True, False]
+
+    def test_phone_parse_per_row_region(self, conn):
+        from anofox.validate import phone_parse
+        out = phone_parse(conn, self._df(), column="phone", region_column="country")
+        assert [r["region"] for r in out["phone_parse"]] == ["US", "FR", None]
+
+    def test_polars_per_row_region(self, conn):
+        pl = pytest.importorskip("polars")
+        from anofox.validate import phone_is_valid
+        out = phone_is_valid(conn, pl.from_pandas(self._df()), column="phone", region_column="country")
+        assert out["phone_is_valid"].to_list() == [True, True, False]
+
+    def test_region_and_region_column_are_exclusive(self, conn):
+        from anofox.validate import phone_is_valid, phone_parse
+        for func in (phone_is_valid, phone_parse):
+            with pytest.raises(ValueError, match="region.*region_column"):
+                func(conn, self._df(), column="phone", region="US", region_column="country")
+
+    def test_region_column_needs_a_dataframe(self, conn):
+        from anofox.validate import phone_is_valid
+        with pytest.raises(ValueError, match="region_column"):
+            phone_is_valid(conn, "4155552671", region_column="country")
+
+    def test_default_region_is_us(self, conn):
+        from anofox.validate import phone_is_valid
+        out = phone_is_valid(conn, self._df(), column="phone")
+        assert out["phone_is_valid"].tolist() == [True, False, True]
