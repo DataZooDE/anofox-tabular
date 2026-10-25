@@ -90,6 +90,23 @@ class TestRegisterDfAsTable:
         name2 = register_df_as_table(conn, df)
         assert name1 != name2
 
+    def test_filtered_pandas_df_adds_no_index_column(self):
+        import pandas as pd
+        conn = self._make_conn()
+        df = pd.DataFrame({"x": [1, 2, 3, 4]}, index=[10, 40, 20, 30])
+        filtered = df[df["x"] != 2]  # index [10, 20, 30], not a RangeIndex
+        name = register_df_as_table(conn, filtered)
+        columns = [r[0] for r in conn.execute(f'DESCRIBE "{name}"').fetchall()]
+        assert columns == ["x"]
+
+    def test_named_index_is_not_copied(self):
+        import pandas as pd
+        conn = self._make_conn()
+        df = pd.DataFrame({"x": [1, 2]}, index=pd.Index([7, 9], name="key"))
+        name = register_df_as_table(conn, df)
+        columns = [r[0] for r in conn.execute(f'DESCRIBE "{name}"').fetchall()]
+        assert columns == ["x"]
+
 
 # ---------------------------------------------------------------------------
 # relation_to_dataframe

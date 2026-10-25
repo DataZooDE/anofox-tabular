@@ -51,9 +51,11 @@ def register_df_as_table(conn: Any, df: Any, name: str | None = None) -> str:
     if df_type == "pandas":
         # Convert via PyArrow to handle pandas 3.x StringDtype and other
         # extended dtypes that DuckDB's register() may not recognise directly.
+        # preserve_index=False: the index is not data; a non-range index would
+        # otherwise become an extra "__index_level_0__" column.
         try:
             import pyarrow as pa
-            arrow_table = pa.Table.from_pandas(df)
+            arrow_table = pa.Table.from_pandas(df, preserve_index=False)
             conn.register(tmp_view, arrow_table)
         except ImportError:
             conn.register(tmp_view, df)
