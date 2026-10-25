@@ -121,9 +121,9 @@ true
 
 # --- Email Masking Tests ---
 
-# Partial masking preserves domain
+# Partial masking keeps the first character and the top-level domain only
 query I
-SELECT pii_mask('user@example.com', 'partial') LIKE '%@example.com';
+SELECT pii_mask('user@example.com', 'partial') = 'u***@*******.com';
 ----
 true
 
@@ -824,9 +824,9 @@ SELECT pii_mask('Go to https://secret.com/private', 'redact') LIKE '%[URL]%';
 ----
 true
 
-# Partial shows domain
+# Partial keeps scheme and top-level domain, masks host labels and path
 query I
-SELECT pii_mask('https://example.com/secret/path', 'partial') LIKE '%example.com%';
+SELECT pii_mask('https://example.com/secret/path', 'partial') = 'https://*******.com/***';
 ----
 true
 

@@ -149,13 +149,70 @@ std::string Utf8Stars(std::string_view text) {
     return std::string(Utf8Length(text), '*');
 }
 
-// Keep the first `keep` characters of word and replace each further
-// character with '*'; words of at most `keep` characters stay unchanged
+// ---------------------------------------------------------------------------
+// Partial masks keep at most half of the letters and digits of a value and
+// mask short values completely. Each recognizer has its own rule; ApplyMask()
+// checks every result against the half rule and falls back to one '*' per
+// character, so no type (also one added later) can reveal more.
+// ---------------------------------------------------------------------------
+
+// Words of at most this many characters are masked completely by partial
+constexpr size_t PARTIAL_SHORT_WORD = 4;
+
+// Letters and digits of text: ASCII letters and digits plus every non-ASCII
+// code point. Counts what a partial mask reveals ('*' and separators are not
+// counted).
+size_t CountLettersAndDigits(std::string_view text) {
+    size_t count = 0;
+    for (char c : text) {
+        const auto byte = static_cast<unsigned char>(c);
+        if (std::isalnum(byte) || (byte >= 0xC0)) {
+            ++count;
+        }
+    }
+    return count;
+}
+
+// True if text is well-formed UTF-8 (a byte-based partial mask of arbitrary
+// pii_mask_value input could cut a character)
+bool IsValidUtf8(std::string_view text) {
+    size_t i = 0;
+    while (i < text.size()) {
+        const auto lead = static_cast<unsigned char>(text[i]);
+        size_t extra = 0;
+        if (lead < 0x80) {
+            extra = 0;
+        } else if ((lead & 0xE0) == 0xC0) {
+            extra = 1;
+        } else if ((lead & 0xF0) == 0xE0) {
+            extra = 2;
+        } else if ((lead & 0xF8) == 0xF0) {
+            extra = 3;
+        } else {
+            return false;
+        }
+        if (i + extra >= text.size()) {
+            return false;
+        }
+        for (size_t k = 1; k <= extra; ++k) {
+            if (!IsUtf8Continuation(text[i + k])) {
+                return false;
+            }
+        }
+        i += extra + 1;
+    }
+    return true;
+}
+
+// Partial mask of one word of an entity: words of at most
+// PARTIAL_SHORT_WORD characters become stars, longer words keep their first
+// `keep` characters but never more than half of them
 std::string MaskWordKeepingPrefix(const std::string &word, size_t keep) {
     const size_t length = Utf8Length(word);
-    if (length <= keep) {
-        return word;
+    if (length <= PARTIAL_SHORT_WORD) {
+        return std::string(length, '*');
     }
+    keep = std::min(keep, length / 2);
     return Utf8Prefix(word, keep) + std::string(length - keep, '*');
 }
 
@@ -526,12 +583,15 @@ std::vector<PIIMatch> RegexRecognizer::FindMatches(const std::string &text) cons
 }
 
 std::string RegexRecognizer::GetPartialMask(const std::string &text) const {
-    // Default: show first and last 2 characters (code points, not bytes)
+    // Default: keep the first and last character for 5 to 7 characters, the
+    // first and last 2 from 8 characters on (at most a quarter at each end);
+    // short values are masked completely
     const size_t length = Utf8Length(text);
-    if (length <= 4) {
+    if (length <= PARTIAL_SHORT_WORD) {
         return std::string(length, '*');
     }
-    return Utf8Prefix(text, 2) + std::string(length - 4, '*') + Utf8Suffix(text, 2);
+    const size_t keep = std::min<size_t>(2, length / 4);
+    return Utf8Prefix(text, keep) + std::string(length - 2 * keep, '*') + Utf8Suffix(text, keep);
 }
 
 // ============================================================================
@@ -768,13 +828,14 @@ std::string CreditCardRecognizer::GetPartialMask(const std::string &text) const 
     }
 
     if (clean.length() < 8) {
-        return std::string(text.length(), '*');
+        return Utf8Stars(text);
     }
 
-    // Show first 4 and last 4 digits: 4111********1111
-    std::string first4 = clean.substr(0, 4);
-    std::string last4 = clean.substr(clean.length() - 4);
-    return first4 + std::string(clean.length() - 8, '*') + last4;
+    // Last 4 digits, plus the first 4 (issuer) from 16 digits on, so at most
+    // half of the digits: 4111********1111, Amex ***********0005
+    const size_t first = clean.length() >= 16 ? 4 : 0;
+    return clean.substr(0, first) + std::string(clean.length() - first - 4, '*') +
+           clean.substr(clean.length() - 4);
 }
 
 // ============================================================================
@@ -835,7 +896,8 @@ std::string USSSNRecognizer::GetPartialMask(const std::string &text) const {
         }
     }
 
-    if (digits.length() < 4) {
+    // Last 4 of 9 digits; fewer than 8 digits are no SSN, mask them all
+    if (digits.length() < 8) {
         return "***-**-****";
     }
 
@@ -939,12 +1001,15 @@ std::string IBANRecognizer::GetPartialMask(const std::string &text) const {
         }
     }
 
-    if (clean.length() < 4) {
-        return std::string(text.length(), '*');
+    if (clean.length() < 10) {
+        return Utf8Stars(clean);
     }
 
-    // Show first 4 (country + check) and last 4
-    return clean.substr(0, 4) + std::string(clean.length() - 8, '*') + clean.substr(clean.length() - 4);
+    // Country code and check digits, plus up to 4 trailing characters while
+    // at most half of the IBAN stays readable: DE89**************3000
+    const size_t last = std::min<size_t>(4, clean.length() / 2 - 4);
+    return clean.substr(0, 4) + std::string(clean.length() - 4 - last, '*') +
+           clean.substr(clean.length() - last);
 }
 
 // ============================================================================
@@ -1020,7 +1085,8 @@ std::string DETaxIDRecognizer::GetPartialMask(const std::string &text) const {
         }
     }
 
-    if (digits.length() < 3) {
+    // Last 3 of 11 digits; fewer than 9 digits are masked completely
+    if (digits.length() < 9) {
         return "**-***-***-***";
     }
 
@@ -1215,19 +1281,54 @@ URLRecognizer::URLRecognizer()
 URLRecognizer::~URLRecognizer() {}
 
 std::string URLRecognizer::GetPartialMask(const std::string &text) const {
-    // Show protocol + domain, mask path: https://example.com/***
+    // Keep the scheme and the top-level domain; mask every other host label
+    // and replace path, query and fragment with "/***":
+    // https://crm.example.com/customers/4711 -> https://***.*******.com/***
+    // (a host such as anna-schmidt.blog can name a person)
     size_t protocol_end = text.find("://");
     if (protocol_end == std::string::npos) {
-        return "[URL REDACTED]";
+        return Utf8Stars(text);
     }
 
-    size_t domain_start = protocol_end + 3;
-    size_t path_start = text.find('/', domain_start);
-    if (path_start == std::string::npos) {
-        return text;  // No path, show full URL
+    const size_t host_start = protocol_end + 3;
+    size_t host_end = text.find_first_of("/?#", host_start);
+    const bool has_path = host_end != std::string::npos;
+    if (!has_path) {
+        host_end = text.size();
+    }
+    const std::string host = text.substr(host_start, host_end - host_start);
+
+    // The TLD stays readable when it is letters only (no port, no IP octet)
+    size_t tld_start = host.rfind('.');
+    if (tld_start != std::string::npos) {
+        const std::string tld = host.substr(tld_start + 1);
+        const bool letters_only = !tld.empty() && std::all_of(tld.begin(), tld.end(), [](char c) {
+            return std::isalpha(static_cast<unsigned char>(c));
+        });
+        if (!letters_only) {
+            tld_start = std::string::npos;
+        }
     }
 
-    return text.substr(0, path_start) + "/***";
+    std::string masked_host;
+    const std::string_view masked_part = std::string_view(host).substr(0, tld_start == std::string::npos ? host.size() : tld_start);
+    size_t label_start = 0;
+    while (label_start <= masked_part.size()) {
+        size_t dot = masked_part.find('.', label_start);
+        if (dot == std::string_view::npos) {
+            dot = masked_part.size();
+        }
+        masked_host += Utf8Stars(masked_part.substr(label_start, dot - label_start));
+        if (dot < masked_part.size()) {
+            masked_host += '.';
+        }
+        label_start = dot + 1;
+    }
+    if (tld_start != std::string::npos) {
+        masked_host += host.substr(tld_start);
+    }
+
+    return text.substr(0, host_start) + masked_host + (has_path ? "/***" : "");
 }
 
 // ============================================================================
@@ -1322,30 +1423,39 @@ std::vector<PIIMatch> EmailRecognizer::FindMatches(const std::string &text) cons
 EmailRecognizer::~EmailRecognizer() {}
 
 std::string EmailRecognizer::GetPartialMask(const std::string &text) const {
-    // Show first 2 characters of local part + domain: jo***@example.com.
-    // Characters are UTF-8 code points, so "jörg" keeps "jö", never half of "ö".
-    auto at_pos = text.find('@');
+    // Keep the first character of the local part and the top-level domain;
+    // every other character becomes '*' (dots between domain labels stay):
+    // jane.doe@acme-corp.com -> j*******@*********.com, ab@cd.de -> a*@**.de.
+    // The domain is masked too: a company or personal domain identifies the
+    // person as well as the local part does. Characters are code points.
+    auto at_pos = text.rfind('@');
     if (at_pos == std::string::npos) {
-        return "***@***.***";
+        return Utf8Stars(text);
     }
 
-    std::string local = text.substr(0, at_pos);
-    std::string domain = text.substr(at_pos);
+    const std::string local = text.substr(0, at_pos);
+    const std::string domain = text.substr(at_pos + 1);
+    const size_t local_length = Utf8Length(local);
+    std::string masked = local_length >= 2 ? Utf8Prefix(local, 1) + std::string(local_length - 1, '*')
+                                           : std::string(local_length, '*');
+    masked += '@';
 
-    std::vector<size_t> char_starts;
-    for (size_t i = 0; i < local.size(); ++i) {
-        if ((static_cast<unsigned char>(local[i]) & 0xC0) != 0x80) {
-            char_starts.push_back(i);
+    const size_t tld_start = domain.rfind('.');
+    size_t label_start = 0;
+    while (true) {
+        size_t dot = domain.find('.', label_start);
+        if (dot == std::string::npos) {
+            break;
         }
+        masked += Utf8Stars(std::string_view(domain).substr(label_start, dot - label_start)) + ".";
+        label_start = dot + 1;
     }
-    if (char_starts.size() < 2) {
-        return "***@***.***";
+    if (tld_start == std::string::npos) {
+        masked += Utf8Stars(domain);
+    } else {
+        masked += domain.substr(tld_start + 1);
     }
-    if (char_starts.size() == 2) {
-        return local + "***" + domain;
-    }
-
-    return local.substr(0, char_starts[2]) + std::string(char_starts.size() - 2, '*') + domain;
+    return masked;
 }
 
 // ============================================================================
@@ -1403,7 +1513,7 @@ std::string MACAddressRecognizer::GetPartialMask(const std::string &text) const 
     } else if (text.find('.') != std::string::npos) {
         // XXXX.XXXX.XXXX -> XXXX.****.****
         if (text.length() >= 4) {
-            return text.substr(0, 4) + ".****.****.";
+            return text.substr(0, 4) + ".****.****";
         }
     } else {
         // XXXXXXXXXXXX -> XXXX********
@@ -1497,11 +1607,12 @@ USPassportRecognizer::~USPassportRecognizer() {
 }
 
 std::string USPassportRecognizer::GetPartialMask(const std::string &text) const {
-    // Show first character, mask rest
-    if (text.length() < 2) {
-        return std::string(text.length(), '*');
+    // Show first character (the letter), mask the digits
+    const size_t length = Utf8Length(text);
+    if (length <= PARTIAL_SHORT_WORD) {
+        return std::string(length, '*');
     }
-    return text.substr(0, 1) + std::string(text.length() - 1, '*');
+    return Utf8Prefix(text, 1) + std::string(length - 1, '*');
 }
 
 // ============================================================================
@@ -1645,13 +1756,14 @@ std::string PhoneRecognizer::GetPartialMask(const std::string &text) const {
         }
     }
 
-    if (digits.length() < 4) {
-        return std::string(text.length(), '*');
+    if (digits.length() <= PARTIAL_SHORT_WORD) {
+        return Utf8Stars(text);
     }
 
-    // Show last 4 digits
+    // Show the last 4 digits, never more than half of them
+    const size_t keep = std::min<size_t>(4, digits.length() / 2);
     std::string prefix = has_plus ? "+***-***-" : "***-***-";
-    return prefix + digits.substr(digits.length() - 4);
+    return prefix + digits.substr(digits.length() - keep);
 }
 
 // ============================================================================
@@ -2124,7 +2236,7 @@ bool NameRecognizer::Validate(const std::string &text) const {
 }
 
 std::string NameRecognizer::GetPartialMask(const std::string &text) const {
-    // Mask: "John Smith" -> "J*** S****"
+    // Mask: "Anna Schmidt" -> "**** S******" (short words are masked completely)
     std::vector<std::string> words = SplitIntoWords(text);
     std::string masked;
 
@@ -2197,7 +2309,7 @@ bool OrganizationRecognizer::Validate(const std::string &text) const {
 }
 
 std::string OrganizationRecognizer::GetPartialMask(const std::string &text) const {
-    // Mask: "Microsoft Corp" -> "Mic****** C***"
+    // Mask: "Microsoft Corp" -> "Mic****** ****"
     std::vector<std::string> words = SplitIntoWords(text);
     std::string masked;
 
@@ -2270,7 +2382,8 @@ bool LocationRecognizer::Validate(const std::string &text) const {
 }
 
 std::string LocationRecognizer::GetPartialMask(const std::string &text) const {
-    // Mask: "New York" -> "New ****"
+    // Mask: "Frankfurt am Main" -> "Fra****** ** ****"; words of up to 4
+    // characters are masked completely ("Rome" -> "****", "New York" -> "*** ****")
     std::vector<std::string> words = SplitIntoWords(text);
     std::string masked;
 
@@ -2347,7 +2460,7 @@ bool MiscRecognizer::Validate(const std::string &text) const {
 }
 
 std::string MiscRecognizer::GetPartialMask(const std::string &text) const {
-    // Mask: "Nobel Prize" -> "Nob** P****"
+    // Mask: "Nobel Prize" -> "No*** Pr***"
     std::vector<std::string> words = SplitIntoWords(text);
     std::string masked;
 
@@ -2606,12 +2719,23 @@ std::string PIIEngine::ApplyMask(const PIIMatch &match, MaskStrategy strategy) c
         }
 
         case MaskStrategy::PARTIAL: {
-            // Use type-specific partial masking
+            // Type-specific partial mask, checked against the half rule: a
+            // partial mask that reveals more than half of the letters and
+            // digits of the value (or is no valid UTF-8, possible for
+            // arbitrary pii_mask_value input) falls back to one '*' per
+            // character
             const auto *recognizer = GetRecognizer(match.type);
-            if (recognizer) {
-                return recognizer->GetPartialMask(match.matched_text);
+            if (!recognizer) {
+                return Utf8Stars(match.matched_text);
             }
-            return Utf8Stars(match.matched_text);
+            std::string masked = recognizer->GetPartialMask(match.matched_text);
+            if (!IsValidUtf8(masked) ||
+                CountLettersAndDigits(masked) > CountLettersAndDigits(match.matched_text) / 2) {
+                AnofoxTrace(AnofoxLogLevel::Debug, "pii: partial mask of a " + PIITypeToString(match.type) +
+                                                       " value reveals too much, masking it completely");
+                return Utf8Stars(match.matched_text);
+            }
+            return masked;
         }
 
         case MaskStrategy::ASTERISK:

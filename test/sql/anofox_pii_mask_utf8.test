@@ -17,12 +17,12 @@ LOAD anofox_tabular;
 query T
 SELECT pii_mask_column('Ömer Özdemir', 'NAME', 'partial');
 ----
-Ö*** Ö******
+**** Ö******
 
 query T
 SELECT hex(pii_mask_column('Ömer Özdemir', 'NAME', 'partial'));
 ----
-C3962A2A2A20C3962A2A2A2A2A2A
+2A2A2A2A20C3962A2A2A2A2A2A
 
 query T
 SELECT pii_mask('Mr Smith moved to Brüssel last year.', 'partial');
@@ -57,7 +57,7 @@ SELECT pii_mask_column('Ömer Özdemir', 'NAME', 'partial') AS name_partial,
 query TTT
 SELECT * FROM masked_utf8;
 ----
-Ö*** Ö******	************	Mr Smith moved to Brü**** last year.
+**** Ö******	************	Mr Smith moved to Brü**** last year.
 
 query I
 SELECT length(name_asterisk) FROM masked_utf8;

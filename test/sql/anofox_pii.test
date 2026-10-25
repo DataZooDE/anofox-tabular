@@ -105,7 +105,7 @@ true
 query I
 SELECT pii_mask('Email: test@example.com', 'partial');
 ----
-Email: te**@example.com
+Email: t***@*******.com
 
 # Test PARTIAL masking for SSN
 query I
@@ -762,7 +762,7 @@ true
 
 # PARTIAL masking (first letter + asterisks)
 query I
-SELECT pii_mask('Hello Mary Johnson', 'partial') LIKE '%M*** J******%';
+SELECT pii_mask('Hello Mary Johnson', 'partial') LIKE '%**** J******%';
 ----
 true
 
@@ -1179,7 +1179,7 @@ statement ok
 SET anofox_pii_default_mask_strategy = 'partial';
 
 query I
-SELECT masked_value LIKE '%**@example.com%' FROM pii_audit_table('audit_test_data')
+SELECT masked_value LIKE '%**@*******.com%' FROM pii_audit_table('audit_test_data')
 WHERE row_id = 1 AND pii_type = 'EMAIL';
 ----
 true

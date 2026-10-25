@@ -223,9 +223,9 @@ j.weiß@beispiel.de
 
 # Partial masking keeps whole characters of the local part
 query T
-SELECT pii_mask('Mail an jörg.k@example.com', 'partial');
+SELECT pii_mask('Mail an ömer.k@example.com', 'partial');
 ----
-Mail an jö****@example.com
+Mail an ö*****@*******.com
 
 # ============================================================================
 # US_SSN and US_PASSPORT: no bare 9-digit numbers

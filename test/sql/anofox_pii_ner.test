@@ -94,7 +94,7 @@ true
 
 # Location masking - PARTIAL
 query I
-SELECT pii_mask('Office in Tokyo', 'partial') LIKE '%Tok**%';
+SELECT pii_mask('Office in Tokyo', 'partial') LIKE '%To***%';
 ----
 true
 
