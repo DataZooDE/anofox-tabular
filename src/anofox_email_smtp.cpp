@@ -500,7 +500,7 @@ void AddLoopbackEndpoints(uint16_t port, std::vector<ResolvedEndpoint> &endpoint
 
 bool ResolveHostEndpoints(const std::string &host, uint16_t port, std::chrono::milliseconds timeout,
                           std::vector<ResolvedEndpoint> &endpoints, SmtpResult &result) {
-    EmailTrace(AnofoxLogLevel::Info, "ResolveHostEndpoints host=" + host + " port=" +
+    EmailTrace(AnofoxLogLevel::Debug, "ResolveHostEndpoints host=" + host + " port=" +
                                          std::to_string(port) + " timeout_ms=" +
                                          std::to_string(timeout.count()));
 	std::string init_error;
@@ -557,13 +557,13 @@ bool ResolveHostEndpoints(const std::string &host, uint16_t port, std::chrono::m
 
 	if (!loop_ok) {
 		result.reason = loop_error.empty() ? "smtp_dns_timeout" : loop_error;
-        EmailTrace(AnofoxLogLevel::Warn, "ResolveHostEndpoints loop failed reason=" + result.reason);
+        EmailTrace(AnofoxLogLevel::Debug, "ResolveHostEndpoints loop failed reason=" + result.reason);
 		return false;
 	}
 
 	if (pending != 0) {
 		result.reason = "smtp_dns_incomplete";
-        EmailTrace(AnofoxLogLevel::Warn, "ResolveHostEndpoints incomplete pending=" + std::to_string(pending));
+        EmailTrace(AnofoxLogLevel::Debug, "ResolveHostEndpoints incomplete pending=" + std::to_string(pending));
 		return false;
 	}
 
@@ -573,12 +573,12 @@ bool ResolveHostEndpoints(const std::string &host, uint16_t port, std::chrono::m
 		} else {
 			result.reason = "smtp_dns_no_addresses";
 		}
-        EmailTrace(AnofoxLogLevel::Warn, "ResolveHostEndpoints failure reason=" + result.reason);
+        EmailTrace(AnofoxLogLevel::Debug, "ResolveHostEndpoints failure reason=" + result.reason);
 		return false;
 	}
 
 	endpoints = std::move(state.endpoints);
-    EmailTrace(AnofoxLogLevel::Info,
+    EmailTrace(AnofoxLogLevel::Debug,
                "ResolveHostEndpoints success count=" + std::to_string(endpoints.size()));
 	return true;
 }
@@ -776,7 +776,7 @@ SmtpResult AttemptHost(const std::string &email, const std::string &host, const 
                        Clock::time_point deadline) {
 	SmtpResult attempt;
 	attempt.transcript.push_back({"Attempt host: " + host});
-    EmailTrace(AnofoxLogLevel::Info,
+    EmailTrace(AnofoxLogLevel::Debug,
                "SMTP attempt host=" + host + " port=" + std::to_string(options.port));
 	if (!EnsureSocketSubsystem(attempt)) {
         EmailTrace(AnofoxLogLevel::Error, "SMTP socket subsystem unavailable reason=" + attempt.reason);
@@ -800,11 +800,11 @@ SmtpResult AttemptHost(const std::string &email, const std::string &host, const 
 		} else if (HasReservedSuffix(lower_host)) {
 			attempt.reason = "smtp_dns_reserved_domain";
 			attempt.transcript.push_back({"Skip reserved domain: " + host});
-            EmailTrace(AnofoxLogLevel::Info,
+            EmailTrace(AnofoxLogLevel::Debug,
                        "SMTP reserved domain skipped host=" + host);
 			return attempt;
 		} else {
-            EmailTrace(AnofoxLogLevel::Info, "SMTP resolving host via DNS: " + host);
+            EmailTrace(AnofoxLogLevel::Debug, "SMTP resolving host via DNS: " + host);
 			auto resolve_timeout = ClampToDeadline(connect_timeout, Clock::now(), deadline);
 			if (resolve_timeout <= milliseconds::zero()) {
 				attempt.reason = "smtp_overall_timeout";
@@ -812,7 +812,7 @@ SmtpResult AttemptHost(const std::string &email, const std::string &host, const 
 				return attempt;
 			}
 			if (!ResolveHostEndpoints(host, options.port, resolve_timeout, endpoints, attempt)) {
-                EmailTrace(AnofoxLogLevel::Warn,
+                EmailTrace(AnofoxLogLevel::Debug,
                            "SMTP DNS resolution failed reason=" + attempt.reason);
 				return attempt;
 			}
@@ -821,11 +821,11 @@ SmtpResult AttemptHost(const std::string &email, const std::string &host, const 
 
 	if (endpoints.empty()) {
 		attempt.reason = "smtp_dns_no_addresses";
-        EmailTrace(AnofoxLogLevel::Warn, "SMTP no endpoints resolved host=" + host);
+        EmailTrace(AnofoxLogLevel::Debug, "SMTP no endpoints resolved host=" + host);
 		return attempt;
 	}
 
-    EmailTrace(AnofoxLogLevel::Info,
+    EmailTrace(AnofoxLogLevel::Debug,
                "SMTP attempting " + std::to_string(endpoints.size()) + " endpoints for host=" + host);
 	for (auto &endpoint : endpoints) {
 		// RAII socket ownership (issue #60): the guard closes the descriptor on
@@ -833,13 +833,13 @@ SmtpResult AttemptHost(const std::string &email, const std::string &host, const 
 		SocketGuard sock(socket(endpoint.address.ss_family, SOCK_STREAM, 0));
 		if (!sock.IsValid()) {
 			attempt.transcript.push_back({"Socket creation failed: " + SocketErrorMessage(LastSocketError())});
-            EmailTrace(AnofoxLogLevel::Warn,
+            EmailTrace(AnofoxLogLevel::Debug,
                        "SMTP socket creation failed endpoint=" + endpoint.description);
 			continue;
 		}
 		if (!SetNonBlocking(sock.Get(), true)) {
 			attempt.transcript.push_back({"Failed to set non-blocking mode: " + SocketErrorMessage(LastSocketError())});
-            EmailTrace(AnofoxLogLevel::Warn,
+            EmailTrace(AnofoxLogLevel::Debug,
                        "SMTP failed to set non-blocking endpoint=" + endpoint.description);
 			continue;
 		}
@@ -851,7 +851,7 @@ SmtpResult AttemptHost(const std::string &email, const std::string &host, const 
 		std::string endpoint_str;
 		if (!ConnectSocket(sock.Get(), reinterpret_cast<const sockaddr *>(&endpoint.address), endpoint.length,
 		                   connect_timeout, deadline, endpoint_str, attempt)) {
-            EmailTrace(AnofoxLogLevel::Warn,
+            EmailTrace(AnofoxLogLevel::Debug,
                        "SMTP connect failed endpoint=" + endpoint.description + " reason=" + attempt.reason);
 			if (!attempt.reason.empty()) {
 				return attempt;
@@ -860,73 +860,73 @@ SmtpResult AttemptHost(const std::string &email, const std::string &host, const 
 		}
 
 		attempt.transcript.push_back({"Connected to " + endpoint_str});
-        EmailTrace(AnofoxLogLevel::Info, "SMTP connected to " + endpoint_str);
+        EmailTrace(AnofoxLogLevel::Debug, "SMTP connected to " + endpoint_str);
 		read_buffer.clear();
 
 		int code = 0;
 		if (!ReadResponse(sock.Get(), read_buffer, io_timeout, deadline, attempt, code, "smtp_greeting_timeout",
 		                  "smtp_greeting_error")) {
-            EmailTrace(AnofoxLogLevel::Warn,
+            EmailTrace(AnofoxLogLevel::Debug,
                        "SMTP greeting read failed reason=" + attempt.reason);
 			return attempt;
 		}
 		if (code / 100 != 2) {
 			attempt.reason = "smtp_invalid_greeting";
-            EmailTrace(AnofoxLogLevel::Warn,
+            EmailTrace(AnofoxLogLevel::Debug,
                        "SMTP greeting invalid code=" + std::to_string(code));
 			return attempt;
 		}
 
 		if (!SendCommand(sock.Get(), "EHLO " + options.helo_domain, io_timeout, deadline, attempt)) {
-            EmailTrace(AnofoxLogLevel::Warn,
+            EmailTrace(AnofoxLogLevel::Debug,
                        "SMTP EHLO send failed reason=" + attempt.reason);
 			return attempt;
 		}
 		if (!ReadResponse(sock.Get(), read_buffer, io_timeout, deadline, attempt, code, "smtp_read_timeout",
 		                  "smtp_read_error")) {
-            EmailTrace(AnofoxLogLevel::Warn,
+            EmailTrace(AnofoxLogLevel::Debug,
                        "SMTP EHLO response failed reason=" + attempt.reason);
 			return attempt;
 		}
 		if (code / 100 != 2) {
 			attempt.reason = "smtp_helo_rejected";
-            EmailTrace(AnofoxLogLevel::Warn,
+            EmailTrace(AnofoxLogLevel::Debug,
                        "SMTP EHLO rejected code=" + std::to_string(code));
 			return attempt;
 		}
 
 		if (!SendCommand(sock.Get(), "MAIL FROM:<" + options.mail_from + ">", io_timeout, deadline, attempt)) {
-            EmailTrace(AnofoxLogLevel::Warn,
+            EmailTrace(AnofoxLogLevel::Debug,
                        "SMTP MAIL FROM send failed reason=" + attempt.reason);
 			return attempt;
 		}
 		if (!ReadResponse(sock.Get(), read_buffer, io_timeout, deadline, attempt, code, "smtp_read_timeout",
 		                  "smtp_read_error")) {
-            EmailTrace(AnofoxLogLevel::Warn,
+            EmailTrace(AnofoxLogLevel::Debug,
                        "SMTP MAIL FROM response failed reason=" + attempt.reason);
 			return attempt;
 		}
 		if (code / 100 != 2) {
 			attempt.reason = "smtp_mail_from_rejected";
-            EmailTrace(AnofoxLogLevel::Warn,
+            EmailTrace(AnofoxLogLevel::Debug,
                        "SMTP MAIL FROM rejected code=" + std::to_string(code));
 			return attempt;
 		}
 
 		if (!SendCommand(sock.Get(), "RCPT TO:<" + email + ">", io_timeout, deadline, attempt)) {
-            EmailTrace(AnofoxLogLevel::Warn,
+            EmailTrace(AnofoxLogLevel::Debug,
                        "SMTP RCPT TO send failed reason=" + attempt.reason);
 			return attempt;
 		}
 		if (!ReadResponse(sock.Get(), read_buffer, io_timeout, deadline, attempt, code, "smtp_read_timeout",
 		                  "smtp_read_error")) {
-            EmailTrace(AnofoxLogLevel::Warn,
+            EmailTrace(AnofoxLogLevel::Debug,
                        "SMTP RCPT TO response failed reason=" + attempt.reason);
 			return attempt;
 		}
 		if (code / 100 != 2) {
 			attempt.reason = "smtp_recipient_rejected";
-            EmailTrace(AnofoxLogLevel::Warn,
+            EmailTrace(AnofoxLogLevel::Debug,
                        "SMTP RCPT TO rejected code=" + std::to_string(code));
 			return attempt;
 		}
@@ -934,11 +934,11 @@ SmtpResult AttemptHost(const std::string &email, const std::string &host, const 
 		attempt.success = true;
 		attempt.reason.clear();
 		SendCommand(sock.Get(), "QUIT", io_timeout, deadline, attempt);
-        EmailTrace(AnofoxLogLevel::Info, "SMTP verification success host=" + host);
+        EmailTrace(AnofoxLogLevel::Debug, "SMTP verification success host=" + host);
 		return attempt;
 	}
 
-    EmailTrace(AnofoxLogLevel::Info,
+    EmailTrace(AnofoxLogLevel::Debug,
                "SMTP exhausted endpoints host=" + host + " last_reason=" + attempt.reason);
 	return attempt;
 }

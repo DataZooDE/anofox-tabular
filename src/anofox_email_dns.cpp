@@ -316,7 +316,78 @@ bool EnsureLibraryInitializedInternal(std::string &error_reason) {
 	return true;
 }
 
+//! Thread-safe, process-wide cache of DNS results keyed by lower-cased domain.
+//! Entries expire after DNS_CACHE_TTL_SECONDS; the map is bounded to
+//! DNS_CACHE_MAX_ENTRIES (expired entries are purged first, then the entry
+//! closest to expiry is evicted).
+class DnsResultCache {
+public:
+	static DnsResultCache &Get() {
+		static DnsResultCache cache;
+		return cache;
+	}
+
+	bool Lookup(const std::string &key, DnsResult &result) {
+		std::lock_guard<std::mutex> guard(mutex);
+		auto it = entries.find(key);
+		if (it == entries.end()) {
+			return false;
+		}
+		if (Clock::now() >= it->second.expires_at) {
+			entries.erase(it);
+			return false;
+		}
+		result = it->second.result;
+		return true;
+	}
+
+	void Store(const std::string &key, const DnsResult &result) {
+		std::lock_guard<std::mutex> guard(mutex);
+		auto now = Clock::now();
+		if (entries.find(key) == entries.end() && entries.size() >= DNS_CACHE_MAX_ENTRIES) {
+			EvictLocked(now);
+		}
+		entries[key] = Entry {result, now + std::chrono::seconds(DNS_CACHE_TTL_SECONDS)};
+	}
+
+private:
+	struct Entry {
+		DnsResult result;
+		Clock::time_point expires_at;
+	};
+
+	void EvictLocked(Clock::time_point now) {
+		for (auto it = entries.begin(); it != entries.end();) {
+			if (now >= it->second.expires_at) {
+				it = entries.erase(it);
+			} else {
+				++it;
+			}
+		}
+		if (entries.size() < DNS_CACHE_MAX_ENTRIES) {
+			return;
+		}
+		auto oldest = std::min_element(entries.begin(), entries.end(), [](const auto &lhs, const auto &rhs) {
+			return lhs.second.expires_at < rhs.second.expires_at;
+		});
+		if (oldest != entries.end()) {
+			entries.erase(oldest);
+		}
+	}
+
+	std::mutex mutex;
+	std::unordered_map<std::string, Entry> entries;
+};
+
 } // namespace
+
+bool IsCacheableDnsResult(const DnsResult &result) {
+	if (result.success) {
+		return true;
+	}
+	return result.reason == "dns_domain_not_found" || result.reason == "dns_no_records" ||
+	       result.reason == "dns_null_mx";
+}
 
 MxSelection SelectMxHosts(std::vector<MxRecord> records) {
 	MxSelection selection;
@@ -363,15 +434,31 @@ DnsResolver::DnsResolver(const DnsOptions &options_p) : options(options_p) {
 }
 
 DnsResult DnsResolver::Resolve(const std::string &domain) {
-	DnsResult result;
-	EmailTrace(AnofoxLogLevel::Info,
-	           "DNS Resolve begin domain=" + domain + " timeout_ms=" + std::to_string(options.timeout_ms) +
-	               " tries=" + std::to_string(options.tries));
 	if (domain.empty()) {
+		DnsResult result;
 		result.reason = "dns_empty_domain";
-		EmailTrace(AnofoxLogLevel::Warn, "DNS early exit: empty domain");
+		EmailTrace(AnofoxLogLevel::Debug, "DNS early exit: empty domain");
 		return result;
 	}
+	auto key = StringUtil::Lower(domain);
+	auto &cache = DnsResultCache::Get();
+	DnsResult cached;
+	if (cache.Lookup(key, cached)) {
+		EmailTrace(AnofoxLogLevel::Trace, "DNS cache hit domain=" + key);
+		return cached;
+	}
+	auto result = ResolveUncached(key);
+	if (IsCacheableDnsResult(result)) {
+		cache.Store(key, result);
+	}
+	return result;
+}
+
+DnsResult DnsResolver::ResolveUncached(const std::string &domain) {
+	DnsResult result;
+	EmailTrace(AnofoxLogLevel::Debug,
+	           "DNS Resolve begin domain=" + domain + " timeout_ms=" + std::to_string(options.timeout_ms) +
+	               " tries=" + std::to_string(options.tries));
 
 	std::string init_error;
 	if (!EnsureAresInitialized(init_error)) {
@@ -407,6 +494,7 @@ DnsResult DnsResolver::Resolve(const std::string &domain) {
 	                                ARES_OPT_TIMEOUTMS | ARES_OPT_TRIES | ARES_OPT_SOCK_STATE_CB);
 	if (init_rc != ARES_SUCCESS) {
 		result.reason = MapAresStatus(init_rc);
+		EmailTrace(AnofoxLogLevel::Warn, "DNS channel init failure reason=" + result.reason);
 		return result;
 	}
 	// RAII channel ownership (issue #60): released on every exit path.
@@ -451,13 +539,13 @@ DnsResult DnsResolver::Resolve(const std::string &domain) {
 
 	if (!loop_ok) {
 		result.reason = loop_error.empty() ? "dns_loop_failure" : loop_error;
-		EmailTrace(AnofoxLogLevel::Warn, "DNS loop failure reason=" + result.reason);
+		EmailTrace(AnofoxLogLevel::Debug, "DNS loop failure reason=" + result.reason);
 		return result;
 	}
 
 	if (pending != 0) {
 		result.reason = "dns_pending_incomplete";
-		EmailTrace(AnofoxLogLevel::Warn, "DNS incomplete pending=" + std::to_string(pending));
+		EmailTrace(AnofoxLogLevel::Debug, "DNS incomplete pending=" + std::to_string(pending));
 		return result;
 	}
 
@@ -466,7 +554,7 @@ DnsResult DnsResolver::Resolve(const std::string &domain) {
 		if (!selection.hosts.empty()) {
 			result.success = true;
 			result.mx_hosts = std::move(selection.hosts);
-			EmailTrace(AnofoxLogLevel::Info,
+			EmailTrace(AnofoxLogLevel::Debug,
 			           "DNS MX success records=" + std::to_string(result.mx_hosts.size()));
 			return result;
 		}
@@ -474,7 +562,7 @@ DnsResult DnsResolver::Resolve(const std::string &domain) {
 			// RFC 7505 Null MX: the domain explicitly refuses mail; do not fall
 			// back to direct host resolution.
 			result.reason = "dns_null_mx";
-			EmailTrace(AnofoxLogLevel::Warn, "DNS Null MX (RFC 7505) for domain=" + domain);
+			EmailTrace(AnofoxLogLevel::Debug, "DNS Null MX (RFC 7505) for domain=" + domain);
 			return result;
 		}
 	}
@@ -490,7 +578,7 @@ DnsResult DnsResolver::Resolve(const std::string &domain) {
 		if (result.mx_hosts.empty()) {
 			result.mx_hosts.emplace_back(domain);
 		}
-		EmailTrace(AnofoxLogLevel::Info,
+		EmailTrace(AnofoxLogLevel::Debug,
 		           "DNS addrinfo fallback success count=" + std::to_string(result.mx_hosts.size()));
 		return result;
 	}
@@ -509,7 +597,7 @@ DnsResult DnsResolver::Resolve(const std::string &domain) {
 			result.reason = "dns_no_records";
 		}
 	}
-	EmailTrace(AnofoxLogLevel::Warn, "DNS failure reason=" + result.reason);
+	EmailTrace(AnofoxLogLevel::Debug, "DNS failure reason=" + result.reason);
 	return result;
 }
 

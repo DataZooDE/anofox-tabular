@@ -89,7 +89,7 @@ email_validate(email VARCHAR [, mode VARCHAR]) -> STRUCT(
 |-------|------|-------------|
 | `valid` | `BOOLEAN` | `true` when every stage of the mode passed |
 | `stage` | `VARCHAR` | The last stage that ran: `regex`, `dns`, `smtp`, or `unsupported` for an unknown mode |
-| `reason` | `VARCHAR` | `NULL` when valid; otherwise a code such as `invalid_format`, `dns_no_records`, `dns_timeout`, `smtp_connect_error` or `validation_not_implemented` |
+| `reason` | `VARCHAR` | `NULL` when valid; otherwise a code from [Reason codes](#reason-codes) |
 | `mx_hosts` | `VARCHAR[]` | MX hosts found by the `dns` and `smtp` stages; empty for `regex` |
 | `smtp_debug.transcript` | `VARCHAR[]` | The SMTP conversation of the `smtp` stage; empty otherwise |
 
@@ -133,6 +133,52 @@ A DNS check needs network access, so its result depends on where you run it:
 SELECT email_validate('support@example.org', 'dns');
 ```
 
+### Reason codes
+
+| Stage | Reason | Meaning |
+|-------|--------|---------|
+| `regex` | `invalid_format` | The address does not match the regex pattern |
+| `unsupported` | `validation_not_implemented` | The mode is not `regex`, `dns`, `smtp` or `full` |
+| `dns` | `dns_resolution_failed` | No domain could be taken from the address |
+| `dns` | `dns_empty_domain` | The domain is empty |
+| `dns` | `dns_domain_not_found` | The domain does not exist (NXDOMAIN) |
+| `dns` | `dns_no_records` | The domain has neither MX nor address records |
+| `dns` | `dns_null_mx` | The domain publishes a Null MX record (RFC 7505): it accepts no mail |
+| `dns` | `dns_timeout` | The lookup did not finish within `anofox_tab_email_dns_timeout_ms` × `anofox_tab_email_dns_tries` |
+| `dns` | `dns_server_unreachable` | The DNS server refused the connection |
+| `dns` | `dns_out_of_memory` | The resolver ran out of memory |
+| `dns` | `dns_init_failed` | The resolver library could not be initialized |
+| `dns` | `dns_loop_failure`, `dns_pending_incomplete` | The resolver stopped before all queries finished |
+| `dns` | `dns_poll_failed_<errno>` | Waiting on the resolver sockets failed |
+| `dns` | `dns_error_<status>` | Any other c-ares status code |
+| `smtp` | `smtp_no_hosts` | No mail host to try |
+| `smtp` | `smtp_dns_reserved_domain` | The mail host is a reserved name such as `localhost` and is not contacted |
+| `smtp` | `smtp_dns_no_addresses`, `smtp_dns_timeout`, `smtp_dns_incomplete`, `smtp_dns_init_failed`, `smtp_dns_poll_failed_<errno>`, `smtp_dns_*` | The mail host name could not be resolved to an address |
+| `smtp` | `smtp_socket_init_failed` | The socket subsystem is unavailable |
+| `smtp` | `smtp_connect_error`, `smtp_connect_timeout` | No TCP connection to the mail host |
+| `smtp` | `smtp_greeting_error`, `smtp_greeting_timeout`, `smtp_invalid_greeting` | The server greeting was missing or not `220` |
+| `smtp` | `smtp_helo_rejected` | The server rejected `EHLO` |
+| `smtp` | `smtp_mail_from_rejected` | The server rejected `MAIL FROM` |
+| `smtp` | `smtp_recipient_rejected` | The server rejected `RCPT TO`: the mailbox does not exist |
+| `smtp` | `smtp_read_error`, `smtp_read_timeout`, `smtp_write_error`, `smtp_write_timeout` | The connection failed during the conversation |
+| `smtp` | `smtp_invalid_response`, `smtp_response_too_large` | The server sent a malformed or oversized reply |
+| `smtp` | `smtp_overall_timeout` | The whole SMTP check ran out of time |
+| `smtp` | `smtp_verification_failed` | SMTP failed without a more specific reason |
+
+### DNS cache
+
+DNS results are cached per domain for the life of the process, so a column with many addresses
+of the same domain does one lookup instead of one per row. The domain key is case-insensitive.
+Entries expire after 300 seconds and the cache holds at most 10,000 domains; when it is full,
+expired entries are dropped first, then the entry closest to expiry. Successful lookups and
+definite negative answers (`dns_domain_not_found`, `dns_no_records`, `dns_null_mx`) are cached.
+Timeouts and other transient errors are not, so the next row with that domain tries again. The
+cache is shared by `dns` and `smtp` mode and by all connections; `email_config` reports its
+limits as `dns_cache_ttl_s` and `dns_cache_max_entries`.
+
+Per-row outcomes (lookups, results, SMTP steps) are traced at `debug` level. Only environment
+problems, such as a resolver that cannot be initialized, are traced at `warn`.
+
 ---
 
 ## `email_config`
@@ -158,6 +204,8 @@ SELECT * FROM email_config();
 │ regex_pattern           │ ^[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*$ │
 │ dns_timeout_ms          │ 1000                                                                 │
 │ dns_tries               │ 1                                                                    │
+│ dns_cache_ttl_s         │ 300                                                                  │
+│ dns_cache_max_entries   │ 10000                                                                │
 │ smtp_port               │ 25                                                                   │
 │ smtp_connect_timeout_ms │ 5000                                                                 │
 │ smtp_read_timeout_ms    │ 5000                                                                 │
@@ -166,7 +214,7 @@ SELECT * FROM email_config();
 │ trace_enabled           │ true                                                                 │
 │ trace_level             │ info                                                                 │
 └─────────────────────────┴──────────────────────────────────────────────────────────────────────┘
-  11 rows                                                                              2 columns
+  13 rows                                                                              2 columns
 ```
 
 The settings themselves are described in [Configuration](../reference/configuration.md#email).

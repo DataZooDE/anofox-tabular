@@ -214,6 +214,8 @@ public:
 		entries.emplace_back("regex_pattern", regex_pattern);
 		entries.emplace_back("dns_timeout_ms", std::to_string(dns_options.timeout_ms));
 		entries.emplace_back("dns_tries", std::to_string(dns_options.tries));
+		entries.emplace_back("dns_cache_ttl_s", std::to_string(email::DNS_CACHE_TTL_SECONDS));
+		entries.emplace_back("dns_cache_max_entries", std::to_string(email::DNS_CACHE_MAX_ENTRIES));
 		entries.emplace_back("smtp_port", std::to_string(smtp_options.port));
 		entries.emplace_back("smtp_connect_timeout_ms", std::to_string(smtp_options.connect_timeout_ms));
 		entries.emplace_back("smtp_read_timeout_ms", std::to_string(smtp_options.read_timeout_ms));
@@ -257,14 +259,14 @@ EmailValidationResult ValidateRegex(std::string_view email, const std::regex &re
 EmailValidationResult ValidateEmailAddress(std::string_view email, const std::string &normalized_mode,
                                            const std::regex &regex) {
 	// Trace message construction is guarded so disabled tracing costs nothing per row.
-	if (AnofoxTraceConfig::Get().ShouldLog(AnofoxLogLevel::Info)) {
-		EmailTrace(AnofoxLogLevel::Info,
+	if (AnofoxTraceConfig::Get().ShouldLog(AnofoxLogLevel::Debug)) {
+		EmailTrace(AnofoxLogLevel::Debug,
 		           "ValidateEmailAddress start email=" + std::string(email) + " mode=" + normalized_mode);
 	}
 	auto regex_result = ValidateRegex(email, regex);
 	if (!regex_result.valid || normalized_mode == EMAIL_STAGE_REGEX) {
-		if (AnofoxTraceConfig::Get().ShouldLog(AnofoxLogLevel::Info)) {
-			EmailTrace(AnofoxLogLevel::Info,
+		if (AnofoxTraceConfig::Get().ShouldLog(AnofoxLogLevel::Debug)) {
+			EmailTrace(AnofoxLogLevel::Debug,
 			           std::string("Regex stage result valid=") + (regex_result.valid ? "true" : "false") +
 			               " reason=" +
 			               (regex_result.reason.empty() ? std::string("<none>") : regex_result.reason));
@@ -281,7 +283,7 @@ EmailValidationResult ValidateEmailAddress(std::string_view email, const std::st
 
 	auto domain = std::string(ExtractDomain(email));
 	if (domain.empty()) {
-	EmailTrace(AnofoxLogLevel::Warn, "No domain extracted from email");
+		EmailTrace(AnofoxLogLevel::Debug, "No domain extracted from email");
 		EmailValidationResult result;
 		result.stage = EMAIL_STAGE_DNS;
 		result.reason = EMAIL_REASON_DNS_FAIL;
@@ -289,7 +291,7 @@ EmailValidationResult ValidateEmailAddress(std::string_view email, const std::st
 		return result;
 	}
 
-	EmailTrace(AnofoxLogLevel::Info, "Performing DNS lookup for domain=" + domain);
+	EmailTrace(AnofoxLogLevel::Debug, "Performing DNS lookup for domain=" + domain);
 	auto dns_options = EmailConfig::Get().GetDnsOptions();
 	email::DnsResolver resolver(dns_options);
 	auto dns_lookup = resolver.Resolve(domain);
@@ -299,7 +301,7 @@ EmailValidationResult ValidateEmailAddress(std::string_view email, const std::st
 	dns_stage.mx_hosts = dns_lookup.mx_hosts;
 	dns_stage.smtp_transcript.clear();
 
-	EmailTrace(AnofoxLogLevel::Info,
+	EmailTrace(AnofoxLogLevel::Debug,
 	           std::string("DNS result success=") + (dns_lookup.success ? "true" : "false") + " reason=" +
 	               (dns_lookup.reason.empty() ? std::string("<none>") : dns_lookup.reason) + " hosts=" +
 	               std::to_string(dns_lookup.mx_hosts.size()));
@@ -310,7 +312,7 @@ EmailValidationResult ValidateEmailAddress(std::string_view email, const std::st
 		// loopback addresses (issue #47).
 		dns_stage.valid = false;
 		dns_stage.reason = dns_lookup.reason.empty() ? EMAIL_REASON_DNS_FAIL : dns_lookup.reason;
-		EmailTrace(AnofoxLogLevel::Warn,
+		EmailTrace(AnofoxLogLevel::Debug,
 		           "DNS failure, validation fails without SMTP fallback reason=" + dns_stage.reason);
 		return dns_stage;
 	}
@@ -323,7 +325,7 @@ EmailValidationResult ValidateEmailAddress(std::string_view email, const std::st
 	}
 
 	auto smtp_options = EmailConfig::Get().GetSmtpOptions();
-	EmailTrace(AnofoxLogLevel::Info,
+	EmailTrace(AnofoxLogLevel::Debug,
 	           "Starting SMTP verification with " + std::to_string(smtp_hosts.size()) + " host candidates");
 	email::SmtpClient smtp_client(smtp_options);
 	auto smtp_result = smtp_client.Verify(std::string(email), smtp_hosts);
@@ -336,7 +338,7 @@ EmailValidationResult ValidateEmailAddress(std::string_view email, const std::st
 	}
 
 	if (!smtp_result.success) {
-	    EmailTrace(AnofoxLogLevel::Info,
+	    EmailTrace(AnofoxLogLevel::Debug,
 	               std::string("SMTP verification failed reason=") +
 	                   (smtp_result.reason.empty() ? std::string("<none>") : smtp_result.reason));
 		smtp_stage.valid = false;
@@ -344,7 +346,7 @@ EmailValidationResult ValidateEmailAddress(std::string_view email, const std::st
 		return smtp_stage;
 	}
 
-    EmailTrace(AnofoxLogLevel::Info, "SMTP verification succeeded");
+    EmailTrace(AnofoxLogLevel::Debug, "SMTP verification succeeded");
 	smtp_stage.valid = true;
 	return smtp_stage;
 }
