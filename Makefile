@@ -11,6 +11,13 @@ endif
 EXT_NAME=anofox_tabular
 EXT_CONFIG=${PROJ_DIR}extension_config.cmake
 
+# DuckDB 2.0 takes its version from scripts/ci/release_version.txt instead of
+# git, so a local build of the v2.0.0 tag is stamped as a dev version
+# (v2.0.0-devNNNNN) that released DuckDB clients, e.g. the Python package,
+# refuse to load. When ./duckdb sits exactly on a release tag, stamp that tag.
+# An explicit OVERRIDE_GIT_DESCRIBE (CI) wins.
+OVERRIDE_GIT_DESCRIBE ?= $(shell git -C $(PROJ_DIR)duckdb describe --tags --exact-match 2>/dev/null)
+
 # Include the Makefile from extension-ci-tools
 include extension-ci-tools/makefiles/duckdb_extension.Makefile
 
@@ -76,7 +83,7 @@ test_reldebug_internal:
 # built without OpenVINO rather than letting every NER assertion degrade.
 NER_TESTS := test/sql/anofox_pii_ner.test test/sql/anofox_ner_cache_zero.test test/sql/anofox_ner_truncation.test
 test_ner: release
-	@./build/release/duckdb -noheader -list -c "SELECT onnx_available FROM anofox_ner_status()" | grep -qx true \
+	@$(PROJ_DIR)scripts/duckdb-dev.sh -noheader -list -c "SELECT onnx_available FROM anofox_ner_status()" 2>/dev/null | grep -qx true \
 		|| { echo "test_ner: the extension was built without OpenVINO"; exit 1; }
 	@for t in $(NER_TESTS); do \
 		DATAZOO_DISABLE_TELEMETRY=1 DNNL_MAX_CPU_ISA=AVX2 OPENVINO_AVAILABLE=1 ./build/release/test/unittest "$$t" || exit 1; \

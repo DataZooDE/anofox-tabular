@@ -3,7 +3,7 @@
 # them: they guard on OPENVINO_AVAILABLE, and they download the NER model from
 # Hugging Face on first use, which the release pipeline must not depend on.
 # Here the extension is built with OpenVINO on linux_amd64 against the
-# submodule's DuckDB (v1.5.6), and the model directory is cached between runs.
+# submodule's DuckDB (v2.0.0), and the model directory is cached between runs.
 #
 name: NER tests (linux_amd64)
 on:
@@ -31,12 +31,12 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  # the vcpkg commit extension-ci-tools v1.5-variegata builds with
-  VCPKG_COMMIT: 84bab45d415d22042bd0b9081aea57f362da3f35
+  # the vcpkg commit extension-ci-tools v2.0-cyanoptera builds with
+  VCPKG_COMMIT: cd61e1e26a038e82d6550a3ebbe0fbbfe7da78e3
 
 jobs:
   test:
-    name: linux_amd64, DuckDB v1.5.6, OpenVINO
+    name: linux_amd64, DuckDB v2.0.0, OpenVINO
     runs-on: ubuntu-24.04
     timeout-minutes: 180
     steps:
