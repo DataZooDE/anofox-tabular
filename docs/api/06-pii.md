@@ -913,7 +913,7 @@ need it, or on a sample first.
 | `anofox_pii_require_checksum` | `true` (default): an IBAN or card number must pass its checksum. `false`: values of the right shape that fail it are reported too, at confidence `0.6`, so mistyped account and card numbers are masked as well |
 | `anofox_pii_default_mask_strategy` | The strategy of `pii_redact_column(value)` and of `masked_value` in `pii_audit_table`; `none` is rejected |
 | `anofox_pii_min_confidence` | Minimum confidence of a match; dictionary name matches have 0.5, pattern matches 1.0 |
-| `anofox_pii_deep_validation` | Validate detected phone numbers with the built-in phone module |
+| `anofox_pii_deep_validation` | Validate detected phone numbers with the built-in phone module. A match is dropped only when the module can judge the number and finds its length impossible: a number with `+CC` (or the default region's international prefix) for that country, a national number for `anofox_tab_phonenumber_default_region`. A national number in another country's format, such as `0171 1234567` with the default region `US`, cannot be judged and stays a match. |
 | `anofox_ner_auto_download` | Download the NER model on first use |
 | `anofox_ner_model` | The NER model (`distilbert-en`); set it before the model is loaded |
 | `anofox_ner_device` | OpenVINO device (`AUTO`, `CPU`, `GPU`, ...) |

@@ -305,6 +305,11 @@ public:
     std::vector<PIIMatch> FindMatches(const std::string &text) const override;
     bool Validate(const std::string &text) const override;
     std::string GetPartialMask(const std::string &text) const override;
+
+private:
+    //! Deep validation (anofox_pii_deep_validation): false only when the phone module can judge
+    //! the number and finds its length impossible
+    static bool PassesDeepValidation(const std::string &text);
 };
 
 /**
