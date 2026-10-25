@@ -327,6 +327,12 @@ Canonical name: `anofox_tab_dbscan`. Table function.
 DBSCAN over a single numeric column. Rows where the column is `NULL` are skipped. A non-numeric
 column is a binder error (`dbscan: column 'segment' must be numeric, got VARCHAR`).
 
+The neighbour search sorts the values once and only visits the points within `eps` of each point,
+so the run time grows with the number of rows times the typical neighbourhood size, not with the
+square of the row count. A large `eps` that puts most rows into each other's neighbourhood is
+still quadratic. A column holding `NaN` or infinite values falls back to comparing every pair of
+points.
+
 ```text
 dbscan(table_name VARCHAR, column_name VARCHAR
        [, eps DOUBLE [, min_pts BIGINT [, output_mode VARCHAR]]]
@@ -409,6 +415,10 @@ Canonical name: `anofox_tab_dbscan_mv`. Table function.
 
 DBSCAN over several numeric columns. Rows with a `NULL` in any selected column are skipped. A
 non-numeric column is a binder error.
+
+With two or more columns every point is compared with every other point, so the run time grows
+with the square of the row count: tens of thousands of rows take seconds, 100,000 rows take
+tens of seconds or more. Sample larger tables first.
 
 ```text
 dbscan_mv(table_name VARCHAR, column_names VARCHAR

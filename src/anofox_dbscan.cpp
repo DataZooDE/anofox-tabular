@@ -60,6 +60,25 @@ void DBSCAN::RegionQuery(
 
 	const auto& query_point = data[point_idx];
 
+	if (use_sorted_1d_) {
+		const size_t pos = sorted_pos_[point_idx];
+		for (size_t p = pos; p-- > 0;) {
+			size_t other = sorted_order_[p];
+			if (ComputeDistance(query_point, data[other]) > eps_) {
+				break;
+			}
+			neighbors.push_back(other);
+		}
+		for (size_t p = pos + 1; p < sorted_order_.size(); ++p) {
+			size_t other = sorted_order_[p];
+			if (ComputeDistance(query_point, data[other]) > eps_) {
+				break;
+			}
+			neighbors.push_back(other);
+		}
+		return;
+	}
+
 	for (size_t i = 0; i < data.size(); ++i) {
 		if (i != point_idx) {
 			double dist = ComputeDistance(query_point, data[i]);
@@ -154,6 +173,23 @@ void DBSCAN::Fit(const std::vector<std::vector<double>>& data) {
 		results_[i].point_type = PointType::UNVISITED;
 		results_[i].neighbor_count = 0;
 		results_[i].density_score = 0.0;
+	}
+
+	// Univariate fast path (see use_sorted_1d_); NaN/Inf values keep the all-pairs search
+	use_sorted_1d_ = n_features_ == 1 && std::all_of(data.begin(), data.end(), [](const std::vector<double> &point) {
+		                 return point.size() == 1 && std::isfinite(point[0]);
+	                 });
+	sorted_order_.clear();
+	sorted_pos_.clear();
+	if (use_sorted_1d_) {
+		sorted_order_.resize(n_points);
+		std::iota(sorted_order_.begin(), sorted_order_.end(), size_t(0));
+		std::stable_sort(sorted_order_.begin(), sorted_order_.end(),
+		                 [&data](size_t a, size_t b) { return data[a][0] < data[b][0]; });
+		sorted_pos_.resize(n_points);
+		for (size_t p = 0; p < n_points; ++p) {
+			sorted_pos_[sorted_order_[p]] = p;
+		}
 	}
 
 	std::vector<bool> visited(n_points, false);

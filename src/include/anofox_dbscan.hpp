@@ -53,6 +53,16 @@ private:
 	std::vector<DBSCANPoint> results_;        // Clustering results
 	DistanceMetric metric_;                   // Distance metric to use
 
+	// Univariate fast path: with one feature and only finite values the points are
+	// sorted once, and a region query walks outward from the point's sorted position
+	// until the distance exceeds eps (the distance grows monotonically along the sorted
+	// order), instead of comparing against every point. The neighbour sets are
+	// identical to the all-pairs search; only their order differs, which DBSCAN's
+	// result does not depend on.
+	bool use_sorted_1d_ = false;
+	std::vector<size_t> sorted_order_;        // point indices by ascending value
+	std::vector<size_t> sorted_pos_;          // position of each point in sorted_order_
+
 	/**
 	 * Compute distance between two points
 	 * @param p1: First point
