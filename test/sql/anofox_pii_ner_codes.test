@@ -1,0 +1,56 @@
+# name: test/sql/anofox_pii_ner_codes.test
+# description: NER matches that are only an ISO country or currency code are dropped, and
+#              partial masks of short NER entities reveal nothing (F23, F7)
+# group: [sql]
+
+require-env OPENVINO_AVAILABLE
+
+require anofox_tabular
+
+statement ok
+LOAD anofox_tabular
+
+# Master data: country and currency code columns are not PII
+statement ok
+CREATE TABLE customer_master AS
+SELECT * FROM (VALUES
+    (1, 'DE', 'EUR'),
+    (2, 'GB', 'GBP'),
+    (3, 'US', 'USD'),
+    (4, 'CH', 'CHF')
+) t(customer_id, country_code, currency);
+
+query I
+SELECT count(*) FROM pii_audit_table('customer_master');
+----
+0
+
+query T
+SELECT list_transform(pii_detect('DE'), lambda m: m.type) || list_transform(pii_detect('EUR'), lambda m: m.type);
+----
+[]
+
+# Lower-case or longer words are not codes and stay detectable
+query I
+SELECT list_contains(list_transform(pii_detect('Office in Rome'), lambda m: m.type), 'LOCATION');
+----
+true
+
+# A detected short entity is masked completely by partial
+query T
+SELECT pii_mask('Office in Rome', 'partial');
+----
+Office in ****
+
+query T
+SELECT pii_mask('UK customer', 'partial');
+----
+** customer
+
+# pii_status gives the NER types real descriptions
+query TT
+SELECT pii_type, pattern_info FROM pii_status() WHERE pii_type IN ('LOCATION', 'MISC', 'ORGANIZATION') ORDER BY pii_type;
+----
+LOCATION	OpenVINO DistilBERT NER, LOC entities (cities, countries, regions)
+MISC	OpenVINO DistilBERT NER, MISC entities (events, nationalities, products)
+ORGANIZATION	OpenVINO DistilBERT NER, ORG entities (companies, institutions)

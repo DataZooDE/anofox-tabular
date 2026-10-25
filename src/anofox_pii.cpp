@@ -6,6 +6,7 @@
 #include "anofox_id_column.hpp"
 #include "anofox_phonenumber.hpp"
 #include "anofox_phonenumber_metadata.hpp"
+#include "anofox_money_currency.hpp"
 #include "telemetry.hpp"
 
 #include "duckdb/catalog/catalog.hpp"
@@ -97,6 +98,42 @@ bool IsFieldLabel(const std::string &text) {
         upper.pop_back();
     }
     return labels.count(upper) > 0;
+}
+
+// An ISO 3166-1 alpha-2 country code ("DE", "GB") or ISO 4217 currency code
+// ("EUR", "USD"), written in capitals. The NER model tags such codes in
+// master data as ORG or LOC; on their own they identify nobody.
+bool IsCountryOrCurrencyCode(const std::string &text) {
+    const bool all_upper = !text.empty() && std::all_of(text.begin(), text.end(), [](char c) {
+        return c >= 'A' && c <= 'Z';
+    });
+    if (!all_upper) {
+        return false;
+    }
+    if (text.size() == 2) {
+        // ISO 3166-1 alpha-2, officially assigned codes
+        static const std::unordered_set<std::string> country_codes = {
+            "AD", "AE", "AF", "AG", "AI", "AL", "AM", "AO", "AQ", "AR", "AS", "AT", "AU", "AW", "AX", "AZ", "BA",
+            "BB", "BD", "BE", "BF", "BG", "BH", "BI", "BJ", "BL", "BM", "BN", "BO", "BQ", "BR", "BS", "BT", "BV",
+            "BW", "BY", "BZ", "CA", "CC", "CD", "CF", "CG", "CH", "CI", "CK", "CL", "CM", "CN", "CO", "CR", "CU",
+            "CV", "CW", "CX", "CY", "CZ", "DE", "DJ", "DK", "DM", "DO", "DZ", "EC", "EE", "EG", "EH", "ER", "ES",
+            "ET", "FI", "FJ", "FK", "FM", "FO", "FR", "GA", "GB", "GD", "GE", "GF", "GG", "GH", "GI", "GL", "GM",
+            "GN", "GP", "GQ", "GR", "GS", "GT", "GU", "GW", "GY", "HK", "HM", "HN", "HR", "HT", "HU", "ID", "IE",
+            "IL", "IM", "IN", "IO", "IQ", "IR", "IS", "IT", "JE", "JM", "JO", "JP", "KE", "KG", "KH", "KI", "KM",
+            "KN", "KP", "KR", "KW", "KY", "KZ", "LA", "LB", "LC", "LI", "LK", "LR", "LS", "LT", "LU", "LV", "LY",
+            "MA", "MC", "MD", "ME", "MF", "MG", "MH", "MK", "ML", "MM", "MN", "MO", "MP", "MQ", "MR", "MS", "MT",
+            "MU", "MV", "MW", "MX", "MY", "MZ", "NA", "NC", "NE", "NF", "NG", "NI", "NL", "NO", "NP", "NR", "NU",
+            "NZ", "OM", "PA", "PE", "PF", "PG", "PH", "PK", "PL", "PM", "PN", "PR", "PS", "PT", "PW", "PY", "QA",
+            "RE", "RO", "RS", "RU", "RW", "SA", "SB", "SC", "SD", "SE", "SG", "SH", "SI", "SJ", "SK", "SL", "SM",
+            "SN", "SO", "SR", "SS", "ST", "SV", "SX", "SY", "SZ", "TC", "TD", "TF", "TG", "TH", "TJ", "TK", "TL",
+            "TM", "TN", "TO", "TR", "TT", "TV", "TW", "TZ", "UA", "UG", "UM", "US", "UY", "UZ", "VA", "VC", "VE",
+            "VG", "VI", "VN", "VU", "WF", "WS", "YE", "YT", "ZA", "ZM", "ZW"};
+        return country_codes.count(text) > 0;
+    }
+    if (text.size() == 3) {
+        return CurrencyRegistry::GetInstance().CurrencyExists(text);
+    }
+    return false;
 }
 
 // ---------------------------------------------------------------------------
@@ -2602,7 +2639,7 @@ std::vector<PIIMatch> PIIEngine::Detect(
             }
             if (IsNERType(match.type)) {
                 WidenToWords(text, match);
-                if (IsFieldLabel(match.matched_text)) {
+                if (IsFieldLabel(match.matched_text) || IsCountryOrCurrencyCode(match.matched_text)) {
                     continue;
                 }
             }
@@ -3382,6 +3419,9 @@ void PIIStatusFunction(ClientContext &, TableFunctionInput &input, DataChunk &ou
         {PIIType::DE_TAX_ID, "German Tax ID"},
         {PIIType::URL, "URL"},
         {PIIType::NAME, "Person Name"},
+        {PIIType::ORGANIZATION, "Organization Name"},
+        {PIIType::LOCATION, "Location"},
+        {PIIType::MISC, "Miscellaneous Entity"},
         {PIIType::US_PASSPORT, "US Passport"},
         {PIIType::CRYPTO_ADDRESS, "Crypto Address"},
         {PIIType::UK_NINO, "UK NINO"},
@@ -3405,8 +3445,14 @@ void PIIStatusFunction(ClientContext &, TableFunctionInput &input, DataChunk &ou
         {PIIType::URL, "HTTP/HTTPS URLs"},
 #if HAVE_OPENVINO
         {PIIType::NAME, "OpenVINO DistilBERT NER (92% F1)"},
+        {PIIType::ORGANIZATION, "OpenVINO DistilBERT NER, ORG entities (companies, institutions)"},
+        {PIIType::LOCATION, "OpenVINO DistilBERT NER, LOC entities (cities, countries, regions)"},
+        {PIIType::MISC, "OpenVINO DistilBERT NER, MISC entities (events, nationalities, products)"},
 #else
         {PIIType::NAME, "Dictionary-based name detection (200+ first names)"},
+        {PIIType::ORGANIZATION, "Needs the NER model, which this build does not include"},
+        {PIIType::LOCATION, "Needs the NER model, which this build does not include"},
+        {PIIType::MISC, "Needs the NER model, which this build does not include"},
 #endif
         {PIIType::US_PASSPORT, "Letter + 8 digits"},
         {PIIType::CRYPTO_ADDRESS, "Bitcoin (P2PKH/P2SH/SegWit) and Ethereum"},
