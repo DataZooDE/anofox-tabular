@@ -106,12 +106,28 @@ def vat_country_name(conn: Any, country_code: str) -> str:
     return str(result[0]) if result[0] is not None else ""
 
 
-def vat_format(conn: Any, country: str, digits: str) -> str:
-    """Format a country + digits pair as a canonical VAT string."""
-    result = conn.execute(
-        "SELECT anofox_tab_vat_format(?, ?)", [country, digits]
-    ).fetchone()
-    return str(result[0]) if result[0] is not None else ""
+def vat_format(conn: Any, vat: str, style: str = "plain") -> Optional[str]:
+    """
+    Format a VAT number, like SQL ``vat_format(vat_number, format_style)``.
+
+    Parameters
+    ----------
+    conn:
+        An :class:`~anofox.AnofoxConnection`.
+    vat:
+        VAT number in any common spelling, e.g. ``"de 111-111-125"``.
+    style:
+        ``"plain"`` (default): digits only, without prefix; ``"iso"``: VAT
+        prefix and digits, e.g. ``"DE111111125"`` (Greece as ``EL``).
+        Case-insensitive; an unknown style raises a DuckDB error.
+
+    Returns
+    -------
+    str or None
+        *None* when *vat* cannot be parsed.
+    """
+    result = conn.execute("SELECT anofox_tab_vat_format(?, ?)", [vat, style]).fetchone()
+    return None if result[0] is None else str(result[0])
 
 
 def vat_is_valid(conn: Any, vat_string: str) -> bool:

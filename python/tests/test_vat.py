@@ -91,3 +91,20 @@ class TestMakeVat:
         from anofox import vat
         result = vat.make_vat(conn, "DE123456789")
         assert isinstance(result, dict)
+
+
+class TestVatFormat:
+    """vat_format mirrors SQL vat_format(vat_number, format_style)."""
+
+    def test_default_style_is_plain(self, conn):
+        from anofox.vat import vat_format
+        assert vat_format(conn, "de 111-111-125") == "111111125"
+
+    def test_iso_style(self, conn):
+        from anofox.vat import vat_format
+        assert vat_format(conn, "de 111-111-125", style="iso") == "DE111111125"
+        assert vat_format(conn, "GR123456783", "iso") == "EL123456783"
+
+    def test_unparseable_returns_none(self, conn):
+        from anofox.vat import vat_format
+        assert vat_format(conn, "not a vat", "iso") is None
