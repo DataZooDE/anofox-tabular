@@ -243,7 +243,8 @@ class AnofoxConnection:
             pandas or polars DataFrame.
         rules:
             Mapping of ``{check_name: params_dict}``.  Supported checks:
-            ``"volume"``, ``"null_rate"``, ``"distinct_count"``.
+            ``"volume"``, ``"null_rate"``, ``"distinct_count"``; any other
+            name raises :class:`ValueError`.
 
         Returns
         -------
@@ -254,6 +255,13 @@ class AnofoxConnection:
         from . import quality as q
 
         detect_df_type(df)  # validate type
+        unknown = [name for name in rules if name not in _QUALITY_CHECK_RULES]
+        if unknown:
+            raise ValueError(
+                f"unknown quality_check rule(s): {', '.join(map(repr, unknown))}; "
+                f"supported: {', '.join(map(repr, _QUALITY_CHECK_RULES))}. "
+                "Use anofox.quality for the other checks."
+            )
         table_name = register_df_as_table(self._conn, df)
 
         results = {}
@@ -286,6 +294,9 @@ class AnofoxConnection:
             status="pass" if overall_passed else "fail",
             checks=results,
         )
+
+
+_QUALITY_CHECK_RULES = ("volume", "null_rate", "distinct_count")
 
 
 def _rows_to_frame(rows: list[dict], columns: list[str], df_type: str) -> Any:

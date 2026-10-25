@@ -85,3 +85,32 @@ class TestProfile:
         result = conn.profile(df)
         row = result[result["column"] == "x"].iloc[0]
         assert abs(row["null_rate"] - 0.75) < 0.01
+
+
+class TestQualityCheckRules:
+    def test_unknown_rule_raises(self, conn):
+        import pandas as pd
+        df = pd.DataFrame({"a": [1, None]})
+        with pytest.raises(ValueError) as exc:
+            conn.quality_check(df, {"null-rate": {"column": "a"}, "zscore": {"column": "a"}})
+        message = str(exc.value)
+        assert "null-rate" in message and "zscore" in message
+        assert "volume" in message and "null_rate" in message and "distinct_count" in message
+
+    def test_unknown_rule_creates_no_table(self, conn):
+        import pandas as pd
+        before = conn.execute(
+            "SELECT count(*) FROM information_schema.tables WHERE table_name LIKE '_anofox_%'"
+        ).fetchone()[0]
+        with pytest.raises(ValueError):
+            conn.quality_check(pd.DataFrame({"a": [1]}), {"nope": {}})
+        after = conn.execute(
+            "SELECT count(*) FROM information_schema.tables WHERE table_name LIKE '_anofox_%'"
+        ).fetchone()[0]
+        assert after == before
+
+    def test_known_rules_still_run(self, conn):
+        import pandas as pd
+        result = conn.quality_check(pd.DataFrame({"a": [1, None]}), {"null_rate": {"column": "a"}})
+        assert result["status"] == "fail"
+        assert set(result["checks"]) == {"null_rate"}
