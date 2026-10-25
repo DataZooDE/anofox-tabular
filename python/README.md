@@ -182,4 +182,5 @@ uv run pytest tests/test_loader.py tests/test_utils.py -v
 
 ## License
 
-MIT
+Business Source License 1.1, the same as the extension. Production use is permitted, except
+offering it to third parties on a hosted or embedded basis. See [LICENSE](https://github.com/DataZooDE/anofox-tabular/blob/main/LICENSE) for the full terms.
