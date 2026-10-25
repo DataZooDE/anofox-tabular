@@ -72,7 +72,7 @@ const std::unordered_map<std::string, CountryMetadata> REGION_METADATA = {
 		"00",                                 // international_prefix
 		"1212345678",                         // example_number
 		"$1 $2 $3",                           // national_format_pattern
-		"2\\d{9}|3\\d{9}|[58]\\d{9}",        // fixed_line_pattern (020, 030, 08, 05)
+		"[1-3]\\d{9}|[58]\\d{9}",             // fixed_line_pattern (01, 02, 03, 05, 08)
 		"7\\d{9}",                            // mobile_pattern (07xxx)
 		"80\\d{8}",                           // toll_free_pattern (0800)
 	}},
@@ -84,7 +84,7 @@ const std::unordered_map<std::string, CountryMetadata> REGION_METADATA = {
 		{10, 11},                             // valid_lengths (10 or 11 digits)
 		"0",                                  // national_prefix
 		"00",                                 // international_prefix
-		"30123456",                           // example_number
+		"3012345678",                         // example_number (030 1234 5678, Berlin)
 		"$1 $2",                              // national_format_pattern
 		"[2-9]\\d{9,10}",                    // fixed_line_pattern
 		"1[567]\\d{9}",                      // mobile_pattern (015x, 016x, 017x)
@@ -170,7 +170,7 @@ const std::unordered_map<std::string, CountryMetadata> REGION_METADATA = {
 		"00",                                 // international_prefix
 		"1012345678",                         // example_number
 		"$1 $2 $3",                           // national_format_pattern
-		"[2-8]\\d{9,11}",                     // fixed_line_pattern
+		"10\\d{8}|[2-8]\\d{9,11}",             // fixed_line_pattern (010 Beijing, 02x-08xx)
 		"1[3-9]\\d{9}",                       // mobile_pattern
 		"800\\d{7}",                          // toll_free_pattern
 	}},
@@ -226,7 +226,7 @@ const std::unordered_map<std::string, CountryMetadata> REGION_METADATA = {
 		"00",                                 // international_prefix
 		"1123456789",                         // example_number
 		"$1 $2-$3",                           // national_format_pattern
-		"[2-9]\\d{9}",                        // fixed_line_pattern
+		"[1-9]\\d{9}",                        // fixed_line_pattern (011 Buenos Aires, 02xx, 03xx)
 		"9\\d{10}",                           // mobile_pattern
 		"800\\d{7}",                          // toll_free_pattern
 	}},
@@ -310,7 +310,7 @@ const std::unordered_map<std::string, CountryMetadata> REGION_METADATA = {
 		"00",                                 // international_prefix
 		"912345678",                          // example_number
 		"$1 $2 $3",                           // national_format_pattern
-		"[1-35]\\d{8}",                       // fixed_line_pattern
+		"[1-359]\\d{8}",                      // fixed_line_pattern (09 Helsinki)
 		"4\\d{8}",                            // mobile_pattern
 		"800\\d{6}",                          // toll_free_pattern
 	}},

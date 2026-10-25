@@ -210,7 +210,7 @@ SELECT phonenumber_example('GB');
 query T
 SELECT phonenumber_example('DE');
 ----
-+4930123456
++493012345678
 
 # Get example number for FR
 query T
@@ -343,3 +343,21 @@ query T
 SELECT phonenumber_format('6502530000', 'US', 'RFC3966');
 ----
 tel:+1-650-253-0000
+
+# Every region's example number is valid in that region (DE, GB, AR, CN and FI were not)
+query I
+SELECT list(r ORDER BY r) FROM (VALUES ('AR'),('AU'),('BR'),('CA'),('CH'),('CN'),('DE'),('ES'),('FI'),('FR'),('GB'),
+  ('DK'),('IN'),('IT'),('JP'),('MX'),('NL'),('NO'),('RU'),('SE'),('US')) v(r)
+WHERE NOT coalesce(phonenumber_is_valid(phonenumber_example(r), r), false);
+----
+NULL
+
+
+# Real numbers from the ranges the examples come from
+query IIII
+SELECT phonenumber_is_valid('+44 121 234 5678', 'GB'),   -- Birmingham (0121)
+       phonenumber_is_valid('+54 11 2345 6789', 'AR'),   -- Buenos Aires (011)
+       phonenumber_is_valid('+86 10 1234 5678', 'CN'),   -- Beijing (010)
+       phonenumber_is_valid('+358 9 1234 5678', 'FI');   -- Helsinki (09)
+----
+true	true	true	true
