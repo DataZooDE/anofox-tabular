@@ -387,8 +387,8 @@ Detect and mask Personally Identifiable Information (PII) in text data with 17 s
 **PII Types Detected:**
 - **Pattern-based (13 types):** EMAIL, PHONE, CREDIT_CARD, US_SSN, IBAN, IP_ADDRESS, URL, MAC_ADDRESS, UK_NINO, US_PASSPORT, API_KEY, CRYPTO_ADDRESS, DE_TAX_ID
 - **NER-based (4 types):** NAME, ORGANIZATION, LOCATION, MISC (using OpenVINO + DistilBERT)
-  - Available on: Linux x64 (glibc), macOS (x64 & ARM64)
-  - Not available on: Windows x64, Linux ARM64, Linux musl (Alpine)
+  - Available on: Linux x64 (glibc), macOS x64
+  - Not available on: macOS ARM64, Windows x64, Linux ARM64, Linux musl (Alpine)
   - On unsupported platforms: NAME uses dictionary fallback, other NER types unavailable
   - Inputs are truncated at the model's 512-token limit; entities beyond that are not detected
   - The built-in tokenizer is ASCII-focused (English model); non-ASCII punctuation is not treated as a word boundary
