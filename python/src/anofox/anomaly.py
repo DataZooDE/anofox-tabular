@@ -54,6 +54,7 @@ def isolation_forest(
     -------
     dict or DataFrame
     """
+    _check_output_mode("isolation_forest", output_mode)
     table_name, registered = resolve_table(conn, table_or_df)
     try:
         actual_sample_size = sample_size if sample_size is not None else 256
@@ -101,6 +102,7 @@ def isolation_forest_mv(
         per-row output, directly after ``row_id``. Only valid with
         ``output_mode="scores"``.
     """
+    _check_output_mode("isolation_forest_mv", output_mode)
     table_name, registered = resolve_table(conn, table_or_df)
     cols_csv = ",".join(columns)
     try:
@@ -147,6 +149,7 @@ def dbscan(
         per-row output, directly after ``row_id``. Only valid with
         ``output_mode="scores"``/``"clusters"``.
     """
+    _check_output_mode("dbscan", output_mode)
     table_name, registered = resolve_table(conn, table_or_df)
     # The extension's per-row DBSCAN mode is named 'clusters'; keep the
     # package-level "scores" naming consistent with the other detectors.
@@ -194,6 +197,7 @@ def dbscan_mv(
         per-row output, directly after ``row_id``. Only valid with
         ``output_mode="scores"``/``"clusters"``.
     """
+    _check_output_mode("dbscan_mv", output_mode)
     table_name, registered = resolve_table(conn, table_or_df)
     cols_csv = ",".join(columns)
     sql_mode = "clusters" if output_mode == "scores" else output_mode
@@ -256,6 +260,7 @@ def outlier_tree(
     -------
     dict or DataFrame
     """
+    _check_output_mode("outlier_tree", output_mode)
     table_name, registered = resolve_table(conn, table_or_df)
     if isinstance(columns, list):
         cols_csv = ",".join(columns)
@@ -274,11 +279,31 @@ def outlier_tree(
         cleanup_table(conn, table_name, registered)
 
 
+_OUTPUT_MODES = {
+    "isolation_forest": ("summary", "scores"),
+    "isolation_forest_mv": ("summary", "scores"),
+    # 'scores' is the package-wide name of the per-row mode; the SQL name is 'clusters'.
+    "dbscan": ("summary", "clusters", "scores"),
+    "dbscan_mv": ("summary", "clusters", "scores"),
+    "outlier_tree": ("summary", "outliers"),
+}
+
+
+def _check_output_mode(function: str, output_mode: str) -> None:
+    """Raise ValueError unless *output_mode* is a mode of *function*."""
+    allowed = _OUTPUT_MODES[function]
+    if output_mode not in allowed:
+        raise ValueError(
+            f"{function}: output_mode must be one of {', '.join(map(repr, allowed))}, "
+            f"got {output_mode!r}"
+        )
+
+
 def _execute_anomaly(
     conn: Any, query: str, params: list, output_mode: str, df_type: str
 ) -> Union[dict, Any]:
-    """Execute the query and return either a dict or a DataFrame of *df_type*."""
-    if output_mode in ("scores", "outliers"):
+    """Execute the query: a dict for 'summary', else a DataFrame of *df_type* (one row per row)."""
+    if output_mode != "summary":
         return fetch_frame(conn, query, params, df_type)
 
     # summary — convert first row to dict using column names from description

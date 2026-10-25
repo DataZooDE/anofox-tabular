@@ -188,3 +188,29 @@ class TestIdColumn:
         from anofox import anomaly
         with pytest.raises(duckdb.Error, match="id_column requires output_mode"):
             anomaly.isolation_forest(conn, id_table, "x", output_mode="summary", id_column="key")
+
+
+class TestOutputModes:
+    """Every per-row mode returns a DataFrame; unknown modes raise ValueError."""
+
+    @pytest.mark.parametrize("func,arg", [("dbscan", "x"), ("dbscan_mv", ["x", "y"])])
+    def test_dbscan_clusters_mode_returns_dataframe(self, conn, numeric_table, func, arg):
+        import pandas as pd
+        from anofox import anomaly
+        result = getattr(anomaly, func)(conn, numeric_table, arg, output_mode="clusters")
+        assert isinstance(result, pd.DataFrame)
+        assert len(result) == 50
+        assert "cluster_id" in result.columns
+
+    @pytest.mark.parametrize("func,arg,mode", [
+        ("isolation_forest", "x", "clusters"),
+        ("isolation_forest", "x", "outliers"),
+        ("isolation_forest_mv", ["x", "y"], "Scores"),
+        ("dbscan", "x", "outliers"),
+        ("dbscan_mv", ["x", "y"], "summery"),
+        ("outlier_tree", ["x", "y"], "scores"),
+    ])
+    def test_unknown_mode_raises(self, conn, numeric_table, func, arg, mode):
+        from anofox import anomaly
+        with pytest.raises(ValueError, match="output_mode"):
+            getattr(anomaly, func)(conn, numeric_table, arg, output_mode=mode)
