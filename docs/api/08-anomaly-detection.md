@@ -115,10 +115,11 @@ A `NULL` for `n_trees`, `sample_size`, `contamination` or `output_mode` keeps th
 | `anomaly_score` | `DOUBLE` | Higher is more anomalous |
 | `is_anomaly` | `BOOLEAN` | Score above the contamination threshold |
 
-With the default contamination of 0.1, 20 of the 200 rows are flagged:
+With the default contamination of 0.1, 20 of the 200 rows are flagged (the seed `42` makes the
+example reproducible):
 
 ```sql
-SELECT * FROM isolation_forest('readings', 'temperature');
+SELECT * FROM isolation_forest('readings', 'temperature', 100, 256, 0.1, 'summary', 42);
 ```
 
 ```text

@@ -877,7 +877,7 @@ SELECT pii_type, recognizer_name, pattern_info FROM pii_status() ORDER BY pii_ty
 │    varchar     │            varchar             │                                          varchar                                          │
 ├────────────────┼────────────────────────────────┼───────────────────────────────────────────────────────────────────────────────────────────┤
 │ API_KEY        │ API Key                        │ AWS/GitHub tokens and high-entropy strings                                                │
-│ CREDIT_CARD    │ Credit Card                    │ Visa/MC/Amex/Discover with Luhn validation                                                │
+│ CREDIT_CARD    │ Credit Card                    │ Card brand prefixes (IIN) with Luhn validation                                            │
 │ CRYPTO_ADDRESS │ Crypto Address                 │ Bitcoin (P2PKH/P2SH/SegWit) and Ethereum                                                  │
 │ DATE_OF_BIRTH  │ Date of Birth                  │ Date after a birth keyword (geb., Geburtsdatum, DOB, born on), real calendar date         │
 │ DE_ID_CARD     │ German ID Card / Passport      │ 9-character document number; check digit or keyword (Personalausweis, Reisepass) required │
@@ -886,11 +886,11 @@ SELECT pii_type, recognizer_name, pattern_info FROM pii_status() ORDER BY pii_ty
 │ EMAIL          │ Email                          │ RFC 5322 email pattern                                                                    │
 │ IBAN           │ IBAN                           │ ISO 13616 with MOD-97 checksum                                                            │
 │ IP_ADDRESS     │ IP Address                     │ IPv4 and IPv6 formats                                                                     │
-│ LOCATION       │ Unknown                        │ No description                                                                            │
+│ LOCATION       │ Location                       │ OpenVINO DistilBERT NER, LOC entities (cities, countries, regions)                        │
 │ MAC_ADDRESS    │ MAC Address                    │ Colon/hyphen/dot formats; bare hex needs letter+digit                                     │
-│ MISC           │ Unknown                        │ No description                                                                            │
+│ MISC           │ Miscellaneous Entity           │ OpenVINO DistilBERT NER, MISC entities (events, nationalities, products)                  │
 │ NAME           │ Person Name                    │ OpenVINO DistilBERT NER (92% F1)                                                          │
-│ ORGANIZATION   │ Unknown                        │ No description                                                                            │
+│ ORGANIZATION   │ Organization Name              │ OpenVINO DistilBERT NER, ORG entities (companies, institutions)                           │
 │ PHONE          │ Phone                          │ International (+XX, 00XX) and national (0XX) formats                                      │
 │ POSTAL_CODE    │ Postal Code                    │ DE/AT/CH, NL and UK postcodes next to an address (off by default)                         │
 │ UK_NINO        │ UK NINO                        │ UK National Insurance Number format                                                       │
