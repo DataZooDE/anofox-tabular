@@ -90,6 +90,68 @@ SELECT postal_load_data();
 The postal functions are not available on Windows, and may be missing on macOS builds. See
 [Postal addresses](../api/02-postal.md).
 
+## "Problem with the SSL CA cert" when downloading the NER model or postal data
+
+```text
+[anofox] [warn] ner: Download attempt 1 failed: Problem with the SSL CA cert (path? access rights?) (HTTP 0)
+```
+
+The download of the NER model or the libpostal data could not load a list of trusted
+certificate authorities (CA bundle). `anofox_ner_status()` then reports `FAILED` with
+`Failed to download model`, and `postal_load_data()` fails.
+
+The extension looks for a CA bundle before each download, in this order:
+
+1. The file named by the environment variable `CURL_CA_BUNDLE`, else `SSL_CERT_FILE`. The file is
+   used even when it does not exist, so a wrong path fails visibly.
+2. The bundle compiled into the bundled libcurl, when that file exists.
+3. The first existing file of `/etc/ssl/certs/ca-certificates.crt` (Debian, Ubuntu, Arch),
+   `/etc/pki/tls/certs/ca-bundle.crt` (RHEL, Fedora), `/etc/ssl/ca-bundle.pem` (openSUSE),
+   `/etc/pki/tls/cacert.pem`, `/etc/ssl/cert.pem` (macOS, Alpine),
+   `/usr/local/etc/openssl/cert.pem` and `/opt/homebrew/etc/openssl@3/cert.pem` (Homebrew).
+
+`SSL_CERT_DIR`, when set, adds a directory of certificates. If the error persists, your bundle
+is in another place: set the variable before you start DuckDB, for example
+
+```bash
+SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt duckdb
+```
+
+The trace at level `debug` shows which bundle a download used (`ner: TLS CA bundle ...`).
+
+**Release v2026.10.25 and older.** These releases do not look for a bundle: the Linux build
+only knows `/etc/pki/tls/certs/ca-bundle.crt`, which exists on RHEL and Fedora but not on Debian,
+Ubuntu or Arch, and the environment variables above have no effect on them. Upgrade
+(`FORCE INSTALL anofox_tabular FROM community;`), or work around it in one of two ways:
+
+- Link your system bundle to the expected path (needs root):
+
+  ```bash
+  sudo mkdir -p /etc/pki/tls/certs
+  sudo ln -s /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/certs/ca-bundle.crt
+  ```
+
+- Download the files with the system `curl` into the places the extension reads them from:
+
+  ```bash
+  # NER model (about 66 MB)
+  dir=~/.duckdb/extensions/anofox/ner/distilbert-en
+  base=https://huggingface.co/onnx-community/distilbert-base-cased-finetuned-conll03-english-ONNX/resolve/main
+  mkdir -p "$dir"
+  curl -L -o "$dir/model_quantized.onnx" "$base/onnx/model_quantized.onnx"
+  curl -L -o "$dir/tokenizer.json" "$base/tokenizer.json"
+
+  # libpostal data (about 500 MB); use the directory of anofox_tab_postal_data_path
+  dir=~/.duckdb/extensions/libpostal
+  mkdir -p "$dir"
+  for f in language_classifier.tar.gz libpostal_data.tar.gz parser.tar.gz; do
+    curl -L "https://public-read-libpostal-data.s3.amazonaws.com/v1.1.0/$f" | tar -xz -C "$dir"
+  done
+  ```
+
+  Then `SET anofox_tab_postal_data_path = '~/.duckdb/extensions/libpostal';` before the first
+  postal call.
+
 ## Names, organizations or locations are not detected
 
 These PII types need the NER model. Check its state:

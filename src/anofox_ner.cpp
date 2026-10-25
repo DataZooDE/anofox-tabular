@@ -1,5 +1,6 @@
 #include "anofox_ner.hpp"
 #include "anofox_raii.hpp"
+#include "anofox_curl_ca.hpp"
 #include "anofox_trace.hpp"
 #include "yyjson.hpp"
 #include "duckdb.hpp"
@@ -814,6 +815,7 @@ std::string DownloadToFileAtomic(const std::string &url, const std::string &dest
         curl_easy_setopt(curl.get(), CURLOPT_SSL_VERIFYPEER, 1L);
         curl_easy_setopt(curl.get(), CURLOPT_SSL_VERIFYHOST, 2L);
         curl_easy_setopt(curl.get(), CURLOPT_USERAGENT, "anofox-tabular/1.0");
+        ConfigureCurlCaBundle(curl.get(), "ner");
 
         CURLcode res = curl_easy_perform(curl.get());
         long http_code = 0;
@@ -822,7 +824,8 @@ std::string DownloadToFileAtomic(const std::string &url, const std::string &dest
         if (res != CURLE_OK) {
             std::error_code ignored;
             std::filesystem::remove(tmp_path, ignored);
-            return std::string(curl_easy_strerror(res)) + " (HTTP " + std::to_string(http_code) + ")";
+            return std::string(curl_easy_strerror(res)) + " (HTTP " + std::to_string(http_code) + ")" +
+                   CurlCaErrorHint(res);
         }
         // FileHandle goes out of scope here, flushing and closing the file
         // before the rename below

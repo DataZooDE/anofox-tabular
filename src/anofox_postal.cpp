@@ -17,6 +17,7 @@
 #include "duckdb/parser/parsed_data/create_scalar_function_info.hpp"
 
 #include "anofox_raii.hpp"
+#include "anofox_curl_ca.hpp"
 #include "anofox_trace.hpp"
 #include "duckdb/common/string_util.hpp"
 #include "anofox_duckdb_vectors.hpp"
@@ -269,6 +270,7 @@ void PostalManager::LoadDataInternal(ClientContext &context) {
 		// Robust libcurl-based download with retry logic
 		const int max_retries = 5;
 		bool download_success = false;
+		std::string last_error;
 
 		for (int attempt = 1; attempt <= max_retries && !download_success; attempt++) {
 			if (attempt > 1) {
@@ -302,6 +304,7 @@ void PostalManager::LoadDataInternal(ClientContext &context) {
 			curl_easy_setopt(curl.get(), CURLOPT_FAILONERROR, 1L);  // Fail on HTTP error codes
 			curl_easy_setopt(curl.get(), CURLOPT_SSL_VERIFYPEER, 1L);  // Verify SSL certificates
 			curl_easy_setopt(curl.get(), CURLOPT_SSL_VERIFYHOST, 2L);  // Verify hostname matches cert
+			ConfigureCurlCaBundle(curl.get(), "postal");  // A CA bundle that exists on this system
 
 			// Perform the download
 			CURLcode res = curl_easy_perform(curl.get());
@@ -316,10 +319,10 @@ void PostalManager::LoadDataInternal(ClientContext &context) {
 				download_success = true;
 				AnofoxTrace(AnofoxLogLevel::Info, "Postal download complete for " + asset);
 			} else {
-				const char *error_msg = curl_easy_strerror(res);
+				last_error = std::string(curl_easy_strerror(res)) + " (HTTP " + std::to_string(http_code) + ")" +
+				             CurlCaErrorHint(res);
 				AnofoxTrace(AnofoxLogLevel::Warn,
-					"Postal download attempt " + std::to_string(attempt) + " failed: " +
-					std::string(error_msg) + " (HTTP " + std::to_string(http_code) + ")");
+					"Postal download attempt " + std::to_string(attempt) + " failed: " + last_error);
 
 				// Remove partially downloaded file
 				fs.RemoveFile(destination);
@@ -335,7 +338,8 @@ void PostalManager::LoadDataInternal(ClientContext &context) {
 
 		if (!download_success) {
 			AnofoxTrace(AnofoxLogLevel::Error, "Postal download failed after " + std::to_string(max_retries) + " attempts");
-			throw IOException("Failed to download '" + asset + "' from " + url + " after " + std::to_string(max_retries) + " attempts");
+			throw IOException("Failed to download '" + asset + "' from " + url + " after " + std::to_string(max_retries) +
+			                  " attempts: " + last_error);
 		}
 
 		// Extract the tarball without involving a shell
