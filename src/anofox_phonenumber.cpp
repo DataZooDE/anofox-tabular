@@ -295,80 +295,56 @@ std::string PhoneNumberManager::Format(const std::string& raw_number, const std:
 		throw InvalidInputException("No metadata for region: %s", parts.region_code);
 	}
 
+	const std::string country_prefix = "+" + std::to_string(parts.country_code);
+	// The region's layout rule for this number (nullptr: emit the NSN ungrouped)
+	std::smatch match;
+	const NumberFormat *number_format = FindNumberFormat(parts.region_code, parts.national_number, match);
+	auto international_body = [&]() {
+		return number_format ? match.format(number_format->international_format) : parts.national_number;
+	};
+
 	std::string formatted;
 	std::string format_label;
 
 	switch (format_option) {
 	case PhoneNumberFormatOption::E164:
-		// E164: +<country_code><national_number>
-		formatted = "+" + std::to_string(parts.country_code) + parts.national_number;
+		formatted = country_prefix + parts.national_number;
 		format_label = "E164";
 		break;
 
 	case PhoneNumberFormatOption::INTERNATIONAL:
-		// INTERNATIONAL: +<country_code> <formatted_national>
-		formatted = "+" + std::to_string(parts.country_code) + " ";
-		// Simple formatting: insert space every 3-4 digits
-		if (parts.national_number.size() == 10) {
-			// US/CA format: XXX XXX XXXX
-			formatted += parts.national_number.substr(0, 3) + " " +
-			            parts.national_number.substr(3, 3) + " " +
-			            parts.national_number.substr(6);
-		} else {
-			// Generic: just add spaces every 3 digits
-			for (size_t i = 0; i < parts.national_number.size(); i++) {
-				if (i > 0 && i % 3 == 0) {
-					formatted += " ";
-				}
-				formatted += parts.national_number[i];
-			}
-		}
+		formatted = country_prefix + " " + international_body();
 		format_label = "INTERNATIONAL";
 		break;
 
 	case PhoneNumberFormatOption::NATIONAL:
-		// NATIONAL: Regional formatting
-		if (parts.national_number.size() == 10) {
-			// US/CA format: (XXX) XXX-XXXX
-			formatted = "(" + parts.national_number.substr(0, 3) + ") " +
-			           parts.national_number.substr(3, 3) + "-" +
-			           parts.national_number.substr(6);
-		} else {
-			// Generic: prepend national prefix if exists
-			if (!metadata->national_prefix.empty()) {
-				formatted = metadata->national_prefix;
-			}
-			// Add spaces every 3 digits
-			for (size_t i = 0; i < parts.national_number.size(); i++) {
-				if (i > 0 && i % 3 == 0) {
-					formatted += " ";
-				}
-				formatted += parts.national_number[i];
-			}
-		}
+		formatted = number_format ? match.format(number_format->national_format)
+		                          : metadata->national_prefix + parts.national_number;
 		format_label = "NATIONAL";
 		break;
 
-	case PhoneNumberFormatOption::RFC3966:
-		// RFC3966: tel:+<country_code>-<formatted>
-		formatted = "tel:+" + std::to_string(parts.country_code) + "-";
-		// Simple formatting with hyphens every 3-4 digits
-		if (parts.national_number.size() == 10) {
-			formatted += parts.national_number.substr(0, 3) + "-" +
-			            parts.national_number.substr(3, 3) + "-" +
-			            parts.national_number.substr(6);
-		} else {
-			for (size_t i = 0; i < parts.national_number.size(); i++) {
-				if (i > 0 && i % 3 == 0) {
-					formatted += "-";
+	case PhoneNumberFormatOption::RFC3966: {
+		// RFC 3966: the international layout with every separator run replaced by '-'
+		formatted = "tel:" + country_prefix + "-";
+		bool pending_separator = false;
+		for (char c : international_body()) {
+			if (c >= '0' && c <= '9') {
+				if (pending_separator) {
+					formatted += '-';
+					pending_separator = false;
 				}
-				formatted += parts.national_number[i];
+				formatted += c;
+			} else {
+				pending_separator = true;
 			}
 		}
 		format_label = "RFC3966";
 		break;
 	}
+	}
 
+	AnofoxTrace(AnofoxLogLevel::Debug, "PhoneNumber format rule for region=" + parts.region_code + ": " +
+	                                       (number_format ? number_format->pattern : std::string("none")));
 	AnofoxTrace(AnofoxLogLevel::Debug,
 	           "PhoneNumber format success number=" + raw_number + " format=" + format_label + " output=" + formatted);
 	return formatted;
