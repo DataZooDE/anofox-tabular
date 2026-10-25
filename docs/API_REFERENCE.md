@@ -254,7 +254,7 @@ SELECT anofox_tab_postal_load_data();
 
 ## Phone Number Validation
 
-International phone parsing via **[libphonenumber](https://github.com/google/libphonenumber)**, Google's library for parsing and formatting phone numbers.
+International phone parsing, validation and formatting with a built-in implementation (no external library).
 
 ### Functions
 
@@ -931,7 +931,7 @@ Detect and mask Personally Identifiable Information (PII) in text data. Supports
 
 **PHONE:**
 - Requires distinctive features (+ prefix or parentheses format)
-- Pattern-based detection only, not full libphonenumber validation
+- Pattern-based detection only, not full phone number validation
 - For comprehensive phone parsing, use `phonenumber_parse()`
 
 **API_KEY:**
@@ -954,7 +954,8 @@ Detect and mask Personally Identifiable Information (PII) in text data. Supports
 - Confidence threshold: 0.7 (70%) for entity acceptance
 - NAME has dictionary fallback if NER unavailable; ORGANIZATION, LOCATION, MISC require NER
 - **Platform Availability:**
-  - ✅ Linux x64 (glibc), macOS x64, macOS ARM64 - Full NER detection available
+  - ✅ Linux x64 (glibc), macOS x64 - Full NER detection available
+  - ❌ macOS ARM64 - OpenVINO is not part of this build, NAME uses dictionary fallback, ORG/LOC/MISC unavailable
   - ❌ Windows x64 - OpenVINO not installed, NAME uses dictionary fallback, ORG/LOC/MISC unavailable
   - ❌ Linux ARM64 - vcpkg OpenVINO build timeout issues, excluded from CI
   - ❌ Linux musl (Alpine) - OpenVINO requires glibc, excluded from CI
@@ -1339,7 +1340,7 @@ SELECT * FROM pii_config();
 | `anofox_pii_min_confidence` | DOUBLE | 0.5 | Minimum confidence threshold (0.0-1.0) |
 | `anofox_pii_default_mask_strategy` | VARCHAR | 'redact' | Strategy used by `pii_redact_column(value)` and the `masked_value` of `pii_audit_table` (`redact`, `hash`, `partial`, `asterisk`, `none`; case-insensitive). `pii_mask` without a strategy always redacts. |
 | `anofox_pii_enabled_types` | VARCHAR | '' | Comma-separated list of enabled PII types (empty = all) |
-| `anofox_pii_deep_validation` | BOOLEAN | false | Validate detected phone numbers with libphonenumber |
+| `anofox_pii_deep_validation` | BOOLEAN | false | Validate detected phone numbers with the phone module |
 
 **Example:**
 ```sql
@@ -2393,7 +2394,7 @@ anofox_tab_profile_table(
 | `is_sampled` | BOOLEAN | True if a sample was taken |
 | `actual_sample_size` | BIGINT | Number of rows actually scanned |
 
-**Pattern Detection Priority:** `email` → `phone` → `uuid` → `url` → `ip_address` → `iso_date` → `numeric_string` → `mixed`. A pattern is assigned when ≥ 80% of non-NULL values match. Phone detection uses the libphonenumber validator (`US` region hint).
+**Pattern Detection Priority:** `email` → `phone` → `uuid` → `url` → `ip_address` → `iso_date` → `numeric_string` → `mixed`. A pattern is assigned when ≥ 80% of non-NULL values match. Phone detection uses the phone module's validator (`US` region hint).
 
 **Example:**
 ```sql
@@ -2503,7 +2504,7 @@ The 24 settings are grouped by prefix: `anofox_tab_*` for email, phone, postal a
 | `anofox_pii_enabled_types` | VARCHAR | empty (all types) | Comma-separated PII types to detect |
 | `anofox_pii_min_confidence` | DOUBLE | `0.5` | Minimum confidence for NER-based detection (0.0-1.0) |
 | `anofox_pii_default_mask_strategy` | VARCHAR | `redact` | Strategy of `pii_redact_column(value)` and `pii_audit_table` (`redact`, `hash`, `partial`, `asterisk`, `none`) |
-| `anofox_pii_deep_validation` | BOOLEAN | `false` | Validate detected phone numbers with libphonenumber |
+| `anofox_pii_deep_validation` | BOOLEAN | `false` | Validate detected phone numbers with the phone module |
 | `anofox_ner_auto_download` | BOOLEAN | `true` | Download the NER model (~66 MB) on first use; `false` skips NER detection instead |
 | `anofox_ner_model` | VARCHAR | `distilbert-en` | NER model; set it before the model is first loaded |
 | `anofox_ner_device` | VARCHAR | `AUTO` | OpenVINO device (`AUTO`, `CPU`, `GPU`, `GPU.0`, …) |
@@ -2631,7 +2632,7 @@ Check the numbers against your build with
 |--------|-----------|--------|--------------|
 | Email Validation | 3 | Stable | c-ares (optional DNS), OpenSSL (optional SMTP) |
 | Address Parsing | 4 | Stable | libpostal (required; the module is not built on Windows) |
-| Phone Numbers | 9 | Stable | libphonenumber (embedded) |
+| Phone Numbers | 9 | Stable | built-in |
 | Money & Currency | 17 | Stable | None |
 | VAT Validation | 10 | Stable | None |
 | PII Detection | 24 | Stable | OpenVINO (for NER), OpenSSL (for hash masking) |
@@ -2644,7 +2645,7 @@ Check the numbers against your build with
 
 ## Notes
 
-1. **All validation calculations** are performed by native C++ implementations with optional integration to external libraries (libpostal, libphonenumber).
+1. **All validation calculations** are performed by native C++ implementations with optional integration to external libraries (libpostal, OpenVINO).
 
 2. **Parameters**: arguments are positional. Only the parameters listed under
    [Parameter Conventions](#parameter-conventions) also accept the named form (`:=`).
@@ -2662,7 +2663,7 @@ Check the numbers against your build with
    - **libpostal**: Required for address parsing. Its data (~500MB) is downloaded on the first postal call, or up front with `postal_load_data()`.
    - **c-ares**: Optional for DNS email validation
    - **OpenSSL**: Optional for SMTP email validation
-   - **libphonenumber**: Embedded implementation, no external dependencies
+   - **Phone numbers**: built-in implementation, no external dependencies
 
 6. **Money struct format**: All money functions use `STRUCT(amount DECIMAL(18,3), currency VARCHAR)` format. Currency codes must match supported currencies (USD, EUR, GBP, JPY, CAD, AUD, CHF, CNY, INR, BRL).
 

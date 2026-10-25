@@ -21,7 +21,7 @@ Every function has a canonical `anofox_tab_*` name and a short alias, for exampl
 **Validation & Normalization:**
 - Email validation with optional DNS/SMTP verification
 - International address parsing via libpostal
-- Phone number handling via libphonenumber
+- Phone number parsing, validation and formatting (built-in, no external library)
 - EU VAT validation (28 countries: the 27 EU member states plus GB, with XI for Northern Ireland)
 - Multi-currency arithmetic (10 currencies)
 
@@ -220,7 +220,7 @@ Function counts are canonical `anofox_tab_*` names; each also has a short alias.
 |--------|-----------|----------|
 | 📧 **Email Validation** | 3 | Regex (RFC 5322 inspired), DNS and SMTP verification |
 | 📮 **Address Parsing** | 4 | International address normalization (libpostal; not built on Windows) |
-| 📞 **Phone Numbers** | 9 | Google libphonenumber integration |
+| 📞 **Phone Numbers** | 9 | Built-in parser and formatter |
 | 💰 **Money & Currency** | 17 | Multi-currency operations, 10 currencies |
 | 💼 **VAT Validation** | 10 | EU VAT validation, 28 countries |
 | 🕵️ **PII Detection** | 24 | Detect & mask 17 PII types (SSN, IBAN, NAME, etc.) |
@@ -297,7 +297,7 @@ SELECT postal_expand_address('123 Main St');
 
 ### 📞 Phone Number Validation
 
-International phone parsing via **[libphonenumber](https://github.com/google/libphonenumber)**, Google's library for parsing and formatting phone numbers:
+International phone parsing, validation and formatting with a built-in implementation (no external library):
 
 ```sql
 -- Parse and validate phone numbers
@@ -1301,7 +1301,7 @@ The 24 settings are grouped by prefix: `anofox_tab_*` for email, phone, postal a
 | `anofox_pii_enabled_types` | VARCHAR | empty (all types) | Comma-separated PII types to detect |
 | `anofox_pii_min_confidence` | DOUBLE | `0.5` | Minimum confidence for NER-based detection (0.0-1.0) |
 | `anofox_pii_default_mask_strategy` | VARCHAR | `redact` | Strategy of `pii_redact_column(value)` and `pii_audit_table` (`redact`, `hash`, `partial`, `asterisk`, `none`) |
-| `anofox_pii_deep_validation` | BOOLEAN | `false` | Validate detected phone numbers with libphonenumber |
+| `anofox_pii_deep_validation` | BOOLEAN | `false` | Validate detected phone numbers with the phone module |
 | `anofox_ner_auto_download` | BOOLEAN | `true` | Download the NER model (~66 MB) on first use; `false` skips NER detection instead |
 | `anofox_ner_model` | VARCHAR | `distilbert-en` | NER model; set it before the model is first loaded |
 | `anofox_ner_device` | VARCHAR | `AUTO` | OpenVINO device (`AUTO`, `CPU`, `GPU`, `GPU.0`, …) |
@@ -1362,7 +1362,7 @@ For offline machines, copy `model_quantized.onnx` and `tokenizer.json` from a ma
 SET anofox_pii_enabled_types = 'EMAIL,US_SSN';    -- detect only these types (empty = all)
 SET anofox_pii_min_confidence = 0.7;              -- NER confidence threshold
 SET anofox_pii_default_mask_strategy = 'partial'; -- used by pii_redact_column(value) and pii_audit_table
-SET anofox_pii_deep_validation = true;            -- check detected phone numbers with libphonenumber
+SET anofox_pii_deep_validation = true;            -- check detected phone numbers with the phone module
 SELECT * FROM pii_config();
 ```
 
@@ -1501,7 +1501,7 @@ coverage that needs no data runs in `anofox_postal_null.test` when `POSTAL_AVAIL
 │  └─────────────────────────────────────────────────────┘ │
 ├─────────────────────────────────────────────────────────┤
 │                 External Libraries                       │
-│ libpostal · libphonenumber · c-ares · spdlog · OpenVINO │
+│ libpostal · c-ares · spdlog · OpenVINO │
 └─────────────────────────────────────────────────────────┘
 ```
 

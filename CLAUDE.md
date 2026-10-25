@@ -36,7 +36,7 @@ It's built on the DuckDB C++ extension template and consists of 10 modules:
 
 - **Email**: Regex, DNS, and SMTP validation with configurable timeouts
 - **Postal**: Address parsing and expansion via libpostal
-- **Phone**: Phone number parsing/formatting via libphonenumber
+- **Phone**: Phone number parsing/formatting (built-in implementation)
 - **Money**: Currency-aware DECIMAL money values
 - **VAT**: EU VAT number validation (28 countries)
 - **PII**: Pattern- and NER-based PII detection and masking
@@ -54,7 +54,7 @@ The extension is implemented entirely in C++17 with dependencies managed through
 
 - **Makefile**: Entry point that wraps `extension-ci-tools/makefiles/duckdb_extension.Makefile`
 - **CMakeLists.txt**: Defines targets `anofox_tabular_extension` (static) and `anofox_tabular_loadable_extension` (dynamic)
-- **vcpkg**: Dependencies (libphonenumber, libpostal, spdlog, c-ares, Boost, absl) are declared in `vcpkg.json`
+- **vcpkg**: Dependencies (openssl, c-ares, spdlog, curl, OpenVINO) are declared in `vcpkg.json`; libpostal is built separately
 
 ```bash
 GEN=ninja make release                   # Build the extension (requires vcpkg)
@@ -104,7 +104,7 @@ Each feature module has three layers:
 - Not built on Windows; the postal SQL tests run only with `POSTAL_AVAILABLE`
 
 **Phone Module** (`anofox_phonenumber.*`)
-- Wraps libphonenumber for international phone parsing/formatting
+- Built-in international phone parsing/formatting (`anofox_phonenumber_metadata.cpp` holds the region metadata)
 - Supports four output formats: E164, INTERNATIONAL, NATIONAL, RFC3966
 - Region hints allow contextual parsing (defaults to `anofox_tab_phonenumber_default_region`)
 
@@ -184,12 +184,13 @@ export VCPKG_TOOLCHAIN_PATH="${VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake"
 ```
 
 Declared in `vcpkg.json`:
-- **libphonenumber** – Phone parsing/formatting
 - **c-ares** – DNS resolution (async, used by email DNS module)
 - **spdlog** – Logging (header-only)
-- **libpostal** – Address parsing (via pkg-config)
-- **Boost** (date_time, system, thread) – Utilities
-- **absl** – Google Abseil logging framework
+- **openssl** – Hashing (PII hash masking)
+- **curl** – Downloads (postal data, NER model)
+- **openvino** – NER inference; only on x64 Linux and x64 macOS
+
+libpostal is not a vcpkg port: `scripts/install-deps-ci.sh` builds it, and CMake finds it via pkg-config (skipped with `ANOFOX_TABULAR_NO_LIBPOSTAL=1`).
 
 ## Updating DuckDB Version
 
