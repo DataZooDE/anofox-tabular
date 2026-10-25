@@ -108,3 +108,36 @@ TEST_CASE("test/cpp/anofox_email_smtp_deadline_clamp", "[anofox_email]") {
 		REQUIRE(ClampToDeadline(milliseconds(-5), now, now + seconds(1)) == milliseconds(0));
 	}
 }
+
+TEST_CASE("test/cpp/anofox_email_reserved_domains", "[anofox_email]") {
+	SECTION("loopback and reserved TLDs are reserved, case-insensitively") {
+		for (const char *domain : {"localhost", "LocalHost", "mail.localhost", "example", "shop.example",
+		                           "nonexistent.invalid", "INVALID", "ci.test", "printer.local"}) {
+			INFO(domain);
+			REQUIRE(IsReservedMailDomain(domain));
+		}
+	}
+
+	SECTION("ordinary domains, including RFC 2606 second-level names, are not") {
+		for (const char *domain : {"web.de", "example.com", "example.org", "testing.com", "localhost.de",
+		                           "mytest", "locale.fr", "invalid-domain.com"}) {
+			INFO(domain);
+			REQUIRE_FALSE(IsReservedMailDomain(domain));
+		}
+	}
+}
+
+TEST_CASE("test/cpp/anofox_email_dns_cacheability", "[anofox_email]") {
+	DnsResult result;
+	result.success = true;
+	REQUIRE(IsCacheableDnsResult(result));
+	result.success = false;
+	for (const char *reason : {"dns_domain_not_found", "dns_no_records", "dns_null_mx"}) {
+		result.reason = reason;
+		REQUIRE(IsCacheableDnsResult(result));
+	}
+	for (const char *reason : {"dns_timeout", "dns_server_unreachable", "dns_init_failed"}) {
+		result.reason = reason;
+		REQUIRE_FALSE(IsCacheableDnsResult(result));
+	}
+}

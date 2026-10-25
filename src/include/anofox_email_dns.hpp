@@ -70,6 +70,13 @@ private:
 	DnsOptions options;
 };
 
+//! True for names that never belong to a deliverable mail domain: 'localhost'
+//! and '*.localhost' (RFC 6761) and the reserved TLDs '.example', '.invalid',
+//! '.test' (RFC 2606) and '.local' (RFC 6762, mDNS). Case-insensitive. The DNS
+//! stage rejects these with reason 'dns_reserved_domain' instead of resolving
+//! them (localhost would otherwise resolve to the loopback addresses).
+bool IsReservedMailDomain(const std::string &domain);
+
 std::string DnsStatusToReason(int status);
 bool EnsureAresInitialized(std::string &error_reason);
 

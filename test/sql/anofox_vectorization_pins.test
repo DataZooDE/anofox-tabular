@@ -26,7 +26,7 @@ statement ok
 SET anofox_tab_email_default_validation = 'regex';
 
 statement ok
-SET anofox_tab_email_regex_pattern = '^[A-Za-z0-9.!#$%&''*+/=?^_`{|}~-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*$';
+RESET anofox_tab_email_regex_pattern;
 
 # Constant input, implicit default mode (regex)
 query T

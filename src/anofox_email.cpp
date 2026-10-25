@@ -33,12 +33,25 @@ constexpr const char *EMAIL_STAGE_DNS = "dns";
 constexpr const char *EMAIL_STAGE_SMTP = "smtp";
 constexpr const char *EMAIL_STAGE_UNSUPPORTED = "unsupported";
 constexpr const char *EMAIL_REASON_REGEX_FAIL = "invalid_format";
+constexpr const char *EMAIL_REASON_TOO_LONG = "invalid_length";
 constexpr const char *EMAIL_REASON_DNS_FAIL = "dns_resolution_failed";
 constexpr const char *EMAIL_REASON_SMTP_FAIL = "smtp_verification_failed";
 constexpr const char *EMAIL_REASON_UNSUPPORTED = "validation_not_implemented";
 constexpr const char *DEFAULT_VALIDATION = "regex";
+//! Default pattern: an RFC 5322 dot-atom local part (no leading, trailing or
+//! consecutive dots; quoted local parts are not accepted) and a domain of
+//! LDH labels of 1-63 characters that neither start nor end with '-', whose
+//! last label is not all digits. Length limits are checked before the regex
+//! (see EMAIL_MAX_LENGTH / EMAIL_MAX_LOCAL_LENGTH).
 constexpr const char *DEFAULT_REGEX_PATTERN =
-    R"(^[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*$)";
+    R"(^[A-Za-z0-9!#$%&'*+/=?^_`{|}~-]+(?:\.[A-Za-z0-9!#$%&'*+/=?^_`{|}~-]+)*@)"
+    R"((?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)*(?![0-9]+$)[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$)";
+//! RFC 5321 limits: 254 characters for a usable address (the 256-octet path
+//! minus the angle brackets), 64 for the local part. Applied to every pattern,
+//! including a custom anofox_tab_email_regex_pattern, before the regex runs, so
+//! huge inputs never reach std::regex.
+constexpr size_t EMAIL_MAX_LENGTH = 254;
+constexpr size_t EMAIL_MAX_LOCAL_LENGTH = 64;
 
 struct EmailValidationResult {
 	bool valid = false;
@@ -244,6 +257,13 @@ private:
 EmailValidationResult ValidateRegex(std::string_view email, const std::regex &regex) {
 	EmailValidationResult result;
 	result.stage = EMAIL_STAGE_REGEX;
+	auto at_pos = email.rfind('@');
+	auto local_length = at_pos == std::string_view::npos ? email.size() : at_pos;
+	if (email.size() > EMAIL_MAX_LENGTH || local_length > EMAIL_MAX_LOCAL_LENGTH) {
+		result.valid = false;
+		result.reason = EMAIL_REASON_TOO_LONG;
+		return result;
+	}
 	if (std::regex_match(email.begin(), email.end(), regex)) {
 		result.valid = true;
 	} else {

@@ -78,23 +78,19 @@ SET anofox_tab_email_smtp_connect_timeout_ms=50;
 statement ok
 SET anofox_tab_email_smtp_read_timeout_ms=50;
 
+# localhost is a reserved name: the DNS stage rejects it without a lookup, so
+# no loopback address is reported and no SMTP connection is attempted
 query TTT
-SELECT (result).valid, (result).stage, COALESCE((result).reason, '') <> '' AS has_reason
+SELECT (result).valid, (result).stage, (result).reason
 FROM (SELECT anofox_tab_email_validate('user@localhost', 'smtp') AS result);
 ----
-false	smtp	true
+false	dns	dns_reserved_domain
 
-query T
-SELECT array_length((result).mx_hosts)
+query TT
+SELECT array_length((result).mx_hosts), array_length((result).smtp_debug.transcript)
 FROM (SELECT anofox_tab_email_validate('user@localhost', 'smtp') AS result);
 ----
-2
-
-query T
-SELECT array_length((result).smtp_debug.transcript) >= 1
-FROM (SELECT anofox_tab_email_validate('user@localhost', 'smtp') AS result);
-----
-true
+0	0
 
 query TTT
 SELECT (result).valid, (result).stage, COALESCE((result).reason, '')
@@ -124,7 +120,7 @@ SET anofox_tab_trace_enabled=true;
 # The email settings are process-wide: restore the defaults this file changed so
 # later test files start from a clean configuration
 statement ok
-SET anofox_tab_email_regex_pattern = '^[A-Za-z0-9.!#$%&''*+/=?^_`{|}~-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*$';
+RESET anofox_tab_email_regex_pattern;
 
 statement ok
 SET anofox_tab_email_smtp_connect_timeout_ms = 5000;

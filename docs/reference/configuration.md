@@ -82,7 +82,7 @@ Used by [`email_is_valid` and `email_validate`](../api/01-email.md).
 | Setting | Effect |
 |---------|--------|
 | `anofox_tab_email_default_validation` | Mode used when the `mode` argument is omitted or `NULL`: `regex`, `dns` or `smtp` |
-| `anofox_tab_email_regex_pattern` | Regular expression of the `regex` stage. Default: ``^[A-Za-z0-9.!#$%&'*+/=?^_`{\|}~-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*$`` |
+| `anofox_tab_email_regex_pattern` | Regular expression of the `regex` stage (ECMAScript syntax). Default: ``^[A-Za-z0-9!#$%&'*+/=?^_`{\|}~-]+(?:\.[A-Za-z0-9!#$%&'*+/=?^_`{\|}~-]+)*@(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)*(?![0-9]+$)[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$``; see [Syntax rules](../api/01-email.md#syntax-rules-of-the-regex-stage). The 254/64-character length limits apply to any pattern. `RESET` restores the default |
 | `anofox_tab_email_dns_timeout_ms` | Timeout of one DNS query, in milliseconds (1 to 5000) |
 | `anofox_tab_email_dns_tries` | Number of DNS attempts before the stage fails (1 to 10) |
 | `anofox_tab_email_smtp_port` | Port of the MX host for the `smtp` stage (1 to 65535) |

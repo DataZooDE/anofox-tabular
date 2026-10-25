@@ -1,8 +1,10 @@
 # name: test/sql/anofox_email_dns_cache.test
 # description: DNS results are cached per domain (process-wide, bounded, TTL).
-#              Uses the reserved .invalid TLD (RFC 2606) so resolution fails
-#              without requiring a working network; the cache must not change
-#              any result.
+#              Uses the reserved .invalid TLD (RFC 2606) so the check fails
+#              without requiring a working network (since the reserved-domain
+#              rule these rows stop with dns_reserved_domain before the lookup
+#              and the cache, so this file pins stable per-domain results; the
+#              cacheability rule is unit-tested in test/cpp/test_email_internal.cpp).
 # group: [anofox_tabular]
 
 require anofox_tabular
@@ -16,7 +18,7 @@ SET anofox_tab_email_dns_timeout_ms=500;
 # The email configuration is process-wide; other test files may leave a custom
 # regex behind, so pin the default pattern.
 statement ok
-SET anofox_tab_email_regex_pattern = '^[A-Za-z0-9.!#$%&''*+/=?^_`{|}~-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*$';
+RESET anofox_tab_email_regex_pattern;
 
 # The cache bounds are reported by email_config
 query TT

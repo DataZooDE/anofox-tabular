@@ -433,11 +433,29 @@ DnsResolver::DnsResolver(const DnsOptions &options_p) : options(options_p) {
 	options.timeout_ms = std::min(std::max(options.timeout_ms, DnsOptions::MIN_TIMEOUT_MS), DnsOptions::MAX_TIMEOUT_MS);
 }
 
+bool IsReservedMailDomain(const std::string &domain) {
+	auto lower = StringUtil::Lower(domain);
+	for (const char *name : {"localhost", "example", "invalid", "test", "local"}) {
+		if (lower == name || StringUtil::EndsWith(lower, std::string(".") + name)) {
+			return true;
+		}
+	}
+	return false;
+}
+
 DnsResult DnsResolver::Resolve(const std::string &domain) {
 	if (domain.empty()) {
 		DnsResult result;
 		result.reason = "dns_empty_domain";
 		EmailTrace(AnofoxLogLevel::Debug, "DNS early exit: empty domain");
+		return result;
+	}
+	if (IsReservedMailDomain(domain)) {
+		// Same rule as the SMTP stage (smtp_dns_reserved_domain): no lookup,
+		// so 'user@localhost' is not reported valid with loopback addresses.
+		DnsResult result;
+		result.reason = "dns_reserved_domain";
+		EmailTrace(AnofoxLogLevel::Debug, "DNS early exit: reserved domain=" + domain);
 		return result;
 	}
 	auto key = StringUtil::Lower(domain);

@@ -23,9 +23,53 @@ See [Network and privacy](../reference/network-and-privacy.md).
 
 | Mode | What it checks | Network |
 |------|----------------|---------|
-| `regex` (default) | The address matches `anofox_tab_email_regex_pattern` | none |
-| `dns` | `regex`, then the domain has MX records | DNS query |
+| `regex` (default) | The address is at most 254 characters with a local part of at most 64, and matches `anofox_tab_email_regex_pattern` | none |
+| `dns` | `regex`, then the domain is not a reserved name and has MX records (or, without MX records, an address record) | DNS query |
 | `smtp` | `dns`, then an MX host accepts `RCPT TO` for the address. `full` is an alias. | DNS query, TCP connection to port `anofox_tab_email_smtp_port` |
+
+### Syntax rules of the `regex` stage
+
+The default pattern accepts what mail systems accept in practice:
+
+- **Local part** (before the `@`): letters, digits and ``!#$%&'*+/=?^_`{|}~-``, in dot-separated
+  parts. A dot may not start or end the local part, and two dots may not follow each other
+  (`.max@web.de`, `max.@web.de` and `max..muster@web.de` are invalid). Plus-addressing such as
+  `max+news@web.de` is valid. Quoted local parts (`"max muster"@web.de`) are rejected, although
+  RFC 5322 allows them.
+- **Domain**: labels of 1 to 63 letters, digits and hyphens, separated by dots. A label may not
+  start or end with a hyphen (`max@-web.de` is invalid), and the last label may not be all
+  digits (`max@web.123` is invalid). A domain with a single label (`max@localhost`) passes the
+  `regex` stage; the `dns` stage rejects reserved names.
+- **International domains** must be in their ASCII (punycode) form: `max@xn--mller-kva.de` is
+  valid, `max@müller.de` is not. Non-ASCII local parts are rejected as well.
+- **Length**: at most 254 characters in total and 64 in the local part (RFC 5321). A longer
+  address fails with reason `invalid_length`. The length check runs before the pattern, also
+  for a custom `anofox_tab_email_regex_pattern`.
+
+The check does not trim: `' max@web.de'` is invalid. Clean the column first, e.g.
+`email_is_valid(lower(trim(email)))`.
+
+```sql
+SELECT address, email_is_valid(address) AS valid, (email_validate(address)).reason AS reason
+FROM (VALUES ('max.mustermann@web.de'), ('max+news@web.de'), ('max..muster@web.de'),
+             ('max@-web.de'), ('max@web.123'), ('"max muster"@web.de'),
+             (repeat('a', 65) || '@web.de')) t(address);
+```
+
+```text
+┌──────────────────────────────────────────────────────────────────────────┬─────────┬────────────────┐
+│                                 address                                  │  valid  │     reason     │
+│                                 varchar                                  │ boolean │    varchar     │
+├──────────────────────────────────────────────────────────────────────────┼─────────┼────────────────┤
+│ max.mustermann@web.de                                                    │ true    │ NULL           │
+│ max+news@web.de                                                          │ true    │ NULL           │
+│ max..muster@web.de                                                       │ false   │ invalid_format │
+│ max@-web.de                                                              │ false   │ invalid_format │
+│ max@web.123                                                              │ false   │ invalid_format │
+│ "max muster"@web.de                                                      │ false   │ invalid_format │
+│ aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa@web.de │ false   │ invalid_length │
+└──────────────────────────────────────────────────────────────────────────┴─────────┴────────────────┘
+```
 
 The mode argument is case-insensitive. When you omit it, or pass `NULL`, the function uses the
 setting `anofox_tab_email_default_validation`. An unknown mode does not raise an error: the
@@ -126,7 +170,34 @@ SELECT email_validate('user@example.com', 'bogus') AS result;
 └────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
-A DNS check needs network access, so its result depends on where you run it:
+### The `dns` stage
+
+The `dns` stage looks up the MX records of the domain. When the domain has none, it falls back
+to the domain's address records (A/AAAA), as RFC 5321 prescribes for mail delivery; `mx_hosts`
+then lists those IP addresses instead of host names. A Null MX record (RFC 7505) means the domain
+accepts no mail and fails with `dns_null_mx`.
+
+Reserved names are rejected without a lookup, with reason `dns_reserved_domain`: `localhost`
+and any name ending in `.localhost`, and the reserved top-level domains `example`, `invalid`,
+`test` (RFC 2606) and `local` (multicast DNS), including names that end in them. Second-level
+names such as `example.com` are looked up normally. The `smtp` mode runs the `dns` stage first,
+so these addresses never reach SMTP.
+
+```sql
+SELECT (r).valid, (r).stage, (r).reason, (r).mx_hosts
+FROM (SELECT email_validate('max@localhost', 'dns') AS r);
+```
+
+```text
+┌─────────────┬───────────┬─────────────────────┬──────────────┐
+│ (r)."valid" │ (r).stage │     (r).reason      │ (r).mx_hosts │
+│   boolean   │  varchar  │       varchar       │  varchar[]   │
+├─────────────┼───────────┼─────────────────────┼──────────────┤
+│ false       │ dns       │ dns_reserved_domain │ []           │
+└─────────────┴───────────┴─────────────────────┴──────────────┘
+```
+
+A DNS check of a real domain needs network access, so its result depends on where you run it:
 
 ```sql no-run
 -- Uses the network: looks up the MX records of example.org
@@ -138,9 +209,11 @@ SELECT email_validate('support@example.org', 'dns');
 | Stage | Reason | Meaning |
 |-------|--------|---------|
 | `regex` | `invalid_format` | The address does not match the regex pattern |
+| `regex` | `invalid_length` | The address is longer than 254 characters, or its local part longer than 64 |
 | `unsupported` | `validation_not_implemented` | The mode is not `regex`, `dns`, `smtp` or `full` |
 | `dns` | `dns_resolution_failed` | No domain could be taken from the address |
 | `dns` | `dns_empty_domain` | The domain is empty |
+| `dns` | `dns_reserved_domain` | The domain is `localhost`, ends in `.localhost`, or is in the reserved top-level domain `example`, `invalid`, `test` or `local`; it is not looked up |
 | `dns` | `dns_domain_not_found` | The domain does not exist (NXDOMAIN) |
 | `dns` | `dns_no_records` | The domain has neither MX nor address records |
 | `dns` | `dns_null_mx` | The domain publishes a Null MX record (RFC 7505): it accepts no mail |
@@ -196,25 +269,25 @@ SELECT * FROM email_config();
 ```
 
 ```text
-┌─────────────────────────┬──────────────────────────────────────────────────────────────────────┐
-│           key           │                                value                                 │
-│         varchar         │                               varchar                                │
-├─────────────────────────┼──────────────────────────────────────────────────────────────────────┤
-│ default_validation      │ regex                                                                │
-│ regex_pattern           │ ^[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*$ │
-│ dns_timeout_ms          │ 1000                                                                 │
-│ dns_tries               │ 1                                                                    │
-│ dns_cache_ttl_s         │ 300                                                                  │
-│ dns_cache_max_entries   │ 10000                                                                │
-│ smtp_port               │ 25                                                                   │
-│ smtp_connect_timeout_ms │ 5000                                                                 │
-│ smtp_read_timeout_ms    │ 5000                                                                 │
-│ smtp_helo_domain        │ duckdb.local                                                         │
-│ smtp_mail_from          │ validator@duckdb.local                                               │
-│ trace_enabled           │ true                                                                 │
-│ trace_level             │ info                                                                 │
-└─────────────────────────┴──────────────────────────────────────────────────────────────────────┘
-  13 rows                                                                              2 columns
+┌─────────────────────────┬──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│           key           │                                                                                        value                                                                                         │
+│         varchar         │                                                                                       varchar                                                                                        │
+├─────────────────────────┼──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+│ default_validation      │ regex                                                                                                                                                                                │
+│ regex_pattern           │ ^[A-Za-z0-9!#$%&'*+/=?^_`{|}~-]+(?:\.[A-Za-z0-9!#$%&'*+/=?^_`{|}~-]+)*@(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)*(?![0-9]+$)[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$ │
+│ dns_timeout_ms          │ 1000                                                                                                                                                                                 │
+│ dns_tries               │ 1                                                                                                                                                                                    │
+│ dns_cache_ttl_s         │ 300                                                                                                                                                                                  │
+│ dns_cache_max_entries   │ 10000                                                                                                                                                                                │
+│ smtp_port               │ 25                                                                                                                                                                                   │
+│ smtp_connect_timeout_ms │ 5000                                                                                                                                                                                 │
+│ smtp_read_timeout_ms    │ 5000                                                                                                                                                                                 │
+│ smtp_helo_domain        │ duckdb.local                                                                                                                                                                         │
+│ smtp_mail_from          │ validator@duckdb.local                                                                                                                                                               │
+│ trace_enabled           │ true                                                                                                                                                                                 │
+│ trace_level             │ info                                                                                                                                                                                 │
+└─────────────────────────┴──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+  13 rows                                                                                                                                                                                              2 columns
 ```
 
 The settings themselves are described in [Configuration](../reference/configuration.md#email).
