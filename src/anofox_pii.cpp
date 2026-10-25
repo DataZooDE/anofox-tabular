@@ -1895,9 +1895,13 @@ std::vector<std::vector<PIIMatch>> PIIEngine::DetectBatch(
     }
 
     // Pre-warm NER cache by running batch extraction
-    // This ensures subsequent Detect calls hit the cache instead of re-running inference
+    // This ensures subsequent Detect calls hit the cache instead of re-running inference.
+    // Skipped when no NER type is requested, so regex-only scans never pay for inference
+    const std::vector<PIIType> &effective_types = !types.empty() ? types : config.enabled_types;
+    const bool wants_ner = effective_types.empty() ||
+                           std::any_of(effective_types.begin(), effective_types.end(), IsNERType);
     auto &ner = NERModelManager::Instance();
-    if (ner.IsAvailable()) {
+    if (wants_ner && ner.IsAvailable()) {
         AnofoxTrace(AnofoxLogLevel::Debug,
                     "pii: Pre-warming NER cache for " + std::to_string(texts.size()) + " texts");
         ner.ExtractEntitiesBatch(texts);
