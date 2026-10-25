@@ -6,9 +6,12 @@
 #include "telemetry.hpp"
 #include "duckdb/catalog/catalog.hpp"
 #include "duckdb/common/exception.hpp"
+#include "duckdb/common/string_util.hpp"
 #include "duckdb/function/table_function.hpp"
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/main/connection.hpp"
+#include "duckdb/common/error_data.hpp"
+#include "duckdb/planner/binder.hpp"
 #include "duckdb_compat.hpp"
 #include "anofox_tabular_banner.hpp"
 #include "yyjson.hpp"
@@ -49,6 +52,9 @@ struct CheckSpec {
 	bool monitor_only = false;
 	string identifier_column;
 	string filter_expr;
+	// A problem found while reading the check (e.g. invalid params JSON); the check then
+	// yields an 'error' row instead of failing the whole run
+	string config_error;
 };
 
 // Parse the params JSON of one check with DuckDB's bundled yyjson (no dependency on the
@@ -168,9 +174,14 @@ static vector<CheckSpec> ReadCheckSpecs(ClientContext &context, const string &ch
 			throw BinderException("run_checks: every check in '" + checks_table + "' must have a check_name");
 		}
 		if (spec.table_name.empty()) {
-			throw BinderException("run_checks: check '" + spec.check_name + "' must have a table_name");
+			spec.config_error = "the check has no table_name";
+		} else {
+			try {
+				ParseCheckParams(spec, str_at(row, 4));
+			} catch (const std::exception &ex) {
+				spec.config_error = ErrorData(ex).RawMessage();
+			}
 		}
-		ParseCheckParams(spec, str_at(row, 4));
 		specs.push_back(std::move(spec));
 	}
 	if (specs.empty()) {
@@ -312,23 +323,13 @@ static string BuildAllowedArrayFromJson(const CheckSpec &spec) {
 	return literal;
 }
 
-// Build the comma-separated quoted identifier list for duplicate_count keys
-static string BuildDistinctKeyExpr(const CheckSpec &spec) {
+// The key columns of a duplicate_count check (column_name is a comma-separated list)
+static vector<string> DuplicateKeyColumns(const CheckSpec &spec) {
 	auto columns = ParseCommaSeparatedColumns(spec.column_name);
 	if (columns.empty()) {
 		throw BinderException("run_checks: check '" + spec.check_name + "' (duplicate_count) requires a column_name");
 	}
-	if (columns.size() == 1) {
-		return QuoteSqlIdentifier(columns[0]);
-	}
-	string expr = "(";
-	for (size_t i = 0; i < columns.size(); i++) {
-		if (i > 0) {
-			expr += ", ";
-		}
-		expr += QuoteSqlIdentifier(columns[i]);
-	}
-	return expr + ")";
+	return columns;
 }
 
 // The per-branch pieces the outer uniform template is assembled from. A check either
@@ -343,6 +344,9 @@ struct CheckBranch {
 	// outcome as the standalone freshness check.
 	bool null_value_fails = false;
 	string null_value_message;
+	// When set, the inner query also exposes nonfinite_count (the NaN/Inf inputs of the
+	// value), which the message of a NaN value reports.
+	string nonfinite_count_expr;
 };
 
 static string ThresholdLiteral(const Value &threshold) {
@@ -401,13 +405,14 @@ static CheckBranch BuildCheckBranch(ClientContext &context, const CheckSpec &spe
 		}
 		string agg_upper = agg;
 		std::transform(agg_upper.begin(), agg_upper.end(), agg_upper.begin(), ::toupper);
-		value_expr = "CAST(" + agg_upper + "(CAST(" + QuoteSqlIdentifier(spec.column_name) + " AS DOUBLE)) AS DOUBLE)";
+		string double_expr = "CAST(" + QuoteSqlIdentifier(spec.column_name) + " AS DOUBLE)";
+		value_expr = BuildFiniteAggregateExpr(agg_upper, double_expr);
+		branch.nonfinite_count_expr = BuildNonFiniteCountExpr(double_expr);
 	} else if (spec.check_type == "duplicate_count") {
-		value_expr = "CAST(COUNT(*) - COUNT(DISTINCT " + BuildDistinctKeyExpr(spec) + ") AS DOUBLE)";
+		value_expr = "CAST(" + BuildDuplicateCountExpr(DuplicateKeyColumns(spec)) + " AS DOUBLE)";
 	} else if (spec.check_type == "compliance") {
 		RequireParam(spec, spec.expression, "expression");
-		ValidateBooleanExpression(context, spec.expression,
-		                          "run_checks (params.expression of check '" + spec.check_name + "')");
+		ValidateBooleanExpression(context, spec.expression, "params.expression");
 		value_expr = "CAST(SUM(CASE WHEN COALESCE((" + spec.expression +
 		             "), FALSE) THEN 1 ELSE 0 END) AS DOUBLE) / NULLIF(COUNT(*), 0)";
 	} else if (spec.check_type == "freshness") {
@@ -418,7 +423,8 @@ static CheckBranch BuildCheckBranch(ClientContext &context, const CheckSpec &spe
 		string ref_time = spec.reference_time.empty()
 		                      ? "CAST(now() AS TIMESTAMP)"
 		                      : "'" + EscapeSqlStringLiteral(spec.reference_time) + "'::TIMESTAMP";
-		value_expr = "CAST(EXTRACT(EPOCH FROM (" + ref_time + " - MAX(CAST(" + col + " AS TIMESTAMP)))) AS DOUBLE)";
+		// TRY_CAST: a text column with an unparseable value must not abort the whole suite
+		value_expr = "CAST(EXTRACT(EPOCH FROM (" + ref_time + " - MAX(TRY_CAST(" + col + " AS TIMESTAMP)))) AS DOUBLE)";
 		branch.null_value_fails = true;
 		branch.null_value_message = "No timestamp values found (table is empty or column is all NULL)";
 	} else if (spec.check_type == "occurrence") {
@@ -547,12 +553,16 @@ static CheckBranch BuildCheckBranch(ClientContext &context, const CheckSpec &spe
 	}
 
 	// Simple aggregate path (value_expr set): optionally partition by the identifier column
+	string select_list = value_expr + " AS value";
+	if (!branch.nonfinite_count_expr.empty()) {
+		select_list += ", " + branch.nonfinite_count_expr + " AS nonfinite_count";
+	}
 	if (grouped) {
 		string id_col = QuoteSqlIdentifier(spec.identifier_column);
-		branch.inner_sql = "SELECT CAST(" + id_col + " AS VARCHAR) AS identifier, " + value_expr + " AS value FROM " +
+		branch.inner_sql = "SELECT CAST(" + id_col + " AS VARCHAR) AS identifier, " + select_list + " FROM " +
 		                   table_ref + where_clause + " GROUP BY 1";
 	} else {
-		branch.inner_sql = "SELECT " + value_expr + " AS value FROM " + table_ref + where_clause;
+		branch.inner_sql = "SELECT " + select_list + " FROM " + table_ref + where_clause;
 	}
 	return branch;
 }
@@ -589,6 +599,14 @@ static string BuildBranchSQL(const CheckSpec &spec, const CheckBranch &branch) {
 	string null_status = branch.null_value_fails ? fail_status : "pass";
 	string null_message = branch.null_value_fails ? EscapeSqlStringLiteral(branch.null_value_message)
 	                                              : "No value to evaluate; check passed trivially";
+	// A NaN value (e.g. an average over a column holding NaN) cannot be shown to be within
+	// the thresholds: it fails instead of passing every comparison.
+	string type_lit = EscapeSqlStringLiteral(spec.check_type);
+	string nan_message = "'" + type_lit + " value is NaN'";
+	if (!branch.nonfinite_count_expr.empty()) {
+		nan_message += " || ': the column contains ' || CAST(__c.nonfinite_count AS VARCHAR) || ' NaN/Inf value(s)'";
+	}
+	string value_text = RoundedNumberSQL("__c.value");
 
 	return "SELECT CAST(now() AS TIMESTAMP) AS run_ts,"
 	       "'" + EscapeSqlStringLiteral(spec.check_name) + "' AS check_name, "
@@ -600,14 +618,141 @@ static string BuildBranchSQL(const CheckSpec &spec, const CheckBranch &branch) {
 	       + lower_expr + " AS lower_threshold, "
 	       + upper_expr + " AS upper_threshold, "
 	       "CASE WHEN __c.value IS NULL THEN '" + null_status + "' "
+	       "     WHEN isnan(__c.value) THEN '" + fail_status + "' "
 	       "     WHEN " + fail_cond + " THEN '" + fail_status + "' "
 	       "     ELSE 'pass' END AS status, "
 	       "CASE WHEN __c.value IS NULL THEN '" + null_message + "' "
-	       "     WHEN " + fail_cond + " THEN '" + EscapeSqlStringLiteral(spec.check_type) +
-	       " value ' || CAST(__c.value AS VARCHAR) || ' violates thresholds' "
-	       "     ELSE '" + EscapeSqlStringLiteral(spec.check_type) +
-	       " value ' || CAST(__c.value AS VARCHAR) || ' is within thresholds' END AS message "
+	       "     WHEN isnan(__c.value) THEN " + nan_message + " "
+	       "     WHEN " + fail_cond + " THEN '" + type_lit + " value ' || " + value_text + " || ' violates thresholds' "
+	       "     ELSE '" + type_lit + " value ' || " + value_text + " || ' is within thresholds' END AS message "
 	       "FROM (" + branch.inner_sql + ") __c";
+}
+
+// Bind `sql` (one SELECT) in the calling context without running it. Unlike a sibling
+// connection this sees the caller's TEMP tables and uncommitted changes, like the final
+// query does. Throws the binder's error for an unknown table, column or function.
+static BoundStatement BindProbe(ClientContext &context, const string &sql) {
+	auto statements = ParseWithContextSettings(context, sql);
+	if (statements.size() != 1 || statements[0]->type != StatementType::SELECT_STATEMENT) {
+		throw BinderException("run_checks: generated check query is not a single SELECT");
+	}
+	auto binder = Binder::CreateBinder(context);
+	return binder->Bind(*statements[0]);
+}
+
+// The columns a check reads from its target table, as configured
+static vector<string> ReferencedColumns(const CheckSpec &spec) {
+	vector<string> columns;
+	auto add = [&](const string &column) {
+		if (!column.empty()) {
+			columns.push_back(column);
+		}
+	};
+	const auto &type = spec.check_type;
+	if (type == "duplicate_count") {
+		for (auto &column : ParseCommaSeparatedColumns(spec.column_name)) {
+			add(column);
+		}
+	} else if (type == "match_rate") {
+		for (auto &column : ParseCommaSeparatedColumns(spec.left_keys.empty() ? spec.column_name : spec.left_keys)) {
+			add(column);
+		}
+	} else if (type != "volume" && type != "compliance" && type != "rel_count_change" &&
+	           type != "metric_anomaly_iqr") {
+		add(spec.column_name);
+	}
+	add(spec.identifier_column);
+	add(spec.date_column);
+	add(spec.count_column);
+	add(spec.metric_column);
+	return columns;
+}
+
+// Resolve every configured column against the target table (case-insensitively, like
+// DuckDB identifiers) so a missing column names the column and the table's columns.
+static void ValidateCheckColumns(ClientContext &context, const CheckSpec &spec) {
+	auto bound = BindProbe(context, "SELECT * FROM " + BuildQueryTableRef(spec.table_name) + " LIMIT 0");
+	vector<string> available = duckdb_compat::Strs(bound.names);
+	MatchColumnNames("run_checks", spec.table_name, available, ReferencedColumns(spec));
+	if (spec.check_type == "agg" && !spec.column_name.empty()) {
+		auto idx = MatchColumnNames("run_checks", spec.table_name, available, {spec.column_name})[0];
+		if (!bound.types[idx].IsNumeric()) {
+			throw BinderException("run_checks: column '%s' has type %s, agg needs a numeric column",
+			                      available[idx], bound.types[idx].ToString());
+		}
+	}
+}
+
+static bool IsRateCheck(const string &check_type) {
+	return check_type == "null_rate" || check_type == "regex_match" || check_type == "values_in_set" ||
+	       check_type == "compliance" || check_type == "match_rate" || check_type == "rolling_values_in_set";
+}
+
+static void ValidateCheckThresholds(const CheckSpec &spec) {
+	ValidateThresholdOrder(spec.lower_threshold, spec.upper_threshold, "run_checks", "lower_threshold",
+	                       "upper_threshold");
+	if (!IsRateCheck(spec.check_type)) {
+		return;
+	}
+	auto validate_rate = [&](const Value &threshold, const char *name) {
+		if (threshold.IsNull()) {
+			return;
+		}
+		double rate = threshold.GetValue<double>();
+		if (!(rate >= 0 && rate <= 1)) {
+			throw BinderException("run_checks: %s must be between 0 and 1 for a %s check (got %s)", name,
+			                      spec.check_type, threshold.ToString());
+		}
+	};
+	validate_rate(spec.lower_threshold, "lower_threshold");
+	validate_rate(spec.upper_threshold, "upper_threshold");
+}
+
+// The SQL of one check in the uniform result schema. Every problem that keeps the check
+// from running (missing table or column, invalid configuration, a query that does not
+// bind) is thrown here and turned into an 'error' row by the caller.
+static string BuildValidatedCheckSQL(ClientContext &context, const CheckSpec &spec) {
+	if (!spec.config_error.empty()) {
+		throw BinderException(spec.config_error);
+	}
+	if (!TargetTableExists(context, spec.table_name)) {
+		throw BinderException("target table '%s' does not exist", spec.table_name);
+	}
+	ValidateCheckColumns(context, spec);
+	if (!spec.identifier_column.empty() && !SupportsIdentifier(spec.check_type)) {
+		throw BinderException("identifier_column is not supported for check_type '%s'", spec.check_type);
+	}
+	ValidateCheckThresholds(spec);
+
+	string filter_sql;
+	if (!spec.filter_expr.empty()) {
+		filter_sql = SubstituteDateTokens(spec.filter_expr, spec.check_name);
+		ValidateBooleanExpression(context, filter_sql, "filter_expr");
+	}
+	auto sql = BuildBranchSQL(spec, BuildCheckBranch(context, spec, filter_sql));
+	BindProbe(context, sql);
+	return sql;
+}
+
+// "check '<name>' (<type>) cannot run: <cause>", with the run_checks/check prefixes of the
+// cause dropped and only its first line kept (binder errors append the query context)
+static string CheckErrorMessage(const CheckSpec &spec, string cause) {
+	auto newline = cause.find('\n');
+	if (newline != string::npos) {
+		cause = cause.substr(0, newline);
+	}
+	const string check_prefix = "check '" + spec.check_name + "'";
+	for (auto &prefix : {string("run_checks: ") + check_prefix + " (" + spec.check_type + ")",
+	                     string("run_checks: ") + check_prefix, string("run_checks: ")}) {
+		if (StringUtil::StartsWith(cause, prefix)) {
+			cause = cause.substr(prefix.size());
+			break;
+		}
+	}
+	while (!cause.empty() && (cause[0] == ':' || cause[0] == ' ')) {
+		cause.erase(0, 1);
+	}
+	return check_prefix + " (" + spec.check_type + ") cannot run: " + cause;
 }
 
 } // anonymous namespace
@@ -621,36 +766,33 @@ static unique_ptr<TableRef> RunChecksBindReplace(ClientContext &context, TableFu
 	if (input.inputs.empty()) {
 		throw BinderException("anofox_tab_run_checks requires 1 argument: checks_table");
 	}
-	string checks_table = input.inputs[0].ToString();
+	string checks_table = RequireNonNullArgument(input, 0, "run_checks", "checks_table");
 
 	auto specs = ReadCheckSpecs(context, checks_table);
 	AnofoxTrace(AnofoxLogLevel::Debug, "check_suite: running " + std::to_string(specs.size()) +
 	                                       " check(s) from '" + checks_table + "'");
 
 	vector<string> branches;
+	idx_t error_count = 0;
 	for (auto &spec : specs) {
-		// Per-check error isolation: a missing target or an unsupported identifier
-		// combination yields an error row instead of failing the whole run.
-		if (!TargetTableExists(context, spec.table_name)) {
-			branches.push_back(BuildErrorRowSQL(spec, "Target table '" + spec.table_name + "' does not exist"));
-			continue;
+		// Per-check error isolation: a check that cannot be built or bound yields an
+		// 'error' row; the other checks run normally.
+		try {
+			branches.push_back(BuildValidatedCheckSQL(context, spec));
+		} catch (const std::exception &ex) {
+			ErrorData error(ex);
+			if (error.Type() == ExceptionType::INTERRUPT || error.Type() == ExceptionType::FATAL ||
+			    error.Type() == ExceptionType::INTERNAL) {
+				throw;
+			}
+			auto message = CheckErrorMessage(spec, error.RawMessage());
+			AnofoxTrace(AnofoxLogLevel::Warn, "check_suite: " + message);
+			branches.push_back(BuildErrorRowSQL(spec, message));
+			error_count++;
 		}
-		if (!spec.identifier_column.empty() && !SupportsIdentifier(spec.check_type)) {
-			branches.push_back(BuildErrorRowSQL(
-			    spec, "identifier_column is not supported for check_type '" + spec.check_type + "'"));
-			continue;
-		}
-
-		string filter_sql;
-		if (!spec.filter_expr.empty()) {
-			filter_sql = SubstituteDateTokens(spec.filter_expr, spec.check_name);
-			ValidateBooleanExpression(context, filter_sql,
-			                          "run_checks (filter_expr of check '" + spec.check_name + "')");
-		}
-
-		auto branch = BuildCheckBranch(context, spec, filter_sql);
-		branches.push_back(BuildBranchSQL(spec, branch));
 	}
+	AnofoxTrace(AnofoxLogLevel::Debug, "check_suite: " + std::to_string(error_count) + " of " +
+	                                       std::to_string(specs.size()) + " check(s) cannot run");
 
 	string sql;
 	for (size_t i = 0; i < branches.size(); i++) {

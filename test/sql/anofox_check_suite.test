@@ -194,22 +194,23 @@ CREATE TABLE dq_checks_bad AS SELECT * FROM dq_checks LIMIT 0
 statement ok
 INSERT INTO dq_checks_bad VALUES ('bad', 'teleport', 'orders', NULL, NULL, NULL, NULL, false, NULL, NULL)
 
-statement error
-SELECT * FROM run_checks('dq_checks_bad')
+# a check of an unknown type is an error row; it does not abort the suite
+query TT
+SELECT status, message FROM run_checks('dq_checks_bad')
 ----
-unknown check_type
+error	check 'bad' (teleport) cannot run: unknown check_type 'teleport' in check 'bad' (supported: volume, null_rate, distinct_count, regex_match, values_in_set, agg, duplicate_count, occurrence, match_rate, compliance, freshness, rel_count_change, metric_anomaly_iqr, rolling_values_in_set)
 
-# malicious filter_expr is rejected at bind time
+# malicious filter_expr is rejected at bind time (an error row; nothing is executed)
 statement ok
 CREATE TABLE dq_checks_evil AS SELECT * FROM dq_checks LIMIT 0
 
 statement ok
 INSERT INTO dq_checks_evil VALUES ('evil', 'volume', 'orders', NULL, NULL, 1, NULL, false, NULL, '1=1); DROP TABLE orders;--')
 
-statement error
-SELECT * FROM run_checks('dq_checks_evil')
+query TT
+SELECT status, message LIKE 'check ''evil'' (volume) cannot run: filter_expr: %' FROM run_checks('dq_checks_evil')
 ----
-filter_expr
+error	true
 
 query I
 SELECT COUNT(*) FROM orders

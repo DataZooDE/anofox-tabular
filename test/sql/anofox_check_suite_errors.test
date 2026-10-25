@@ -1,0 +1,228 @@
+# name: test/sql/anofox_check_suite_errors.test
+# description: run_checks keeps going when single checks are broken: a nightly suite with a
+#              check on a missing column, a check on a missing table and aggregates over a
+#              sensor column with NaN/Inf still returns one row per check (and partition);
+#              broken checks get status 'error' with a message naming the check and the cause.
+# group: [anofox_tabular]
+
+require anofox_tabular
+
+statement ok
+LOAD anofox_tabular
+
+statement ok
+SET anofox_tab_trace_enabled = false
+
+# ===--------------------------------------------------------------------===
+# A nightly load: orders, customers and a sensor feed with NaN/Inf readings
+# ===--------------------------------------------------------------------===
+
+statement ok
+CREATE TABLE nightly_orders (order_id INTEGER, customer_id INTEGER, status VARCHAR, amount DOUBLE,
+                             region VARCHAR, loaded_at TIMESTAMP)
+
+statement ok
+INSERT INTO nightly_orders VALUES
+    (5001, 11, 'completed', 129.90, 'north', TIMESTAMP '2026-10-24 01:10:00'),
+    (5002, 12, 'completed',  15.00, 'north', TIMESTAMP '2026-10-24 01:12:00'),
+    (5003, 13, 'pending',    48.50, 'south', TIMESTAMP '2026-10-24 01:15:00'),
+    (5004, 14, 'shipped',   310.00, 'south', TIMESTAMP '2026-10-24 01:20:00'),
+    (5004, 15, 'refunded',   22.00, 'south', TIMESTAMP '2026-10-24 01:25:00'),
+    (5006, NULL, 'completed', 75.25, 'west', TIMESTAMP '2026-10-24 01:30:00')
+
+statement ok
+CREATE TABLE sensor_readings (sensor_id VARCHAR, read_at TIMESTAMP, temperature DOUBLE, humidity DOUBLE)
+
+statement ok
+INSERT INTO sensor_readings VALUES
+    ('greenhouse-1', TIMESTAMP '2026-10-24 00:00:00', 21.5, 55.0),
+    ('greenhouse-1', TIMESTAMP '2026-10-24 01:00:00', 'nan'::DOUBLE, 56.0),
+    ('greenhouse-1', TIMESTAMP '2026-10-24 02:00:00', 22.0, 57.5),
+    ('greenhouse-2', TIMESTAMP '2026-10-24 00:00:00', 19.0, 'inf'::DOUBLE),
+    ('greenhouse-2', TIMESTAMP '2026-10-24 01:00:00', 19.5, 60.0)
+
+statement ok
+CREATE TABLE nightly_checks (
+    check_name VARCHAR, check_type VARCHAR, table_name VARCHAR, column_name VARCHAR,
+    params VARCHAR, lower_threshold DOUBLE, upper_threshold DOUBLE,
+    monitor_only BOOLEAN, identifier_column VARCHAR, filter_expr VARCHAR
+)
+
+statement ok
+INSERT INTO nightly_checks VALUES
+    ('01_orders_volume',     'volume',          'nightly_orders',  NULL,          NULL, 1, NULL, false, NULL, NULL),
+    ('02_customer_null',     'null_rate',       'nightly_orders',  'customer_id', NULL, NULL, 0.1, false, NULL, NULL),
+    ('03_order_id_unique',   'duplicate_count', 'nightly_orders',  'order_id',    NULL, NULL, 0, false, NULL, NULL),
+    ('04_orders_fresh',      'freshness',       'nightly_orders',  'loaded_at',   '{"reference_time": "2026-10-24 06:00:00"}', NULL, 86400, false, NULL, NULL),
+    ('05_status_set',        'values_in_set',   'nightly_orders',  'status',      '{"allowed_values": ["completed", "pending", "shipped", "refunded"]}', 1.0, NULL, false, NULL, NULL),
+    ('06_coupon_null',       'null_rate',       'nightly_orders',  'coupon_code', NULL, NULL, 0.5, false, NULL, NULL),
+    ('07_returns_volume',    'volume',          'nightly_returns', NULL,          NULL, 1, NULL, false, NULL, NULL),
+    ('08_temperature_avg',   'agg',             'sensor_readings', 'temperature', '{"agg": "avg"}', 10, 30, false, NULL, NULL),
+    ('09_humidity_stddev',   'agg',             'sensor_readings', 'humidity',    '{"agg": "stddev"}', NULL, 10, false, NULL, NULL)
+
+# Every check produces its row; only the two broken ones are errors, the NaN/Inf
+# aggregates fail (the data cannot be shown to be within the thresholds)
+query TTT
+SELECT check_name, check_type, status FROM run_checks('nightly_checks')
+----
+01_orders_volume	volume	pass
+02_customer_null	null_rate	fail
+03_order_id_unique	duplicate_count	fail
+04_orders_fresh	freshness	pass
+05_status_set	values_in_set	pass
+06_coupon_null	null_rate	error
+07_returns_volume	volume	error
+08_temperature_avg	agg	fail
+09_humidity_stddev	agg	fail
+
+# The error message names the check and the cause
+query T
+SELECT message FROM run_checks('nightly_checks') WHERE check_name = '06_coupon_null'
+----
+check '06_coupon_null' (null_rate) cannot run: column 'coupon_code' not found in table 'nightly_orders' (available columns: order_id, customer_id, status, amount, region, loaded_at)
+
+query T
+SELECT message FROM run_checks('nightly_checks') WHERE check_name = '07_returns_volume'
+----
+check '07_returns_volume' (volume) cannot run: target table 'nightly_returns' does not exist
+
+# A NaN value fails with a message saying why
+query TT
+SELECT isnan(value), message FROM run_checks('nightly_checks') WHERE check_name LIKE '08%' OR check_name LIKE '09%'
+----
+true	agg value is NaN: the column contains 1 NaN/Inf value(s)
+true	agg value is NaN: the column contains 1 NaN/Inf value(s)
+
+# Error rows carry the uniform schema: NULL value/identifier, thresholds as configured are not echoed
+query TTRT
+SELECT table_name, column_name, value, identifier FROM run_checks('nightly_checks') WHERE status = 'error'
+----
+nightly_orders	coupon_code	NULL	NULL
+nightly_returns	NULL	NULL	NULL
+
+# The healthy checks still compute their values
+query TR
+SELECT check_name, round(value, 4) FROM run_checks('nightly_checks') WHERE status IN ('pass', 'fail') AND NOT isnan(value)
+----
+01_orders_volume	6.0
+02_customer_null	0.1667
+03_order_id_unique	1.0
+04_orders_fresh	16200.0
+05_status_set	1.0
+
+# Column names match case-insensitively, like DuckDB identifiers
+statement ok
+CREATE TABLE case_checks AS SELECT * FROM nightly_checks WHERE false
+
+statement ok
+INSERT INTO case_checks VALUES
+    ('customer_null_upper', 'null_rate', 'NIGHTLY_ORDERS', 'Customer_ID', NULL, NULL, 0.5, false, 'REGION', NULL)
+
+query TTR
+SELECT identifier, status, round(value, 4) FROM run_checks('case_checks') ORDER BY identifier
+----
+north	pass	0.0
+south	pass	0.0
+west	fail	1.0
+
+# ===--------------------------------------------------------------------===
+# Partitioned suite: identifier_column on every check, including the broken ones
+# ===--------------------------------------------------------------------===
+
+statement ok
+CREATE TABLE partitioned_checks AS SELECT * FROM nightly_checks WHERE false
+
+statement ok
+INSERT INTO partitioned_checks VALUES
+    ('p1_volume',         'volume',          'nightly_orders',  NULL,          NULL, 2, NULL, false, 'region', NULL),
+    ('p2_customer_null',  'null_rate',       'nightly_orders',  'customer_id', NULL, NULL, 0.1, false, 'region', NULL),
+    ('p3_unique',         'duplicate_count', 'nightly_orders',  'order_id',    NULL, NULL, 0, false, 'region', NULL),
+    ('p4_fresh',          'freshness',       'nightly_orders',  'loaded_at',   '{"reference_time": "2026-10-24 06:00:00"}', NULL, 86400, false, 'region', NULL),
+    ('p5_status',         'values_in_set',   'nightly_orders',  'status',      '{"allowed_values": ["completed", "pending", "shipped"]}', 1.0, NULL, false, 'region', NULL),
+    ('p6_coupon_null',    'null_rate',       'nightly_orders',  'coupon_code', NULL, NULL, 0.5, false, 'region', NULL),
+    ('p7_bad_partition',  'volume',          'nightly_orders',  NULL,          NULL, 1, NULL, false, 'warehouse', NULL),
+    ('p8_missing_table',  'volume',          'nightly_returns', NULL,          NULL, 1, NULL, false, 'region', NULL),
+    ('p9_temperature',    'agg',             'sensor_readings', 'temperature', '{"agg": "avg"}', 10, 30, false, 'sensor_id', NULL)
+
+query TTT
+SELECT check_name, identifier, status FROM run_checks('partitioned_checks') ORDER BY check_name, identifier
+----
+p1_volume	north	pass
+p1_volume	south	pass
+p1_volume	west	fail
+p2_customer_null	north	pass
+p2_customer_null	south	pass
+p2_customer_null	west	fail
+p3_unique	north	pass
+p3_unique	south	fail
+p3_unique	west	pass
+p4_fresh	north	pass
+p4_fresh	south	pass
+p4_fresh	west	pass
+p5_status	north	pass
+p5_status	south	fail
+p5_status	west	pass
+p6_coupon_null	NULL	error
+p7_bad_partition	NULL	error
+p8_missing_table	NULL	error
+p9_temperature	greenhouse-1	fail
+p9_temperature	greenhouse-2	pass
+
+query T
+SELECT message FROM run_checks('partitioned_checks') WHERE check_name = 'p7_bad_partition'
+----
+check 'p7_bad_partition' (volume) cannot run: column 'warehouse' not found in table 'nightly_orders' (available columns: order_id, customer_id, status, amount, region, loaded_at)
+
+# ===--------------------------------------------------------------------===
+# Other build errors become error rows too: an unknown column inside a
+# compliance expression, a missing right table of a match_rate check, and an
+# agg over a text column
+# ===--------------------------------------------------------------------===
+
+statement ok
+CREATE TABLE more_checks AS SELECT * FROM nightly_checks WHERE false
+
+statement ok
+INSERT INTO more_checks VALUES
+    ('m1_amount_positive', 'compliance', 'nightly_orders', NULL, '{"expression": "discount >= 0"}', 1.0, NULL, false, NULL, NULL),
+    ('m2_customer_fk', 'match_rate', 'nightly_orders', 'customer_id', '{"right_table": "crm_customers", "right_keys": "id"}', 1.0, NULL, false, NULL, NULL),
+    ('m3_status_avg', 'agg', 'nightly_orders', 'status', '{"agg": "avg"}', 0, NULL, false, NULL, NULL),
+    ('m4_bad_filter', 'volume', 'nightly_orders', NULL, NULL, 1, NULL, false, NULL, 'channel = ''web'''),
+    ('m5_volume', 'volume', 'nightly_orders', NULL, NULL, 1, NULL, false, NULL, NULL)
+
+query TT
+SELECT check_name, status FROM run_checks('more_checks')
+----
+m1_amount_positive	error
+m2_customer_fk	error
+m3_status_avg	error
+m4_bad_filter	error
+m5_volume	pass
+
+query T
+SELECT message FROM run_checks('more_checks') WHERE check_name = 'm3_status_avg'
+----
+check 'm3_status_avg' (agg) cannot run: column 'status' has type VARCHAR, agg needs a numeric column
+
+query TT
+SELECT check_name, message LIKE 'check ''' || check_name || ''' (%) cannot run: %' FROM run_checks('more_checks') WHERE status = 'error'
+----
+m1_amount_positive	true
+m2_customer_fk	true
+m3_status_avg	true
+m4_bad_filter	true
+
+query T
+SELECT message LIKE '%discount%' FROM run_checks('more_checks') WHERE check_name = 'm1_amount_positive'
+----
+true
+
+query T
+SELECT message LIKE '%crm_customers%' FROM run_checks('more_checks') WHERE check_name = 'm2_customer_fk'
+----
+true
+
+query T
+SELECT message LIKE '%channel%' FROM run_checks('more_checks') WHERE check_name = 'm4_bad_filter'
+----
+true
