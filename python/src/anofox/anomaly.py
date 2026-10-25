@@ -217,12 +217,12 @@ def outlier_tree(
     table_or_df: Union[str, Any],
     columns: Union[str, list[str]],
     output_mode: str = "summary",
-    max_depth: int = 4,
-    max_perc_outliers: float = 0.1,
-    min_size_numeric: int = 10,
-    min_size_categ: int = 10,
-    z_norm: float = 2.67,
-    z_outlier: float = 8.0,
+    max_depth: Optional[int] = None,
+    max_perc_outliers: Optional[float] = None,
+    min_size_numeric: Optional[int] = None,
+    min_size_categ: Optional[int] = None,
+    z_norm: Optional[float] = None,
+    z_outlier: Optional[float] = None,
     id_column: Optional[str] = None,
 ) -> Union[dict, Any]:
     """
@@ -240,17 +240,22 @@ def outlier_tree(
         ``"summary"`` → dict with counts; ``"outliers"`` → DataFrame with
         per-row explanations.
     max_depth:
-        Maximum tree depth (default 4).
+        Maximum tree depth.
     max_perc_outliers:
-        Maximum fraction of outliers allowed (default 0.1).
+        Largest share of a group that may be flagged.
     min_size_numeric:
-        Minimum cluster size for numeric columns (default 10).
+        Smallest group for a numeric target.
     min_size_categ:
-        Minimum cluster size for categorical columns (default 10).
+        Smallest group for a categorical target.
     z_norm:
-        Z-score threshold for normal data (default 2.67).
+        Z threshold for the group's confidence interval.
     z_outlier:
-        Z-score threshold for outliers (default 8.0).
+        Z threshold to flag a value.
+
+        Each parameter left at ``None`` uses the extension's default, the same
+        as in SQL: ``max_depth=4``, ``max_perc_outliers=0.01``,
+        ``min_size_numeric=25``, ``min_size_categ=75``, ``z_norm=2.67``,
+        ``z_outlier=8.0``. Lower the size and z thresholds for small tables.
     id_column:
         Optional identifier column of the input whose value is added to the
         per-row output, directly after ``row_id``. Only valid with

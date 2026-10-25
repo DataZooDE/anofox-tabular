@@ -214,3 +214,41 @@ class TestOutputModes:
         from anofox import anomaly
         with pytest.raises(ValueError, match="output_mode"):
             getattr(anomaly, func)(conn, numeric_table, arg, output_mode=mode)
+
+
+@pytest.fixture(scope="module")
+def staff_table(conn):
+    conn.execute(
+        "CREATE OR REPLACE TABLE _staff AS "
+        "SELECT i AS staff_id, CASE WHEN i <= 100 THEN 'junior' ELSE 'senior' END AS level, "
+        "CASE WHEN i = 7 THEN 92000 WHEN i <= 100 THEN 48000 + (i % 10) * 500 "
+        "ELSE 88000 + (i % 10) * 600 END AS salary FROM range(1, 201) t(i)"
+    )
+    yield "_staff"
+    conn.execute("DROP TABLE IF EXISTS _staff")
+
+
+class TestOutlierTreeDefaults:
+    """Python defaults are the SQL defaults: the same call gives the same result."""
+
+    def test_summary_matches_sql_defaults(self, conn, staff_table):
+        from anofox import anomaly
+        cursor = conn.execute(f"SELECT * FROM outlier_tree('{staff_table}', 'level, salary', 'summary')")
+        names = [d[0] for d in cursor.description]
+        expected = dict(zip(names, cursor.fetchone()))
+        assert anomaly.outlier_tree(conn, staff_table, ["level", "salary"]) == expected
+
+    def test_outliers_match_sql_defaults(self, conn, staff_table):
+        from anofox import anomaly
+        expected = conn.execute(
+            f"SELECT row_id FROM outlier_tree('{staff_table}', 'level, salary', 'outliers') ORDER BY row_id"
+        ).fetchall()
+        out = anomaly.outlier_tree(conn, staff_table, ["level", "salary"], output_mode="outliers")
+        assert sorted(out["row_id"].tolist()) == [r[0] for r in expected]
+
+    def test_explicit_parameter_overrides_default(self, conn, staff_table):
+        from anofox import anomaly
+        loose = anomaly.outlier_tree(conn, staff_table, ["level", "salary"], z_outlier=1.0,
+                                     min_size_numeric=10, max_perc_outliers=0.5)
+        strict = anomaly.outlier_tree(conn, staff_table, ["level", "salary"])
+        assert loose["outlier_count"] >= strict["outlier_count"]
