@@ -28,6 +28,7 @@
 #include <iomanip>
 #include <cctype>
 #include <cmath>
+#include <string_view>
 #include <openssl/sha.h>
 #include "anofox_tabular_banner.hpp"
 
@@ -64,6 +65,66 @@ bool IsFieldLabel(const std::string &text) {
         upper.pop_back();
     }
     return labels.count(upper) > 0;
+}
+
+// ---------------------------------------------------------------------------
+// UTF-8 code point helpers for masking. Masks keep or replace whole
+// characters: a byte-based substr can split a multi-byte sequence and yield
+// invalid UTF-8 that DuckDB rejects ("Invalid unicode"). Input is valid UTF-8
+// (DuckDB guarantees that for VARCHAR); a code point starts at every byte
+// that is not a continuation byte (10xxxxxx).
+// ---------------------------------------------------------------------------
+bool IsUtf8Continuation(char c) {
+    return (static_cast<unsigned char>(c) & 0xC0) == 0x80;
+}
+
+// Number of code points in text
+size_t Utf8Length(std::string_view text) {
+    return static_cast<size_t>(std::count_if(text.begin(), text.end(),
+                                             [](char c) { return !IsUtf8Continuation(c); }));
+}
+
+// Byte offset at which code point number n starts (text.size() if n >= length)
+size_t Utf8ByteOffset(std::string_view text, size_t n) {
+    size_t seen = 0;
+    for (size_t i = 0; i < text.size(); ++i) {
+        if (!IsUtf8Continuation(text[i])) {
+            if (seen == n) {
+                return i;
+            }
+            ++seen;
+        }
+    }
+    return text.size();
+}
+
+// First n code points of text
+std::string Utf8Prefix(std::string_view text, size_t n) {
+    return std::string(text.substr(0, Utf8ByteOffset(text, n)));
+}
+
+// Last n code points of text
+std::string Utf8Suffix(std::string_view text, size_t n) {
+    const size_t length = Utf8Length(text);
+    if (n >= length) {
+        return std::string(text);
+    }
+    return std::string(text.substr(Utf8ByteOffset(text, length - n)));
+}
+
+// One '*' per character of text
+std::string Utf8Stars(std::string_view text) {
+    return std::string(Utf8Length(text), '*');
+}
+
+// Keep the first `keep` characters of word and replace each further
+// character with '*'; words of at most `keep` characters stay unchanged
+std::string MaskWordKeepingPrefix(const std::string &word, size_t keep) {
+    const size_t length = Utf8Length(word);
+    if (length <= keep) {
+        return word;
+    }
+    return Utf8Prefix(word, keep) + std::string(length - keep, '*');
 }
 } // anonymous namespace
 
@@ -362,11 +423,12 @@ std::vector<PIIMatch> RegexRecognizer::FindMatches(const std::string &text) cons
 }
 
 std::string RegexRecognizer::GetPartialMask(const std::string &text) const {
-    // Default: show first and last 2 characters
-    if (text.length() <= 4) {
-        return std::string(text.length(), '*');
+    // Default: show first and last 2 characters (code points, not bytes)
+    const size_t length = Utf8Length(text);
+    if (length <= 4) {
+        return std::string(length, '*');
     }
-    return text.substr(0, 2) + std::string(text.length() - 4, '*') + text.substr(text.length() - 2);
+    return Utf8Prefix(text, 2) + std::string(length - 4, '*') + Utf8Suffix(text, 2);
 }
 
 // ============================================================================
@@ -1390,12 +1452,7 @@ std::string NameRecognizer::GetPartialMask(const std::string &text) const {
     for (size_t i = 0; i < words.size(); ++i) {
         if (i > 0) masked += " ";
 
-        if (words[i].size() <= 1) {
-            masked += words[i];
-        } else {
-            masked += words[i][0];
-            masked += std::string(words[i].size() - 1, '*');
-        }
+        masked += MaskWordKeepingPrefix(words[i], 1);
     }
 
     return masked;
@@ -1468,12 +1525,7 @@ std::string OrganizationRecognizer::GetPartialMask(const std::string &text) cons
     for (size_t i = 0; i < words.size(); ++i) {
         if (i > 0) masked += " ";
 
-        if (words[i].size() <= 3) {
-            masked += words[i];
-        } else {
-            masked += words[i].substr(0, 3);
-            masked += std::string(words[i].size() - 3, '*');
-        }
+        masked += MaskWordKeepingPrefix(words[i], 3);
     }
 
     return masked;
@@ -1546,13 +1598,10 @@ std::string LocationRecognizer::GetPartialMask(const std::string &text) const {
     for (size_t i = 0; i < words.size(); ++i) {
         if (i > 0) masked += " ";
 
-        if (i == 0 && words[i].size() <= 3) {
-            masked += words[i];
-        } else if (i == 0) {
-            masked += words[i].substr(0, 3);
-            masked += std::string(words[i].size() - 3, '*');
+        if (i == 0) {
+            masked += MaskWordKeepingPrefix(words[i], 3);
         } else {
-            masked += std::string(words[i].size(), '*');
+            masked += Utf8Stars(words[i]);
         }
     }
 
@@ -1626,12 +1675,7 @@ std::string MiscRecognizer::GetPartialMask(const std::string &text) const {
     for (size_t i = 0; i < words.size(); ++i) {
         if (i > 0) masked += " ";
 
-        if (words[i].size() <= 3) {
-            masked += words[i];
-        } else {
-            masked += words[i].substr(0, 3);
-            masked += std::string(words[i].size() - 3, '*');
-        }
+        masked += MaskWordKeepingPrefix(words[i], 3);
     }
 
     return masked;
@@ -1855,11 +1899,12 @@ std::string PIIEngine::ApplyMask(const PIIMatch &match, MaskStrategy strategy) c
             if (recognizer) {
                 return recognizer->GetPartialMask(match.matched_text);
             }
-            return std::string(match.matched_text.length(), '*');
+            return Utf8Stars(match.matched_text);
         }
 
         case MaskStrategy::ASTERISK:
-            return std::string(match.matched_text.length(), '*');
+            // One '*' per character, not per byte
+            return Utf8Stars(match.matched_text);
 
         default:
             return match.matched_text;

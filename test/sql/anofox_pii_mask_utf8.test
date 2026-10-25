@@ -1,0 +1,65 @@
+# name: test/sql/anofox_pii_mask_utf8.test
+# description: partial and asterisk masks count characters, not bytes, and never split a
+#              UTF-8 sequence (a lone lead byte made CREATE TABLE AS fail with "Invalid unicode")
+# group: [sql]
+
+# Non-ASCII PII text comes from the NER recognizers (NAME, ORGANIZATION, LOCATION, MISC);
+# the regex recognizers match ASCII only.
+require-env OPENVINO_AVAILABLE
+
+require anofox_tabular
+
+statement ok
+LOAD anofox_tabular;
+
+# --- partial: the kept prefix is whole characters ---
+
+query T
+SELECT pii_mask_column('Ömer Özdemir', 'NAME', 'partial');
+----
+Ö*** Ö******
+
+query T
+SELECT hex(pii_mask_column('Ömer Özdemir', 'NAME', 'partial'));
+----
+C3962A2A2A20C3962A2A2A2A2A2A
+
+query T
+SELECT pii_mask('Mr Smith moved to Brüssel last year.', 'partial');
+----
+Mr Smith moved to Brü**** last year.
+
+query T
+SELECT pii_mask('Thomas Müller works at Siemens in München.', 'partial');
+----
+T***** M***** works at Sie**** in Mün****.
+
+# --- asterisk: one star per character ---
+
+query T
+SELECT pii_mask_column('Thomas Müller', 'NAME', 'asterisk');
+----
+*************
+
+query T
+SELECT pii_mask('Thomas Müller works at Siemens in München.', 'asterisk');
+----
+************* works at ******* in *******.
+
+# --- masked values are valid UTF-8 and can be stored ---
+
+statement ok
+CREATE TABLE masked_utf8 AS
+SELECT pii_mask_column('Ömer Özdemir', 'NAME', 'partial') AS name_partial,
+       pii_mask_column('Ömer Özdemir', 'NAME', 'asterisk') AS name_asterisk,
+       pii_mask('Mr Smith moved to Brüssel last year.', 'partial') AS loc_partial;
+
+query TTT
+SELECT * FROM masked_utf8;
+----
+Ö*** Ö******	************	Mr Smith moved to Brü**** last year.
+
+query I
+SELECT length(name_asterisk) FROM masked_utf8;
+----
+12
