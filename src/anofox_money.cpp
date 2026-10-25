@@ -744,11 +744,15 @@ void RegisterMoneyFunctions(ExtensionLoader &loader) {
                                      AnofoxMoneyDecimalFunction);
         money_decimal.SetBindCallback(&ScalarContextBind<MoneyBind>::Bind);
         SetFallibleCompat(money_decimal);
+        // The function sets NULL rows itself; with the default handling DuckDB
+        // v1.5 folds money(NULL, ...) into an untyped NULL constant
+        duckdb_compat::SetNullHandling(money_decimal, FunctionNullHandling::SPECIAL_HANDLING);
         money_set.AddFunction(money_decimal);
         ScalarFunction money_double("anofox_tab_money", {LogicalTypeId::DOUBLE, LogicalTypeId::VARCHAR}, GetMoneyType(),
                                     AnofoxMoneyFunction);
         money_double.SetBindCallback(&ScalarContextBind<MoneyBind>::Bind);
         SetFallibleCompat(money_double);
+        duckdb_compat::SetNullHandling(money_double, FunctionNullHandling::SPECIAL_HANDLING);
         money_set.AddFunction(money_double);
 
         FunctionDescription decimal_desc;
