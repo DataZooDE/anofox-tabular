@@ -10,6 +10,7 @@ This example demonstrates:
 5. Handling Australian address formats
 """
 
+import os
 import sys
 from pathlib import Path
 
@@ -34,26 +35,27 @@ def create_conn():
 
 
 def load_extension(conn):
-    """Load Anofox Tabular extension with custom search path if needed."""
-    project_root = Path(__file__).parent.parent
+    """Load anofox_tabular.
 
-    # Try the repository path first (where extensions are deployed)
-    repo_path = project_root / "build" / "release" / "repository"
-    if repo_path.exists():
-        conn.execute(f"SET extension_directory = '{repo_path}'")
-        conn.execute("LOAD anofox_tabular")
+    Order: the ANOFOX_EXT_PATH environment variable, then a local build in
+    ../build/release, then INSTALL ... FROM community.
+    """
+    ext_path = os.environ.get("ANOFOX_EXT_PATH")
+    if not ext_path:
+        local_build = (
+            Path(__file__).parent.parent
+            / "build" / "release" / "extension" / "anofox_tabular"
+            / "anofox_tabular.duckdb_extension"
+        )
+        if local_build.exists():
+            ext_path = str(local_build)
+    if ext_path:
+        conn.execute(f"LOAD '{ext_path}'")
     else:
-        # Try the direct extension path
-        ext_path = project_root / "build" / "release" / "extension" / "anofox_tabular"
-        if ext_path.exists():
-            conn.execute(f"SET extension_directory = '{ext_path.parent}'")
-            conn.execute("LOAD anofox_tabular")
-        else:
-            raise FileNotFoundError(
-                f"Anofox Tabular extension not found. "
-                f"Please build the extension first: make release\n"
-                f"Looked in: {repo_path} and {ext_path}"
-            )
+        conn.execute("INSTALL anofox_tabular FROM community")
+        conn.execute("LOAD anofox_tabular")
+    # Keep the console readable: hide the [anofox] [info] trace lines
+    conn.execute("SET anofox_tab_trace_level = 'warn'")
 
 
 def example_1_load_febrl_data():
@@ -116,7 +118,7 @@ def example_2_parse_addresses():
     load_extension(conn)
 
     # Check postal status
-    status = conn.execute("SELECT * FROM anofox_postal_status()").fetchall()
+    status = conn.execute("SELECT * FROM postal_status()").fetchall()
     print("\nPostal library status:")
     if status:
         initialized, data_present, data_dir = status[0]
@@ -128,7 +130,7 @@ def example_2_parse_addresses():
         if not data_present:
             print("\n  Loading libpostal data (this may take a moment)...")
             try:
-                success = conn.execute("SELECT anofox_postal_load_data()").fetchall()[0][0]
+                success = conn.execute("SELECT postal_load_data()").fetchall()[0][0]
                 if success:
                     print("  ✓ Libpostal data loaded successfully")
                 else:
@@ -162,7 +164,7 @@ def example_2_parse_addresses():
                     result.postcode,
                     result.country
                 FROM (
-                    SELECT anofox_postal_parse_address('{address}') as result
+                    SELECT postal_parse_address('{address}') as result
                 )
                 """
             ).fetchall()
@@ -193,13 +195,13 @@ def example_3_extract_and_parse_from_table():
     load_extension(conn)
 
     # Ensure libpostal data is loaded
-    status = conn.execute("SELECT * FROM anofox_postal_status()").fetchall()
+    status = conn.execute("SELECT * FROM postal_status()").fetchall()
     if status:
         _, data_present, _ = status[0]
         if not data_present:
             print("\nLoading libpostal data...")
             try:
-                success = conn.execute("SELECT anofox_postal_load_data()").fetchall()[0][0]
+                success = conn.execute("SELECT postal_load_data()").fetchall()[0][0]
                 if not success:
                     print("✗ Failed to load libpostal data. Skipping this example.")
                     conn.close()
@@ -235,7 +237,7 @@ def example_3_extract_and_parse_from_table():
                 address_2,
                 postcode,
                 state,
-                anofox_postal_parse_address(
+                postal_parse_address(
                     COALESCE(address_1, '') ||
                     CASE WHEN address_2 IS NOT NULL THEN ' ' || address_2 ELSE '' END ||
                     ' ' || COALESCE(street_number, '') ||
@@ -272,13 +274,13 @@ def example_4_address_expansion():
     load_extension(conn)
 
     # Ensure libpostal data is loaded
-    status = conn.execute("SELECT * FROM anofox_postal_status()").fetchall()
+    status = conn.execute("SELECT * FROM postal_status()").fetchall()
     if status:
         _, data_present, _ = status[0]
         if not data_present:
             print("\nLoading libpostal data...")
             try:
-                success = conn.execute("SELECT anofox_postal_load_data()").fetchall()[0][0]
+                success = conn.execute("SELECT postal_load_data()").fetchall()[0][0]
                 if not success:
                     print("✗ Failed to load libpostal data. Skipping this example.")
                     conn.close()
@@ -301,7 +303,7 @@ def example_4_address_expansion():
             result = conn.execute(
                 f"""
                 SELECT
-                    UNNEST(anofox_postal_expand_address('{address}')) as variant
+                    UNNEST(postal_expand_address('{address}')) as variant
                 LIMIT 5
                 """
             ).fetchall()

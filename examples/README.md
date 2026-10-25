@@ -4,33 +4,31 @@ This directory contains practical examples demonstrating how to use the Anofox T
 
 ## Quick Start
 
-### 1. Set up the Python environment
+### 1. Get the extension
 
-Using `uv` (recommended, fast):
+The scripts load `anofox_tabular` in this order:
+
+1. the file named by the `ANOFOX_EXT_PATH` environment variable;
+2. a local build at `../build/release/extension/anofox_tabular/anofox_tabular.duckdb_extension`
+   (see [Building from Source](../README.md#%EF%B8%8F-building-from-source));
+3. otherwise `INSTALL anofox_tabular FROM community`, which needs network access.
+
+The `duckdb` Python package must match the DuckDB version the extension was built for
+(1.5.6 or 2.0; `uv.lock` pins 1.5.6).
+
+### 2. Run an example
 
 ```bash
 cd examples
 uv sync
 uv run python email_verification.py
+
+# with a local build of the extension:
+ANOFOX_EXT_PATH=../build/release/extension/anofox_tabular/anofox_tabular.duckdb_extension \
+  uv run python email_verification.py
 ```
 
-Or using `pip`:
-
-```bash
-cd examples
-pip install -r requirements.txt
-python email_verification.py
-```
-
-### 2. Build the extension (if not already built)
-
-From the project root:
-
-```bash
-make release
-```
-
-This creates the extension binary at `build/release/extension/anofox_tabular/anofox_tabular.duckdb_extension`.
+`postal_verification.py` downloads the libpostal data (~500 MB) on first run.
 
 ## Examples
 
@@ -47,19 +45,13 @@ A comprehensive example demonstrating email validation capabilities using the fr
 - **Example 6: Batch Validation** - Processing multiple emails in SQL
 
 **Dataset:**
-- `data/fraudulent_emails.parquet` - ~5000 historical fraudulent/spam emails (Enron corpus subset)
+- `data/fraudulent_emails.parquet` - 3,976 historical fraudulent/spam emails
 - Contains fields: from, to, subject, date, message_id, reply_to, content_type, return_path
 
 **Run the example:**
 
 ```bash
 uv run python email_verification.py
-```
-
-Or with Python directly:
-
-```bash
-python email_verification.py
 ```
 
 **Sample output:**
@@ -70,12 +62,15 @@ EXAMPLE 1: Basic Email Validation (Regex Mode)
 ======================================================================
 
 Validating emails with regex mode:
-  user@example.com              → ✓ Valid
-  invalid.email@                → ✗ Invalid
-  person@domain.co.uk           → ✓ Valid
-  test+tag@test.org             → ✓ Valid
-  no-domain@invalid             → ✗ Invalid
+  user@example.com               Valid
+  invalid.email@                 Invalid
+  person@domain.co.uk            Valid
+  test+tag@test.org              Valid
+  no-domain@invalid              Valid
 ```
+
+The default regex accepts a single-label domain such as `invalid`; use the `dns` mode to check
+that the domain has mail servers.
 
 ## Using Anofox Tabular with Python & DuckDB
 
@@ -86,31 +81,36 @@ import duckdb
 
 # Connect to DuckDB and load Anofox Tabular
 conn = duckdb.connect(":memory:")
+conn.execute("INSTALL anofox_tabular FROM community")
 conn.execute("LOAD anofox_tabular")
+conn.execute("SET anofox_tab_trace_level = 'warn'")  # optional: hide [anofox] [info] lines
 ```
+
+The `anofox-tabular` package (`pip install anofox-tabular`, imported as `anofox`) does the same
+with `anofox.connect()`; see [`python/README.md`](../python/README.md).
 
 ### Email validation functions
 
 ```python
 # Simple validation
 result = conn.execute(
-    "SELECT anofox_email_is_valid('user@example.com', 'regex') as valid"
+    "SELECT email_is_valid('user@example.com', 'regex') as valid"
 ).fetchall()
 
 # Detailed validation with structured results
 result = conn.execute("""
-    SELECT anofox_email_validate('user@example.com', 'regex') as validation_result
+    SELECT email_validate('user@example.com', 'regex') as validation_result
 """).fetchall()
 
 # Check configuration
-config = conn.execute("SELECT * FROM anofox_email_config()").fetchall()
+config = conn.execute("SELECT * FROM email_config()").fetchall()
 ```
 
 ### Common validation modes
 
 - **`'regex'`** (default) - Fast syntax check using regex pattern
-- **`'dns'`** - Verify domain MX records exist
-- **`'smtp'`** - Full verification including SMTP validation
+- **`'dns'`** - Verify domain MX records exist (network: DNS lookup)
+- **`'smtp'`** - Full verification including SMTP validation (network: connects to the mail host)
 - **`'full'`** - Alias for `'smtp'` mode
 
 ### Reading Parquet files
@@ -131,14 +131,13 @@ results = conn.execute("""
 ### SQL integration
 
 ```python
-# Validate all emails in a table
+# Validate a column: list senders that fail the regex check
 results = conn.execute("""
     SELECT
         email,
-        anofox_email_is_valid(email, 'regex') as valid,
-        anofox_email_validate(email, 'regex') as details
-    FROM emails
-    WHERE anofox_email_is_valid(email, 'regex') = false
+        email_validate(email, 'regex') as details
+    FROM (SELECT "from" AS email FROM emails)
+    WHERE email_is_valid(email, 'regex') = false
     LIMIT 10
 """).fetchall()
 
@@ -159,7 +158,7 @@ results = conn.execute("""
     SELECT
         original,
         email,
-        anofox_email_is_valid(email, 'regex') as is_valid
+        email_is_valid(email, 'regex') as is_valid
     FROM extracted
 """).fetchall()
 ```
@@ -170,7 +169,7 @@ results = conn.execute("""
 
 ```bash
 # Install uv if you don't have it
-pip install uv
+curl -LsSf https://astral.sh/uv/install.sh | sh
 
 # Navigate to examples directory
 cd examples
@@ -194,7 +193,7 @@ python email_verification.py
 
 ```bash
 cd examples
-pip install duckdb>=1.0.0 pyarrow>=13.0.0 polars>=0.19.0
+pip install "duckdb==1.5.6" "pyarrow>=13.0.0" "polars>=0.19.0"
 python email_verification.py
 ```
 
@@ -225,7 +224,7 @@ The examples use the following architecture:
 
 The `fraudulent_emails.parquet` file contains historical spam/phishing emails from the Enron corpus. It includes:
 
-- **5000+ emails** with realistic patterns
+- **3,976 emails** with realistic patterns
 - **Headers**: from, to, subject, date, message_id, reply_to, content_type, return_path
 - **Use cases**: Email validation testing, spam detection, regex pattern validation
 
@@ -254,7 +253,7 @@ return_path     VARCHAR  - Return path for bounces
 # ✓ Good: Validate in SQL
 results = conn.execute("""
     SELECT * FROM emails
-    WHERE anofox_email_is_valid(email, 'regex')
+    WHERE email_is_valid(email, 'regex')
 """).fetchall()
 
 # ✗ Slow: Validate in Python loop
@@ -267,13 +266,11 @@ for row in conn.execute("SELECT * FROM emails").fetchall():
 
 ### Extension not found
 
-**Issue**: "Failed to load extension 'anofox_tabular'"
+**Issue**: "Failed to load extension 'anofox_tabular'" or a version mismatch error
 
-**Solution**: Build the extension first from the project root:
-```bash
-cd ..
-make release
-```
+**Solution**: Check that the `duckdb` package version matches the extension (see
+[Quick Start](#quick-start)). Without network access, build the extension
+(`GEN=ninja make release` from the project root) or point `ANOFOX_EXT_PATH` at a binary.
 
 ### Data file not found
 
@@ -311,7 +308,7 @@ conn = duckdb.connect("example.db")  # File-based
 
 - [DuckDB Python API Documentation](https://duckdb.org/docs/api/python/overview)
 - [Anofox Tabular Documentation](../README.md)
-- [Email Validation Best Practices](../README.md#email-verification)
+- [Email Validation](../README.md#-email-validation)
 
 ## Contributing
 
