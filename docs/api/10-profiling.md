@@ -76,7 +76,7 @@ Output columns:
 | `p75` | `DOUBLE` | 75th percentile, numeric columns only |
 | `skewness` | `DOUBLE` | Numeric columns only |
 | `kurtosis` | `DOUBLE` | Numeric columns only |
-| `top_values` | `STRUCT(value VARCHAR, count BIGINT)[]` | The 5 most frequent values, most frequent first. The order of values with equal counts is not fixed |
+| `top_values` | `STRUCT(value VARCHAR, count BIGINT)[]` | The 5 most frequent values, most frequent first; values with equal counts in ascending order (compared as text) |
 | `avg_length` | `DOUBLE` | String length; element count for lists; cardinality for maps |
 | `min_length` | `BIGINT` | As `avg_length` |
 | `max_length` | `BIGINT` | As `avg_length` |

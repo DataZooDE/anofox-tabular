@@ -458,13 +458,14 @@ static string BuildColumnProfileSQL(const string &col_name, const string &col_ty
 	    "CAST(COALESCE(SUM(CASE WHEN TRY_CAST(" + ec + " AS DOUBLE) < 0 THEN 1 ELSE 0 END), 0)"
 	    " AS BIGINT)");
 
-	// top_values — cast column to VARCHAR to handle all types uniformly
+	// top_values — cast column to VARCHAR to handle all types uniformly;
+	// ties in count are ordered by value so the result is deterministic
 	string top_val_sql =
 	    "(SELECT LIST({'value': CAST(v AS VARCHAR), 'count': cnt})"
 	    " FROM (SELECT CAST(" + ec + " AS VARCHAR) AS v, COUNT(*) AS cnt FROM src"
 	    "       WHERE " + ec + " IS NOT NULL"
 	    "       GROUP BY CAST(" + ec + " AS VARCHAR)"
-	    "       ORDER BY cnt DESC LIMIT 5))";
+	    "       ORDER BY cnt DESC, v LIMIT 5))";
 
 	return "SELECT"
 	       " " + col_name_lit + " AS column_name,"
