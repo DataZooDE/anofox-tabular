@@ -67,7 +67,7 @@ class TestScalarValues:
         assert vat.is_valid_vat_country(conn, "D'") is False
         assert vat.vat_exists(conn, "D'") in (True, False)
         assert vat.vat_is_eu_member(conn, "D'") is False
-        assert isinstance(vat.vat_country_name(conn, "D'"), str)
+        assert vat.vat_country_name(conn, "D'") is None
         assert vat.vat_split(conn, "it's") is None or isinstance(vat.vat_split(conn, "it's"), dict)
         assert isinstance(vat.make_vat(conn, "DE111111125"), dict)
 

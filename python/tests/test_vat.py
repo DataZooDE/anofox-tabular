@@ -108,3 +108,97 @@ class TestVatFormat:
     def test_unparseable_returns_none(self, conn):
         from anofox.vat import vat_format
         assert vat_format(conn, "not a vat", "iso") is None
+
+
+def _suppliers():
+    import pandas as pd
+    return pd.DataFrame({
+        "supplier": ["Brenner GmbH", "Kowalski Sp. z o.o.", "Acme UK Ltd", "Typo AG"],
+        "vat_id": ["de 111-111-125", "DE123456789", "UK123456789", "DE12"],
+        "country": ["DE", "DE", "UK", "DE"],
+    }, index=[40, 10, 30, 20])
+
+
+class TestVatInvalidInputIsNone:
+    def test_country_name_unknown(self, conn):
+        from anofox import vat
+        assert vat.vat_country_name(conn, "ZZ") is None
+
+    def test_make_vat_unparsable(self, conn):
+        from anofox import vat
+        assert vat.make_vat(conn, "UK123456789") is None
+
+    def test_vat_format_unparsable(self, conn):
+        from anofox import vat
+        assert vat.vat_format(conn, "garbage", "iso") is None
+
+
+class TestVatExists:
+    def test_checks_the_prefix_of_a_vat_number(self, conn):
+        from anofox import vat
+        assert vat.vat_exists(conn, "DE111111125") is True
+        assert vat.vat_exists(conn, "DE12") is True        # pattern is not checked
+        assert vat.vat_exists(conn, "UK123456789") is False  # UK is not a VAT prefix
+
+    def test_keyword_is_vat_string(self, conn):
+        from anofox import vat
+        assert vat.vat_exists(conn, vat_string="EL123456783") is True
+
+    def test_docstring_says_prefix(self):
+        from anofox import vat
+        doc = vat.vat_exists.__doc__
+        assert "prefix" in doc and "registered" in doc
+
+
+VAT_NUMBER_FUNCS = [
+    ("vat_is_valid", [True, False, False, False]),
+    ("vat_is_valid_syntax", [True, True, False, False]),
+    ("vat_exists", [True, True, False, True]),
+    ("vat_normalize", ["DE111111125", "DE123456789", "UK123456789", "DE12"]),
+    ("vat_format", ["111111125", "123456789", None, "12"]),
+    ("vat_split", [{"country": "DE", "digits": "111111125"}, {"country": "DE", "digits": "123456789"},
+                   None, {"country": "DE", "digits": "12"}]),
+    ("make_vat", [{"country": "DE", "digits": "111111125"}, {"country": "DE", "digits": "123456789"},
+                  None, {"country": "DE", "digits": "12"}]),
+]
+
+COUNTRY_FUNCS = [
+    ("is_valid_vat_country", [True, True, False, True]),
+    ("vat_is_eu_member", [True, True, False, True]),
+    ("vat_country_name", ["Germany", "Germany", None, "Germany"]),
+]
+
+
+def _values(series):
+    """List of *series* with NaN/NA/None as None."""
+    import pandas as pd
+    return [None if not isinstance(v, dict) and pd.isna(v) else v for v in series.tolist()]
+
+
+class TestVatDataFrame:
+    @pytest.mark.parametrize("name,expected", VAT_NUMBER_FUNCS)
+    def test_vat_number_column(self, conn, name, expected):
+        from anofox import vat
+        df = _suppliers()
+        out = getattr(vat, name)(conn, df, column="vat_id")
+        assert out.index.tolist() == [40, 10, 30, 20]
+        assert out["vat_id"].tolist() == df["vat_id"].tolist()
+        assert _values(out[name]) == expected
+
+    @pytest.mark.parametrize("name,expected", COUNTRY_FUNCS)
+    def test_country_column(self, conn, name, expected):
+        from anofox import vat
+        out = getattr(vat, name)(conn, _suppliers(), column="country")
+        assert _values(out[name]) == expected
+
+    def test_vat_format_style(self, conn):
+        from anofox import vat
+        out = vat.vat_format(conn, _suppliers(), "iso", column="vat_id")
+        assert _values(out["vat_format"])[:2] == ["DE111111125", "DE123456789"]
+
+    def test_polars(self, conn):
+        pl = pytest.importorskip("polars")
+        from anofox import vat
+        out = vat.vat_is_valid(conn, pl.from_pandas(_suppliers()), column="vat_id")
+        assert isinstance(out, pl.DataFrame)
+        assert out["vat_is_valid"].to_list() == [True, False, False, False]

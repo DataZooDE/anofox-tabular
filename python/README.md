@@ -117,7 +117,8 @@ print(result.failures)    # DataFrame: column, row_id, value, rule
   or a table name gives pandas. A Series is not a DataFrame and raises `TypeError`: pass
   `series.to_frame()` (with `column=series.name` for the row-wise helpers).
 - **Row-wise results** (`email_is_valid`, `email_validate`, `phone_is_valid`, `phone_parse`,
-  `phone_format`, `phone_region`, `pii_detect`, `pii_mask` with `column=`) are a copy of the input plus one column. They keep
+  `phone_format`, `phone_region`, the `anofox.vat` functions, `pii_detect`, `pii_mask` with
+  `column=`) are a copy of the input plus one column. They keep
   the input's index (pandas) and row order, so `df["ok"] = ...["email_is_valid"]` lines up.
 - **Table functions** (`anofox.quality`, `anofox.anomaly`, `anofox.profile`, `anofox.diff`,
   `pii_scan_table`, `pii_audit_table`, `conn.profile`, `conn.quality_check`) take a table name
@@ -157,7 +158,7 @@ print(result.failures)    # DataFrame: column, row_id, value, rule
 | `anofox.diff` | `joindiff`, `hashdiff` |
 | `anofox.profile` | `profile_table`, `profile_summary`, `profile_correlations` |
 | `anofox.money` | `make_money`, `money_from_cents`, `is_valid_currency`, `currency_symbol`, `money_add`, etc. |
-| `anofox.vat` | `make_vat`, `vat_is_valid`, `vat_format(conn, vat, style="plain"\|"iso")`, `vat_is_eu_member`, `vat_country_name`, etc. |
+| `anofox.vat` | `make_vat`, `vat_is_valid`, `vat_is_valid_syntax`, `vat_exists` (prefix check only), `vat_split`, `vat_normalize`, `vat_format(conn, vat, style="plain"\|"iso")`, `is_valid_vat_country`, `vat_is_eu_member`, `vat_country_name` |
 
 ## CLI
 
