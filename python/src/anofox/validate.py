@@ -10,7 +10,9 @@ from __future__ import annotations
 import json
 from typing import Any, Optional, Union
 
-from ._utils import detect_df_type, drop_df_table, register_df_as_table, relation_to_dataframe
+from ._sql import fetch_one
+from ._table import apply_scalar
+from ._utils import detect_df_type
 
 
 # ---------------------------------------------------------------------------
@@ -63,25 +65,14 @@ def email_is_valid(
         plus ``email_is_valid`` (bool).
     """
     if isinstance(email_or_df, str):
-        result = conn.execute(
-            f"SELECT anofox_tab_email_is_valid('{email_or_df}', '{mode}')"
-        ).fetchone()
-        return bool(result[0])
+        return bool(fetch_one(conn, "SELECT anofox_tab_email_is_valid(?, ?)", [email_or_df, mode]))
 
     # DataFrame path
     df_type = detect_df_type(email_or_df)
     if column is None:
         raise ValueError("'column' is required when passing a DataFrame.")
 
-    table_name = register_df_as_table(conn.native, email_or_df)
-    try:
-        rel = conn.native.sql(
-            f"SELECT *, anofox_tab_email_is_valid(\"{column}\", '{mode}') AS email_is_valid "
-            f"FROM {table_name}"
-        )
-        return relation_to_dataframe(rel, df_type)
-    finally:
-        drop_df_table(conn.native, table_name)
+    return apply_scalar(conn, email_or_df, df_type, "anofox_tab_email_is_valid", column, [mode], "email_is_valid")
 
 
 def email_validate(
@@ -112,10 +103,7 @@ def email_validate(
         When *email_or_df* is a DataFrame.
     """
     if isinstance(email_or_df, str):
-        result = conn.execute(
-            f"SELECT anofox_tab_email_validate('{email_or_df}', '{mode}')"
-        ).fetchone()
-        raw = result[0]
+        raw = fetch_one(conn, "SELECT anofox_tab_email_validate(?, ?)", [email_or_df, mode])
         if isinstance(raw, dict):
             return raw
         if isinstance(raw, str):
@@ -130,15 +118,7 @@ def email_validate(
     if column is None:
         raise ValueError("'column' is required when passing a DataFrame.")
 
-    table_name = register_df_as_table(conn.native, email_or_df)
-    try:
-        rel = conn.native.sql(
-            f"SELECT *, anofox_tab_email_validate(\"{column}\", '{mode}') AS email_validate "
-            f"FROM {table_name}"
-        )
-        return relation_to_dataframe(rel, df_type)
-    finally:
-        drop_df_table(conn.native, table_name)
+    return apply_scalar(conn, email_or_df, df_type, "anofox_tab_email_validate", column, [mode], "email_validate")
 
 
 # ---------------------------------------------------------------------------
@@ -166,24 +146,13 @@ def phone_is_valid(
         Column name when a DataFrame is passed.
     """
     if isinstance(phone_or_df, str):
-        result = conn.execute(
-            f"SELECT anofox_tab_phonenumber_is_valid('{phone_or_df}', '{region}')"
-        ).fetchone()
-        return bool(result[0])
+        return bool(fetch_one(conn, "SELECT anofox_tab_phonenumber_is_valid(?, ?)", [phone_or_df, region]))
 
     df_type = detect_df_type(phone_or_df)
     if column is None:
         raise ValueError("'column' is required when passing a DataFrame.")
 
-    table_name = register_df_as_table(conn.native, phone_or_df)
-    try:
-        rel = conn.native.sql(
-            f"SELECT *, anofox_tab_phonenumber_is_valid(\"{column}\", '{region}') AS phone_is_valid "
-            f"FROM {table_name}"
-        )
-        return relation_to_dataframe(rel, df_type)
-    finally:
-        drop_df_table(conn.native, table_name)
+    return apply_scalar(conn, phone_or_df, df_type, "anofox_tab_phonenumber_is_valid", column, [region], "phone_is_valid")
 
 
 def phone_parse(
@@ -207,10 +176,7 @@ def phone_parse(
         Column name when a DataFrame is passed.
     """
     if isinstance(phone_or_df, str):
-        result = conn.execute(
-            f"SELECT anofox_tab_phonenumber_parse('{phone_or_df}', '{region}')"
-        ).fetchone()
-        raw = result[0]
+        raw = fetch_one(conn, "SELECT anofox_tab_phonenumber_parse(?, ?)", [phone_or_df, region])
         if isinstance(raw, dict):
             return raw
         if isinstance(raw, str):
@@ -224,15 +190,7 @@ def phone_parse(
     if column is None:
         raise ValueError("'column' is required when passing a DataFrame.")
 
-    table_name = register_df_as_table(conn.native, phone_or_df)
-    try:
-        rel = conn.native.sql(
-            f"SELECT *, anofox_tab_phonenumber_parse(\"{column}\", '{region}') AS phone_parse "
-            f"FROM {table_name}"
-        )
-        return relation_to_dataframe(rel, df_type)
-    finally:
-        drop_df_table(conn.native, table_name)
+    return apply_scalar(conn, phone_or_df, df_type, "anofox_tab_phonenumber_parse", column, [region], "phone_parse")
 
 
 def phone_format(
@@ -261,10 +219,8 @@ def phone_format(
     str
         Formatted phone number.
     """
-    result = conn.execute(
-        f"SELECT anofox_tab_phonenumber_format('{phone}', '{region}', '{fmt}')"
-    ).fetchone()
-    return str(result[0]) if result[0] is not None else ""
+    value = fetch_one(conn, "SELECT anofox_tab_phonenumber_format(?, ?, ?)", [phone, region, fmt])
+    return str(value) if value is not None else ""
 
 
 def phone_region(
@@ -289,7 +245,6 @@ def phone_region(
     str
         ISO 3166-1 alpha-2 region code.
     """
-    result = conn.execute(
-        f"SELECT anofox_tab_phonenumber_region('{phone}', '{hint}')"
-    ).fetchone()
-    return str(result[0]) if result[0] is not None else ""
+    value = fetch_one(conn, "SELECT anofox_tab_phonenumber_region(?, ?)", [phone, hint])
+    return str(value) if value is not None else ""
+

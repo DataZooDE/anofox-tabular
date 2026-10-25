@@ -237,9 +237,11 @@ class TestProfileCorrelations:
 class _DummyNative:
     def __init__(self):
         self.last_query = None
+        self.last_params = None
 
-    def sql(self, query):
+    def execute(self, query, params=None):
         self.last_query = query
+        self.last_params = params
         return self
 
     def df(self):
@@ -251,8 +253,10 @@ class _DummyConn:
         self.native = _DummyNative()
 
 
-class TestProfileSqlEscaping:
-    def test_profile_table_escapes_table_and_columns(self, monkeypatch):
+class TestProfileSqlBinding:
+    """Table and column names travel as bound parameters, never inside the SQL text."""
+
+    def test_profile_table_binds_table_and_columns(self, monkeypatch):
         from anofox import profile
 
         conn = _DummyConn()
@@ -261,10 +265,10 @@ class TestProfileSqlEscaping:
 
         profile.profile_table(conn, "ignored", columns=["a'b"])
 
-        assert "anofox_tab_profile_table('bad''table'" in conn.native.last_query
-        assert "['a''b']" in conn.native.last_query
+        assert "bad'table" not in conn.native.last_query
+        assert conn.native.last_params[:2] == ["bad'table", ["a'b"]]
 
-    def test_profile_summary_escapes_table(self, monkeypatch):
+    def test_profile_summary_binds_table(self, monkeypatch):
         from anofox import profile
 
         conn = _DummyConn()
@@ -273,9 +277,10 @@ class TestProfileSqlEscaping:
 
         profile.profile_summary(conn, "ignored")
 
-        assert "anofox_tab_profile_summary('bad''table')" in conn.native.last_query
+        assert "bad'table" not in conn.native.last_query
+        assert conn.native.last_params == ["bad'table"]
 
-    def test_profile_correlations_escapes_table_and_columns(self, monkeypatch):
+    def test_profile_correlations_binds_table_and_columns(self, monkeypatch):
         from anofox import profile
 
         conn = _DummyConn()
@@ -284,5 +289,5 @@ class TestProfileSqlEscaping:
 
         profile.profile_correlations(conn, "ignored", columns=["a'b"])
 
-        assert "anofox_tab_profile_correlations('bad''table'" in conn.native.last_query
-        assert "['a''b']" in conn.native.last_query
+        assert "bad'table" not in conn.native.last_query
+        assert conn.native.last_params == ["bad'table", ["a'b"]]

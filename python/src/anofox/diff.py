@@ -6,6 +6,7 @@ from __future__ import annotations
 
 from typing import Any, Optional, Union
 
+from ._sql import fetch_frame
 from ._table import cleanup_table, resolve_table
 
 
@@ -45,25 +46,19 @@ def joindiff(
     """
     src_name, src_registered = resolve_table(conn, src)
     tgt_name, tgt_registered = resolve_table(conn, tgt)
-    pk_arg = _format_pk(primary_keys)
+    pk_sql, pk_value = _format_pk(primary_keys)
 
     try:
-        if compare_columns is not None and include_unchanged:
-            cols_list = "[" + ", ".join(f"'{c}'" for c in compare_columns) + "]"
-            query = (
-                f"SELECT * FROM anofox_tab_diff_joindiff("
-                f"'{src_name}', '{tgt_name}', {pk_arg}, {cols_list}, true)"
-            )
-        elif compare_columns is not None:
-            cols_list = "[" + ", ".join(f"'{c}'" for c in compare_columns) + "]"
-            query = (
-                f"SELECT * FROM anofox_tab_diff_joindiff("
-                f"'{src_name}', '{tgt_name}', {pk_arg}, {cols_list})"
-            )
-        else:
-            query = f"SELECT * FROM anofox_tab_diff_joindiff('{src_name}', '{tgt_name}', {pk_arg})"
+        params: list = [src_name, tgt_name, pk_value]
+        query = f"SELECT * FROM anofox_tab_diff_joindiff(?, ?, {pk_sql}"
+        if compare_columns is not None:
+            query += ", ?::VARCHAR[]"
+            params.append(list(compare_columns))
+            if include_unchanged:
+                query += ", true"
+        query += ")"
 
-        result = conn.native.sql(query).df()
+        result = fetch_frame(conn, query, params)
     finally:
         cleanup_table(conn, src_name, src_registered)
         cleanup_table(conn, tgt_name, tgt_registered)
@@ -105,34 +100,31 @@ def hashdiff(
     """
     src_name, src_registered = resolve_table(conn, src)
     tgt_name, tgt_registered = resolve_table(conn, tgt)
-    pk_arg = _format_pk(primary_keys)
+    pk_sql, pk_value = _format_pk(primary_keys)
 
     try:
-        if bisection_threshold is not None and bisection_factor is not None:
-            query = (
-                f"SELECT * FROM anofox_tab_diff_hashdiff("
-                f"'{src_name}', '{tgt_name}', {pk_arg}, {bisection_threshold}, {bisection_factor})"
-            )
-        elif bisection_threshold is not None:
-            query = (
-                f"SELECT * FROM anofox_tab_diff_hashdiff("
-                f"'{src_name}', '{tgt_name}', {pk_arg}, {bisection_threshold})"
-            )
-        else:
-            query = f"SELECT * FROM anofox_tab_diff_hashdiff('{src_name}', '{tgt_name}', {pk_arg})"
+        params: list = [src_name, tgt_name, pk_value]
+        query = f"SELECT * FROM anofox_tab_diff_hashdiff(?, ?, {pk_sql}"
+        if bisection_threshold is not None:
+            query += ", ?::BIGINT"
+            params.append(bisection_threshold)
+            if bisection_factor is not None:
+                query += ", ?::BIGINT"
+                params.append(bisection_factor)
+        query += ")"
 
-        result = conn.native.sql(query).df()
+        result = fetch_frame(conn, query, params)
     finally:
         cleanup_table(conn, src_name, src_registered)
         cleanup_table(conn, tgt_name, tgt_registered)
     return result
 
 
-def _format_pk(primary_keys: Union[str, list[str]]) -> str:
-    """Format primary key argument for SQL."""
+def _format_pk(primary_keys: Union[str, list[str]]) -> tuple[str, Any]:
+    """Return the placeholder SQL and the bound value of the primary key argument."""
     if isinstance(primary_keys, str):
-        return f"'{primary_keys}'"
+        return "?", primary_keys
     if len(primary_keys) == 1:
-        return f"'{primary_keys[0]}'"
-    # Compound key — pass as a LIST<VARCHAR> literal
-    return "[" + ", ".join(f"'{k}'" for k in primary_keys) + "]"
+        return "?", primary_keys[0]
+    # Compound key — pass as a LIST<VARCHAR>
+    return "?::VARCHAR[]", list(primary_keys)

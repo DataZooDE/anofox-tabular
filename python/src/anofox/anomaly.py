@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from typing import Any, Optional, Union
 
+from ._sql import fetch_frame, id_column_arg
 from ._table import cleanup_table, resolve_table
 
 
@@ -55,12 +56,12 @@ def isolation_forest(
     table_name, registered = resolve_table(conn, table_or_df)
     try:
         actual_sample_size = sample_size if sample_size is not None else 256
+        params = [table_name, column, n_trees, actual_sample_size, contamination, output_mode]
         query = (
-            f"SELECT * FROM anofox_tab_isolation_forest("
-            f"'{table_name}', '{column}', {n_trees}, {actual_sample_size}, {contamination}, '{output_mode}'"
-            f"{_id_column_arg(id_column)})"
+            "SELECT * FROM anofox_tab_isolation_forest(?, ?, ?::BIGINT, ?::BIGINT, ?::DOUBLE, ?"
+            f"{id_column_arg(id_column, params)})"
         )
-        return _execute_anomaly(conn, query, output_mode)
+        return _execute_anomaly(conn, query, params, output_mode)
     finally:
         cleanup_table(conn, table_name, registered)
 
@@ -103,12 +104,12 @@ def isolation_forest_mv(
     cols_csv = ",".join(columns)
     try:
         actual_sample_size = sample_size if sample_size is not None else 256
+        params = [table_name, cols_csv, n_trees, actual_sample_size, contamination, output_mode]
         query = (
-            f"SELECT * FROM anofox_tab_isolation_forest_mv("
-            f"'{table_name}', '{cols_csv}', {n_trees}, {actual_sample_size}, {contamination}, '{output_mode}'"
-            f"{_id_column_arg(id_column)})"
+            "SELECT * FROM anofox_tab_isolation_forest_mv(?, ?, ?::BIGINT, ?::BIGINT, ?::DOUBLE, ?"
+            f"{id_column_arg(id_column, params)})"
         )
-        return _execute_anomaly(conn, query, output_mode)
+        return _execute_anomaly(conn, query, params, output_mode)
     finally:
         cleanup_table(conn, table_name, registered)
 
@@ -150,12 +151,12 @@ def dbscan(
     # package-level "scores" naming consistent with the other detectors.
     sql_mode = "clusters" if output_mode == "scores" else output_mode
     try:
+        params = [table_name, column, epsilon, min_points, sql_mode]
         query = (
-            f"SELECT * FROM anofox_tab_dbscan("
-            f"'{table_name}', '{column}', {epsilon}, {min_points}, '{sql_mode}'"
-            f"{_id_column_arg(id_column)})"
+            "SELECT * FROM anofox_tab_dbscan(?, ?, ?::DOUBLE, ?::BIGINT, ?"
+            f"{id_column_arg(id_column, params)})"
         )
-        return _execute_anomaly(conn, query, output_mode)
+        return _execute_anomaly(conn, query, params, output_mode)
     finally:
         cleanup_table(conn, table_name, registered)
 
@@ -196,12 +197,12 @@ def dbscan_mv(
     cols_csv = ",".join(columns)
     sql_mode = "clusters" if output_mode == "scores" else output_mode
     try:
+        params = [table_name, cols_csv, epsilon, min_points, sql_mode]
         query = (
-            f"SELECT * FROM anofox_tab_dbscan_mv("
-            f"'{table_name}', '{cols_csv}', {epsilon}, {min_points}, '{sql_mode}'"
-            f"{_id_column_arg(id_column)})"
+            "SELECT * FROM anofox_tab_dbscan_mv(?, ?, ?::DOUBLE, ?::BIGINT, ?"
+            f"{id_column_arg(id_column, params)})"
         )
-        return _execute_anomaly(conn, query, output_mode)
+        return _execute_anomaly(conn, query, params, output_mode)
     finally:
         cleanup_table(conn, table_name, registered)
 
@@ -260,34 +261,25 @@ def outlier_tree(
     else:
         cols_csv = columns
     try:
+        params = [table_name, cols_csv, output_mode, max_depth, max_perc_outliers,
+                  min_size_numeric, min_size_categ, z_norm, z_outlier]
         query = (
-            f"SELECT * FROM anofox_tab_outlier_tree("
-            f"'{table_name}', '{cols_csv}', '{output_mode}', "
-            f"{max_depth}, {max_perc_outliers}, {min_size_numeric}, "
-            f"{min_size_categ}, {z_norm}, {z_outlier}"
-            f"{_id_column_arg(id_column)})"
+            "SELECT * FROM anofox_tab_outlier_tree(?, ?, ?, ?::INTEGER, ?::DOUBLE, "
+            "?::INTEGER, ?::INTEGER, ?::DOUBLE, ?::DOUBLE"
+            f"{id_column_arg(id_column, params)})"
         )
-        return _execute_anomaly(conn, query, output_mode)
+        return _execute_anomaly(conn, query, params, output_mode)
     finally:
         cleanup_table(conn, table_name, registered)
 
 
-def _id_column_arg(id_column: Optional[str]) -> str:
-    """The ``id_column := '...'`` named argument, or ``""`` when not requested."""
-    if id_column is None:
-        return ""
-    escaped = id_column.replace("'", "''")
-    return f", id_column := '{escaped}'"
-
-
-def _execute_anomaly(conn: Any, query: str, output_mode: str) -> Union[dict, Any]:
+def _execute_anomaly(conn: Any, query: str, params: list, output_mode: str) -> Union[dict, Any]:
     """Execute the query and return either a dict or a DataFrame."""
     if output_mode in ("scores", "outliers"):
-        rel = conn.native.sql(query)
-        return rel.df()
+        return fetch_frame(conn, query, params)
 
     # summary — convert first row to dict using column names from description
-    cursor = conn.execute(query)
+    cursor = conn.execute(query, params)
     col_names = [d[0] for d in cursor.description]
     rows = cursor.fetchall()
 

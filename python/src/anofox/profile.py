@@ -9,11 +9,8 @@ from __future__ import annotations
 
 from typing import Any, Optional, Union
 
+from ._sql import fetch_frame
 from ._table import cleanup_table, resolve_table
-
-
-def _escape_sql_literal(value: str) -> str:
-    return value.replace("'", "''")
 
 
 def profile_table(
@@ -52,15 +49,11 @@ def profile_table(
     """
     table_name, registered = resolve_table(conn, table_or_df)
     try:
-        table_name_sql = _escape_sql_literal(table_name)
-        cols_sql = "[]::VARCHAR[]"
-        if columns:
-            cols_sql = "[" + ", ".join(f"'{_escape_sql_literal(c)}'" for c in columns) + "]"
-        query = (
-            f"SELECT * FROM anofox_tab_profile_table("
-            f"'{table_name_sql}', {cols_sql}, {sample_size}, {str(exact).lower()})"
+        return fetch_frame(
+            conn,
+            "SELECT * FROM anofox_tab_profile_table(?, ?::VARCHAR[], ?::BIGINT, ?::BOOLEAN)",
+            [table_name, list(columns or []), sample_size, bool(exact)],
         )
-        return conn.native.sql(query).df()
     finally:
         cleanup_table(conn, table_name, registered)
 
@@ -82,10 +75,7 @@ def profile_summary(
     """
     table_name, registered = resolve_table(conn, table_or_df)
     try:
-        table_name_sql = _escape_sql_literal(table_name)
-        return conn.native.sql(
-            f"SELECT * FROM anofox_tab_profile_summary('{table_name_sql}')"
-        ).df()
+        return fetch_frame(conn, "SELECT * FROM anofox_tab_profile_summary(?)", [table_name])
     finally:
         cleanup_table(conn, table_name, registered)
 
@@ -105,12 +95,10 @@ def profile_correlations(
     """
     table_name, registered = resolve_table(conn, table_or_df)
     try:
-        table_name_sql = _escape_sql_literal(table_name)
-        cols_sql = "[]::VARCHAR[]"
-        if columns:
-            cols_sql = "[" + ", ".join(f"'{_escape_sql_literal(c)}'" for c in columns) + "]"
-        return conn.native.sql(
-            f"SELECT * FROM anofox_tab_profile_correlations('{table_name_sql}', {cols_sql})"
-        ).df()
+        return fetch_frame(
+            conn,
+            "SELECT * FROM anofox_tab_profile_correlations(?, ?::VARCHAR[])",
+            [table_name, list(columns or [])],
+        )
     finally:
         cleanup_table(conn, table_name, registered)

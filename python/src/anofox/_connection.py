@@ -10,6 +10,7 @@ from typing import Any, Optional
 import duckdb
 
 from ._loader import AnofoxLoader, _DEFAULT_S3_BASE
+from ._sql import quote_ident
 
 
 class AnofoxConnection:
@@ -45,7 +46,8 @@ class AnofoxConnection:
             duckdb_version=duckdb_version,
         )
         resolved_path = loader.ensure_extension(local_path=extension_path)
-        self._conn.execute(f"LOAD '{resolved_path}'")
+        escaped_path = str(resolved_path).replace("'", "''")
+        self._conn.execute(f"LOAD '{escaped_path}'")
 
     # ------------------------------------------------------------------
     # Context manager
@@ -125,27 +127,32 @@ class AnofoxConnection:
         try:
             # Get column names and types
             cols_result = self._conn.execute(
-                f"SELECT column_name, data_type FROM information_schema.columns "
-                f"WHERE table_name = '{table_name}' ORDER BY ordinal_position"
+                "SELECT column_name, data_type FROM information_schema.columns "
+                "WHERE table_name = ? ORDER BY ordinal_position",
+                [table_name],
             ).fetchall()
 
+            # A plain name refers to a table in the search path; anything else
+            # (e.g. "schema.table") is used as written.
+            table_sql = quote_ident(table_name) if cols_result else table_name
             if not cols_result:
                 # Fallback: describe the table
-                desc = self._conn.execute(f"DESCRIBE {table_name}").fetchall()
+                desc = self._conn.execute(f"DESCRIBE {table_sql}").fetchall()
                 cols_result = [(row[0], row[1]) for row in desc]
 
             # Volume (total rows)
             total = self._conn.execute(
-                f"SELECT count(*) FROM {table_name}"
+                f"SELECT count(*) FROM {table_sql}"
             ).fetchone()[0]
 
             rows = []
             for col_name, col_type in cols_result:
+                col_sql = quote_ident(col_name)
                 null_count = self._conn.execute(
-                    f"SELECT count(*) FROM {table_name} WHERE \"{col_name}\" IS NULL"
+                    f"SELECT count(*) FROM {table_sql} WHERE {col_sql} IS NULL"
                 ).fetchone()[0]
                 distinct_count = self._conn.execute(
-                    f"SELECT count(DISTINCT \"{col_name}\") FROM {table_name}"
+                    f"SELECT count(DISTINCT {col_sql}) FROM {table_sql}"
                 ).fetchone()[0]
 
                 null_rate = null_count / total if total > 0 else 0.0
@@ -193,9 +200,10 @@ class AnofoxConnection:
                 if isinstance(rule, EmailRule):
                     mode = getattr(rule, "mode", "regex")
                     results = self._conn.execute(
-                        f"SELECT rowid, \"{col}\", "
-                        f"anofox_tab_email_is_valid(\"{col}\", '{mode}') AS valid "
-                        f"FROM {table_name}"
+                        f"SELECT rowid, {quote_ident(col)}, "
+                        f"anofox_tab_email_is_valid({quote_ident(col)}, ?) AS valid "
+                        f"FROM {quote_ident(table_name)}",
+                        [mode],
                     ).fetchall()
                     for row_id, value, valid in results:
                         if not valid:
@@ -208,9 +216,10 @@ class AnofoxConnection:
                 elif isinstance(rule, PhoneRule):
                     region = getattr(rule, "region", "US")
                     results = self._conn.execute(
-                        f"SELECT rowid, \"{col}\", "
-                        f"anofox_tab_phonenumber_is_valid(\"{col}\", '{region}') AS valid "
-                        f"FROM {table_name}"
+                        f"SELECT rowid, {quote_ident(col)}, "
+                        f"anofox_tab_phonenumber_is_valid({quote_ident(col)}, ?) AS valid "
+                        f"FROM {quote_ident(table_name)}",
+                        [region],
                     ).fetchall()
                     for row_id, value, valid in results:
                         if not valid:

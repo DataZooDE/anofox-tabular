@@ -7,7 +7,9 @@ from __future__ import annotations
 import json
 from typing import Any, Optional, Union
 
-from ._utils import detect_df_type, drop_df_table, register_df_as_table, relation_to_dataframe
+from ._sql import fetch_frame, fetch_one, id_column_arg
+from ._table import apply_scalar
+from ._utils import detect_df_type
 
 
 def pii_detect(
@@ -35,25 +37,14 @@ def pii_detect(
         When *text_or_df* is a DataFrame; adds ``pii_detect`` column.
     """
     if isinstance(text_or_df, str):
-        result = conn.execute(
-            f"SELECT anofox_tab_pii_detect('{_escape(text_or_df)}')"
-        ).fetchone()
-        raw = result[0]
+        raw = fetch_one(conn, "SELECT anofox_tab_pii_detect(?)", [text_or_df])
         return _parse_json_list(raw)
 
     df_type = detect_df_type(text_or_df)
     if column is None:
         raise ValueError("'column' is required when passing a DataFrame.")
 
-    table_name = register_df_as_table(conn.native, text_or_df)
-    try:
-        rel = conn.native.sql(
-            f"SELECT *, anofox_tab_pii_detect(\"{column}\") AS pii_detect "
-            f"FROM {table_name}"
-        )
-        return relation_to_dataframe(rel, df_type)
-    finally:
-        drop_df_table(conn.native, table_name)
+    return apply_scalar(conn, text_or_df, df_type, "anofox_tab_pii_detect", column, [], "pii_detect")
 
 
 def pii_mask(
@@ -79,10 +70,8 @@ def pii_mask(
     str
         Text with PII replaced according to *strategy*.
     """
-    result = conn.execute(
-        f"SELECT anofox_tab_pii_mask('{_escape(text)}', '{strategy}')"
-    ).fetchone()
-    return str(result[0]) if result[0] is not None else ""
+    value = fetch_one(conn, "SELECT anofox_tab_pii_mask(?, ?)", [text, strategy])
+    return str(value) if value is not None else ""
 
 
 def pii_contains(
@@ -99,10 +88,7 @@ def pii_contains(
     text:
         Input text to inspect.
     """
-    result = conn.execute(
-        f"SELECT anofox_tab_pii_contains('{_escape(text)}')"
-    ).fetchone()
-    return bool(result[0])
+    return bool(fetch_one(conn, "SELECT anofox_tab_pii_contains(?)", [text]))
 
 
 def pii_scan_table(
@@ -125,16 +111,11 @@ def pii_scan_table(
         Specific columns to scan.  When *None* all text columns are
         scanned (extension default behaviour).
     """
-    import pandas as pd
-
+    params: list = [table_name]
     if columns is not None:
-        cols_csv = ",".join(columns)
-        query = f"SELECT * FROM anofox_tab_pii_scan_table('{table_name}', '{cols_csv}')"
-    else:
-        query = f"SELECT * FROM anofox_tab_pii_scan_table('{table_name}')"
-
-    rel = conn.native.sql(query)
-    return rel.df()
+        params.append(",".join(columns))
+    placeholders = ", ".join("?" for _ in params)
+    return fetch_frame(conn, f"SELECT * FROM anofox_tab_pii_scan_table({placeholders})", params)
 
 
 def pii_audit_table(
@@ -163,25 +144,19 @@ def pii_audit_table(
     pd.DataFrame
         Row-level PII audit with original/masked values.
     """
-    id_arg = f", id_column := '{_escape(id_column)}'" if id_column is not None else ""
+    params: list = [table_name]
     if columns is not None:
-        cols_csv = ",".join(columns)
-        query = f"SELECT * FROM anofox_tab_pii_audit_table('{table_name}', '{cols_csv}'{id_arg})"
-    else:
-        query = f"SELECT * FROM anofox_tab_pii_audit_table('{table_name}'{id_arg})"
-
-    rel = conn.native.sql(query)
-    return rel.df()
+        params.append(",".join(columns))
+    placeholders = ", ".join("?" for _ in params)
+    id_arg = id_column_arg(id_column, params)
+    return fetch_frame(
+        conn, f"SELECT * FROM anofox_tab_pii_audit_table({placeholders}{id_arg})", params
+    )
 
 
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
-
-def _escape(text: str) -> str:
-    """Escape single quotes for inline SQL string literals."""
-    return text.replace("'", "''")
-
 
 def _parse_json_list(raw: Any) -> list[dict]:
     """Convert raw DuckDB return value to a list of dicts."""

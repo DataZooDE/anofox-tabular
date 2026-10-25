@@ -14,6 +14,8 @@ from __future__ import annotations
 import json
 from typing import Any, Optional, Union
 
+from ._sql import quote_ident
+
 _MAX_BIGINT = 9223372036854775807
 
 
@@ -47,14 +49,10 @@ def volume(
     if max_rows is not None and max_rows < min_rows:
         raise ValueError("max_rows must be >= min_rows")
 
-    if max_rows is not None:
-        rows = conn.execute(
-            f"SELECT * FROM anofox_tab_volume('{table_name}', {min_rows}, {max_rows})"
-        ).fetchall()
-    else:
-        rows = conn.execute(
-            f"SELECT * FROM anofox_tab_volume('{table_name}', {min_rows}, {_MAX_BIGINT})"
-        ).fetchall()
+    rows = conn.execute(
+        "SELECT * FROM anofox_tab_volume(?, ?::BIGINT, ?::BIGINT)",
+        [table_name, min_rows, max_rows if max_rows is not None else _MAX_BIGINT],
+    ).fetchall()
 
     return _parse_table_result(rows, {"min_rows": min_rows, "max_rows": max_rows})
 
@@ -85,7 +83,7 @@ def null_rate(
         ``{"status": "pass"|"fail", "null_rate": float, ...}``
     """
     rows = conn.execute(
-        f"SELECT * FROM anofox_tab_null_rate('{table_name}', '{column_name}', {max_null_rate})"
+        "SELECT * FROM anofox_tab_null_rate(?, ?, ?::DOUBLE)", [table_name, column_name, max_null_rate]
     ).fetchall()
     return _parse_table_result(rows, {"column": column_name, "max_null_rate": max_null_rate})
 
@@ -120,7 +118,8 @@ def distinct_count(
     """
     _max = max_distinct if max_distinct is not None else min_distinct * 1_000_000
     rows = conn.execute(
-        f"SELECT * FROM anofox_tab_distinct_count('{table_name}', '{column_name}', {min_distinct}, {_max})"
+        "SELECT * FROM anofox_tab_distinct_count(?, ?, ?::BIGINT, ?::BIGINT)",
+        [table_name, column_name, min_distinct, _max],
     ).fetchall()
     return _parse_table_result(
         rows, {"column": column_name, "min_distinct": min_distinct, "max_distinct": max_distinct}
@@ -157,13 +156,13 @@ def freshness(
     """
     if warn_age is not None:
         rows = conn.execute(
-            f"SELECT * FROM anofox_tab_freshness("
-            f"'{table_name}', '{timestamp_column}', INTERVAL '{max_age}', INTERVAL '{warn_age}')"
+            "SELECT * FROM anofox_tab_freshness(?, ?, ?::INTERVAL, ?::INTERVAL)",
+            [table_name, timestamp_column, max_age, warn_age],
         ).fetchall()
     else:
         rows = conn.execute(
-            f"SELECT * FROM anofox_tab_freshness("
-            f"'{table_name}', '{timestamp_column}', INTERVAL '{max_age}')"
+            "SELECT * FROM anofox_tab_freshness(?, ?, ?::INTERVAL)",
+            [table_name, timestamp_column, max_age],
         ).fetchall()
     return _parse_table_result(
         rows, {"column": timestamp_column, "max_age": max_age, "warn_age": warn_age}
@@ -196,7 +195,7 @@ def zscore(
         ``{"status": "pass"|"fail", ...}``
     """
     rows = conn.execute(
-        f"SELECT * FROM anofox_tab_zscore('{table_name}', '{column_name}', {threshold})"
+        "SELECT * FROM anofox_tab_zscore(?, ?, ?::DOUBLE)", [table_name, column_name, threshold]
     ).fetchall()
     return _parse_table_result(rows, {"column": column_name, "threshold": threshold})
 
@@ -227,7 +226,7 @@ def iqr(
         ``{"status": "pass"|"fail", ...}``
     """
     rows = conn.execute(
-        f"SELECT * FROM anofox_tab_iqr('{table_name}', '{column_name}', {multiplier})"
+        "SELECT * FROM anofox_tab_iqr(?, ?, ?::DOUBLE)", [table_name, column_name, multiplier]
     ).fetchall()
     return _parse_table_result(rows, {"column": column_name, "multiplier": multiplier})
 
@@ -254,9 +253,9 @@ def schema_check(
     dict
         ``{"status": "pass"|"fail", ...}``
     """
-    cols_list = "[" + ", ".join(f"'{c}'" for c in required_columns) + "]"
     rows = conn.execute(
-        f"SELECT * FROM anofox_tab_schema_check('{table_name}', {cols_list})"
+        "SELECT * FROM anofox_tab_schema_check(?, ?::VARCHAR[])",
+        [table_name, list(required_columns)],
     ).fetchall()
     return _parse_table_result(rows, {"required_columns": required_columns})
 
@@ -292,16 +291,15 @@ def regex_match(
     dict
         ``{"status": "pass"|"fail", ...}``
     """
-    pattern_sql = pattern.replace("'", "''")
     if max_match_rate is not None:
         rows = conn.execute(
-            f"SELECT * FROM anofox_tab_regex_match("
-            f"'{table_name}', '{column_name}', '{pattern_sql}', {min_match_rate}, {max_match_rate})"
+            "SELECT * FROM anofox_tab_regex_match(?, ?, ?, ?::DOUBLE, ?::DOUBLE)",
+            [table_name, column_name, pattern, min_match_rate, max_match_rate],
         ).fetchall()
     else:
         rows = conn.execute(
-            f"SELECT * FROM anofox_tab_regex_match("
-            f"'{table_name}', '{column_name}', '{pattern_sql}', {min_match_rate})"
+            "SELECT * FROM anofox_tab_regex_match(?, ?, ?, ?::DOUBLE)",
+            [table_name, column_name, pattern, min_match_rate],
         ).fetchall()
     return _parse_table_result(
         rows,
@@ -342,10 +340,9 @@ def values_in_set(
     dict
         ``{"status": "pass"|"fail", ...}``
     """
-    values_list = "[" + ", ".join("'" + v.replace("'", "''") + "'" for v in allowed_values) + "]"
     rows = conn.execute(
-        f"SELECT * FROM anofox_tab_values_in_set("
-        f"'{table_name}', '{column_name}', {values_list}, {min_rate})"
+        "SELECT * FROM anofox_tab_values_in_set(?, ?, ?::VARCHAR[], ?::DOUBLE)",
+        [table_name, column_name, [str(v) for v in allowed_values], min_rate],
     ).fetchall()
     return _parse_table_result(
         rows, {"column": column_name, "allowed_values": allowed_values, "min_rate": min_rate}
@@ -385,11 +382,9 @@ def agg_check(
     """
     if agg.lower() not in ("avg", "min", "max", "sum", "median", "stddev"):
         raise ValueError("agg must be one of 'avg', 'min', 'max', 'sum', 'median', 'stddev'")
-    lower_sql = "NULL" if lower_threshold is None else str(lower_threshold)
-    upper_sql = "NULL" if upper_threshold is None else str(upper_threshold)
     rows = conn.execute(
-        f"SELECT * FROM anofox_tab_agg_check("
-        f"'{table_name}', '{column_name}', '{agg.lower()}', {lower_sql}, {upper_sql})"
+        "SELECT * FROM anofox_tab_agg_check(?, ?, ?, ?::DOUBLE, ?::DOUBLE)",
+        [table_name, column_name, agg.lower(), lower_threshold, upper_threshold],
     ).fetchall()
     return _parse_table_result(
         rows,
@@ -431,7 +426,8 @@ def duplicate_count(
         raise ValueError("max_duplicates must be >= 0")
     cols = ",".join(column_names) if isinstance(column_names, list) else column_names
     rows = conn.execute(
-        f"SELECT * FROM anofox_tab_duplicate_count('{table_name}', '{cols}', {max_duplicates})"
+        "SELECT * FROM anofox_tab_duplicate_count(?, ?, ?::BIGINT)",
+        [table_name, cols, max_duplicates],
     ).fetchall()
     return _parse_table_result(rows, {"columns": cols, "max_duplicates": max_duplicates})
 
@@ -469,11 +465,9 @@ def occurrence(
     """
     if mode.lower() not in ("max", "min"):
         raise ValueError("mode must be 'max' or 'min'")
-    lower_sql = "NULL" if lower_threshold is None else str(lower_threshold)
-    upper_sql = "NULL" if upper_threshold is None else str(upper_threshold)
     rows = conn.execute(
-        f"SELECT * FROM anofox_tab_occurrence("
-        f"'{table_name}', '{column_name}', '{mode.lower()}', {lower_sql}, {upper_sql})"
+        "SELECT * FROM anofox_tab_occurrence(?, ?, ?, ?::BIGINT, ?::BIGINT)",
+        [table_name, column_name, mode.lower(), lower_threshold, upper_threshold],
     ).fetchall()
     return _parse_table_result(
         rows,
@@ -522,8 +516,8 @@ def match_rate(
     lk = ",".join(left_keys) if isinstance(left_keys, list) else left_keys
     rk = ",".join(right_keys) if isinstance(right_keys, list) else right_keys
     rows = conn.execute(
-        f"SELECT * FROM anofox_tab_match_rate("
-        f"'{left_table}', '{right_table}', '{lk}', '{rk}', {min_rate})"
+        "SELECT * FROM anofox_tab_match_rate(?, ?, ?, ?, ?::DOUBLE)",
+        [left_table, right_table, lk, rk, min_rate],
     ).fetchall()
     return _parse_table_result(
         rows, {"left_keys": lk, "right_keys": rk, "min_rate": min_rate}
@@ -559,9 +553,8 @@ def compliance(
     dict
         ``{"status": "pass"|"fail", "compliance_rate": float, ...}``
     """
-    expr_sql = expression.replace("'", "''")
     rows = conn.execute(
-        f"SELECT * FROM anofox_tab_compliance('{table_name}', '{expr_sql}', {min_rate})"
+        "SELECT * FROM anofox_tab_compliance(?, ?, ?::DOUBLE)", [table_name, expression, min_rate]
     ).fetchall()
     return _parse_table_result(rows, {"expression": expression, "min_rate": min_rate})
 
@@ -608,18 +601,16 @@ def rel_count_change(
         With ``start_date``/``end_date``: one dict per reference date (ordered by
         date), keyed by the result columns (``status``, ``reference_date``, ...).
     """
-    count_sql = "NULL" if count_column is None else f"'{count_column}'"
-    lower_sql = "NULL" if lower_threshold is None else str(lower_threshold)
-    upper_sql = "NULL" if upper_threshold is None else str(upper_threshold)
-    ref_sql = "NULL" if reference_date is None else f"DATE '{reference_date}'"
+    params = [table_name, date_column, count_column, window_days,
+              lower_threshold, upper_threshold, reference_date]
     sql = (
-        f"SELECT * FROM anofox_tab_rel_count_change("
-        f"'{table_name}', '{date_column}', {count_sql}, {window_days}, {lower_sql}, {upper_sql}, {ref_sql}"
-        f"{_date_range_sql(start_date, end_date)})"
+        "SELECT * FROM anofox_tab_rel_count_change("
+        "?, ?, ?::VARCHAR, ?::BIGINT, ?::DOUBLE, ?::DOUBLE, ?::DATE"
+        f"{_date_range_sql(start_date, end_date, params)})"
     )
     if start_date is not None or end_date is not None:
-        return _fetch_dicts(conn, sql)
-    rows = conn.execute(sql).fetchall()
+        return _fetch_dicts(conn, sql, params)
+    rows = conn.execute(sql, params).fetchall()
     return _parse_table_result(
         rows,
         {
@@ -677,16 +668,15 @@ def metric_anomaly_iqr(
     """
     if mode.lower() not in ("both", "upper", "lower"):
         raise ValueError("mode must be 'both', 'upper' or 'lower'")
-    metric_sql = "NULL" if metric_column is None else f"'{metric_column}'"
-    ref_sql = "NULL" if reference_date is None else f"DATE '{reference_date}'"
+    params = [table_name, date_column, metric_column, window_days, k, mode.lower(), reference_date]
     sql = (
-        f"SELECT * FROM anofox_tab_metric_anomaly_iqr("
-        f"'{table_name}', '{date_column}', {metric_sql}, {window_days}, {k}, '{mode.lower()}', {ref_sql}"
-        f"{_date_range_sql(start_date, end_date)})"
+        "SELECT * FROM anofox_tab_metric_anomaly_iqr("
+        "?, ?, ?::VARCHAR, ?::BIGINT, ?::DOUBLE, ?, ?::DATE"
+        f"{_date_range_sql(start_date, end_date, params)})"
     )
     if start_date is not None or end_date is not None:
-        return _fetch_dicts(conn, sql)
-    rows = conn.execute(sql).fetchall()
+        return _fetch_dicts(conn, sql, params)
+    rows = conn.execute(sql, params).fetchall()
     return _parse_table_result(
         rows,
         {
@@ -744,16 +734,16 @@ def rolling_values_in_set(
         With ``start_date``/``end_date``: one dict per reference date (ordered by
         date), keyed by the result columns (``status``, ``reference_date``, ...).
     """
-    values_list = "[" + ", ".join("'" + v.replace("'", "''") + "'" for v in allowed_values) + "]"
-    ref_sql = "NULL" if reference_date is None else f"DATE '{reference_date}'"
+    params = [table_name, column_name, [str(v) for v in allowed_values], date_column,
+              window_days, min_rate, reference_date]
     sql = (
-        f"SELECT * FROM anofox_tab_rolling_values_in_set("
-        f"'{table_name}', '{column_name}', {values_list}, '{date_column}', {window_days}, {min_rate}, {ref_sql}"
-        f"{_date_range_sql(start_date, end_date)})"
+        "SELECT * FROM anofox_tab_rolling_values_in_set("
+        "?, ?, ?::VARCHAR[], ?, ?::BIGINT, ?::DOUBLE, ?::DATE"
+        f"{_date_range_sql(start_date, end_date, params)})"
     )
     if start_date is not None or end_date is not None:
-        return _fetch_dicts(conn, sql)
-    rows = conn.execute(sql).fetchall()
+        return _fetch_dicts(conn, sql, params)
+    rows = conn.execute(sql, params).fetchall()
     return _parse_table_result(
         rows,
         {
@@ -782,8 +772,9 @@ def define_checks(conn: Any, checks: list[dict], checks_table: str = "dq_checks"
 
     Returns the checks table name.
     """
+    checks_sql = quote_ident(checks_table)
     conn.execute(
-        f"CREATE OR REPLACE TABLE \"{checks_table}\" ("
+        f"CREATE OR REPLACE TABLE {checks_sql} ("
         "check_name VARCHAR, check_type VARCHAR, table_name VARCHAR, column_name VARCHAR, "
         "params VARCHAR, lower_threshold DOUBLE, upper_threshold DOUBLE, "
         "monitor_only BOOLEAN, identifier_column VARCHAR, filter_expr VARCHAR)"
@@ -794,7 +785,7 @@ def define_checks(conn: Any, checks: list[dict], checks_table: str = "dq_checks"
                 raise ValueError(f"every check needs a non-empty '{required}'")
         params = check.get("params")
         conn.execute(
-            f"INSERT INTO \"{checks_table}\" VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            f"INSERT INTO {checks_sql} VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             [
                 check["check_name"],
                 check["check_type"],
@@ -838,20 +829,22 @@ def run_checks(
         ``lower_threshold``, ``upper_threshold``, ``status``, ``message``).
     """
     if result_table is not None:
+        result_sql = quote_ident(result_table)
         conn.execute(
-            f"CREATE TABLE IF NOT EXISTS \"{result_table}\" AS "
-            f"SELECT * FROM anofox_tab_run_checks('{checks_table}') LIMIT 0"
+            f"CREATE TABLE IF NOT EXISTS {result_sql} AS "
+            "SELECT * FROM anofox_tab_run_checks(?) LIMIT 0",
+            [checks_table],
         )
         conn.execute(
-            f"INSERT INTO \"{result_table}\" SELECT * FROM anofox_tab_run_checks('{checks_table}')"
+            f"INSERT INTO {result_sql} SELECT * FROM anofox_tab_run_checks(?)", [checks_table]
         )
         cursor = conn.execute(
-            f"SELECT * FROM \"{result_table}\" "
-            f"WHERE run_ts = (SELECT MAX(run_ts) FROM \"{result_table}\") ORDER BY check_name"
+            f"SELECT * FROM {result_sql} "
+            f"WHERE run_ts = (SELECT MAX(run_ts) FROM {result_sql}) ORDER BY check_name"
         )
     else:
         cursor = conn.execute(
-            f"SELECT * FROM anofox_tab_run_checks('{checks_table}') ORDER BY check_name"
+            "SELECT * FROM anofox_tab_run_checks(?) ORDER BY check_name", [checks_table]
         )
     columns = [d[0] for d in cursor.description]
     return [dict(zip(columns, row)) for row in cursor.fetchall()]
@@ -861,23 +854,26 @@ def run_checks(
 # Internal helpers
 # ---------------------------------------------------------------------------
 
-def _date_range_sql(start_date: Optional[str], end_date: Optional[str]) -> str:
+def _date_range_sql(start_date: Optional[str], end_date: Optional[str], params: list) -> str:
     """Named start_date/end_date arguments of the time-aware checks ('' when absent).
 
-    Validation (both or neither, start <= end, not with reference_date) is left to
-    the extension so the Python and SQL errors are the same.
+    The dates are appended to *params*. Validation (both or neither, start <= end,
+    not with reference_date) is left to the extension so the Python and SQL errors
+    are the same.
     """
     sql = ""
     if start_date is not None:
-        sql += f", start_date := DATE '{start_date}'"
+        sql += ", start_date := ?::DATE"
+        params.append(start_date)
     if end_date is not None:
-        sql += f", end_date := DATE '{end_date}'"
+        sql += ", end_date := ?::DATE"
+        params.append(end_date)
     return sql
 
 
-def _fetch_dicts(conn: Any, sql: str) -> list[dict]:
+def _fetch_dicts(conn: Any, sql: str, params: list) -> list[dict]:
     """Run a query and return every row as a dict keyed by the result column names."""
-    cursor = conn.execute(sql)
+    cursor = conn.execute(sql, params)
     columns = [d[0] for d in cursor.description]
     return [dict(zip(columns, row)) for row in cursor.fetchall()]
 

@@ -24,7 +24,7 @@ def make_vat(conn: Any, vat_string: str) -> dict:
         ``{"country": str, "digits": str}``
     """
     result = conn.execute(
-        f"SELECT anofox_tab_vat('{vat_string}')"
+        "SELECT anofox_tab_vat(?)", [vat_string]
     ).fetchone()
     raw = result[0]
     if isinstance(raw, dict):
@@ -37,7 +37,7 @@ def make_vat(conn: Any, vat_string: str) -> dict:
 def is_valid_vat_country(conn: Any, country_code: str) -> bool:
     """Return True if *country_code* is a supported VAT country."""
     result = conn.execute(
-        f"SELECT anofox_tab_is_valid_vat_country('{country_code}')"
+        "SELECT anofox_tab_is_valid_vat_country(?)", [country_code]
     ).fetchone()
     return bool(result[0])
 
@@ -45,7 +45,7 @@ def is_valid_vat_country(conn: Any, country_code: str) -> bool:
 def vat_normalize(conn: Any, vat_string: str) -> str:
     """Normalize a VAT number to a canonical format."""
     result = conn.execute(
-        f"SELECT anofox_tab_vat_normalize('{vat_string}')"
+        "SELECT anofox_tab_vat_normalize(?)", [vat_string]
     ).fetchone()
     return str(result[0]) if result[0] is not None else ""
 
@@ -58,7 +58,7 @@ def vat_is_valid_syntax(conn: Any, vat_string: str) -> bool:
     e.g. ``'DE123456789'``.
     """
     result = conn.execute(
-        f"SELECT anofox_tab_vat_is_valid_syntax('{vat_string}')"
+        "SELECT anofox_tab_vat_is_valid_syntax(?)", [vat_string]
     ).fetchone()
     return bool(result[0])
 
@@ -70,7 +70,7 @@ def vat_split(conn: Any, vat_string: str) -> Optional[dict]:
     Returns *None* if the VAT string cannot be parsed.
     """
     result = conn.execute(
-        f"SELECT anofox_tab_vat_split('{vat_string}')"
+        "SELECT anofox_tab_vat_split(?)", [vat_string]
     ).fetchone()
     raw = result[0]
     if raw is None:
@@ -85,7 +85,7 @@ def vat_split(conn: Any, vat_string: str) -> Optional[dict]:
 def vat_exists(conn: Any, country_code: str) -> bool:
     """Return True if *country_code* has VAT registration."""
     result = conn.execute(
-        f"SELECT anofox_tab_vat_exists('{country_code}')"
+        "SELECT anofox_tab_vat_exists(?)", [country_code]
     ).fetchone()
     return bool(result[0])
 
@@ -93,7 +93,7 @@ def vat_exists(conn: Any, country_code: str) -> bool:
 def vat_is_eu_member(conn: Any, country_code: str) -> bool:
     """Return True if *country_code* is an EU member state."""
     result = conn.execute(
-        f"SELECT anofox_tab_vat_is_eu_member('{country_code}')"
+        "SELECT anofox_tab_vat_is_eu_member(?)", [country_code]
     ).fetchone()
     return bool(result[0])
 
@@ -101,7 +101,7 @@ def vat_is_eu_member(conn: Any, country_code: str) -> bool:
 def vat_country_name(conn: Any, country_code: str) -> str:
     """Return the full country name for a VAT country code."""
     result = conn.execute(
-        f"SELECT anofox_tab_vat_country_name('{country_code}')"
+        "SELECT anofox_tab_vat_country_name(?)", [country_code]
     ).fetchone()
     return str(result[0]) if result[0] is not None else ""
 
@@ -109,7 +109,7 @@ def vat_country_name(conn: Any, country_code: str) -> str:
 def vat_format(conn: Any, country: str, digits: str) -> str:
     """Format a country + digits pair as a canonical VAT string."""
     result = conn.execute(
-        f"SELECT anofox_tab_vat_format('{country}', '{digits}')"
+        "SELECT anofox_tab_vat_format(?, ?)", [country, digits]
     ).fetchone()
     return str(result[0]) if result[0] is not None else ""
 
@@ -117,6 +117,6 @@ def vat_format(conn: Any, country: str, digits: str) -> str:
 def vat_is_valid(conn: Any, vat_string: str) -> bool:
     """Return True if *vat_string* is a syntactically valid VAT number."""
     result = conn.execute(
-        f"SELECT anofox_tab_vat_is_valid('{vat_string}')"
+        "SELECT anofox_tab_vat_is_valid(?)", [vat_string]
     ).fetchone()
     return bool(result[0])
