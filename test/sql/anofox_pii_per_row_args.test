@@ -1,0 +1,61 @@
+# name: test/sql/anofox_pii_per_row_args.test
+# description: pii_mask_column / pii_redact_column read the type and strategy of every row
+#              (they used to apply the first row's arguments to the whole chunk)
+# group: [sql]
+
+require anofox_tabular
+
+statement ok
+LOAD anofox_tabular;
+
+statement ok
+CREATE TABLE pr AS SELECT * FROM (VALUES
+  (1, 'mail jane@corp.com', 'EMAIL', 'redact'),
+  (2, 'mail jane@corp.com', 'EMAIL', 'none'),
+  (3, 'ssn 123-45-6789',    'EMAIL', 'redact'),
+  (4, 'mail jane@corp.com', 'EMAIL', 'asterisk')
+) t(id, note, pii_type, strategy);
+
+query IT
+SELECT id, pii_redact_column(note, strategy) FROM pr ORDER BY id;
+----
+1	mail [EMAIL]
+2	mail jane@corp.com
+3	ssn [US_SSN]
+4	mail *************
+
+query IT
+SELECT id, pii_mask_column(note, pii_type, strategy) FROM pr ORDER BY id;
+----
+1	mail [EMAIL]
+2	mail jane@corp.com
+3	ssn 123-45-6789
+4	mail *************
+
+# a NULL argument makes that row NULL, not the whole chunk
+query IT
+SELECT id, pii_mask_column(note, pii_type, CASE WHEN id = 1 THEN NULL ELSE strategy END) FROM pr ORDER BY id;
+----
+1	NULL
+2	mail jane@corp.com
+3	ssn 123-45-6789
+4	mail *************
+
+query IT
+SELECT id, pii_redact_column(note, CASE WHEN id = 2 THEN NULL ELSE strategy END) FROM pr ORDER BY id;
+----
+1	mail [EMAIL]
+2	NULL
+3	ssn [US_SSN]
+4	mail *************
+
+# an invalid value in a later row is still rejected
+statement error
+SELECT pii_redact_column(note, CASE WHEN id = 3 THEN 'bogus' ELSE 'redact' END) FROM pr;
+----
+Invalid mask strategy: bogus
+
+statement error
+SELECT pii_mask_column(note, CASE WHEN id = 3 THEN 'NOPE' ELSE 'EMAIL' END, 'redact') FROM pr;
+----
+Unknown PII type: NOPE

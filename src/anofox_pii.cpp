@@ -2341,32 +2341,18 @@ struct PIIMaskColumnFunction {
         auto &engine = PIIEngine::Instance();
         const auto config = PIIConfig::Get().Snapshot();
 
-        // Get the type and strategy arguments (they should be the same for all rows)
-        auto type_arg = args.data[1].GetValue(0);
-        auto strategy_arg = args.data[2].GetValue(0);
-
-        if (type_arg.IsNull() || strategy_arg.IsNull()) {
-            result.SetVectorType(VectorType::CONSTANT_VECTOR);
-            result.SetValue(0, Value(LogicalType::SQLNULL));
-            return;
-        }
-
-        auto pii_type = StringToPIIType(type_arg.GetValue<std::string>());
-        auto strategy = ParseMaskStrategy(strategy_arg.GetValue<std::string>());
-
-        if (pii_type == PIIType::UNKNOWN) {
-            throw InvalidInputException("Unknown PII type: %s", type_arg.GetValue<std::string>());
-        }
-
-        // Use type filter for detection
-        std::vector<PIIType> filter = {pii_type};
-
+        // The type and strategy are read per row; a NULL argument yields NULL for that row.
         // Mask() returns the original text when nothing of the requested type is
         // found, so a single call per row suffices (no separate Detect pass).
-        UnaryExecutor::Execute<string_t, string_t>(
-            args.data[0], result, args.size(),
-            [&](string_t input) {
-                return StringVector::AddString(result, engine.Mask(input.GetString(), strategy, filter, config));
+        TernaryExecutor::Execute<string_t, string_t, string_t, string_t>(
+            args.data[0], args.data[1], args.data[2], result, args.size(),
+            [&](string_t input, string_t type_str, string_t strategy_str) {
+                auto pii_type = StringToPIIType(type_str.GetString());
+                if (pii_type == PIIType::UNKNOWN) {
+                    throw InvalidInputException("Unknown PII type: %s", type_str.GetString());
+                }
+                auto strategy = ParseMaskStrategy(strategy_str.GetString());
+                return StringVector::AddString(result, engine.Mask(input.GetString(), strategy, {pii_type}, config));
             }
         );
     }
@@ -2385,17 +2371,11 @@ struct PIIRedactColumnFunction {
         auto &engine = PIIEngine::Instance();
         const auto config = PIIConfig::Get().Snapshot();
 
-        // Get strategy argument
-        auto strategy_arg = args.data[1].GetValue(0);
-
-        MaskStrategy strategy = MaskStrategy::REDACT;
-        if (!strategy_arg.IsNull()) {
-            strategy = ParseMaskStrategy(strategy_arg.GetValue<std::string>());
-        }
-
-        UnaryExecutor::Execute<string_t, string_t>(
-            args.data[0], result, args.size(),
-            [&](string_t input) {
+        // The strategy is read per row; a NULL argument yields NULL for that row.
+        BinaryExecutor::Execute<string_t, string_t, string_t>(
+            args.data[0], args.data[1], result, args.size(),
+            [&](string_t input, string_t strategy_str) {
+                auto strategy = ParseMaskStrategy(strategy_str.GetString());
                 return StringVector::AddString(result, engine.Mask(input.GetString(), strategy, {}, config));
             }
         );

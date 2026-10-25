@@ -303,6 +303,9 @@ pii_mask_column(value VARCHAR, pii_type VARCHAR, strategy VARCHAR) -> VARCHAR
 | `pii_type` | `VARCHAR` | required | A type from [PII types](#pii-types), e.g. `US_SSN` |
 | `strategy` | `VARCHAR` | required | See [Masking strategies](#masking-strategies) |
 
+The type and strategy can differ from row to row, for example when they come from columns. A
+`NULL` argument returns `NULL` for that row.
+
 ```sql
 SELECT pii_mask_column('SSN 123-45-6789, mail a@b.com', 'US_SSN', 'partial') AS masked;
 ```
@@ -331,7 +334,7 @@ pii_redact_column(value VARCHAR [, strategy VARCHAR]) -> VARCHAR
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `value` | `VARCHAR` | required | The text to mask |
-| `strategy` | `VARCHAR` | `anofox_pii_default_mask_strategy` (`redact`) | See [Masking strategies](#masking-strategies) |
+| `strategy` | `VARCHAR` | `anofox_pii_default_mask_strategy` (`redact`) | See [Masking strategies](#masking-strategies). It can differ from row to row; `NULL` returns `NULL` |
 
 ```sql
 SELECT pii_redact_column('SSN 123-45-6789, mail a@b.com')         AS redacted,
