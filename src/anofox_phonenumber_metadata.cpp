@@ -89,12 +89,14 @@ const std::unordered_map<std::string, CountryMetadata> REGION_METADATA = {
 	{"DE", {
 		49,                                   // country_code
 		"DE",                                 // region_code
-		{10, 11},                             // valid_lengths (10 or 11 digits)
+		{5, 6, 7, 8, 9, 10, 11},              // valid_lengths (area code + subscriber number vary in length)
 		"0",                                  // national_prefix
 		"00",                                 // international_prefix
 		"3012345678",                         // example_number (030 1234 5678, Berlin)
-		"[2-9]\\d{9,10}",                    // fixed_line_pattern
-		"1[567]\\d{9}",                      // mobile_pattern (015x, 016x, 017x)
+		// fixed_line_pattern: Berlin/Hamburg/Frankfurt/Munich (2-digit area code) take a
+		// 5-8 digit subscriber number, other areas (3-5 digit area code) 6-11 digits in total
+		"(?:30|40|69|89)\\d{5,8}|(?!30|40|69|89)[2-9]\\d{5,10}",
+		"1(?:5\\d{9}|[67]\\d{8,9})",            // mobile_pattern (015x: 11 digits, 016x/017x: 10-11)
 		"800\\d{7}",                         // toll_free_pattern (0800)
 		{  // number_formats: {leading_digits, pattern, national_format, international_format}
 			{"1[67]", "(\\d{3})(\\d{7,8})", "0$1 $2", "$1 $2"},
@@ -243,7 +245,7 @@ const std::unordered_map<std::string, CountryMetadata> REGION_METADATA = {
 		"00",                                 // international_prefix
 		"1123456789",                         // example_number
 		"[1-9][1-9]\\d{8}",                   // fixed_line_pattern
-		"[1-9][6-9]\\d{8}",                   // mobile_pattern
+		"[1-9][1-9]9\\d{8}|[1-9][6-9]\\d{8}",  // mobile_pattern (area code + 9 + 8 digits; legacy 8-digit)
 		"800\\d{7}",                          // toll_free_pattern
 		{  // number_formats: {leading_digits, pattern, national_format, international_format}
 			{"800", "(\\d{3})(\\d{3})(\\d{4})", "0$1 $2 $3", "$1 $2 $3"},

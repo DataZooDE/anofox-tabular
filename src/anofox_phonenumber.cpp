@@ -171,6 +171,28 @@ std::string ResolveRegionForCountryCode(int country_code, const std::string& reg
 	return candidates[0];
 }
 
+// Numbers written as "+49 (0)30 1234567" or "+44 020 7946 0018" carry the
+// national (trunk) prefix after the country code. Drop it when the number is
+// only valid without it, as libphonenumber does.
+std::string StripTrunkPrefixAfterCountryCode(const std::string& national_number, const std::string& region_code) {
+	const CountryMetadata* metadata = GetMetadataForRegion(region_code);
+	if (!metadata || metadata->national_prefix.empty() ||
+	    national_number.compare(0, metadata->national_prefix.size(), metadata->national_prefix) != 0) {
+		return national_number;
+	}
+	auto is_valid = [&](const std::string& candidate) {
+		return metadata->IsValidLength(candidate.size()) &&
+		       ClassifyNationalNumber(candidate, region_code).MatchesValidPattern();
+	};
+	std::string stripped = national_number.substr(metadata->national_prefix.size());
+	if (!is_valid(national_number) && is_valid(stripped)) {
+		AnofoxTrace(AnofoxLogLevel::Debug,
+		           "PhoneNumber parse: dropped trunk prefix after country code, region=" + region_code);
+		return stripped;
+	}
+	return national_number;
+}
+
 std::mutex& RegionMutex() {
 	static std::mutex region_mutex;
 	return region_mutex;
@@ -217,6 +239,34 @@ PhoneNumberParts PhoneNumberManager::Parse(const std::string& raw_number, const 
 	std::string national_number;
 	std::string region_code;
 
+	if (normalized[0] != '+') {
+		// National format, or international format dialled with the region's
+		// international prefix (e.g. "0049 ..." from DE, "011 49 ..." from US).
+		// The region comes from the hint, falling back to the (session-snapshotted)
+		// default region.
+		region_code = !hint_upper.empty() && GetMetadataForRegion(hint_upper) ? hint_upper
+		                                                                      : EffectiveDefaultRegion(default_region);
+		const CountryMetadata* hint_metadata = GetMetadataForRegion(region_code);
+		if (!hint_metadata) {
+			AnofoxTrace(AnofoxLogLevel::Debug, "PhoneNumber parse failed: could not determine region");
+			return parts;
+		}
+		const auto& idd = hint_metadata->international_prefix;
+		if (!idd.empty() && normalized.size() > idd.size() && normalized.compare(0, idd.size(), idd) == 0) {
+			AnofoxTrace(AnofoxLogLevel::Debug,
+			           "PhoneNumber parse: international prefix " + idd + " of region " + region_code + " in " + normalized);
+			normalized = "+" + normalized.substr(idd.size());
+		} else {
+			country_code = hint_metadata->country_code;
+			national_number = normalized;
+			// Remove national prefix if present
+			if (!hint_metadata->national_prefix.empty() &&
+			    national_number.find(hint_metadata->national_prefix) == 0) {
+				national_number = national_number.substr(hint_metadata->national_prefix.size());
+			}
+		}
+	}
+
 	if (normalized[0] == '+') {
 		// Explicit international format: derive the region from the country code,
 		// using the hint only to disambiguate shared country codes (e.g. +1).
@@ -231,23 +281,7 @@ PhoneNumberParts PhoneNumberManager::Parse(const std::string& raw_number, const 
 			           "PhoneNumber parse failed: no region found for country_code=" + std::to_string(country_code));
 			return parts;
 		}
-	} else {
-		// National format: interpret via the region hint, falling back to the
-		// (session-snapshotted) default region.
-		region_code = !hint_upper.empty() && GetMetadataForRegion(hint_upper) ? hint_upper
-		                                                                      : EffectiveDefaultRegion(default_region);
-		const CountryMetadata* hint_metadata = GetMetadataForRegion(region_code);
-		if (!hint_metadata) {
-			AnofoxTrace(AnofoxLogLevel::Debug, "PhoneNumber parse failed: could not determine region");
-			return parts;
-		}
-		country_code = hint_metadata->country_code;
-		national_number = normalized;
-		// Remove national prefix if present
-		if (!hint_metadata->national_prefix.empty() &&
-		    national_number.find(hint_metadata->national_prefix) == 0) {
-			national_number = national_number.substr(hint_metadata->national_prefix.size());
-		}
+		national_number = StripTrunkPrefixAfterCountryCode(national_number, region_code);
 	}
 
 	const CountryMetadata* metadata = GetMetadataForRegion(region_code);

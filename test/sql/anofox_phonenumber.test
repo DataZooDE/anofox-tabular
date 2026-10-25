@@ -361,3 +361,52 @@ SELECT phonenumber_is_valid('+44 121 234 5678', 'GB'),   -- Birmingham (0121)
        phonenumber_is_valid('+358 9 1234 5678', 'FI');   -- Helsinki (09)
 ----
 true	true	true	true
+
+# ----------------------------------------------------------------------
+# International prefix, "(0)" trunk digit and variable-length DE numbers
+# ----------------------------------------------------------------------
+
+# The region's international dialling prefix (00 in DE, 011 in US) works like '+'
+query TTTT
+SELECT phonenumber_is_valid('0049 30 12345678', 'DE'),
+       phonenumber_region('0044 20 7946 0018', 'DE'),
+       phonenumber_format('011 49 30 12345678', 'US', 'E164'),
+       phonenumber_format('0049 30 12345678', 'DE', 'E164');
+----
+true	GB	+493012345678	+493012345678
+
+# A national "(0)" trunk digit after the country code is dropped
+query TTTT
+SELECT phonenumber_is_valid('+49 (0)30 12345678', NULL),
+       phonenumber_format('+49 (0)30 12345678', NULL, 'E164'),
+       phonenumber_format('+44 (0)20 7946 0018', NULL, 'INTERNATIONAL'),
+       phonenumber_format('0049 (0)171 1234567', 'DE', 'E164');
+----
+true	+493012345678	+44 20 7946 0018	+491711234567
+
+# German subscriber numbers have variable length
+query TTTTT
+SELECT phonenumber_is_valid('089 123456', 'DE'),
+       phonenumber_is_valid('+49 30 901820', NULL),
+       phonenumber_is_valid('0171 1234567', 'DE'),
+       phonenumber_is_valid('0171 12345678', 'DE'),
+       phonenumber_is_valid('07531 12345', 'DE');
+----
+true	true	true	true	true
+
+# ... but garbage stays invalid
+query TTTTTT
+SELECT phonenumber_is_valid('030 1234', 'DE'),            -- Berlin subscriber too short
+       phonenumber_is_valid('0049 1234', 'DE'),           -- too short
+       phonenumber_is_valid('030 123456789012', 'DE'),    -- too long
+       phonenumber_is_valid('0123 4567890', 'DE'),        -- 01x is not a fixed/mobile range
+       phonenumber_is_valid('0171 123', 'DE'),            -- mobile too short
+       phonenumber_is_valid('00 0', 'DE');
+----
+false	false	false	false	false	false
+
+# 11-digit Brazilian mobile numbers are valid
+query T
+SELECT phonenumber_is_valid('(11) 91234-5678', 'BR');
+----
+true
