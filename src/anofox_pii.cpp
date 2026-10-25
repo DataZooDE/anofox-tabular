@@ -28,6 +28,7 @@
 #include <iomanip>
 #include <cctype>
 #include <iterator>
+#include <cstring>
 #include <cmath>
 #include <string_view>
 #include <openssl/sha.h>
@@ -921,16 +922,34 @@ namespace {
 // C3-DF, E1 or E3-EF and one or two continuation bytes. C2 and E2 are left out
 // so NBSP, quotes and dashes (« » „ “ –) around an address stay outside it.
 // The local part and each domain label start with a letter or digit, labels
-// also end with one; the leftmost-match rule then starts the address at its
-// first character, so no leading \b is needed (\b treats UTF-8 bytes as
-// non-word characters and used to cut "jörg.k@..." to "rg.k@...").
+// also end with one. The local part has at most 64 characters and a label at
+// most 63 (RFC 5321); the bounds keep every match attempt short.
 std::string BuildEmailPattern() {
     const std::string utf8_letter = R"([\xC3-\xDF\xE1\xE3-\xEF][\x80-\xBF]{1,2})";
     const std::string alnum = "(?:[A-Za-z0-9]|" + utf8_letter + ")";
-    const std::string label = alnum + "(?:(?:[A-Za-z0-9-]|" + utf8_letter + ")*" + alnum + ")?";
-    const std::string local = alnum + "(?:[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]|" + utf8_letter + ")*";
+    const std::string label = alnum + "(?:(?:[A-Za-z0-9-]|" + utf8_letter + "){0,61}" + alnum + ")?";
+    const std::string local = alnum + "(?:[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]|" + utf8_letter + "){0,63}";
     return local + "@" + label + R"((?:\.)" + label + ")*";
 }
+
+// Bytes that can be part of a local part: the ASCII characters of the pattern
+// and the bytes of the non-ASCII letters it accepts.
+bool IsEmailLocalByte(unsigned char c) {
+    if (c >= 0x80) {
+        return c <= 0xBF || (c >= 0xC3 && c <= 0xDF) || c == 0xE1 || (c >= 0xE3 && c <= 0xEF);
+    }
+    return std::isalnum(c) || std::strchr(".!#$%&'*+/=?^_`{|}~-", c) != nullptr;
+}
+
+// A byte that can start the local part: an ASCII letter or digit, or the lead
+// byte of an accepted non-ASCII letter.
+bool IsEmailAlnumStart(unsigned char c) {
+    return std::isalnum(c) || (c >= 0xC3 && c <= 0xDF) || c == 0xE1 || (c >= 0xE3 && c <= 0xEF);
+}
+
+// Upper bound of the bytes an address can span after its '@': 253 characters
+// of domain, of which non-ASCII letters take up to three bytes.
+constexpr size_t EMAIL_DOMAIN_MAX_BYTES = 3 * 253;
 
 } // namespace
 
@@ -940,6 +959,46 @@ EmailRecognizer::EmailRecognizer()
         "Email",
         BuildEmailPattern()
     ) {}
+
+std::vector<PIIMatch> EmailRecognizer::FindMatches(const std::string &text) const {
+    // Every address contains an '@', so the pattern only runs where there is
+    // one. Searching the whole text instead let std::regex try each byte as a
+    // start and rescan the run of word characters after it: quadratic in the
+    // length of long tokens such as base64 attachments.
+    // The local part is the run of local-part bytes before the '@', starting
+    // at its first letter or digit (the start the leftmost match would pick).
+    // Runs of different '@' do not overlap, so the backward scans are linear
+    // in total; the match itself is bounded by the pattern.
+    std::vector<PIIMatch> matches;
+    size_t consumed = 0;  // Bytes before this belong to an earlier match or '@'
+    for (size_t at = text.find('@'); at != std::string::npos; at = text.find('@', at + 1)) {
+        size_t start = at;
+        while (start > consumed && IsEmailLocalByte(static_cast<unsigned char>(text[start - 1]))) {
+            start--;
+        }
+        while (start < at && !IsEmailAlnumStart(static_cast<unsigned char>(text[start]))) {
+            start++;
+        }
+        if (start == at) {
+            consumed = at + 1;
+            continue;
+        }
+        const auto window_end = text.begin() + static_cast<std::ptrdiff_t>(std::min(text.size(), at + 1 + EMAIL_DOMAIN_MAX_BYTES));
+        std::smatch match;
+        if (!std::regex_search(text.begin() + static_cast<std::ptrdiff_t>(start), window_end, match, pattern_,
+                               std::regex_constants::match_continuous)) {
+            // E.g. a local part over 64 characters or no domain after the '@'
+            AnofoxTrace(AnofoxLogLevel::Trace, "pii: no email address around '@' at byte " + std::to_string(at));
+            consumed = at + 1;
+            continue;
+        }
+        const size_t stop = start + static_cast<size_t>(match.length());
+        matches.emplace_back(type_, text.substr(start, stop - start), start, stop, 1.0);
+        consumed = stop;
+        at = stop - 1;
+    }
+    return matches;
+}
 
 EmailRecognizer::~EmailRecognizer() {}
 
@@ -1234,6 +1293,24 @@ APIKeyRecognizer::APIKeyRecognizer()
 
 APIKeyRecognizer::~APIKeyRecognizer() {
     (void)type_;
+}
+
+std::vector<PIIMatch> APIKeyRecognizer::FindMatches(const std::string &text) const {
+    // A generic high-entropy run next to '+' or '/' is a piece of a longer
+    // base64 or path token (an inline attachment, a data URI), not a key on
+    // its own; AWS and GitHub keys are recognised by their prefix anyway.
+    auto matches = RegexRecognizer::FindMatches(text);
+    auto is_base64_joint = [&text](size_t pos) { return pos < text.size() && (text[pos] == '+' || text[pos] == '/'); };
+    matches.erase(std::remove_if(matches.begin(), matches.end(),
+                                 [&](const PIIMatch &match) {
+                                     const auto &value = match.matched_text;
+                                     const bool prefixed = value.compare(0, 4, "AKIA") == 0 ||
+                                                           (value.size() > 4 && value.compare(0, 2, "gh") == 0 && value[3] == '_');
+                                     return !prefixed && ((match.start_pos > 0 && is_base64_joint(match.start_pos - 1)) ||
+                                                          is_base64_joint(match.end_pos));
+                                 }),
+                  matches.end());
+    return matches;
 }
 
 double APIKeyRecognizer::CalculateShannonEntropy(const std::string &text) {

@@ -255,6 +255,7 @@ class EmailRecognizer : public RegexRecognizer {
 public:
     EmailRecognizer();
     ~EmailRecognizer() override;
+    std::vector<PIIMatch> FindMatches(const std::string &text) const override;
     std::string GetPartialMask(const std::string &text) const override;
 };
 
@@ -308,6 +309,7 @@ class APIKeyRecognizer : public RegexRecognizer {
 public:
     APIKeyRecognizer();
     ~APIKeyRecognizer() override;
+    std::vector<PIIMatch> FindMatches(const std::string &text) const override;
     bool Validate(const std::string &text) const override;
     std::string GetPartialMask(const std::string &text) const override;
 

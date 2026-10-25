@@ -50,7 +50,7 @@ NER types need the NER model.
 
 | Type | Detects | Method |
 |------|---------|--------|
-| `EMAIL` | Email addresses, also with non-ASCII letters (`jörg.k@müller-gmbh.de`) | pattern |
+| `EMAIL` | Email addresses, also with non-ASCII letters (`jörg.k@müller-gmbh.de`); a local part of at most 64 characters and domain labels of at most 63 | pattern |
 | `PHONE` | International numbers with a `+` or `00` prefix (`+49 (0) 221 4711-0`, `0049 171 1234567`), national numbers with an area code and a space, dash or slash (`0171 1234567`, `089/12345678`, `(089) 123 456 78`) and US `(555) 123-4567`; 7 to 15 digits, starting after whitespace, `:` or `(` | pattern |
 | `CREDIT_CARD` | Visa, Mastercard, Amex and Discover numbers | pattern + Luhn checksum |
 | `US_SSN` | US Social Security Numbers `XXX-XX-XXXX` or `XXX XX XXXX`; bare 9-digit numbers are not matched | pattern + area validation |
@@ -61,7 +61,7 @@ NER types need the NER model.
 | `UK_NINO` | UK National Insurance Numbers | pattern |
 | `US_PASSPORT` | A letter and 8 digits (`C12345678`) | pattern |
 | `DE_TAX_ID` | German tax ID (Steueridentifikationsnummer, 11 digits) | pattern + checksum |
-| `API_KEY` | AWS and GitHub tokens, high-entropy strings | pattern + entropy |
+| `API_KEY` | AWS and GitHub tokens, high-entropy strings of 32 to 64 characters; a run next to `+` or `/` is a piece of a base64 or path token (an inline attachment) and not matched | pattern + entropy |
 | `CRYPTO_ADDRESS` | Bitcoin (P2PKH, P2SH, SegWit) and Ethereum addresses | pattern + checksum where available |
 | `DATE_OF_BIRTH` | A date (`12.03.1985`, `3.7.1962`, `1985-03-12`, `12/03/1985`, `12. März 1985`, `March 12, 1985`) that follows a birth keyword (`geboren`, `geb.`, `Geburtsdatum`, `Geburtstag`, `DOB`, `D.O.B.`, `date of birth`, `birthday`, `born`) with at most three words and no comma or sentence end in between. A date without a keyword is not matched. It must be a real calendar date from 1900 up to today | pattern + keyword + date check |
 | `DE_SVNR` | German pension insurance number (Rentenversicherungsnummer, often called Sozialversicherungsnummer): area, birth date `DDMMYY`, initial letter, serial, check digit, with or without spaces (`65 170839 J 003`, `65170839J003`) | pattern + check digit |
