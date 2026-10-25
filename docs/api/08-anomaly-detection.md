@@ -88,8 +88,7 @@ isolation_forest(table_name VARCHAR, column_name VARCHAR
 | `seed` | `BIGINT` | `NULL` (random) | Fixed seed for reproducible scores; `NULL` keeps it random |
 | `id_column` | `VARCHAR` | none | Named only; `'scores'` mode only. See [Identifier pass-through](#identifier-pass-through-id_column) |
 
-Do not pass `NULL` for `n_trees`, `sample_size` or `contamination`: it raises an internal error
-instead of using the default. Pass the default value instead.
+A `NULL` for `n_trees`, `sample_size`, `contamination` or `output_mode` keeps the default.
 
 **Output, `'summary'` mode** (one row):
 
@@ -189,9 +188,8 @@ isolation_forest_mv(table_name VARCHAR, column_names VARCHAR
 | 13 | `prob_pick_avg_gain` | `DOUBLE` | `0.0` | Probability, 0.0 to 1.0, of choosing a split by average gain instead of at random |
 | | `id_column` | `VARCHAR` | none | Named only; `'scores'` mode only |
 
-Parameters 7 to 13 accept `NULL` to keep their default, so you can set a later parameter
-without spelling out the earlier ones. Parameters 3 to 5 do not: a `NULL` there raises an
-internal error. `coef_type` and `scoring_metric` are case-insensitive.
+Every optional parameter accepts `NULL` to keep its default, so you can set a later parameter
+without spelling out the earlier ones. `coef_type` and `scoring_metric` are case-insensitive.
 
 **Output, `'summary'` mode** (one row): `status`, `outlier_count`, `total_count` as for
 `isolation_forest`, then:
@@ -339,7 +337,7 @@ dbscan(table_name VARCHAR, column_name VARCHAR
 | `output_mode` | `VARCHAR` | `'summary'` | `'summary'` or `'clusters'` (lowercase) |
 | `id_column` | `VARCHAR` | none | Named only; `'clusters'` mode only |
 
-A `NULL` `eps` or `min_pts` raises an internal error instead of using the default.
+A `NULL` for `eps`, `min_pts` or `output_mode` keeps the default.
 
 **Output, `'summary'` mode** (one row):
 
@@ -467,7 +465,7 @@ outlier_tree(table_name VARCHAR, columns VARCHAR, output_mode VARCHAR,
 |-----------|------|---------|-------------|
 | `table_name` | `VARCHAR` | required | Table or view to read |
 | `columns` | `VARCHAR` | required | Comma-separated columns to analyze |
-| `output_mode` | `VARCHAR` | required | `'outliers'` for one row per outlier; any other value returns the summary row |
+| `output_mode` | `VARCHAR` | required | `'summary'` for one summary row, `'outliers'` for one row per outlier (lowercase; any other value is an error, `NULL` means `'summary'`) |
 | `max_depth` | `INTEGER` | `4` | Maximum tree depth, 1 to 1024 |
 | `max_perc_outliers` | `DOUBLE` | `0.01` | Largest share of a group that may be flagged, above 0 and at most 1 |
 | `min_size_numeric` | `INTEGER` | `25` | Smallest group for a numeric target, at least 1 |
@@ -476,8 +474,8 @@ outlier_tree(table_name VARCHAR, columns VARCHAR, output_mode VARCHAR,
 | `z_outlier` | `DOUBLE` | `8.0` | Z threshold to flag a value, above 0 |
 | `id_column` | `VARCHAR` | none | Named only; `'outliers'` mode only |
 
-In the 9-argument form all values are required; `NULL` raises an internal error. Lower the
-size and z thresholds for small tables.
+In the 9-argument form a `NULL` keeps that parameter's default. Lower the size and z
+thresholds for small tables.
 
 **Output, summary mode** (one row):
 

@@ -862,13 +862,21 @@ static unique_ptr<FunctionData> OutlierTreeBind(ClientContext &context, TableFun
 
     // Parse optional parameters (read integral values as signed so that
     // negative inputs can be rejected before any cast to size_t)
-    std::string output_mode = input.inputs.size() > 2 ? input.inputs[2].ToString() : "summary";
-    int64_t max_depth_raw = input.inputs.size() > 3 ? input.inputs[3].GetValue<int64_t>() : 4;
-    double max_perc_outliers = input.inputs.size() > 4 ? input.inputs[4].GetValue<double>() : 0.01;
-    int64_t min_size_numeric_raw = input.inputs.size() > 5 ? input.inputs[5].GetValue<int64_t>() : 25;
-    int64_t min_size_categ_raw = input.inputs.size() > 6 ? input.inputs[6].GetValue<int64_t>() : 75;
-    double z_norm = input.inputs.size() > 7 ? input.inputs[7].GetValue<double>() : 2.67;
-    double z_outlier = input.inputs.size() > 8 ? input.inputs[8].GetValue<double>() : 8.0;
+    // An absent or NULL parameter takes its default (GetValue on NULL would be an INTERNAL error)
+    auto optional = [&](idx_t index, Value default_value) {
+        return input.inputs.size() > index && !input.inputs[index].IsNull() ? input.inputs[index] : default_value;
+    };
+    std::string output_mode = optional(2, Value("summary")).ToString();
+    int64_t max_depth_raw = optional(3, Value::BIGINT(4)).GetValue<int64_t>();
+    double max_perc_outliers = optional(4, Value::DOUBLE(0.01)).GetValue<double>();
+    int64_t min_size_numeric_raw = optional(5, Value::BIGINT(25)).GetValue<int64_t>();
+    int64_t min_size_categ_raw = optional(6, Value::BIGINT(75)).GetValue<int64_t>();
+    double z_norm = optional(7, Value::DOUBLE(2.67)).GetValue<double>();
+    double z_outlier = optional(8, Value::DOUBLE(8.0)).GetValue<double>();
+
+    if (output_mode != "summary" && output_mode != "outliers") {
+        throw BinderException("outlier_tree: output_mode must be 'summary' or 'outliers'");
+    }
 
     // Validate parameters while still signed
     static constexpr int64_t MAX_TREE_DEPTH = 1024;

@@ -466,13 +466,23 @@ static unique_ptr<GlobalTableFunctionState> IsolationForestInit(ClientContext &,
 // Shared optional-parameter handling and validation for both isolation forest bind functions.
 // Integer parameters are read as signed int64_t and range-checked BEFORE casting to size_t,
 // so negative values are rejected instead of wrapping; doubles must be finite.
+// An optional positional parameter that is absent or NULL takes its default,
+// like the seed does; GetValue on a NULL Value would raise an INTERNAL error.
+template <class T>
+static T OptionalInput(const TableFunctionBindInput &input, idx_t index, T default_value) {
+	if (input.inputs.size() <= index || input.inputs[index].IsNull()) {
+		return default_value;
+	}
+	return input.inputs[index].GetValue<T>();
+}
+
 static void ParseIsolationForestCommonParameters(TableFunctionBindInput &input, const string &function_name,
                                                  size_t &n_trees, size_t &sample_size, double &contamination,
                                                  string &output_mode, uint64_t &seed, bool &has_seed) {
-	int64_t n_trees_val = input.inputs.size() > 2 ? input.inputs[2].GetValue<int64_t>() : 100;
-	int64_t sample_size_val = input.inputs.size() > 3 ? input.inputs[3].GetValue<int64_t>() : 256;
-	contamination = input.inputs.size() > 4 ? input.inputs[4].GetValue<double>() : 0.1;
-	output_mode = input.inputs.size() > 5 ? input.inputs[5].ToString() : "summary";
+	int64_t n_trees_val = OptionalInput<int64_t>(input, 2, 100);
+	int64_t sample_size_val = OptionalInput<int64_t>(input, 3, 256);
+	contamination = OptionalInput<double>(input, 4, 0.1);
+	output_mode = OptionalInput<string>(input, 5, "summary");
 
 	// Seed parameter (optional, index 6); any signed value is an acceptable seed
 	seed = 0;
@@ -1069,9 +1079,9 @@ static unique_ptr<GlobalTableFunctionState> DBSCANInit(ClientContext &, TableFun
 // Shared optional-parameter handling and validation for both DBSCAN bind functions
 static void ParseDBSCANParameters(TableFunctionBindInput &input, const string &function_name, double &eps,
                                   int64_t &min_pts, string &output_mode) {
-	eps = input.inputs.size() > 2 ? input.inputs[2].GetValue<double>() : 0.5;
-	min_pts = input.inputs.size() > 3 ? input.inputs[3].GetValue<int64_t>() : 5;
-	output_mode = input.inputs.size() > 4 ? input.inputs[4].ToString() : "summary";
+	eps = OptionalInput<double>(input, 2, 0.5);
+	min_pts = OptionalInput<int64_t>(input, 3, 5);
+	output_mode = OptionalInput<string>(input, 4, "summary");
 
 	if (!std::isfinite(eps) || eps <= 0.0) {
 		throw BinderException(function_name + ": eps must be a finite number > 0.0");

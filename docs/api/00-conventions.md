@@ -81,9 +81,10 @@ ORDER BY function_name;
 Arguments are positional. Optional parameters come last and are marked with `[ ]` in the
 signatures. To set a later optional parameter you must also pass the ones before it.
 
-`NULL` keeps the default only where a parameter says so (for example `seed`, `weight_column`,
-`reference_date`, or an unbounded threshold). Elsewhere pass the default value itself: a `NULL`
-`n_trees` or `eps` is not replaced by the default.
+`NULL` keeps the default for every optional parameter of the anomaly functions
+(`isolation_forest`, `isolation_forest_mv`, `dbscan`, `dbscan_mv`, `outlier_tree`), and elsewhere
+where a parameter says so (for example `reference_date`, or an unbounded threshold). In all other
+places pass the default value itself.
 
 ### Named parameters
 

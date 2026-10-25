@@ -1,0 +1,103 @@
+# name: test/sql/anofox_anomaly_null_params.test
+# description: A NULL optional parameter of the anomaly functions takes its default,
+#              as the seed already does; it used to raise an INTERNAL error.
+#              An unknown outlier_tree output_mode is rejected.
+# group: [sql]
+
+require anofox_tabular
+
+statement ok
+LOAD anofox_tabular;
+
+statement ok
+CREATE TABLE np AS
+SELECT i AS id,
+       CASE WHEN i = 77 THEN 500.0 ELSE (i % 13)::DOUBLE END AS v,
+       (i % 7)::DOUBLE AS w,
+       'g' || (i % 3) AS g
+FROM range(1, 301) r(i);
+
+# --- isolation_forest: NULL n_trees / sample_size / contamination / output_mode ---
+
+query I
+SELECT count(*) FROM (
+  (FROM isolation_forest('np', 'v', NULL, NULL, NULL, 'scores', 42)
+   EXCEPT FROM isolation_forest('np', 'v', 100, 256, 0.1, 'scores', 42))
+  UNION ALL
+  (FROM isolation_forest('np', 'v', 100, 256, 0.1, 'scores', 42)
+   EXCEPT FROM isolation_forest('np', 'v', NULL, NULL, NULL, 'scores', 42))
+);
+----
+0
+
+query I
+SELECT count(*) FROM (
+  FROM isolation_forest('np', 'v', 100, 256, 0.1, NULL, 42)
+  EXCEPT FROM isolation_forest('np', 'v', 100, 256, 0.1, 'summary', 42)
+);
+----
+0
+
+query I
+SELECT count(*) FROM (
+  FROM isolation_forest_mv('np', 'v, w', NULL, NULL, NULL, 'scores', 42)
+  EXCEPT FROM isolation_forest_mv('np', 'v, w', 100, 256, 0.1, 'scores', 42)
+);
+----
+0
+
+# --- dbscan: NULL eps / min_pts / output_mode ---
+
+query I
+SELECT count(*) FROM (
+  FROM dbscan('np', 'v', NULL, NULL, 'clusters')
+  EXCEPT FROM dbscan('np', 'v', 0.5, 5, 'clusters')
+);
+----
+0
+
+query I
+SELECT count(*) FROM (
+  FROM dbscan_mv('np', 'v, w', NULL, NULL, 'clusters')
+  EXCEPT FROM dbscan_mv('np', 'v, w', 0.5, 5, 'clusters')
+);
+----
+0
+
+query I
+SELECT count(*) FROM (
+  FROM dbscan('np', 'v', 0.5, 5, NULL)
+  EXCEPT FROM dbscan('np', 'v', 0.5, 5, 'summary')
+);
+----
+0
+
+# --- outlier_tree: every optional parameter NULL ---
+
+query I
+SELECT count(*) FROM (
+  FROM outlier_tree('np', 'v, g', 'outliers', NULL, NULL, NULL, NULL, NULL, NULL)
+  EXCEPT FROM outlier_tree('np', 'v, g', 'outliers', 4, 0.01, 25, 75, 2.67, 8.0)
+);
+----
+0
+
+query I
+SELECT count(*) FROM (
+  FROM outlier_tree('np', 'v, g', NULL)
+  EXCEPT FROM outlier_tree('np', 'v, g', 'summary')
+);
+----
+0
+
+# --- outlier_tree: an unknown output_mode is an error, like the other anomaly functions ---
+
+statement error
+SELECT * FROM outlier_tree('np', 'v, g', 'bogus');
+----
+outlier_tree: output_mode must be 'summary' or 'outliers'
+
+statement error
+SELECT * FROM outlier_tree('np', 'v, g', 'OUTLIERS');
+----
+outlier_tree: output_mode must be 'summary' or 'outliers'

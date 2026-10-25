@@ -68,14 +68,6 @@ Use a regular table (`CREATE TABLE`) instead. The functions that need one are li
 Most parameters are positional. Only a few accept `name := value`; the list is in
 [API conventions](../api/00-conventions.md#named-parameters).
 
-## An INTERNAL Error after passing `NULL`
-
-Some numeric parameters do not accept `NULL` as "use the default": for example `n_trees`,
-`sample_size` and `contamination` of `isolation_forest`, and `eps` and `min_pts` of `dbscan`. A
-`NULL` there raises an `INTERNAL Error`, after which DuckDB refuses further queries in that
-database instance. Pass the default value instead. The module pages say which parameters accept
-`NULL`.
-
 ## `freshness` fails with "No function matches ... '-(TIMESTAMP WITH TIME ZONE, INTERVAL)'"
 
 Without a `reference_time` argument, `freshness` compares against `now()`, which needs DuckDB's
