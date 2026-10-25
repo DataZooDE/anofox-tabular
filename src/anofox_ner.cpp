@@ -939,9 +939,20 @@ std::vector<NEREntity> NERModelManager::RunSingleInference(const std::string &te
         // Truncation drops whole tokens only, so the retained byte offsets
         // are still valid; text beyond the limit is ignored.
         if (tokenized.ids.size() > max_seq_length_) {
-            AnofoxTrace(AnofoxLogLevel::Debug,
-                "ner: Truncating input from " + std::to_string(tokenized.ids.size()) +
-                " to " + std::to_string(max_seq_length_) + " tokens (model limit)");
+            // Warn once per process (a column of long texts would otherwise
+            // flood the log); later truncations are logged at Debug
+            static std::atomic<bool> truncation_warned{false};
+            const std::string detail = "input of " + std::to_string(tokenized.ids.size()) +
+                                       " tokens truncated to " + std::to_string(max_seq_length_) +
+                                       " tokens (model limit)";
+            if (!truncation_warned.exchange(true)) {
+                AnofoxTrace(AnofoxLogLevel::Warn,
+                    "ner: " + detail + "; text beyond " + std::to_string(max_seq_length_) +
+                    " tokens is not scanned for names, organisations, locations or other entities. "
+                    "Split long texts to cover them (this warning is shown once per process)");
+            } else {
+                AnofoxTrace(AnofoxLogLevel::Debug, "ner: " + detail);
+            }
             TruncateTokenizedInput(tokenized, max_seq_length_, tokenizer_->SequenceEndTokenId());
         }
 
