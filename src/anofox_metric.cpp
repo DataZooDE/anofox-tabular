@@ -473,6 +473,7 @@ struct IsolationForestGlobalState : public GlobalTableFunctionState {
 	std::vector<double> scores;
 	std::vector<double> first_column_values;  // univariate numeric path only ("value" output column)
 	std::vector<Value> id_values;              // id_column value per scored row (empty without id_column)
+	std::vector<int64_t> source_row_ids;       // 1-based scan position of each scored row ("row_id")
 	double threshold = 0.0;
 	int64_t total_count = 0;
 	int64_t outlier_count = 0;
@@ -812,17 +813,11 @@ static void IsolationForestExecute(ClientContext &context, TableFunctionInput &d
 		const idx_t id_col_idx = n_checked_cols;
 		column_list += bind_data.id_column.SelectSuffix();
 
-		string null_checks;
-		for (size_t i = 0; i < bind_data.column_names.size(); ++i) {
-			if (i > 0) null_checks += " AND ";
-			null_checks += QuoteSqlIdentifier(bind_data.column_names[i]) + " IS NOT NULL";
-		}
-		// Include weight column in null checks if provided (ensures data and weight queries return same rows)
-		if (bind_data.has_weight_column) {
-			null_checks += " AND " + QuoteSqlIdentifier(bind_data.weight_column) + " IS NOT NULL";
-		}
-
-		string query = "SELECT " + column_list + " FROM " + BuildQueryTableRef(bind_data.table_name) + " WHERE " + null_checks;
+		// No WHERE clause: every row of the scan is read and counted, so row_id
+		// is the 1-based position in the scan order (the table row number),
+		// also after rows that are skipped below because a value is NULL.
+		string query = "SELECT " + column_list + " FROM " + BuildQueryTableRef(bind_data.table_name);
+		int64_t source_row = 0;
 
 		// Stream the input instead of materializing the full result; model
 		// fitting requires the complete dataset, so the feature columns built
@@ -884,6 +879,7 @@ static void IsolationForestExecute(ClientContext &context, TableFunctionInput &d
 				}
 
 				for (idx_t row = 0; row < chunk->size(); ++row) {
+					source_row++;
 					bool valid_row = true;
 					for (idx_t col = 0; col < n_checked_cols; ++col) {
 						if (!formats[col].validity.RowIsValid(formats[col].sel->get_index(row))) {
@@ -893,6 +889,7 @@ static void IsolationForestExecute(ClientContext &context, TableFunctionInput &d
 					}
 					if (!valid_row) continue;
 
+					state.source_row_ids.push_back(source_row);
 					if (bind_data.id_column.Enabled()) {
 						state.id_values.push_back(chunk->data[id_col_idx].GetValue(row));
 					}
@@ -965,6 +962,7 @@ static void IsolationForestExecute(ClientContext &context, TableFunctionInput &d
 				}
 
 				for (idx_t row = 0; row < chunk->size(); ++row) {
+					source_row++;
 					bool valid_row = true;
 					for (idx_t col = 0; col < n_checked_cols; ++col) {
 						if (!formats[col].validity.RowIsValid(formats[col].sel->get_index(row))) {
@@ -974,6 +972,7 @@ static void IsolationForestExecute(ClientContext &context, TableFunctionInput &d
 					}
 					if (!valid_row) continue;
 
+					state.source_row_ids.push_back(source_row);
 					if (bind_data.id_column.Enabled()) {
 						state.id_values.push_back(chunk->data[id_col_idx].GetValue(row));
 					}
@@ -1040,7 +1039,7 @@ static void IsolationForestExecute(ClientContext &context, TableFunctionInput &d
 
 		for (idx_t i = 0; i < count; ++i) {
 			idx_t r = state.current_row + i;
-			row_ids[i] = static_cast<int64_t>(r + 1);  // 1-indexed
+			row_ids[i] = state.source_row_ids[r];
 			if (id_vec) {
 				// Scores are in scan order, like the ids captured with them
 				id_vec->SetValue(i, state.id_values[r]);
@@ -1117,6 +1116,7 @@ struct DBSCANGlobalState : public GlobalTableFunctionState {
 	std::vector<double> anomaly_scores;
 	std::vector<double> first_column_values; // univariate only
 	std::vector<Value> id_values;            // id_column value per point (empty without id_column)
+	std::vector<int64_t> source_row_ids;     // 1-based scan position of each point ("row_id")
 	int64_t total_count = 0;
 	int64_t cluster_count = 0;
 	int64_t noise_count = 0;
@@ -1276,21 +1276,21 @@ static void DBSCANExecute(ClientContext &context, TableFunctionInput &data_p, Da
 		// Materialize the selected columns as DOUBLE, skipping rows with NULLs
 		// (same query path as the isolation forest table function)
 		string column_list;
-		string null_checks;
 		for (size_t i = 0; i < bind_data.column_names.size(); ++i) {
 			if (i > 0) {
 				column_list += ", ";
-				null_checks += " AND ";
 			}
 			column_list += "CAST(" + QuoteSqlIdentifier(bind_data.column_names[i]) + " AS DOUBLE)";
-			null_checks += QuoteSqlIdentifier(bind_data.column_names[i]) + " IS NOT NULL";
 		}
 		// The id column (if any) is read last in the same query, so each id
 		// stays with its own point; it is never a filter (NULL ids pass through)
 		const idx_t n_features = bind_data.column_names.size();
 		column_list += bind_data.id_column.SelectSuffix();
-		string query = "SELECT " + column_list + " FROM " + BuildQueryTableRef(bind_data.table_name) + " WHERE " +
-		               null_checks;
+		// No WHERE clause: every row of the scan is counted, so row_id is the
+		// 1-based position in the scan order (the table row number), also
+		// after rows that are skipped below because a value is NULL.
+		string query = "SELECT " + column_list + " FROM " + BuildQueryTableRef(bind_data.table_name);
+		int64_t source_row = 0;
 
 		// Stream the input instead of materializing the full result; the
 		// clustering algorithm requires the complete dataset, so the feature
@@ -1315,6 +1315,7 @@ static void DBSCANExecute(ClientContext &context, TableFunctionInput &data_p, Da
 			}
 
 			for (idx_t row = 0; row < chunk->size(); ++row) {
+				source_row++;
 				bool valid_row = true;
 				for (idx_t col = 0; col < n_features; ++col) {
 					if (!formats[col].validity.RowIsValid(formats[col].sel->get_index(row))) {
@@ -1326,6 +1327,7 @@ static void DBSCANExecute(ClientContext &context, TableFunctionInput &data_p, Da
 					continue;
 				}
 
+				state.source_row_ids.push_back(source_row);
 				if (bind_data.id_column.Enabled()) {
 					state.id_values.push_back(chunk->data[n_features].GetValue(row));
 				}
@@ -1388,7 +1390,7 @@ static void DBSCANExecute(ClientContext &context, TableFunctionInput &data_p, Da
 		for (idx_t i = 0; i < count; ++i) {
 			idx_t r = state.current_row + i;
 			auto &pt = state.points[r];
-			row_ids[i] = static_cast<int64_t>(r + 1);  // 1-indexed
+			row_ids[i] = state.source_row_ids[r];
 			if (id_vec) {
 				// Points are in scan order, like the ids captured with them
 				id_vec->SetValue(i, state.id_values[r]);

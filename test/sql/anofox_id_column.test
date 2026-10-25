@@ -19,9 +19,9 @@ SET anofox_tab_trace_enabled = false
 # order_id  VARCHAR form of int_id
 # nid       int_id with some NULL ids (rows are still analyzed)
 # val/val2  features; every row with pos % 10 = 3 has NULL features and is
-#           skipped, so positional numbering of the analyzed rows drifts
-#           away from pos. Planted outliers: pos 1000 in val (int_id 2362),
-#           pos 2000 in val2 (int_id 1723).
+#           skipped; row_id is still the table row number, i.e. pos.
+#           Planted outliers: pos 1000 in val (int_id 2362), pos 2000 in
+#           val2 (int_id 1723).
 statement ok
 CREATE TABLE idt AS
 SELECT i AS pos,
@@ -76,9 +76,9 @@ JOIN idt t USING (int_id)
 ----
 2700	0
 
-# row_id keeps its meaning (position among the analyzed rows)
+# row_id is the table row number, so it equals pos; skipped rows leave gaps
 query I
-SELECT count(*) FILTER (WHERE row_id <> pos - (pos + 7) // 10)
+SELECT count(*) FILTER (WHERE row_id <> pos)
 FROM isolation_forest('idt', 'val', 100, 256, 0.05, 'scores', 42, id_column := 'pos')
 ----
 0
@@ -118,7 +118,7 @@ ORD-02362
 ORD-01723
 
 query I
-SELECT count(*) FILTER (WHERE row_id <> pos - (pos + 7) // 10)
+SELECT count(*) FILTER (WHERE row_id <> pos)
 FROM isolation_forest_mv('idt', 'val,val2', 100, 256, 0.05, 'scores', 42, id_column := 'pos')
 ----
 0
@@ -134,14 +134,14 @@ WHERE a.anomaly_score = b.anomaly_score
 2700
 
 query I
-SELECT count(*) FILTER (WHERE row_id <> pos - (pos + 7) // 10)
+SELECT count(*) FILTER (WHERE row_id <> pos)
 FROM isolation_forest_mv('idt', 'val,val2,cat', 100, 256, 0.05, 'scores', 42, id_column := 'pos')
 ----
 0
 
 # Weighted path (the weight column is read in the same query)
 query I
-SELECT count(*) FILTER (WHERE row_id <> pos - (pos + 7) // 10)
+SELECT count(*) FILTER (WHERE row_id <> pos)
 FROM isolation_forest_mv('idt', 'val,val2', 100, 256, 0.05, 'scores', 42, 1, 'uniform', 'depth', 'w', id_column := 'pos')
 ----
 0
@@ -189,7 +189,7 @@ ORD-01723
 ORD-02362
 
 query I
-SELECT count(*) FILTER (WHERE row_id <> pos - (pos + 7) // 10)
+SELECT count(*) FILTER (WHERE row_id <> pos)
 FROM anofox_tab_dbscan_mv('idt', 'val,val2', 0.5, 5, 'clusters', id_column := 'pos')
 ----
 0

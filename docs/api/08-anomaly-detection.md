@@ -109,7 +109,7 @@ A `NULL` for `n_trees`, `sample_size`, `contamination` or `output_mode` keeps th
 
 | Column | Type | Description |
 |--------|------|-------------|
-| `row_id` | `BIGINT` | 1-based position among the analyzed rows (rows with a `NULL` value are not counted) |
+| `row_id` | `BIGINT` | 1-based row number in the table; skipped `NULL` rows keep their number. See [Row numbering](#row-numbering-row_id) |
 | `<id_column>` | the column's type | Only with `id_column` |
 | `value` | `DOUBLE` | The column value |
 | `anomaly_score` | `DOUBLE` | Higher is more anomalous |
@@ -368,7 +368,7 @@ A `NULL` for `eps`, `min_pts` or `output_mode` keeps the default.
 
 | Column | Type | Description |
 |--------|------|-------------|
-| `row_id` | `BIGINT` | 1-based position among the analyzed rows |
+| `row_id` | `BIGINT` | 1-based row number in the table; skipped `NULL` rows keep their number. See [Row numbering](#row-numbering-row_id) |
 | `<id_column>` | the column's type | Only with `id_column` |
 | `value` | `DOUBLE` | The column value |
 | `cluster_id` | `INTEGER` | Cluster number, `-1` for noise |
@@ -509,7 +509,7 @@ thresholds for small tables.
 
 | Column | Type | Description |
 |--------|------|-------------|
-| `row_id` | `BIGINT` | 1-based position of the row in the table; excluded `NULL` rows still count |
+| `row_id` | `BIGINT` | 1-based row number in the table; skipped `NULL` rows keep their number. See [Row numbering](#row-numbering-row_id) |
 | `<id_column>` | the column's type | Only with `id_column` |
 | `column_name` | `VARCHAR` | Column with the outlier |
 | `outlier_value` | `VARCHAR` | The value as text |
@@ -604,12 +604,61 @@ FROM outlier_tree('staff', 'level, salary', 'summary', 4, 0.05, 10, 10, 2.67, 4.
 
 ---
 
+## Row numbering (`row_id`)
+
+The row-level outputs of every anomaly function identify a row by `row_id`:
+
+- `row_id` is the 1-based number of the row in the order the input is scanned, the number
+  `SELECT row_number() OVER () AS row_id, * FROM <table_name>` gives the same row.
+- Every scanned row is counted, including rows that are skipped because a selected column (or
+  the `weight_column`) is `NULL`. A skipped row keeps its number; it is only absent from the
+  output. So the row ids of the output can have gaps.
+- All functions number the same way, so the same row has the same `row_id` in
+  `isolation_forest`, `isolation_forest_mv`, `dbscan`, `dbscan_mv` and `outlier_tree`.
+- For a view, the row number follows the rows the view returns, not the base table.
+- The scan order is the insertion order while `preserve_insertion_order` is `true` (the DuckDB
+  default). With `SET preserve_insertion_order = false` DuckDB can scan the rows in any order;
+  join on a key with [`id_column`](#identifier-pass-through-id_column) in that case.
+
+> **Changed**: before this release `isolation_forest`, `isolation_forest_mv`, `dbscan` and
+> `dbscan_mv` numbered only the analyzed rows, so after a row with a `NULL` value every
+> `row_id` was too small and a join on it returned the wrong rows. `outlier_tree` already used
+> the table row number. Tables with no `NULL` in the analyzed columns get the same row ids as
+> before.
+
+In this view three temperatures are missing. The rows are skipped, but readings 50 and 120 keep
+row ids 50 and 120, so the join by row number finds them:
+
+```sql
+CREATE VIEW readings_gaps AS
+SELECT reading_id,
+       CASE WHEN reading_id IN (10, 20, 30) THEN NULL ELSE temperature END AS temperature
+FROM readings;
+
+SELECT s.row_id, n.reading_id, n.temperature, round(s.anomaly_score, 3) AS score
+FROM isolation_forest('readings_gaps', 'temperature', 100, 256, 0.01, 'scores', 42) s
+JOIN (SELECT row_number() OVER () AS rn, * FROM readings_gaps) n ON n.rn = s.row_id
+WHERE s.is_anomaly
+ORDER BY s.row_id;
+```
+
+```text
+┌────────┬────────────┬───────────────┬────────┐
+│ row_id │ reading_id │  temperature  │ score  │
+│ int64  │   int64    │ decimal(22,1) │ double │
+├────────┼────────────┼───────────────┼────────┤
+│     50 │         50 │          95.0 │  0.902 │
+│    120 │        120 │         -30.0 │  0.887 │
+└────────┴────────────┴───────────────┴────────┘
+```
+
+---
+
 ## Identifier pass-through (`id_column`)
 
-The row-level outputs identify rows by `row_id`, a position. For `isolation_forest*` and
-`dbscan*` it counts only the analyzed rows, so after a skipped `NULL` row it no longer matches
-the table position. The named parameter `id_column := '<column>'` adds the value of an input
-column to every output row, so results join back to the input by key:
+The row-level outputs identify rows by `row_id`, a position (see
+[Row numbering](#row-numbering-row_id)). The named parameter `id_column := '<column>'` adds the
+value of an input column to every output row, so results join back to the input by key:
 
 | Function | Row-level mode |
 |----------|----------------|

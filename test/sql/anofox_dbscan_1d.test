@@ -26,23 +26,24 @@ SELECT i AS id,
 FROM range(0, 400) t(i)
 ORDER BY i
 
+# row_id is the table row number, so the NULL rows leave gaps in it
 query T
 SELECT md5(string_agg(row_id || ':' || value || ':' || cluster_id || ':' || point_type || ':' || neighbor_count || ':' || round(anomaly_score, 12) || ':' || is_anomaly, ',' ORDER BY row_id))
 FROM dbscan('db1d', 'v', 0.2, 6, 'clusters')
 ----
-7701b6cd0f137c5b22044630b8f092d6
+17281a7968969bdc16252eeedaef7284
 
 query T
 SELECT md5(string_agg(row_id || ':' || value || ':' || cluster_id || ':' || point_type || ':' || neighbor_count || ':' || round(anomaly_score, 12) || ':' || is_anomaly, ',' ORDER BY row_id))
 FROM dbscan('db1d', 'v', 0.1, 4, 'clusters')
 ----
-250b45a78616cc8bac295b554716f913
+3cab22721913aeb7341c1c01fb079cb6
 
 query T
 SELECT md5(string_agg(row_id || ':' || value || ':' || cluster_id || ':' || point_type || ':' || neighbor_count || ':' || round(anomaly_score, 12) || ':' || is_anomaly, ',' ORDER BY row_id))
 FROM dbscan('db1d', 'v', 0.05, 5, 'clusters')
 ----
-7c10fca431930f7f14ead409b85ffe7b
+760f949704c2aa15a4d73e02aac96c87
 
 query TIIIIR
 SELECT status, cluster_count, noise_count, total_count, largest_cluster_size, round(noise_rate, 6)

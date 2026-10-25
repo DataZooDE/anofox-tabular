@@ -73,8 +73,9 @@ Orders 1041 and 1200 are not: an amount of 850 is normal for the table as a whol
 
 ## 3. Join the anomalies back to the table
 
-`row_id` is a position among the analyzed rows. Join on a key instead: `id_column` copies the
-key into the result.
+`row_id` is the 1-based row number in the table (rows skipped for a `NULL` value keep their
+number; see [Row numbering](../api/08-anomaly-detection.md#row-numbering-row_id)). A key is
+easier to join on: `id_column` copies the key into the result.
 
 ```sql
 SELECT o.order_id, o.segment, o.amount, o.items

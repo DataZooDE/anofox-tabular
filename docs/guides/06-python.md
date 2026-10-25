@@ -213,8 +213,10 @@ print(scores[scores["is_anomaly"]][["sensor_id", "value"]].to_string(index=False
 With `output_mode="summary"` the function returns a dict with the summary row instead. Pass a
 `seed` for scores that are the same on every run; without it the trees are random. The
 Python defaults are the SQL defaults: a parameter you leave out is passed as `NULL`, so the
-extension applies its own default. `dbscan` returns one row per input row with
-`output_mode="clusters"`, `outlier_tree` with `output_mode="outliers"`.
+extension applies its own default. `dbscan` returns one row per analyzed row with
+`output_mode="clusters"`, `outlier_tree` one row per outlier with `output_mode="outliers"`. Rows
+with a `NULL` in a selected column are left out; `row_id` is still the 1-based row number in
+the input, so the remaining rows keep their numbers.
 
 ## Diff two DataFrames
 
