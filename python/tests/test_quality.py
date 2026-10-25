@@ -473,3 +473,46 @@ class TestCheckSuite:
         from anofox import quality
         with pytest.raises(ValueError, match="check_name"):
             quality.define_checks(conn, [{"check_type": "volume", "table_name": "_suite_orders"}])
+
+
+class TestNamedResultFields:
+    """Result dicts carry every result column by name, with floats instead of Decimal."""
+
+    @staticmethod
+    def _no_decimal(result):
+        from decimal import Decimal
+        return not any(isinstance(v, Decimal) for k, v in result.items() if k != "_raw")
+
+    def test_null_rate_fields(self, conn, sparse_table):
+        from anofox import quality
+        result = quality.null_rate(conn, sparse_table, "val", max_null_rate=0.1)
+        assert result["message"].startswith("Null rate")
+        assert isinstance(result["null_rate"], float)
+        assert result["max_null_rate"] == 0.1 and isinstance(result["max_null_rate"], float)
+        assert isinstance(result["null_count"], int) and isinstance(result["total_count"], int)
+        assert result["message"] == result["_raw"][-1]
+        assert self._no_decimal(result)
+
+    def test_volume_fields(self, conn, quality_table):
+        from anofox import quality
+        result = quality.volume(conn, quality_table, min_rows=10)
+        assert result["row_count"] == 100
+        assert result["min_rows"] == 10
+        assert result["max_rows"] is None
+        assert "message" in result
+
+    def test_zscore_threshold_is_float(self, conn, quality_table):
+        from anofox import quality
+        result = quality.zscore(conn, quality_table, "score", threshold=3.0)
+        assert result["threshold"] == 3.0 and isinstance(result["threshold"], float)
+        assert self._no_decimal(result)
+
+    def test_distinct_count_without_max(self, conn, quality_table):
+        from anofox import quality
+        result = quality.distinct_count(conn, quality_table, "category", min_distinct=2)
+        assert result["distinct_count"] == 5
+        assert result["max_distinct"] is None
+
+    def test_range_rows_have_no_decimal(self, conn, sparse_table):
+        from anofox import quality
+        assert self._no_decimal(quality.iqr(conn, sparse_table, "val"))

@@ -7,17 +7,21 @@ call (on a file-backed connection, into that database file) and dropped
 afterwards::
 
     result = quality.volume(conn, df, min_rows=10)
+
+Each check returns a dict with the call's parameters and every result column
+of the SQL function by name: ``status``, the metric value(s), the thresholds
+and ``message`` (DECIMAL values as float). ``_raw`` keeps the raw result row.
 """
 
 from __future__ import annotations
 
 import json
+from decimal import Decimal
 from typing import Any, Optional, Union
 
 from ._sql import quote_ident
 from ._table import TableLike, accepts_dataframes
 
-_MAX_BIGINT = 9223372036854775807
 
 
 @accepts_dataframes("table_name")
@@ -51,12 +55,13 @@ def volume(
     if max_rows is not None and max_rows < min_rows:
         raise ValueError("max_rows must be >= min_rows")
 
-    rows = conn.execute(
+    cursor = conn.execute(
         "SELECT * FROM anofox_tab_volume(?, ?::BIGINT, ?::BIGINT)",
-        [table_name, min_rows, max_rows if max_rows is not None else _MAX_BIGINT],
-    ).fetchall()
+        [table_name, min_rows, max_rows],
+    )
 
-    return _parse_table_result(rows, {"min_rows": min_rows, "max_rows": max_rows})
+    return _parse_table_result(
+cursor, {"min_rows": min_rows, "max_rows": max_rows})
 
 
 @accepts_dataframes("table_name")
@@ -85,10 +90,11 @@ def null_rate(
     dict
         ``{"status": "pass"|"fail", "null_rate": float, ...}``
     """
-    rows = conn.execute(
+    cursor = conn.execute(
         "SELECT * FROM anofox_tab_null_rate(?, ?, ?::DOUBLE)", [table_name, column_name, max_null_rate]
-    ).fetchall()
-    return _parse_table_result(rows, {"column": column_name, "max_null_rate": max_null_rate})
+    )
+    return _parse_table_result(
+cursor, {"column": column_name, "max_null_rate": max_null_rate})
 
 
 @accepts_dataframes("table_name")
@@ -120,13 +126,12 @@ def distinct_count(
     dict
         ``{"status": "pass"|"fail", "distinct_count": int, ...}``
     """
-    _max = max_distinct if max_distinct is not None else min_distinct * 1_000_000
-    rows = conn.execute(
+    cursor = conn.execute(
         "SELECT * FROM anofox_tab_distinct_count(?, ?, ?::BIGINT, ?::BIGINT)",
-        [table_name, column_name, min_distinct, _max],
-    ).fetchall()
+        [table_name, column_name, min_distinct, max_distinct],
+    )
     return _parse_table_result(
-        rows, {"column": column_name, "min_distinct": min_distinct, "max_distinct": max_distinct}
+        cursor, {"column": column_name, "min_distinct": min_distinct, "max_distinct": max_distinct}
     )
 
 
@@ -160,17 +165,17 @@ def freshness(
         ``{"status": "pass"|"fail", ...}``
     """
     if warn_age is not None:
-        rows = conn.execute(
+        cursor = conn.execute(
             "SELECT * FROM anofox_tab_freshness(?, ?, ?::INTERVAL, ?::INTERVAL)",
             [table_name, timestamp_column, max_age, warn_age],
-        ).fetchall()
+        )
     else:
-        rows = conn.execute(
+        cursor = conn.execute(
             "SELECT * FROM anofox_tab_freshness(?, ?, ?::INTERVAL)",
             [table_name, timestamp_column, max_age],
-        ).fetchall()
+        )
     return _parse_table_result(
-        rows, {"column": timestamp_column, "max_age": max_age, "warn_age": warn_age}
+        cursor, {"column": timestamp_column, "max_age": max_age, "warn_age": warn_age}
     )
 
 
@@ -200,10 +205,11 @@ def zscore(
     dict
         ``{"status": "pass"|"fail", ...}``
     """
-    rows = conn.execute(
+    cursor = conn.execute(
         "SELECT * FROM anofox_tab_zscore(?, ?, ?::DOUBLE)", [table_name, column_name, threshold]
-    ).fetchall()
-    return _parse_table_result(rows, {"column": column_name, "threshold": threshold})
+    )
+    return _parse_table_result(
+cursor, {"column": column_name, "threshold": threshold})
 
 
 @accepts_dataframes("table_name")
@@ -232,10 +238,11 @@ def iqr(
     dict
         ``{"status": "pass"|"fail", ...}``
     """
-    rows = conn.execute(
+    cursor = conn.execute(
         "SELECT * FROM anofox_tab_iqr(?, ?, ?::DOUBLE)", [table_name, column_name, multiplier]
-    ).fetchall()
-    return _parse_table_result(rows, {"column": column_name, "multiplier": multiplier})
+    )
+    return _parse_table_result(
+cursor, {"column": column_name, "multiplier": multiplier})
 
 
 @accepts_dataframes("table_name")
@@ -261,11 +268,12 @@ def schema_check(
     dict
         ``{"status": "pass"|"fail", ...}``
     """
-    rows = conn.execute(
+    cursor = conn.execute(
         "SELECT * FROM anofox_tab_schema_check(?, ?::VARCHAR[])",
         [table_name, list(required_columns)],
-    ).fetchall()
-    return _parse_table_result(rows, {"required_columns": required_columns})
+    )
+    return _parse_table_result(
+cursor, {"required_columns": required_columns})
 
 
 @accepts_dataframes("table_name")
@@ -301,17 +309,17 @@ def regex_match(
         ``{"status": "pass"|"fail", ...}``
     """
     if max_match_rate is not None:
-        rows = conn.execute(
+        cursor = conn.execute(
             "SELECT * FROM anofox_tab_regex_match(?, ?, ?, ?::DOUBLE, ?::DOUBLE)",
             [table_name, column_name, pattern, min_match_rate, max_match_rate],
-        ).fetchall()
+        )
     else:
-        rows = conn.execute(
+        cursor = conn.execute(
             "SELECT * FROM anofox_tab_regex_match(?, ?, ?, ?::DOUBLE)",
             [table_name, column_name, pattern, min_match_rate],
-        ).fetchall()
+        )
     return _parse_table_result(
-        rows,
+        cursor,
         {
             "column": column_name,
             "pattern": pattern,
@@ -350,12 +358,12 @@ def values_in_set(
     dict
         ``{"status": "pass"|"fail", ...}``
     """
-    rows = conn.execute(
+    cursor = conn.execute(
         "SELECT * FROM anofox_tab_values_in_set(?, ?, ?::VARCHAR[], ?::DOUBLE)",
         [table_name, column_name, [str(v) for v in allowed_values], min_rate],
-    ).fetchall()
+    )
     return _parse_table_result(
-        rows, {"column": column_name, "allowed_values": allowed_values, "min_rate": min_rate}
+        cursor, {"column": column_name, "allowed_values": allowed_values, "min_rate": min_rate}
     )
 
 
@@ -393,12 +401,12 @@ def agg_check(
     """
     if agg.lower() not in ("avg", "min", "max", "sum", "median", "stddev"):
         raise ValueError("agg must be one of 'avg', 'min', 'max', 'sum', 'median', 'stddev'")
-    rows = conn.execute(
+    cursor = conn.execute(
         "SELECT * FROM anofox_tab_agg_check(?, ?, ?, ?::DOUBLE, ?::DOUBLE)",
         [table_name, column_name, agg.lower(), lower_threshold, upper_threshold],
-    ).fetchall()
+    )
     return _parse_table_result(
-        rows,
+        cursor,
         {
             "column": column_name,
             "agg": agg.lower(),
@@ -437,11 +445,12 @@ def duplicate_count(
     if max_duplicates < 0:
         raise ValueError("max_duplicates must be >= 0")
     cols = ",".join(column_names) if isinstance(column_names, list) else column_names
-    rows = conn.execute(
+    cursor = conn.execute(
         "SELECT * FROM anofox_tab_duplicate_count(?, ?, ?::BIGINT)",
         [table_name, cols, max_duplicates],
-    ).fetchall()
-    return _parse_table_result(rows, {"columns": cols, "max_duplicates": max_duplicates})
+    )
+    return _parse_table_result(
+cursor, {"columns": cols, "max_duplicates": max_duplicates})
 
 
 @accepts_dataframes("table_name")
@@ -478,12 +487,12 @@ def occurrence(
     """
     if mode.lower() not in ("max", "min"):
         raise ValueError("mode must be 'max' or 'min'")
-    rows = conn.execute(
+    cursor = conn.execute(
         "SELECT * FROM anofox_tab_occurrence(?, ?, ?, ?::BIGINT, ?::BIGINT)",
         [table_name, column_name, mode.lower(), lower_threshold, upper_threshold],
-    ).fetchall()
+    )
     return _parse_table_result(
-        rows,
+        cursor,
         {
             "column": column_name,
             "mode": mode.lower(),
@@ -529,12 +538,12 @@ def match_rate(
     """
     lk = ",".join(left_keys) if isinstance(left_keys, list) else left_keys
     rk = ",".join(right_keys) if isinstance(right_keys, list) else right_keys
-    rows = conn.execute(
+    cursor = conn.execute(
         "SELECT * FROM anofox_tab_match_rate(?, ?, ?, ?, ?::DOUBLE)",
         [left_table, right_table, lk, rk, min_rate],
-    ).fetchall()
+    )
     return _parse_table_result(
-        rows, {"left_keys": lk, "right_keys": rk, "min_rate": min_rate}
+        cursor, {"left_keys": lk, "right_keys": rk, "min_rate": min_rate}
     )
 
 
@@ -568,10 +577,11 @@ def compliance(
     dict
         ``{"status": "pass"|"fail", "compliance_rate": float, ...}``
     """
-    rows = conn.execute(
+    cursor = conn.execute(
         "SELECT * FROM anofox_tab_compliance(?, ?, ?::DOUBLE)", [table_name, expression, min_rate]
-    ).fetchall()
-    return _parse_table_result(rows, {"expression": expression, "min_rate": min_rate})
+    )
+    return _parse_table_result(
+cursor, {"expression": expression, "min_rate": min_rate})
 
 
 @accepts_dataframes("table_name")
@@ -626,9 +636,9 @@ def rel_count_change(
     )
     if start_date is not None or end_date is not None:
         return _fetch_dicts(conn, sql, params)
-    rows = conn.execute(sql, params).fetchall()
+    cursor = conn.execute(sql, params)
     return _parse_table_result(
-        rows,
+        cursor,
         {
             "date_column": date_column,
             "count_column": count_column,
@@ -693,9 +703,9 @@ def metric_anomaly_iqr(
     )
     if start_date is not None or end_date is not None:
         return _fetch_dicts(conn, sql, params)
-    rows = conn.execute(sql, params).fetchall()
+    cursor = conn.execute(sql, params)
     return _parse_table_result(
-        rows,
+        cursor,
         {
             "date_column": date_column,
             "metric_column": metric_column,
@@ -761,9 +771,9 @@ def rolling_values_in_set(
     )
     if start_date is not None or end_date is not None:
         return _fetch_dicts(conn, sql, params)
-    rows = conn.execute(sql, params).fetchall()
+    cursor = conn.execute(sql, params)
     return _parse_table_result(
-        rows,
+        cursor,
         {
             "column": column_name,
             "allowed_values": allowed_values,
@@ -893,35 +903,30 @@ def _fetch_dicts(conn: Any, sql: str, params: list) -> list[dict]:
     """Run a query and return every row as a dict keyed by the result column names."""
     cursor = conn.execute(sql, params)
     columns = [d[0] for d in cursor.description]
-    return [dict(zip(columns, row)) for row in cursor.fetchall()]
+    return [{c: _to_python(v) for c, v in zip(columns, row)} for row in cursor.fetchall()]
 
 
-def _parse_table_result(rows: list, extra: dict) -> dict:
+def _to_python(value: Any) -> Any:
+    """Plain Python value for a result dict: DECIMAL thresholds become float."""
+    return float(value) if isinstance(value, Decimal) else value
+
+
+def _parse_table_result(cursor: Any, extra: dict) -> dict:
     """
-    Convert a table-function result row list into a result dict.
+    Convert the first row of a check's result into a result dict.
 
-    The first row contains column names from cursor description, or we rely
-    on the known metric column names.  The ``status`` field comes from the
-    extension itself (a VARCHAR column typically "pass" or "fail").
+    The dict holds the call's parameters (*extra*), then every result column
+    by name (``status``, the metric value(s), the thresholds, ``message``),
+    with DECIMAL values converted to float. ``_raw`` keeps the row as returned
+    by DuckDB, in column order, for backward compatibility.
     """
+    columns = [d[0] for d in cursor.description]
+    rows = cursor.fetchall()
     if not rows:
         return {"status": "error", "error": "no rows returned", **extra}
 
     row = rows[0]
-    if len(row) == 1:
-        return {"status": str(row[0]), **extra}
-
-    # Multiple columns — build dict from the row values
-    result: dict = {}
-    for val in row:
-        if isinstance(val, str) and val in ("pass", "fail", "warn", "error"):
-            result["status"] = val
-            break
-
-    if "status" not in result:
-        result["status"] = "pass" if row else "error"
-
-    result.update(extra)
-    # Attach raw values for debugging
+    named = {c: _to_python(v) for c, v in zip(columns, row)}
+    result: dict = {"status": str(named.get("status", "error")), **extra, **named}
     result["_raw"] = list(row)
     return result
