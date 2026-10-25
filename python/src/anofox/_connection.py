@@ -105,20 +105,21 @@ class AnofoxConnection:
         """
         Profile a DataFrame or named table.
 
-        Returns a pandas DataFrame with per-column quality metrics:
-        null_rate, distinct_count, and row volume.
+        Returns a DataFrame with per-column quality metrics: null_rate,
+        distinct_count, and row volume. The DataFrame is a polars DataFrame
+        when *df_or_table* is one, else a pandas DataFrame.
 
         Parameters
         ----------
         df_or_table:
             Either a pandas/polars DataFrame or a string table name.
         """
-        import pandas as pd
         from ._utils import detect_df_type, drop_df_table, register_df_as_table
 
         if isinstance(df_or_table, str):
             table_name = df_or_table
             registered = False
+            df_type = "pandas"
         else:
             df_type = detect_df_type(df_or_table)
             table_name = register_df_as_table(self._conn, df_or_table)
@@ -166,7 +167,12 @@ class AnofoxConnection:
                     "distinct_rate": round(distinct_count / total if total > 0 else 0.0, 4),
                 })
 
-            return pd.DataFrame(rows)
+            return _rows_to_frame(
+                rows,
+                ["column", "type", "row_count", "null_count", "null_rate",
+                 "distinct_count", "distinct_rate"],
+                df_type,
+            )
         finally:
             if registered:
                 drop_df_table(self._conn, table_name)
@@ -186,13 +192,13 @@ class AnofoxConnection:
         Returns
         -------
         ValidationResult
-            Contains ``passed`` (bool) and ``failures``, a DataFrame with the
+            Contains ``passed`` (bool) and ``failures``, a DataFrame (polars
+            for a polars *df*, else pandas) with the
             columns ``column``, ``row_id``, ``value`` and ``rule``. ``row_id``
             identifies the failing row of *df*: its index label for a pandas
             DataFrame, its 0-based row position for a polars DataFrame.
         """
         from .validate import EmailRule, PhoneRule
-        import pandas as pd
         from ._utils import POSITION_COLUMN, detect_df_type, registered_view
 
         df_type = detect_df_type(df)
@@ -224,9 +230,7 @@ class AnofoxConnection:
                             "rule": rule_name,
                         })
 
-        failures_df = pd.DataFrame(failure_rows) if failure_rows else pd.DataFrame(
-            columns=["column", "row_id", "value", "rule"]
-        )
+        failures_df = _rows_to_frame(failure_rows, ["column", "row_id", "value", "rule"], df_type)
         return ValidationResult(passed=len(failure_rows) == 0, failures=failures_df)
 
     def quality_check(self, df: Any, rules: dict) -> "QualityResult":
@@ -282,6 +286,22 @@ class AnofoxConnection:
             status="pass" if overall_passed else "fail",
             checks=results,
         )
+
+
+def _rows_to_frame(rows: list[dict], columns: list[str], df_type: str) -> Any:
+    """Build a pandas or polars DataFrame with *columns* from a list of row dicts."""
+    if df_type == "polars":
+        import polars as pl
+        if not rows:
+            return pl.DataFrame({c: [] for c in columns})
+        # Values of several columns can differ in type; strict=False lets
+        # polars pick a common supertype instead of raising.
+        try:
+            return pl.from_dicts(rows, schema=columns, strict=False, infer_schema_length=None)
+        except TypeError:  # polars < 1.0 has no 'strict'
+            return pl.from_dicts(rows, schema=columns, infer_schema_length=None)
+    import pandas as pd
+    return pd.DataFrame(rows, columns=columns)
 
 
 class QualityResult:
@@ -350,8 +370,10 @@ class ValidationResult:
         badge = (
             f'<span style="color:{status_color};font-weight:bold">{badge_label}</span>'
         )
-        if self.failures.empty:
+        if len(self.failures) == 0:
             failures_html = "<p style='color:#888'>No failures</p>"
-        else:
+        elif hasattr(self.failures, "to_html"):
             failures_html = self.failures.to_html(index=False)
+        else:  # polars
+            failures_html = self.failures._repr_html_()
         return f"<div>{badge}<br/>{failures_html}</div>"

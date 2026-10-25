@@ -29,6 +29,17 @@ def resolve_table(conn: Any, table_or_df: Union[str, Any]) -> tuple[str, bool]:
     return table_name, True
 
 
+def output_df_type(*inputs: Any) -> str:
+    """
+    DataFrame library for a result: ``"polars"`` when the first DataFrame among
+    *inputs* is a polars DataFrame, else ``"pandas"`` (also for table names).
+    """
+    for value in inputs:
+        if not isinstance(value, str):
+            return detect_df_type(value)
+    return "pandas"
+
+
 def cleanup_table(conn: Any, table_name: str, was_registered: bool) -> None:
     """Drop a table only when it was created by :func:`resolve_table`."""
     if was_registered:

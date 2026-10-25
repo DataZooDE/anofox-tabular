@@ -7,7 +7,7 @@ from __future__ import annotations
 from typing import Any, Optional, Union
 
 from ._sql import fetch_frame
-from ._table import cleanup_table, resolve_table
+from ._table import cleanup_table, output_df_type, resolve_table
 
 
 def joindiff(
@@ -41,7 +41,7 @@ def joindiff(
 
     Returns
     -------
-    pd.DataFrame
+    DataFrame (pandas, or polars when a polars DataFrame is passed)
         Rows with ``diff_type`` column indicating change type.
     """
     src_name, src_registered = resolve_table(conn, src)
@@ -58,7 +58,7 @@ def joindiff(
                 query += ", true"
         query += ")"
 
-        result = fetch_frame(conn, query, params)
+        result = fetch_frame(conn, query, params, output_df_type(src, tgt))
     finally:
         cleanup_table(conn, src_name, src_registered)
         cleanup_table(conn, tgt_name, tgt_registered)
@@ -95,7 +95,7 @@ def hashdiff(
 
     Returns
     -------
-    pd.DataFrame
+    DataFrame (pandas, or polars when a polars DataFrame is passed)
         Rows where hashes differ, with ``diff_type`` column.
     """
     src_name, src_registered = resolve_table(conn, src)
@@ -113,7 +113,7 @@ def hashdiff(
                 params.append(bisection_factor)
         query += ")"
 
-        result = fetch_frame(conn, query, params)
+        result = fetch_frame(conn, query, params, output_df_type(src, tgt))
     finally:
         cleanup_table(conn, src_name, src_registered)
         cleanup_table(conn, tgt_name, tgt_registered)

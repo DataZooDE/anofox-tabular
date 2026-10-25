@@ -2,7 +2,8 @@
 Data profiling wrappers for anofox-tabular.
 
 Functions accept either a table name string or a DataFrame (pandas/polars).
-All functions return a pandas DataFrame.
+All functions return a DataFrame of the input's library (polars for a polars
+DataFrame, else pandas).
 """
 
 from __future__ import annotations
@@ -10,7 +11,7 @@ from __future__ import annotations
 from typing import Any, Optional, Union
 
 from ._sql import fetch_frame
-from ._table import cleanup_table, resolve_table
+from ._table import cleanup_table, output_df_type, resolve_table
 
 
 def profile_table(
@@ -39,7 +40,7 @@ def profile_table(
 
     Returns
     -------
-    pandas.DataFrame
+    DataFrame (pandas, or polars for a polars input)
         27 columns: column_name, column_type, row_count, null_count,
         null_rate, distinct_count, distinct_rate, min_val, max_val,
         mean, median, stddev, p25, p75, skewness, kurtosis, top_values,
@@ -53,6 +54,7 @@ def profile_table(
             conn,
             "SELECT * FROM anofox_tab_profile_table(?, ?::VARCHAR[], ?::BIGINT, ?::BOOLEAN)",
             [table_name, list(columns or []), sample_size, bool(exact)],
+            output_df_type(table_or_df),
         )
     finally:
         cleanup_table(conn, table_name, registered)
@@ -67,7 +69,7 @@ def profile_summary(
 
     Returns
     -------
-    pandas.DataFrame
+    DataFrame (pandas, or polars for a polars input)
         One row with: row_count, column_count, numeric_columns,
         string_columns, temporal_columns, boolean_columns,
         complex_columns, total_nulls, total_null_rate,
@@ -75,7 +77,10 @@ def profile_summary(
     """
     table_name, registered = resolve_table(conn, table_or_df)
     try:
-        return fetch_frame(conn, "SELECT * FROM anofox_tab_profile_summary(?)", [table_name])
+        return fetch_frame(
+            conn, "SELECT * FROM anofox_tab_profile_summary(?)", [table_name],
+            output_df_type(table_or_df),
+        )
     finally:
         cleanup_table(conn, table_name, registered)
 
@@ -90,7 +95,7 @@ def profile_correlations(
 
     Returns
     -------
-    pandas.DataFrame
+    DataFrame (pandas, or polars for a polars input)
         Columns: column_a, column_b, pearson, spearman, n.
     """
     table_name, registered = resolve_table(conn, table_or_df)
@@ -99,6 +104,7 @@ def profile_correlations(
             conn,
             "SELECT * FROM anofox_tab_profile_correlations(?, ?::VARCHAR[])",
             [table_name, list(columns or [])],
+            output_df_type(table_or_df),
         )
     finally:
         cleanup_table(conn, table_name, registered)

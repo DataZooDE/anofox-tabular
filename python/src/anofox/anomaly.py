@@ -3,7 +3,8 @@ Anomaly detection wrappers (Isolation Forest, DBSCAN, Outlier Tree).
 
 Functions accept either a table name string or a DataFrame.
 When ``output_mode="summary"`` they return a ``dict``; when
-``output_mode="scores"`` they return a pandas DataFrame.
+``output_mode="scores"`` they return a DataFrame: polars for a polars input,
+pandas otherwise.
 """
 
 from __future__ import annotations
@@ -11,7 +12,7 @@ from __future__ import annotations
 from typing import Any, Optional, Union
 
 from ._sql import fetch_frame, id_column_arg
-from ._table import cleanup_table, resolve_table
+from ._table import cleanup_table, output_df_type, resolve_table
 
 
 def isolation_forest(
@@ -61,7 +62,7 @@ def isolation_forest(
             "SELECT * FROM anofox_tab_isolation_forest(?, ?, ?::BIGINT, ?::BIGINT, ?::DOUBLE, ?"
             f"{id_column_arg(id_column, params)})"
         )
-        return _execute_anomaly(conn, query, params, output_mode)
+        return _execute_anomaly(conn, query, params, output_mode, output_df_type(table_or_df))
     finally:
         cleanup_table(conn, table_name, registered)
 
@@ -109,7 +110,7 @@ def isolation_forest_mv(
             "SELECT * FROM anofox_tab_isolation_forest_mv(?, ?, ?::BIGINT, ?::BIGINT, ?::DOUBLE, ?"
             f"{id_column_arg(id_column, params)})"
         )
-        return _execute_anomaly(conn, query, params, output_mode)
+        return _execute_anomaly(conn, query, params, output_mode, output_df_type(table_or_df))
     finally:
         cleanup_table(conn, table_name, registered)
 
@@ -156,7 +157,7 @@ def dbscan(
             "SELECT * FROM anofox_tab_dbscan(?, ?, ?::DOUBLE, ?::BIGINT, ?"
             f"{id_column_arg(id_column, params)})"
         )
-        return _execute_anomaly(conn, query, params, output_mode)
+        return _execute_anomaly(conn, query, params, output_mode, output_df_type(table_or_df))
     finally:
         cleanup_table(conn, table_name, registered)
 
@@ -202,7 +203,7 @@ def dbscan_mv(
             "SELECT * FROM anofox_tab_dbscan_mv(?, ?, ?::DOUBLE, ?::BIGINT, ?"
             f"{id_column_arg(id_column, params)})"
         )
-        return _execute_anomaly(conn, query, params, output_mode)
+        return _execute_anomaly(conn, query, params, output_mode, output_df_type(table_or_df))
     finally:
         cleanup_table(conn, table_name, registered)
 
@@ -268,15 +269,17 @@ def outlier_tree(
             "?::INTEGER, ?::INTEGER, ?::DOUBLE, ?::DOUBLE"
             f"{id_column_arg(id_column, params)})"
         )
-        return _execute_anomaly(conn, query, params, output_mode)
+        return _execute_anomaly(conn, query, params, output_mode, output_df_type(table_or_df))
     finally:
         cleanup_table(conn, table_name, registered)
 
 
-def _execute_anomaly(conn: Any, query: str, params: list, output_mode: str) -> Union[dict, Any]:
-    """Execute the query and return either a dict or a DataFrame."""
+def _execute_anomaly(
+    conn: Any, query: str, params: list, output_mode: str, df_type: str
+) -> Union[dict, Any]:
+    """Execute the query and return either a dict or a DataFrame of *df_type*."""
     if output_mode in ("scores", "outliers"):
-        return fetch_frame(conn, query, params)
+        return fetch_frame(conn, query, params, df_type)
 
     # summary — convert first row to dict using column names from description
     cursor = conn.execute(query, params)
