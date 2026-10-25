@@ -12,10 +12,11 @@ VATRegistry& VATRegistry::Instance() {
 
 VATRegistry::VATRegistry() {
   InitializeCountries();
+  // Greece: the VAT prefix EL maps to the ISO code GR and back. GB and XI
+  // (Northern Ireland) are distinct VAT prefixes and are never mapped onto
+  // each other, otherwise vat_format('GB...', 'iso') would yield 'XI...'.
   vat_to_iso_["EL"] = "GR";
-  vat_to_iso_["XI"] = "GB";
   iso_to_vat_["GR"] = "EL";
-  iso_to_vat_["GB"] = "XI";
   // Precompile anchored syntax patterns once; IsValidSyntax runs per row.
   for (auto& entry : countries_) {
     entry.second.compiled_pattern =
@@ -25,7 +26,8 @@ VATRegistry::VATRegistry() {
 }
 
 void VATRegistry::InitializeCountries() {
-  // All 29 countries: 28 EU + UK
+  // 27 EU member states plus the United Kingdom under two prefixes:
+  // GB (Great Britain) and XI (Northern Ireland, own prefix since 2021).
   // Format: country_code, country_name, pattern (without country prefix), is_eu_member,
   // has_checksum
   //
@@ -46,6 +48,8 @@ void VATRegistry::InitializeCountries() {
   countries_["FI"] = {"FI", "Finland", "[0-9]{8}", true, true};
   countries_["FR"] = {"FR", "France", "[A-HJ-NP-Z0-9]{2}[0-9]{9}", true, true};
   countries_["GB"] = {"GB", "United Kingdom",
+                      "([0-9]{9}|[0-9]{12}|(HA|GD)[0-9]{3})", false, false};
+  countries_["XI"] = {"XI", "United Kingdom",
                       "([0-9]{9}|[0-9]{12}|(HA|GD)[0-9]{3})", false, false};
   countries_["GR"] = {"GR", "Greece", "[0-9]{9}", true, true};
   countries_["HR"] = {"HR", "Croatia", "[0-9]{11}", true, false};

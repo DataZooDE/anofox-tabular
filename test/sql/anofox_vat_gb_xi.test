@@ -1,0 +1,89 @@
+# name: test/sql/anofox_vat_gb_xi.test
+# description: GB (United Kingdom) and XI (Northern Ireland) are distinct VAT
+#              prefixes: no function may turn one into the other. Greece keeps
+#              its EL (VAT prefix) / GR (ISO code) mapping.
+# group: [anofox_tabular]
+
+require anofox_tabular
+
+statement ok
+LOAD anofox_tabular;
+
+# vat_format 'iso' keeps the prefix the number was written with
+query TTTT
+SELECT vat_format('GB123456782', 'iso'),
+       vat_format('XI123456782', 'iso'),
+       vat_format('gb 123 4567 82', 'iso'),
+       vat_format('xi-123-4567-82', 'iso');
+----
+GB123456782	XI123456782	GB123456782	XI123456782
+
+query TT
+SELECT vat_format('GB123456782', 'plain'), vat_format('XI123456782', 'plain');
+----
+123456782	123456782
+
+# vat() and vat_split() report GB and XI as distinct countries
+query TTTT
+SELECT (vat('GB123456782')).country, (vat('GB123456782')).digits,
+       (vat('XI123456782')).country, (vat('XI123456782')).digits;
+----
+GB	123456782	XI	123456782
+
+query TTTT
+SELECT (vat_split('GB123456782')).country, (vat_split('GB123456782')).digits,
+       (vat_split('XI123456782')).country, (vat_split('XI123456782')).digits;
+----
+GB	123456782	XI	123456782
+
+# vat_format round-trips through vat()
+query TT
+SELECT vat_format((vat('XI123456782')).country || (vat('XI123456782')).digits, 'iso'),
+       vat_format((vat('GB123456782')).country || (vat('GB123456782')).digits, 'iso');
+----
+XI123456782	GB123456782
+
+# vat_normalize never rewrites the prefix
+query TT
+SELECT vat_normalize('gb 123 4567 82'), vat_normalize('xi 123 4567 82');
+----
+GB123456782	XI123456782
+
+# Country name, membership, country validity for both prefixes
+query TTTTTT
+SELECT vat_country_name('GB'), vat_country_name('XI'),
+       vat_is_eu_member('GB'), vat_is_eu_member('XI'),
+       is_valid_vat_country('GB'), is_valid_vat_country('xi');
+----
+United Kingdom	United Kingdom	false	false	true	true
+
+query TT
+SELECT vat_country_name((vat('XI123456782')).country), vat_country_name((vat('GB123456782')).country);
+----
+United Kingdom	United Kingdom
+
+# Syntax / validity / existence are the same for both prefixes (syntax-only country)
+query TTTTTT
+SELECT vat_is_valid_syntax('GB123456782'), vat_is_valid_syntax('XI123456782'),
+       vat_is_valid('GB123456782'), vat_is_valid('XI123456782'),
+       vat_exists('GB123456782'), vat_exists('XI123456782');
+----
+true	true	true	true	true	true
+
+query TT
+SELECT vat_is_valid_syntax('XIGD123'), vat_is_valid_syntax('XI12345');
+----
+true	false
+
+# UK is not a VAT prefix
+query TT
+SELECT vat_exists('UK123456782'), vat('UK123456782') IS NULL;
+----
+false	true
+
+# Greece: EL is the VAT prefix, GR the ISO code (unchanged behaviour)
+query TTTT
+SELECT vat_format('EL123456783', 'iso'), vat_format('GR123456783', 'iso'),
+       (vat('EL123456783')).country, vat_country_name('EL');
+----
+EL123456783	EL123456783	GR	Greece

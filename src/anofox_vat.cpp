@@ -126,7 +126,7 @@ static void VATCountryNameFunc(DataChunk& args, ExpressionState& state,
 }
 
 // anofox_vat_format(vat, style) -> VARCHAR
-// Style: 'plain' = digits only, 'iso' = VAT country prefix (EL/XI) + digits
+// Style: 'plain' = digits only, 'iso' = VAT country prefix (EL for Greece) + digits
 static void VATFormatFunc(DataChunk& args, ExpressionState& state,
                          Vector& result) {
   auto& registry = VATRegistry::Instance();

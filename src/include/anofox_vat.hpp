@@ -135,7 +135,7 @@ class VATRegistry {
   // without an implemented checksum (syntax-only validation).
   bool IsValidChecksum(const std::string& country, const std::string& digits) const;
   std::string NormalizeVAT(std::string_view input) const;
-  // Uppercases the code and resolves VAT prefixes (EL -> GR, XI -> GB) to ISO.
+  // Uppercases the code and resolves the Greek VAT prefix EL to ISO GR (GB and XI stay distinct).
   std::string NormalizeCountryCode(std::string_view code) const;
   std::optional<std::pair<std::string, std::string>> SplitVAT(
       std::string_view input) const;

@@ -21,7 +21,7 @@ columns. Everything runs inside DuckDB, on your tables, with SQL.
 | Postal | Parse and normalize addresses with libpostal | [api/02-postal](docs/api/02-postal.md) |
 | Phone | Parse, validate, format and compare phone numbers for 21 regions | [api/03-phone](docs/api/03-phone.md) |
 | Money | Exact `DECIMAL(18,3)` money values, currency-safe arithmetic, formatting for 10 currencies | [api/04-money](docs/api/04-money.md) |
-| VAT | Validate VAT numbers of 28 countries (27 EU member states plus GB/XI), with check digits | [api/05-vat](docs/api/05-vat.md) |
+| VAT | Validate VAT numbers of 28 countries (27 EU member states plus GB/XI): syntax for all, check digits for 16 of them | [api/05-vat](docs/api/05-vat.md) |
 | PII | Detect and mask emails, card numbers, IBANs, SSNs, names and more; scan whole tables | [api/06-pii](docs/api/06-pii.md) |
 | Data quality | 17 checks, a table-driven suite runner and event outputs | [api/07-data-quality](docs/api/07-data-quality.md) |
 | Anomaly detection | Isolation Forest, DBSCAN and OutlierTree with explanations | [api/08-anomaly-detection](docs/api/08-anomaly-detection.md) |

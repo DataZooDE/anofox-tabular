@@ -33,7 +33,8 @@ Greece uses the VAT prefix `EL`; the ISO code `GR` is accepted too. `UK` is not 
 use `GB`, or `XI` for Northern Ireland. Prefixes are case-insensitive.
 
 `vat_is_valid` verifies check digits for AT, BE, DE, DK, ES, FI, FR, EL/GR, IE, IT, LU, NL, PL,
-PT, SE and SI. For the other countries it checks the syntax only. French numbers whose key
+PT, SE and SI. For the other countries (BG, CY, CZ, EE, HR, HU, LT, LV, MT, RO, SK, GB and XI)
+it checks the syntax only. French numbers whose key
 contains letters are accepted without a check-digit test.
 
 ## Functions
@@ -140,9 +141,10 @@ Canonical name: `anofox_tab_vat`. Scalar function.
 
 Canonical name: `anofox_tab_vat_split`. Scalar function.
 
-Both split a VAT number into its ISO country code and its digits. They return the same result.
-The country is the ISO code: `EL` becomes `GR` and `XI` becomes `GB`. The result is `NULL` when
-the prefix is not supported.
+Both split a VAT number into its country code and its digits. They return the same result.
+The country is the ISO code for Greece: `EL` becomes `GR`. `GB` and `XI` (Northern Ireland) are
+kept as written, so the two stay distinguishable. The result is `NULL` when the prefix is not
+supported.
 
 ```text
 vat(vat_number VARCHAR) -> STRUCT(country VARCHAR, digits VARCHAR)
@@ -165,7 +167,7 @@ FROM suppliers ORDER BY id;
 │     2 │ de 111-111-125 │ DE      │ 111111125 │
 │     3 │ DE123456789    │ DE      │ 123456789 │
 │     4 │ EL123456783    │ GR      │ 123456783 │
-│     5 │ XI123456782    │ GB      │ 123456782 │
+│     5 │ XI123456782    │ XI      │ 123456782 │
 │     6 │ UK123456789    │ NULL    │ NULL      │
 │     7 │ DE12           │ DE      │ 12        │
 └───────┴────────────────┴─────────┴───────────┘
@@ -191,7 +193,7 @@ vat_format(vat_number VARCHAR, format_style VARCHAR) -> VARCHAR
 
 | Style | Result |
 |-------|--------|
-| `iso` | VAT prefix and digits, e.g. `DE111111125`; Greece as `EL`, Northern Ireland as `XI` |
+| `iso` | VAT prefix and digits, e.g. `DE111111125`; Greece as `EL` (also for `GR` input); `GB` and `XI` keep their own prefix |
 | `plain` | digits only, without prefix |
 
 The style is case-insensitive. A number that cannot be parsed returns `NULL`. An unknown style
