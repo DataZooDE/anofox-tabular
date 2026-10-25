@@ -67,5 +67,38 @@ SELECT list_contains(list_transform(pii_detect('DE00 3704 0044 0532 0130 00'), l
 ----
 false
 
+# ============================================================================
+# MAC_ADDRESS: a bare 12-character token needs a letter and a digit
+# ============================================================================
+
+query T
+SELECT pii_mask('Tel:+491711234567', 'redact') NOT LIKE '%MAC_ADDRESS%';
+----
+true
+
+query T
+SELECT array_to_string(list_transform(pii_detect(s), lambda x: x.type || ':' || x.text), '; ')
+FROM (VALUES
+    (1, 'Nummer 491711234567'),
+    (2, 'BTW NL 004495445B01'),
+    (3, 'USt-IdNr. NL004495445B01'),
+    (4, 'Token ABCDEFABCDEF'),
+    (5, 'Gerät 00265e8b1c2a'),
+    (6, 'Gerät 00:26:5E:8B:1C:2A'),
+    (7, 'Gerät 00-26-5E-8B-1C-2A'),
+    (8, 'Gerät 0026.5e8b.1c2a'),
+    (9, 'Seriennummer X00265e8b1c2a')
+) t(i, s) ORDER BY i;
+----
+(empty)
+(empty)
+(empty)
+(empty)
+MAC_ADDRESS:00265e8b1c2a
+MAC_ADDRESS:00:26:5E:8B:1C:2A
+MAC_ADDRESS:00-26-5E-8B-1C-2A
+MAC_ADDRESS:0026.5e8b.1c2a
+(empty)
+
 statement ok
 SET anofox_pii_enabled_types = '';

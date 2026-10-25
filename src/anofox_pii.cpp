@@ -881,8 +881,13 @@ MACAddressRecognizer::MACAddressRecognizer()
     : RegexRecognizer(
         PIIType::MAC_ADDRESS,
         "MAC Address",
-        // Matches: XX:XX:XX:XX:XX:XX, XX-XX-XX-XX-XX-XX, XXXX.XXXX.XXXX, XXXXXXXXXXXX
-        R"(\b(?:[0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}\b|\b(?:[0-9A-Fa-f]{4}\.){2}[0-9A-Fa-f]{4}\b|\b[0-9A-Fa-f]{12}\b)"
+        // Matches: XX:XX:XX:XX:XX:XX, XX-XX-XX-XX-XX-XX, XXXX.XXXX.XXXX, XXXXXXXXXXXX.
+        // The bare 12-character form is a whole token with at least one
+        // letter A-F and one digit, so plain 12-digit numbers (e.g. the
+        // digits of +491711234567) are not MACs; a Dutch VAT number body
+        // (9 digits, B, 2 digits as in NL 004495445B01) is excluded as well.
+        R"(\b(?:[0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}\b|\b(?:[0-9A-Fa-f]{4}\.){2}[0-9A-Fa-f]{4}\b|)"
+        R"(\b(?!\d{9}B\d{2}\b)(?=[0-9A-F]*[A-F])(?=[A-F]*\d)[0-9A-F]{12}\b)"
     ) {}
 
 MACAddressRecognizer::~MACAddressRecognizer() {
@@ -2610,7 +2615,7 @@ void PIIStatusFunction(ClientContext &, TableFunctionInput &input, DataChunk &ou
         {PIIType::US_PASSPORT, "9 digits or letter + 8 digits"},
         {PIIType::CRYPTO_ADDRESS, "Bitcoin (P2PKH/P2SH/SegWit) and Ethereum"},
         {PIIType::UK_NINO, "UK National Insurance Number format"},
-        {PIIType::MAC_ADDRESS, "Colon/hyphen/dot/no-separator formats"},
+        {PIIType::MAC_ADDRESS, "Colon/hyphen/dot formats; bare hex needs letter+digit"},
         {PIIType::API_KEY, "AWS/GitHub tokens and high-entropy strings"},
         {PIIType::UNKNOWN, "Unknown pattern"}
     };

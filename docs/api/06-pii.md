@@ -56,7 +56,7 @@ NER types need the NER model.
 | `IBAN` | International Bank Account Numbers, compact or in groups of four separated by single spaces or dashes (`DE89 3704 0044 0532 0130 00`) | pattern + MOD-97 checksum |
 | `IP_ADDRESS` | IPv4 and IPv6 addresses | pattern |
 | `URL` | HTTP and HTTPS URLs | pattern |
-| `MAC_ADDRESS` | MAC addresses (colon, hyphen, dot or no separator) | pattern |
+| `MAC_ADDRESS` | MAC addresses with colons, hyphens or dots; without separators only a standalone 12-character hex token with at least one letter A-F and one digit | pattern |
 | `UK_NINO` | UK National Insurance Numbers | pattern |
 | `US_PASSPORT` | 9 digits, or a letter and 8 digits | pattern |
 | `DE_TAX_ID` | German tax ID (Steueridentifikationsnummer, 11 digits) | pattern + checksum |
@@ -698,7 +698,7 @@ SELECT pii_type, recognizer_name, pattern_info FROM pii_status() ORDER BY pii_ty
 │ IBAN           │ IBAN            │ ISO 13616 with MOD-97 checksum                         │
 │ IP_ADDRESS     │ IP Address      │ IPv4 and IPv6 formats                                  │
 │ LOCATION       │ Unknown         │ No description                                         │
-│ MAC_ADDRESS    │ MAC Address     │ Colon/hyphen/dot/no-separator formats                  │
+│ MAC_ADDRESS    │ MAC Address     │ Colon/hyphen/dot formats; bare hex needs letter+digit  │
 │ MISC           │ Unknown         │ No description                                         │
 │ NAME           │ Person Name     │ OpenVINO DistilBERT NER (92% F1)                       │
 │ ORGANIZATION   │ Unknown         │ No description                                         │
