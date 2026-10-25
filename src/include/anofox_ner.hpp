@@ -341,6 +341,9 @@ public:
 
 private:
     std::unordered_map<std::string, int> vocab_;
+    //! Words longer than this (in characters) become one [UNK] token, as in
+    //! the reference WordPiece tokenizer ("max_input_chars_per_word", 100)
+    size_t max_input_chars_per_word_ = 100;
 
     int TokenToId(const std::string &token) const;
 };

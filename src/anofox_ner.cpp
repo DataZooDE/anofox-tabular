@@ -202,6 +202,11 @@ bool WordPieceTokenizer::Load(const std::string &vocab_path) {
         return false;
     }
 
+    yyjson_val *max_chars = yyjson_obj_get(model, "max_input_chars_per_word");
+    if (max_chars && yyjson_is_int(max_chars) && yyjson_get_int(max_chars) > 0) {
+        max_input_chars_per_word_ = static_cast<size_t>(yyjson_get_int(max_chars));
+    }
+
     // Iterate over vocabulary entries
     vocab_.clear();
     size_t idx, max;
@@ -257,6 +262,20 @@ TokenizedInput WordPieceTokenizer::Encode(const std::string &text) const {
             word_start = text_pos;  // Fallback
         }
         text_pos = word_start + word.size();
+
+        // A word longer than max_input_chars_per_word is one [UNK], as in the
+        // reference tokenizer. Without the limit the longest-match search
+        // below is cubic in the word length: a base64 attachment or a long
+        // token without spaces took minutes.
+        size_t char_count = 0;
+        for (unsigned char c : word) {
+            char_count += (c & 0xC0) != 0x80 ? 1 : 0;
+        }
+        if (char_count > max_input_chars_per_word_) {
+            result.ids.push_back(UNK_TOKEN_ID);
+            result.offsets.push_back({word_start, word_start + word.size()});
+            continue;
+        }
 
         // Apply WordPiece tokenization to each word
         size_t start = 0;
