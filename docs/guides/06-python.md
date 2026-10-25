@@ -109,6 +109,41 @@ print(out.to_string(index=False))
             12      DE             NaN
 ```
 
+## Check VAT numbers and amounts
+
+The `anofox.vat` functions and `money.make_money` take a single value or a DataFrame column
+the same way:
+
+```python
+from anofox import money, vat
+
+suppliers = pd.DataFrame({
+    "supplier": ["Brenner GmbH", "Acme UK Ltd", "Typo AG"],
+    "vat_id": ["de 111-111-125", "UK123456789", "DE12"],
+    "total": [1249.5, 89.99, None],
+    "currency": ["EUR", "gbp", "EUR"],
+})
+checked = vat.vat_is_valid(conn, suppliers, column="vat_id")
+print(checked[["supplier", "vat_is_valid"]].to_string(index=False))
+print(vat.vat_format(conn, "de 111-111-125", "iso"), vat.vat_format(conn, "UK123456789"))
+print(vat.vat_exists(conn, "DE12"))  # only the prefix is checked
+priced = money.make_money(conn, suppliers, column="total", currency_column="currency")
+print(priced["make_money"].tolist())
+```
+
+```text
+    supplier  vat_is_valid
+Brenner GmbH          True
+ Acme UK Ltd         False
+     Typo AG         False
+DE111111125 None
+True
+[{'amount': Decimal('1249.500'), 'currency': 'EUR'}, {'amount': Decimal('89.990'), 'currency': 'GBP'}, <NA>]
+```
+
+`vat_exists` checks only that a VAT number starts with a supported prefix (`UK` is not one;
+use `GB` or `XI`). None of the functions queries the EU VIES service.
+
 ## Run quality checks
 
 The check functions in `anofox.quality` take a table name or a DataFrame and return a dict

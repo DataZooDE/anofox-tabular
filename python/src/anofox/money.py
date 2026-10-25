@@ -11,37 +11,72 @@ when DuckDB returns a struct, or as plain scalars for scalar-returning functions
 from __future__ import annotations
 
 from decimal import Decimal
-from typing import Any
+from typing import Any, Optional, Union
 
-from ._sql import fetch_row
+from ._sql import fetch_one, fetch_row, quote_ident
+from ._table import apply_scalar, check_row_input
 
 
-def make_money(conn: Any, amount: float, currency: str) -> dict:
+def make_money(
+    conn: Any,
+    amount: Union[float, int, Decimal, None, Any],
+    currency: Optional[str] = None,
+    column: Optional[str] = None,
+    currency_column: Optional[str] = None,
+) -> Union[Optional[dict], Any]:
     """
-    Create a money value from an amount and currency code.
+    Create a money value from an amount and currency code, like SQL ``money(amount, currency)``.
 
     Parameters
     ----------
     conn:
         An :class:`~anofox.AnofoxConnection`.
     amount:
-        Monetary amount. Must be finite (NaN/Inf raise) and within the
-        DECIMAL(18,3) range; it is rounded half away from zero to 3 decimals.
-        A :class:`decimal.Decimal` is kept exact; a ``float`` holds about 15
-        significant digits.
+        Monetary amount, or a pandas/polars DataFrame (with *column*). Must be
+        finite (NaN/Inf raise) and within the DECIMAL(18,3) range; it is
+        rounded half away from zero to 3 decimals. A :class:`decimal.Decimal`
+        is kept exact; a ``float`` holds about 15 significant digits. ``None``
+        gives ``None``.
     currency:
-        ISO 4217 currency code, e.g. ``"USD"`` or ``"EUR"``.
+        ISO 4217 currency code for every value, e.g. ``"USD"`` or ``"EUR"``
+        (case-insensitive; stored uppercase). Required for a single amount.
+        An unknown code raises a DuckDB error.
+    column:
+        DataFrame only: column holding the amounts. A missing amount (``None``
+        or NaN) gives a missing money value.
+    currency_column:
+        DataFrame only: column holding the currency code of each row. Cannot
+        be combined with *currency*.
 
     Returns
     -------
-    dict
-        ``{"amount": decimal.Decimal, "currency": str}``
+    dict or None
+        ``{"amount": decimal.Decimal, "currency": str}`` for a single amount.
+    DataFrame
+        For a DataFrame: a copy with an added ``make_money`` column of such
+        dicts (input index and row order kept).
     """
-    result = fetch_row(
-        conn,
-        "SELECT anofox_tab_money(?, ?)", [amount, currency]
+    if currency is not None and currency_column is not None:
+        raise ValueError("pass either 'currency' or 'currency_column', not both.")
+    if amount is None or (isinstance(amount, (int, float, Decimal)) and not isinstance(amount, bool)):
+        if currency_column is not None:
+            raise ValueError("'currency_column' requires a DataFrame input.")
+        if currency is None:
+            raise ValueError("'currency' is required for a single amount.")
+        raw = fetch_one(conn, "SELECT anofox_tab_money(?, ?)", [amount, currency])
+        return None if raw is None else _struct_to_dict(raw)
+
+    df_type = check_row_input(amount, column)
+    if currency_column is not None:
+        currency_sql, params = quote_ident(currency_column), []
+    elif currency is not None:
+        currency_sql, params = "?", [currency]
+    else:
+        raise ValueError("pass 'currency' or 'currency_column' with a DataFrame.")
+    return apply_scalar(
+        conn, amount, df_type,
+        f"anofox_tab_money({quote_ident(column)}, {currency_sql})", params, "make_money",
     )
-    return _struct_to_dict(result[0])
 
 
 def money_from_cents(conn: Any, cents: int, currency: str) -> dict:

@@ -239,3 +239,60 @@ class TestMoneyFormatStyles:
         import inspect
         from anofox import money
         assert inspect.signature(money.money_format).parameters["fmt"].default == "code"
+
+
+def _invoices():
+    import pandas as pd
+    return pd.DataFrame({
+        "invoice_no": ["INV-2026-0141", "INV-2026-0142", "INV-2026-0143", "INV-2026-0144"],
+        "total": [1249.5, 89.99, None, 15000.0],
+        "currency": ["EUR", "usd", "EUR", "JPY"],
+    }, index=[3, 1, 4, 2])
+
+
+class TestMakeMoneyApi:
+    def test_null_amount_is_none(self, conn):
+        from anofox import money
+        assert money.make_money(conn, None, "EUR") is None
+
+    def test_scalar_needs_currency(self, conn):
+        from anofox import money
+        with pytest.raises(ValueError, match="currency"):
+            money.make_money(conn, 12.5)
+
+    def test_dataframe_currency_column(self, conn):
+        import pandas as pd
+        from anofox import money
+        df = _invoices()
+        out = money.make_money(conn, df, column="total", currency_column="currency")
+        assert out.index.tolist() == [3, 1, 4, 2]
+        assert out["invoice_no"].tolist() == df["invoice_no"].tolist()
+        values = out["make_money"].tolist()
+        assert values[0] == {"amount": Decimal("1249.500"), "currency": "EUR"}
+        assert values[1] == {"amount": Decimal("89.990"), "currency": "USD"}
+        assert pd.isna(values[2])  # missing amount -> missing money value
+        assert values[3] == {"amount": Decimal("15000.000"), "currency": "JPY"}
+
+    def test_dataframe_one_currency(self, conn):
+        from anofox import money
+        out = money.make_money(conn, _invoices().head(2), "EUR", column="total")
+        assert [v["currency"] for v in out["make_money"]] == ["EUR", "EUR"]
+        assert out["make_money"].tolist()[1]["amount"] == Decimal("89.990")
+
+    def test_currency_and_currency_column_conflict(self, conn):
+        from anofox import money
+        with pytest.raises(ValueError, match="currency_column"):
+            money.make_money(conn, _invoices(), "EUR", column="total", currency_column="currency")
+
+    def test_polars(self, conn):
+        pl = pytest.importorskip("polars")
+        from anofox import money
+        out = money.make_money(conn, pl.from_pandas(_invoices()), column="total", currency_column="currency")
+        assert isinstance(out, pl.DataFrame)
+        assert out["make_money"].to_list()[2] is None
+
+    def test_series_is_a_type_error(self, conn):
+        import pandas as pd
+        from anofox import money
+        with pytest.raises(TypeError, match=r"Series.*to_frame"):
+            money.make_money(conn, pd.Series([12.5], name="total"), "EUR")
