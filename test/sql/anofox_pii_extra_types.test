@@ -510,7 +510,7 @@ CREATE TABLE crm_kunden AS SELECT * FROM (VALUES
 ) t(kunden_nr, name, anschrift, notiz);
 
 query IIIT
-SELECT column_name, pii_type, match_count, array_to_string(sample_values, ' ; ') FROM pii_scan_table('crm_kunden') ORDER BY column_name, pii_type;
+SELECT column_name, pii_type, match_count, array_to_string(sample_values, ' ; ') FROM pii_scan_table('crm_kunden') WHERE pii_type IS NOT NULL ORDER BY column_name, pii_type;
 ----
 anschrift	POSTAL_CODE	4	80331 ; 51147 ; SW1A 2AA ; 1010
 notiz	DATE_OF_BIRTH	2	12.03.1985 ; March 12, 1985

@@ -188,6 +188,9 @@ private:
     static bool LuhnCheck(const std::string &digits);
     //! True when the digits carry a known brand prefix (IIN range) and a length that brand issues
     static bool HasCardBrandPrefix(const std::string &digits);
+    //! Card-shaped digit chains with a brand prefix: those that pass Luhn, or
+    //! (checksum_failures) those that fail it, reported at the given confidence
+    std::vector<PIIMatch> ScanCardChains(const std::string &text, bool checksum_failures, double confidence) const;
 };
 
 /**

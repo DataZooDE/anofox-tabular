@@ -671,6 +671,11 @@ constexpr size_t CARD_MAX_CHAIN_GROUPS = 32;
 } // namespace
 
 std::vector<PIIMatch> CreditCardRecognizer::FindMatches(const std::string &text) const {
+    return ScanCardChains(text, false, 1.0);
+}
+
+std::vector<PIIMatch> CreditCardRecognizer::ScanCardChains(const std::string &text, bool checksum_failures,
+                                                           double confidence) const {
     // A candidate is a chain of digit groups joined by one separator (space,
     // dash or dot) that is the same throughout: 4111111111111111,
     // 4111 1111 1111 1111, 3782-822463-10005, 4111.1111.1111.1111.
@@ -760,13 +765,15 @@ std::vector<PIIMatch> CreditCardRecognizer::FindMatches(const std::string &text)
                 if (!shape_ok || digits.size() < 13 || digits.size() > 19) {
                     continue;
                 }
-                if (!LuhnCheck(digits) || !HasCardBrandPrefix(digits)) {
+                // checksum_failures (anofox_pii_require_checksum = false) looks
+                // for the same branded chains whose Luhn checksum fails
+                if (!HasCardBrandPrefix(digits) || LuhnCheck(digits) == checksum_failures) {
                     AnofoxTrace(AnofoxLogLevel::Trace, "pii: card candidate failed Luhn or brand check: " + digits);
                     continue;
                 }
                 const size_t start = groups[first].first;
                 const size_t stop = groups[last].second;
-                matches.emplace_back(type_, text.substr(start, stop - start), start, stop, 1.0);
+                matches.emplace_back(type_, text.substr(start, stop - start), start, stop, confidence);
                 first = last + 1;
                 found = true;
                 break;

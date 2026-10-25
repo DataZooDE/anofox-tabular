@@ -360,17 +360,9 @@ bool EndsAddressPart(const std::string &text, size_t pos) {
 // ============================================================================
 
 std::vector<PIIMatch> CreditCardRecognizer::FindChecksumFailures(const std::string &text) const {
-    std::vector<PIIMatch> matches;
-    for (std::sregex_iterator it(text.begin(), text.end(), pattern_), stop; it != stop; ++it) {
-        const std::string candidate = it->str();
-        if (LuhnCheck(candidate)) {
-            continue;  // reported by FindMatches
-        }
-        const auto start = static_cast<size_t>(it->position());
-        AnofoxTrace(AnofoxLogLevel::Trace, "pii: card candidate fails Luhn, kept (require_checksum=false)");
-        matches.emplace_back(type_, candidate, start, start + candidate.size(), CHECKSUM_FAILURE_CONFIDENCE);
-    }
-    return matches;
+    // Same candidates as FindMatches (digit chains with a brand prefix and a
+    // brand length, standing on their own), only those whose Luhn check fails
+    return ScanCardChains(text, true, CHECKSUM_FAILURE_CONFIDENCE);
 }
 
 std::vector<PIIMatch> IBANRecognizer::FindChecksumFailures(const std::string &text) const {
