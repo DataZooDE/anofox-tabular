@@ -18,7 +18,6 @@
 #include "duckdb_compat.hpp"
 
 #include <string>
-#include <type_traits>
 #include <unordered_set>
 #include "anofox_tabular_banner.hpp"
 
@@ -59,18 +58,7 @@ vector<string> ParseColumnList(const Value &column_value) {
 	return result;
 }
 
-// DuckDB v1.5 and 2.0 resolve view columns via BindView()/GetColumnInfo(). The
-// fallback overload (bound names stored directly on the catalog entry) served
-// DuckDB v1.4, which is no longer supported; it is only instantiated when
-// GetColumnInfo() is missing. The available API is detected at compile time.
-template <typename T, typename = void>
-struct ViewHasGetColumnInfo : std::false_type {};
-template <typename T>
-struct ViewHasGetColumnInfo<T, std::void_t<decltype(std::declval<T &>().GetColumnInfo())>> : std::true_type {};
-
-template <typename VIEW>
-typename std::enable_if<ViewHasGetColumnInfo<VIEW>::value, vector<string>>::type
-ResolveViewColumnNames(ClientContext &context, VIEW &view) {
+static vector<string> ResolveViewColumnNames(ClientContext &context, ViewCatalogEntry &view) {
 	view.BindView(context);
 	auto column_info = view.GetColumnInfo();
 	if (!column_info) {
@@ -80,16 +68,6 @@ ResolveViewColumnNames(ClientContext &context, VIEW &view) {
 	for (idx_t i = 0; i < column_info->names.size(); i++) {
 		result.push_back(i < view.aliases.size() ? duckdb_compat::Str(view.aliases[i])
 		                                         : duckdb_compat::Str(column_info->names[i]));
-	}
-	return result;
-}
-
-template <typename VIEW>
-typename std::enable_if<!ViewHasGetColumnInfo<VIEW>::value, vector<string>>::type
-ResolveViewColumnNames(ClientContext &, VIEW &view) {
-	vector<string> result;
-	for (idx_t i = 0; i < view.names.size(); i++) {
-		result.push_back(i < view.aliases.size() ? view.aliases[i] : view.names[i]);
 	}
 	return result;
 }
