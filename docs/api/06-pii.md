@@ -79,13 +79,19 @@ The strategy argument is case-insensitive.
 | `redact` (default) | Replace each match with its type label, e.g. `[EMAIL]` |
 | `partial` | Keep a few characters, e.g. `***-**-6789` |
 | `asterisk` | Replace every character with `*` |
-| `hash` | Replace with the first 8 hex characters of a SHA-256 hash |
+| `hash` | Replace with a pseudonym: the first 16 hex characters of the SHA-256 of the normalised value (see [Hashing](#hashing)) |
 | `none` | Leave the text unchanged |
+
+`partial` and `asterisk` count characters, not bytes: `Müller` becomes six stars and a partial
+mask never cuts a multi-byte UTF-8 character in half, so masked values can be stored in any
+`VARCHAR` column.
 
 `pii_mask(text)` without a strategy always redacts. The setting `anofox_pii_default_mask_strategy`
 applies only to `pii_redact_column(value)` and `pii_audit_table`. A strategy argument that
 is not one of these names is an error (`Invalid mask strategy: …`), in `pii_mask`,
-`pii_mask_column`, `pii_redact_column` and in `SET anofox_pii_default_mask_strategy`.
+`pii_mask_column`, `pii_redact_column` and in `SET anofox_pii_default_mask_strategy`. The
+setting also rejects `none` (`anofox_pii_default_mask_strategy cannot be 'none'`), because a
+default that turns masking off would expose raw PII; `none` stays valid as an explicit argument.
 
 ```sql
 SELECT s AS strategy, pii_mask('SSN: 123-45-6789, mail a.b@example.com', s) AS masked
@@ -93,17 +99,51 @@ FROM (VALUES ('redact'), ('partial'), ('asterisk'), ('hash'), ('none')) t(s);
 ```
 
 ```text
-┌──────────┬────────────────────────────────────────┐
-│ strategy │                 masked                 │
-│ varchar  │                varchar                 │
-├──────────┼────────────────────────────────────────┤
-│ redact   │ SSN: [US_SSN], mail [EMAIL]            │
-│ partial  │ SSN: ***-**-6789, mail a.*@example.com │
-│ asterisk │ SSN: ***********, mail *************** │
-│ hash     │ SSN: 01a54629, mail a6f1bad1           │
-│ none     │ SSN: 123-45-6789, mail a.b@example.com │
-└──────────┴────────────────────────────────────────┘
+┌──────────┬──────────────────────────────────────────────┐
+│ strategy │                    masked                    │
+│ varchar  │                   varchar                    │
+├──────────┼──────────────────────────────────────────────┤
+│ redact   │ SSN: [US_SSN], mail [EMAIL]                  │
+│ partial  │ SSN: ***-**-6789, mail a.*@example.com       │
+│ asterisk │ SSN: ***********, mail ***************       │
+│ hash     │ SSN: 15e2b0d3c33891eb, mail a6f1bad172104d25 │
+│ none     │ SSN: 123-45-6789, mail a.b@example.com       │
+└──────────┴──────────────────────────────────────────────┘
 ```
+
+### Hashing
+
+`hash` replaces a match with the first 16 hex characters (64 bits) of the SHA-256 of the
+normalised value. Normalising first makes differently formatted copies of one value hash alike,
+so hashed columns can still be joined and counted:
+
+| Type | Normalisation before hashing |
+|------|------------------------------|
+| `PHONE`, `CREDIT_CARD`, `US_SSN`, `DE_TAX_ID` | Spaces, `-`, `.`, `/`, `(` and `)` removed (a leading `+` is kept) |
+| `IBAN`, `UK_NINO` | Same separators removed, upper-cased |
+| `EMAIL` | Lower-cased |
+| all other types | None: the matched text is hashed as it is |
+
+```sql
+SELECT pii_mask_column(card, 'CREDIT_CARD', 'hash') AS hashed,
+       pii_mask_column(card, 'CREDIT_CARD', 'hash') = left(sha256('4111111111111111'), 16) AS same_as_sha256
+FROM (VALUES ('4111 1111 1111 1111'), ('4111-1111-1111-1111')) t(card);
+```
+
+```text
+┌──────────────────┬────────────────┐
+│      hashed      │ same_as_sha256 │
+│     varchar      │    boolean     │
+├──────────────────┼────────────────┤
+│ 9bbef19476623ca5 │ true           │
+│ 9bbef19476623ca5 │ true           │
+└──────────────────┴────────────────┘
+```
+
+The hash has no key or salt. That makes it a pseudonym, not anonymisation: anyone with the
+hash can test candidate values, and small value spaces such as phone numbers, SSNs or card
+numbers of a known issuer can be enumerated and so reversed by brute force. Treat hashed data
+as personal data; use `redact` when the values must not be recoverable.
 
 ## Match structure
 
@@ -117,8 +157,12 @@ STRUCT(type VARCHAR, text VARCHAR, start_pos BIGINT, end_pos BIGINT, confidence 
 |-------|------|-------------|
 | `type` | `VARCHAR` | The PII type, e.g. `EMAIL` |
 | `text` | `VARCHAR` | The matched text |
-| `start_pos` | `BIGINT` | Start offset in the input, 0-based |
-| `end_pos` | `BIGINT` | End offset in the input, exclusive |
+| `start_pos` | `BIGINT` | Start offset in the input, 0-based, in UTF-8 bytes |
+| `end_pos` | `BIGINT` | End offset in the input, exclusive, in UTF-8 bytes |
+
+The offsets count bytes of the UTF-8 encoding, not characters, so after a non-ASCII character
+they are larger than the character position that `substr` expects. For ASCII text the two are
+the same.
 | `confidence` | `DOUBLE` | `1.0` for pattern matches; the model score for NER matches |
 
 ---
@@ -342,12 +386,12 @@ SELECT pii_redact_column('SSN 123-45-6789, mail a@b.com')         AS redacted,
 ```
 
 ```text
-┌────────────────────────────┬─────────────────────────────┐
-│          redacted          │           hashed            │
-│          varchar           │           varchar           │
-├────────────────────────────┼─────────────────────────────┤
-│ SSN [US_SSN], mail [EMAIL] │ SSN 01a54629, mail fb98d44a │
-└────────────────────────────┴─────────────────────────────┘
+┌────────────────────────────┬─────────────────────────────────────────────┐
+│          redacted          │                   hashed                    │
+│          varchar           │                   varchar                   │
+├────────────────────────────┼─────────────────────────────────────────────┤
+│ SSN [US_SSN], mail [EMAIL] │ SSN 15e2b0d3c33891eb, mail fb98d44ad7501a95 │
+└────────────────────────────┴─────────────────────────────────────────────┘
 ```
 
 ---
@@ -489,7 +533,12 @@ pii_scan_table(table_name VARCHAR [, columns VARCHAR]) -> TABLE(
 | `pii_type` | `VARCHAR` | The PII type found |
 | `match_count` | `BIGINT` | Number of matches |
 | `sample_values` | `VARCHAR[]` | Up to 5 matched values |
-| `confidence` | `DOUBLE` | Average confidence of the matches |
+| `confidence` | `DOUBLE` | Mean confidence of the matches: `1.0` for pattern types, the mean model score for NER types |
+
+Rows come in table column order and, within a column, ordered by `pii_type`.
+
+`sample_values` holds matched values as they are, that is raw PII. Treat the scan result like
+the table itself, or mask it before you share it.
 
 The example tables of this page:
 
@@ -575,10 +624,13 @@ pii_audit_table(table_name VARCHAR [, columns VARCHAR] [, id_column := VARCHAR])
 | `<id_column>` | the column's type | Only with `id_column`: the row's identifier |
 | `column_name` | `VARCHAR` | The column with the match |
 | `pii_type` | `VARCHAR` | The PII type |
-| `original_value` | `VARCHAR` | The full cell value |
+| `original_value` | `VARCHAR` | The full cell value, unmasked (raw PII) |
 | `masked_value` | `VARCHAR` | The cell value masked with the default strategy |
-| `start_pos`, `end_pos` | `BIGINT` | Position of the match in the cell |
+| `start_pos`, `end_pos` | `BIGINT` | Position of the match in the cell, in UTF-8 bytes |
 | `confidence` | `DOUBLE` | Match confidence |
+
+`original_value` is the raw cell, so the audit result contains the PII it reports. Select only
+`masked_value` when the result leaves the trusted environment.
 
 ```sql
 SELECT row_id, column_name, pii_type, original_value, masked_value, start_pos, end_pos
@@ -708,10 +760,19 @@ anofox_ner_status() -> TABLE(
 | Column | Type | Description |
 |--------|------|-------------|
 | `onnx_available` | `BOOLEAN` | `true` when the build includes OpenVINO (the name is kept for compatibility) |
-| `model_status` | `VARCHAR` | `NOT_LOADED`, `DOWNLOADING`, `LOADED`, `FAILED`, `NOT_AVAILABLE` (no OpenVINO in this build) or `NOT_DOWNLOADED` (model not on disk and `anofox_ner_auto_download` is false) |
+| `model_status` | `VARCHAR` | See the status table below |
 | `model_path` | `VARCHAR` | Path of the model file |
 | `model_size_mb` | `DOUBLE` | Size of the model file |
 | `status_message` | `VARCHAR` | A readable description of the state |
+
+| `model_status` | Meaning |
+|----------------|---------|
+| `NOT_LOADED` | The model is not loaded yet; the first detection that needs it loads it (and downloads it first when it is not on disk) |
+| `DOWNLOADING` | The model is being downloaded |
+| `LOADED` | The model is loaded and NER detection runs |
+| `FAILED` | Download or loading failed; `status_message` says why |
+| `NOT_DOWNLOADED` | The model is not on disk and `anofox_ner_auto_download` is false, so NER detection is skipped. Reported right away, before any detection runs |
+| `NOT_AVAILABLE` | The build has no OpenVINO |
 
 ```sql no-run
 -- The result depends on the build and on whether the model was downloaded.
@@ -726,6 +787,10 @@ On a build with OpenVINO, after the model has been loaded, it reports `true`, `L
 `NAME`, `ORGANIZATION`, `LOCATION` and `MISC` are found by a DistilBERT NER model (English,
 `distilbert-en`) that runs on OpenVINO.
 
+- **Language.** The model is trained on English text. It finds names and places in other
+  languages only partly: German free text, for example, is covered poorly (capitalised nouns are
+  taken for entities, German names and companies are missed). Review NER results on non-English
+  data, and do not rely on them alone.
 - **Download.** The first detection that needs the model downloads it (about 66 MB) from
   Hugging Face into `~/.duckdb/extensions/anofox/ner/<model>/`. This applies to `pii_detect`,
   `pii_mask`, `pii_scan_table`, `pii_audit_table` and the other detection functions, unless
@@ -739,16 +804,29 @@ On a build with OpenVINO, after the model has been loaded, it reports `true`, `L
   is `NOT_AVAILABLE`. Check with `anofox_ner_status()`.
 - **Confidence.** NER matches below 0.7 are never reported. `anofox_pii_min_confidence`
   (default 0.5) filters on top of that.
-- **Limits.** Input is truncated at 512 tokens, so entities after that are not found. The
+- **Limits.** Input is truncated at 512 tokens, so entities after that are not found; the first
+  truncation in a process is logged as a warning. Split long texts to cover them. The
   tokenizer is ASCII-focused: non-ASCII punctuation is not a word boundary. All-caps text can give
   fragmented or no results.
+
+## Throughput
+
+Pattern-based detection is fast: plain regular expressions and checksums. NER is not: each
+distinct text runs through the model, which takes in the order of tens of milliseconds per row on
+a CPU, so a scan of a million free-text rows takes hours. Results are cached per distinct text
+(`anofox_ner_cache_size`), which helps only for repeated values.
+
+To keep large scans fast, leave the NER types out: set `anofox_pii_enabled_types` to the
+pattern-based types you need (no `NAME`, `ORGANIZATION`, `LOCATION`, `MISC`), or pass the type to
+`pii_mask_column`. Then no model inference runs at all. Use NER on the free-text columns that
+need it, or on a sample first.
 
 ## Settings
 
 | Setting | Purpose |
 |---------|---------|
 | `anofox_pii_enabled_types` | Comma-separated list of types to detect; empty means all. An unknown type is an error. |
-| `anofox_pii_default_mask_strategy` | The strategy of `pii_redact_column(value)` and of `masked_value` in `pii_audit_table` |
+| `anofox_pii_default_mask_strategy` | The strategy of `pii_redact_column(value)` and of `masked_value` in `pii_audit_table`; `none` is rejected |
 | `anofox_pii_min_confidence` | Minimum confidence of a match; dictionary name matches have 0.5, pattern matches 1.0 |
 | `anofox_pii_deep_validation` | Validate detected phone numbers with the built-in phone module |
 | `anofox_ner_auto_download` | Download the NER model on first use |

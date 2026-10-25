@@ -57,6 +57,9 @@ ORDER BY column_name, pii_type;
 The free-text column `note` holds three different types. Those are the columns to treat with
 care.
 
+The scan also returns `sample_values`, up to five matched values per row. They are raw PII, so
+keep the scan result as protected as the table.
+
 ## 3. Inspect the findings row by row
 
 `pii_audit_table` returns one row per match. Pass `id_column := 'customer_id'` so each finding
@@ -86,6 +89,9 @@ ORDER BY customer_id, column_name;
 └─────────────┴─────────────┴─────────────┴────────────────────────────────┘
   10 rows                                                        4 columns
 ```
+
+`original_value` is the unmasked cell: the audit result holds the PII it reports. Share
+`masked_value` instead when the findings leave the team that owns the data.
 
 Count the findings per customer to see who has the most personal data on file:
 
@@ -126,15 +132,15 @@ SELECT * FROM customers_export ORDER BY customer_id;
 ```
 
 ```text
-┌─────────────┬───────────────────┬─────────────┬──────────┬─────────────────────────────┐
-│ customer_id │       email       │     ssn     │   card   │            note             │
-│    int32    │      varchar      │   varchar   │ varchar  │           varchar           │
-├─────────────┼───────────────────┼─────────────┼──────────┼─────────────────────────────┤
-│         101 │ an**@example.com  │ ***-**-6789 │ 6a7e0e79 │ Call me on [PHONE]          │
-│         102 │ bo*@example.org   │ NULL        │ NULL     │ No contact details here     │
-│         103 │ not an email      │ ***-**-9999 │ NULL     │ Wire to [IBAN]              │
-│         104 │ ca***@example.net │ NULL        │ f8422072 │ Server [IP_ADDRESS] is down │
-└─────────────┴───────────────────┴─────────────┴──────────┴─────────────────────────────┘
+┌─────────────┬───────────────────┬─────────────┬──────────────────┬─────────────────────────────┐
+│ customer_id │       email       │     ssn     │       card       │            note             │
+│    int32    │      varchar      │   varchar   │     varchar      │           varchar           │
+├─────────────┼───────────────────┼─────────────┼──────────────────┼─────────────────────────────┤
+│         101 │ an**@example.com  │ ***-**-6789 │ 9bbef19476623ca5 │ Call me on [PHONE]          │
+│         102 │ bo*@example.org   │ NULL        │ NULL             │ No contact details here     │
+│         103 │ not an email      │ ***-**-9999 │ NULL             │ Wire to [IBAN]              │
+│         104 │ ca***@example.net │ NULL        │ dd1ed74bd626c6fa │ Server [IP_ADDRESS] is down │
+└─────────────┴───────────────────┴─────────────┴──────────────────┴─────────────────────────────┘
 ```
 
 Check what is left. Scan the export again:
@@ -160,10 +166,19 @@ That is expected for `partial`. Use `redact` or `hash` for columns that must not
 pattern after export.
 
 The `ORGANIZATION` row comes from the NER model, which reads the label `[IP_ADDRESS]` as an
-organization name. NER results are statistical, so review them before you act on them.
+organization name. NER results are statistical, so review them before you act on them. The
+model is trained on English: on German or other non-English free text it misses many names and
+places, so do not rely on it alone there.
+
+`hash` is the first 16 hex characters of the SHA-256 of the card number with spaces and dashes
+removed, so `4111 1111 1111 1111` and `4111-1111-1111-1111` give the same value. It has no key:
+it is a pseudonym, not anonymisation. Card numbers, phone numbers and SSNs can be enumerated, so
+a determined reader can recover them from their hashes. See
+[Hashing](../api/06-pii.md#hashing).
 
 A strategy name that is not `redact`, `partial`, `asterisk`, `hash` or `none` is an error
 (`Invalid mask strategy: …`), so a typo never leaves the text unmasked.
+`SET anofox_pii_default_mask_strategy = 'none'` is rejected as well.
 
 ## 5. Detect only some types
 
@@ -188,6 +203,10 @@ ORDER BY column_name, pii_type;
 └─────────────┴──────────┴─────────────┘
 ```
 
+Leaving out `NAME`, `ORGANIZATION`, `LOCATION` and `MISC` also makes scans much faster: the NER
+model takes in the order of tens of milliseconds per row, pattern matching a tiny fraction of
+that (see [Throughput](../api/06-pii.md#throughput)).
+
 Set it back to all types:
 
 ```sql
@@ -206,7 +225,9 @@ SELECT model_status FROM anofox_ner_status();
 -- NOT_DOWNLOADED when the model is not on disk yet
 ```
 
-The pattern-based types keep working, and `NAME` falls back to a name dictionary.
+`anofox_ner_status()` reports `NOT_DOWNLOADED` as soon as the setting is off and the model is
+missing, before any detection runs. The pattern-based types keep working, and `NAME` falls back
+to a name dictionary.
 `ORGANIZATION`, `LOCATION` and `MISC` are not detected. This snippet is not run as part of the
 docs because its result depends on whether the model is already on disk.
 

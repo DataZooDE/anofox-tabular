@@ -154,7 +154,7 @@ Used by the [PII functions](../api/06-pii.md).
 |---------|--------|
 | `anofox_pii_enabled_types` | Comma-separated list of PII types to detect, e.g. `'EMAIL,US_SSN'`. Empty means all types. All PII functions honor it, including `pii_mask`, `pii_scan_table` and `pii_audit_table`. |
 | `anofox_pii_min_confidence` | Matches below this confidence (0.0 to 1.0) are dropped. Pattern matches have confidence 1.0; dictionary name matches have 0.5. |
-| `anofox_pii_default_mask_strategy` | Strategy of `pii_redact_column(value)` without a strategy argument and of the `masked_value` column of `pii_audit_table`: `redact`, `hash`, `partial`, `asterisk` or `none` (case-insensitive). `pii_mask(text)` always redacts. |
+| `anofox_pii_default_mask_strategy` | Strategy of `pii_redact_column(value)` without a strategy argument and of the `masked_value` column of `pii_audit_table`: `redact`, `hash`, `partial` or `asterisk` (case-insensitive). `none` is rejected, because a default that turns masking off would expose raw PII; pass `'none'` as an explicit argument instead. `pii_mask(text)` always redacts. |
 | `anofox_pii_deep_validation` | `true` validates detected phone numbers with the phone module |
 
 `pii_config()` lists the current PII values.
@@ -181,7 +181,7 @@ uses an OpenVINO model that is downloaded on first use. See
 
 | Setting | Effect |
 |---------|--------|
-| `anofox_ner_auto_download` | `true` downloads the model (~66 MB) from Hugging Face when it is not on disk. `false` never downloads: NER detection is skipped and the pattern recognizers keep working. |
+| `anofox_ner_auto_download` | `true` downloads the model (~66 MB) from Hugging Face when it is not on disk. `false` never downloads: NER detection is skipped, the pattern recognizers keep working, and `anofox_ner_status()` reports `NOT_DOWNLOADED` while the model is not on disk. |
 | `anofox_ner_model` | Model name. Only `distilbert-en` is supported. Set it before the model is first loaded. |
 | `anofox_ner_device` | OpenVINO device: `AUTO`, `CPU`, `GPU`, `GPU.0`, ... Takes effect at the next model load. |
 | `anofox_ner_cache_size` | Number of NER results kept in an LRU cache; `0` disables the cache |
