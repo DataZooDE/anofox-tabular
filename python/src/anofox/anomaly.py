@@ -24,6 +24,7 @@ def isolation_forest(
     sample_size: Optional[int] = None,
     contamination: float = 0.1,
     id_column: Optional[str] = None,
+    seed: Optional[int] = None,
 ) -> Union[dict, Any]:
     """
     Run Isolation Forest on a single numeric column.
@@ -42,13 +43,16 @@ def isolation_forest(
     n_trees:
         Number of isolation trees (default 100).
     sample_size:
-        Sub-sample size per tree.  When ``None`` the extension default is used.
+        Sub-sample size per tree.  When ``None`` the extension default (256) is used.
     contamination:
         Expected fraction of anomalies (default 0.1).
     id_column:
         Optional identifier column of the input whose value is added to the
         per-row output, directly after ``row_id``. Only valid with
         ``output_mode="scores"``.
+    seed:
+        Fixed random seed for reproducible scores. ``None`` (default) keeps the
+        trees random, so scores change between runs.
 
     Returns
     -------
@@ -57,10 +61,9 @@ def isolation_forest(
     _check_output_mode("isolation_forest", output_mode)
     table_name, registered = resolve_table(conn, table_or_df)
     try:
-        actual_sample_size = sample_size if sample_size is not None else 256
-        params = [table_name, column, n_trees, actual_sample_size, contamination, output_mode]
+        params = [table_name, column, n_trees, sample_size, contamination, output_mode, seed]
         query = (
-            "SELECT * FROM anofox_tab_isolation_forest(?, ?, ?::BIGINT, ?::BIGINT, ?::DOUBLE, ?"
+            "SELECT * FROM anofox_tab_isolation_forest(?, ?, ?::BIGINT, ?::BIGINT, ?::DOUBLE, ?, ?::BIGINT"
             f"{id_column_arg(id_column, params)})"
         )
         return _execute_anomaly(conn, query, params, output_mode, output_df_type(table_or_df))
@@ -77,6 +80,8 @@ def isolation_forest_mv(
     sample_size: Optional[int] = None,
     contamination: float = 0.1,
     id_column: Optional[str] = None,
+    seed: Optional[int] = None,
+    ndim: Optional[int] = None,
 ) -> Union[dict, Any]:
     """
     Run multivariate Isolation Forest across multiple numeric columns.
@@ -101,15 +106,22 @@ def isolation_forest_mv(
         Optional identifier column of the input whose value is added to the
         per-row output, directly after ``row_id``. Only valid with
         ``output_mode="scores"``.
+    seed:
+        Fixed random seed for reproducible scores. ``None`` (default) keeps the
+        trees random, so scores change between runs.
+    ndim:
+        Columns combined per split (default ``None`` = the extension's 1).
+        Above 1 the trees split on random hyperplanes (Extended Isolation
+        Forest).
     """
     _check_output_mode("isolation_forest_mv", output_mode)
     table_name, registered = resolve_table(conn, table_or_df)
     cols_csv = ",".join(columns)
     try:
-        actual_sample_size = sample_size if sample_size is not None else 256
-        params = [table_name, cols_csv, n_trees, actual_sample_size, contamination, output_mode]
+        params = [table_name, cols_csv, n_trees, sample_size, contamination, output_mode, seed, ndim]
         query = (
-            "SELECT * FROM anofox_tab_isolation_forest_mv(?, ?, ?::BIGINT, ?::BIGINT, ?::DOUBLE, ?"
+            "SELECT * FROM anofox_tab_isolation_forest_mv("
+            "?, ?, ?::BIGINT, ?::BIGINT, ?::DOUBLE, ?, ?::BIGINT, ?::BIGINT"
             f"{id_column_arg(id_column, params)})"
         )
         return _execute_anomaly(conn, query, params, output_mode, output_df_type(table_or_df))

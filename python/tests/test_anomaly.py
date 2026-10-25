@@ -252,3 +252,38 @@ class TestOutlierTreeDefaults:
                                      min_size_numeric=10, max_perc_outliers=0.5)
         strict = anomaly.outlier_tree(conn, staff_table, ["level", "salary"])
         assert loose["outlier_count"] >= strict["outlier_count"]
+
+
+class TestIsolationForestSeed:
+    """seed= makes scores reproducible, as the SQL seed parameter does."""
+
+    def test_same_seed_same_scores(self, conn, numeric_table):
+        from anofox import anomaly
+        a = anomaly.isolation_forest(conn, numeric_table, "x", output_mode="scores", seed=42)
+        b = anomaly.isolation_forest(conn, numeric_table, "x", output_mode="scores", seed=42)
+        assert a["anomaly_score"].tolist() == b["anomaly_score"].tolist()
+
+    def test_seed_matches_sql(self, conn, numeric_table):
+        from anofox import anomaly
+        sql = conn.execute(
+            f"SELECT anomaly_score FROM isolation_forest('{numeric_table}', 'x', 100, 256, 0.1, 'scores', 7) "
+            "ORDER BY row_id"
+        ).fetchall()
+        py = anomaly.isolation_forest(conn, numeric_table, "x", output_mode="scores", seed=7)
+        assert py["anomaly_score"].tolist() == [r[0] for r in sql]
+
+    def test_mv_same_seed_same_scores(self, conn, numeric_table):
+        from anofox import anomaly
+        kwargs = dict(output_mode="scores", seed=3, ndim=2)
+        a = anomaly.isolation_forest_mv(conn, numeric_table, ["x", "y"], **kwargs)
+        b = anomaly.isolation_forest_mv(conn, numeric_table, ["x", "y"], **kwargs)
+        assert a["anomaly_score"].tolist() == b["anomaly_score"].tolist()
+
+    def test_mv_ndim_matches_sql(self, conn, numeric_table):
+        from anofox import anomaly
+        sql = conn.execute(
+            f"SELECT anomaly_score FROM isolation_forest_mv('{numeric_table}', 'x, y', 100, 256, 0.1, "
+            "'scores', 5, 2) ORDER BY row_id"
+        ).fetchall()
+        py = anomaly.isolation_forest_mv(conn, numeric_table, ["x", "y"], output_mode="scores", seed=5, ndim=2)
+        assert py["anomaly_score"].tolist() == [r[0] for r in sql]
