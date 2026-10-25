@@ -496,14 +496,29 @@ void PostalParseAddressFunction(DataChunk &args, ExpressionState &state, Vector 
 		// Write the libpostal component values straight into the child vectors
 		// (no intermediate std::string or Value copies).
 		auto input_str = inputs[idx].GetString();
+		// libpostal can return the same label more than once (e.g. 'road' for
+		// both 'prinsengracht' and 'gv' in '1016 GV Amsterdam'); the values of a
+		// repeated label are joined with a space in the order libpostal returns
+		// them instead of the last one overwriting the earlier ones.
 		manager.ParseAddress(input_str, [&](char **labels, char **values, size_t count) {
+			std::string joined[COMPONENT_COUNT];
+			bool present[COMPONENT_COUNT] = {};
 			for (size_t component = 0; component < count; component++) {
 				for (idx_t c = 0; c < COMPONENT_COUNT; c++) {
 					if (std::strcmp(labels[component], COMPONENT_LABELS[c]) == 0) {
-						child_data[c][i] = StringVector::AddString(anofox::VectorRef(children[c]), values[component]);
-						FlatVector::SetNull(anofox::VectorRef(children[c]), i, false);
+						if (present[c]) {
+							joined[c] += ' ';
+						}
+						joined[c] += values[component];
+						present[c] = true;
 						break;
 					}
+				}
+			}
+			for (idx_t c = 0; c < COMPONENT_COUNT; c++) {
+				if (present[c]) {
+					child_data[c][i] = StringVector::AddString(anofox::VectorRef(children[c]), joined[c]);
+					FlatVector::SetNull(anofox::VectorRef(children[c]), i, false);
 				}
 			}
 		});

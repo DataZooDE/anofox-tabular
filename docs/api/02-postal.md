@@ -31,10 +31,11 @@ FROM duckdb_functions() WHERE function_name = 'anofox_tab_postal_parse_address';
 └──────────────────┘
 ```
 
-> **How this page was checked.** The data was not downloaded on the machine that checked these
-> docs, so only the examples without data were run. The parse example and its result are taken
-> from the test file `test/sql/anofox_postal.test.disabled`, which the test suite does not run
-> today.
+> **How this page was checked.** The examples that need the data are marked `no-run`. The
+> `postal_parse_address` results in the table below come from the test file
+> `test/sql/anofox_postal_parse_labels.test`, which runs when the environment variable
+> `POSTAL_DATA_PATH` points to a downloaded data directory; the `221B Baker Street` example is
+> taken from `test/sql/anofox_postal.test.disabled`, which the test suite does not run today.
 
 ## Functions
 
@@ -136,6 +137,24 @@ SELECT (p).house_number, (p).road, (p).city, (p).postcode
 FROM (SELECT postal_parse_address('221B Baker Street, London') AS p);
 -- house_number = '221b', road = 'baker street', city = 'london', postcode = NULL
 ```
+
+libpostal tags every token of the address and can give the same label to more than one part.
+The values of a repeated label are joined with a space, in the order libpostal returns them; no
+part is dropped. libpostal labels are not always right, and the join keeps its mistakes visible
+instead of hiding them. Results with the libpostal 1.1 data, from the test file
+`test/sql/anofox_postal_parse_labels.test`:
+
+| Address | `house_number` | `road` | `city` | `postcode` | `country` |
+|---------|----------------|--------|--------|------------|-----------|
+| `Prinsengracht 263, 1016 GV Amsterdam` | `263` | `prinsengracht gv` | `amsterdam` | `1016` | `NULL` |
+| `Hauptstraße 5, 80331 München, Deutschland` | `5` | `hauptstraße` | `münchen` | `80331` | `deutschland` |
+| `10 Downing Street, London SW1A 2AA, United Kingdom` | `10` | `downing street` | `london` | `sw1a 2aa` | `united kingdom` |
+| `Flat 3, 12 High Street, Oxford OX1 4AA` | `12 4aa` | `high street ox1` | `oxford` | `NULL` | `NULL` |
+
+libpostal splits the Dutch postcode `1016 GV` into `postcode` `1016` and `road` `gv`, and does
+not recognise the UK postcode `OX1 4AA` after `Oxford`. Writing the Dutch postcode without the
+space (`1016GV`) gives `postcode` `1016gv`. Labels other than the six columns (for example
+`unit` or `level`) are not returned.
 
 A `NULL` address returns `NULL` without loading the data:
 

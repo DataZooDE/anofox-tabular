@@ -1,0 +1,45 @@
+# name: test/sql/anofox_postal_parse_labels.test
+# description: postal_parse_address joins the values of a label that libpostal
+#              returns more than once (in libpostal's order) instead of keeping
+#              only the last one. Needs the libpostal data bundle: set
+#              POSTAL_DATA_PATH to an existing data directory (the test never
+#              downloads it).
+# group: [anofox_tabular]
+
+require-env POSTAL_AVAILABLE
+
+require-env POSTAL_DATA_PATH
+
+require anofox_tabular
+
+statement ok
+LOAD anofox_tabular;
+
+statement ok
+SET anofox_tab_trace_level='warn';
+
+statement ok
+SET anofox_tab_postal_data_path='{POSTAL_DATA_PATH}';
+
+statement ok
+CREATE TABLE addresses AS SELECT * FROM (VALUES
+    (1, 'Prinsengracht 263, 1016 GV Amsterdam'),
+    (2, 'Hauptstraße 5, 80331 München, Deutschland'),
+    (3, 'Unter den Linden 77, 10117 Berlin'),
+    (4, '10 Downing Street, London SW1A 2AA, United Kingdom'),
+    (5, 'Flat 3, 12 High Street, Oxford OX1 4AA')
+) t(id, address);
+
+# libpostal labels 'Prinsengracht' and 'GV' both as road and 'High Street' /
+# 'OX1' as road, '12' / '4AA' as house_number: all values are kept, joined with
+# a space in the order libpostal returns them.
+query ITTTTTT
+SELECT id, p.house_number, p.road, p.city, p.state, p.postcode, p.country
+FROM (SELECT id, postal_parse_address(address) AS p FROM addresses)
+ORDER BY id;
+----
+1	263	prinsengracht gv	amsterdam	NULL	1016	NULL
+2	5	hauptstraße	münchen	NULL	80331	deutschland
+3	77	unter den linden	berlin	NULL	10117	NULL
+4	10	downing street	london	NULL	sw1a 2aa	united kingdom
+5	12 4aa	high street ox1	oxford	NULL	NULL	NULL
