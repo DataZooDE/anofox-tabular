@@ -49,6 +49,8 @@ struct PhoneNumberParts {
 
 //! Values of the `reason` field of phonenumber_parse
 struct PhoneNumberInvalidReason {
+	//! The value is blank: empty or whitespace only (a quoted '' CSV cell)
+	static constexpr const char *EMPTY = "empty";
 	static constexpr const char *NOT_A_NUMBER = "not_a_number";
 	//! The number contains letters (other than a leading label or an extension marker)
 	static constexpr const char *INVALID_CHARACTERS = "invalid_characters";

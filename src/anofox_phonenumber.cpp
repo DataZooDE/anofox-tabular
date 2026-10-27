@@ -333,6 +333,14 @@ PhoneNumberParts PhoneNumberManager::Parse(const std::string& raw_number, const 
 
 	PhoneNumberParts parts;
 
+	// A blank field (empty or whitespace only) is a missing value, not a broken number
+	if (std::all_of(raw_number.begin(), raw_number.end(),
+	                [](char c) { return IsBlank(c) || c == '\v' || c == '\f'; })) {
+		AnofoxTrace(AnofoxLogLevel::Debug, "PhoneNumber parse failed: blank input");
+		parts.reason = PhoneNumberInvalidReason::EMPTY;
+		return parts;
+	}
+
 	// Fold full-width digits/signs to ASCII, drop a leading label, split off a
 	// trailing extension, then normalize
 	auto input = SplitPhoneInput(FoldFullWidthForms(raw_number));

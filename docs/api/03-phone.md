@@ -133,7 +133,8 @@ parentheses as separators and handles four more cases:
 - **Any other letter makes the number invalid** with reason `invalid_characters`:
   `650foo2530000`, `030 12A34567` and `+49 30 1234 FAX 5678` are rejected instead of being read
   as the digits that are left. Vanity numbers such as `1-800-FLOWERS` are not converted. Input
-  without any digit (`n/a`) is `not_a_number`.
+  without any digit (`n/a`, `-`) is `not_a_number`; a blank value (an empty string or whitespace
+  only) is `empty`.
 
 ```sql
 SELECT phone,
@@ -196,13 +197,14 @@ phonenumber_parse(phone VARCHAR, region VARCHAR) -> STRUCT(
 | `valid` | `BOOLEAN` | `true` when the number is valid, the same as `phonenumber_is_valid`; the other fields except `region` and `reason` are `NULL` when it is not |
 | `country_code` | `INTEGER` | Country calling code, e.g. `1`, `44`, `49` |
 | `national_number` | `VARCHAR` | The number without country code and formatting |
-| `region` | `VARCHAR` | Region code, e.g. `US`, `GB`: the region the number was read in. For a number without `+` that is the `region` argument, or the default region when it is `NULL`; for a number with `+` the region of its country code. Also set for an invalid number once the region is known; `NULL` for `not_a_number`, `invalid_characters`, `unsupported_region` and `unsupported_country_code` |
+| `region` | `VARCHAR` | Region code, e.g. `US`, `GB`: the region the number was read in. For a number without `+` that is the `region` argument, or the default region when it is `NULL`; for a number with `+` the region of its country code. Also set for an invalid number once the region is known; `NULL` for `empty`, `not_a_number`, `invalid_characters`, `unsupported_region` and `unsupported_country_code` |
 | `type` | `VARCHAR` | `fixed_line`, `mobile`, `fixed_line_or_mobile` or `toll_free` |
 | `reason` | `VARCHAR` | `NULL` when the number is valid, else why it is not (see below) |
 | `extension` | `VARCHAR` | Digits of a trailing extension (`ext. 123`, `x123`, `Durchwahl 123`), see [Labels, extensions and letters](#labels-extensions-and-letters); `NULL` when there is none or the number is not valid |
 
 | `reason` | Meaning |
 |----------|---------|
+| `empty` | The value is blank: an empty string or whitespace only (a quoted `''` CSV cell) |
 | `not_a_number` | The input has no digits |
 | `invalid_characters` | The number contains letters, other than a leading label or a trailing extension marker |
 | `unsupported_region` | A number without `+` and a `region` that is not one of the 21 supported regions |

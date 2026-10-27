@@ -33,6 +33,7 @@ namespace {
 constexpr const char *EMAIL_STAGE_REGEX = "regex";
 constexpr const char *EMAIL_STAGE_DNS = "dns";
 constexpr const char *EMAIL_STAGE_SMTP = "smtp";
+constexpr const char *EMAIL_REASON_EMPTY = "empty";
 constexpr const char *EMAIL_REASON_REGEX_FAIL = "invalid_format";
 constexpr const char *EMAIL_REASON_TOO_LONG = "invalid_length";
 constexpr const char *EMAIL_REASON_DNS_FAIL = "dns_resolution_failed";
@@ -64,7 +65,7 @@ EmailFailureKind ClassifyEmailFailure(const std::string &reason) {
 	// servers, temporary SMTP replies, local resolver/socket errors) is unknown.
 	static const std::unordered_set<std::string> DEFINITE_REASONS = {
 	    // regex stage
-	    EMAIL_REASON_REGEX_FAIL, EMAIL_REASON_TOO_LONG,
+	    EMAIL_REASON_EMPTY, EMAIL_REASON_REGEX_FAIL, EMAIL_REASON_TOO_LONG,
 	    // dns stage: authoritative negative answers and names never looked up
 	    EMAIL_REASON_DNS_FAIL, "dns_empty_domain", "dns_reserved_domain", "dns_domain_not_found", "dns_no_records",
 	    "dns_null_mx", "mx_record_absent",
@@ -322,6 +323,13 @@ private:
 EmailValidationResult ValidateRegex(std::string_view email, const CompiledEmailPattern &pattern) {
 	EmailValidationResult result;
 	result.stage = EMAIL_STAGE_REGEX;
+	if (email.empty()) {
+		// A blank field (empty or whitespace only, already trimmed) is a missing
+		// value rather than a malformed address; it is never looked up
+		result.valid = false;
+		result.reason = EMAIL_REASON_EMPTY;
+		return result;
+	}
 	auto at_pos = email.rfind('@');
 	auto local_length = at_pos == std::string_view::npos ? email.size() : at_pos;
 	if (email.size() > EMAIL_MAX_LENGTH || local_length > EMAIL_MAX_LOCAL_LENGTH) {

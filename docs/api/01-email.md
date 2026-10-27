@@ -138,8 +138,9 @@ email_is_valid(email VARCHAR [, mode VARCHAR]) -> BOOLEAN
 | `email` | `VARCHAR` | required | The address to check |
 | `mode` | `VARCHAR` | `anofox_tab_email_default_validation` (`regex`) | `regex`, `dns` or `smtp` |
 
-A `NULL` email returns `NULL`. An empty string returns `false`. The `regex` mode never returns
-`NULL` for a non-`NULL` address.
+A `NULL` email returns `NULL`. A blank value (an empty string or whitespace only) returns
+`false`; `email_validate` gives it the reason `empty`. The `regex` mode never returns `NULL` for a
+non-`NULL` address.
 
 ```sql
 SELECT address, email_is_valid(address) AS valid
@@ -189,7 +190,7 @@ SELECT address,
        (email_validate(address)).valid  AS valid,
        (email_validate(address)).stage  AS stage,
        (email_validate(address)).reason AS reason
-FROM (VALUES ('user@example.com'), ('not-an-email')) t(address);
+FROM (VALUES ('user@example.com'), ('not-an-email'), ('   ')) t(address);
 ```
 
 ```text
@@ -199,6 +200,7 @@ FROM (VALUES ('user@example.com'), ('not-an-email')) t(address);
 ├──────────────────┼─────────┼─────────┼────────────────┤
 │ user@example.com │ true    │ regex   │ NULL           │
 │ not-an-email     │ false   │ regex   │ invalid_format │
+│                  │ false   │ regex   │ empty          │
 └──────────────────┴─────────┴─────────┴────────────────┘
 ```
 
@@ -253,6 +255,7 @@ reason.
 
 | Stage | Reason | `valid` | Meaning |
 |-------|--------|---------|---------|
+| `regex` | `empty` | `false` | The value is blank: an empty string or whitespace only (a quoted `''` CSV cell). It is never looked up, whatever the mode |
 | `regex` | `invalid_format` | `false` | The address does not match the regex pattern |
 | `regex` | `invalid_length` | `false` | The address is longer than 254 characters, or its local part longer than 64 |
 | `dns` | `dns_resolution_failed` | `false` | No domain could be taken from the address |

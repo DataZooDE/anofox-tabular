@@ -249,6 +249,10 @@ instant and bucketed by its UTC date, with or without the ICU extension and what
 ## NULL and empty input
 
 - Scalar functions return `NULL` for a `NULL` input.
+- A blank value (an empty string or whitespace only, such as a quoted `''` CSV cell) is no `NULL`:
+  the validation functions treat it as a missing value and say so. `email_validate`,
+  `phonenumber_parse` and `vat_validate` return `valid = false` with the reason `empty`, and
+  `email_is_valid`, `phonenumber_is_valid` and `vat_is_valid` return `false`.
 - The one-row checks (`volume`, `null_rate`, `regex_match`, ...) always return one row, also for
   an empty table. Empty input passes, with a message that says so.
 - Functions with an `output_mode` (`'summary'`, `'scores'`, `'clusters'`, `'outliers'`) return one
@@ -318,11 +322,11 @@ unknown currency code raises, because a money value without a valid currency can
 
 | Module | Bad value | Bad option |
 |--------|-----------|------------|
-| [Email](01-email.md) | `email_is_valid` is `false`; `email_validate` has `valid = false` and a `reason`. A DNS or SMTP check that gets no answer is `NULL` (`valid = NULL`) | An unknown mode raises (`Unknown email validation mode: ...`) |
+| [Email](01-email.md) | `email_is_valid` is `false`; `email_validate` has `valid = false` and a `reason` (`empty` for a blank value). A DNS or SMTP check that gets no answer is `NULL` (`valid = NULL`) | An unknown mode raises (`Unknown email validation mode: ...`) |
 | [Postal](02-postal.md) | No error: parts that libpostal does not find are `NULL` | none; missing data starts the download, and a failed download raises |
-| [Phone](03-phone.md) | `phonenumber_is_valid` is `false`; `phonenumber_format` and `phonenumber_region` are `NULL`; `phonenumber_parse` has `valid = false` and a `reason`. An unsupported `region` argument makes the row invalid (`unsupported_region`) | An unknown format raises; an unsupported code in `SET anofox_tab_phonenumber_default_region` raises |
+| [Phone](03-phone.md) | `phonenumber_is_valid` is `false`; `phonenumber_format` and `phonenumber_region` are `NULL`; `phonenumber_parse` has `valid = false` and a `reason` (`empty` for a blank value); `phonenumber_match` is `NOT_A_NUMBER`. An unsupported `region` argument makes the row invalid (`unsupported_region`) | An unknown format raises; an unsupported code in `SET anofox_tab_phonenumber_default_region` raises |
 | [Money](04-money.md) | An unknown currency code raises in `money` and `money_from_cents`; arithmetic on two currencies raises | An unknown `money_format` style raises |
-| [VAT](05-vat.md) | `vat_is_valid` is `false`; `vat_validate` has `valid = false` and a `reason`; `vat_format`, `vat_split` and `vat_country_name` are `NULL`; `vat_normalize` only cleans the text and does not validate | An unknown `vat_format` style raises |
+| [VAT](05-vat.md) | `vat_is_valid` is `false`; `vat_validate` has `valid = false` and a `reason` (`empty` for a blank value); `vat_format`, `vat_split` and `vat_country_name` are `NULL`; `vat_normalize` only cleans the text and does not validate | An unknown `vat_format` style raises |
 | [PII](06-pii.md) | No error: text without PII gives an empty list or the unchanged text | An unknown mask strategy raises |
 | Table functions ([checks](07-data-quality.md), [anomaly](08-anomaly-detection.md), [diff](09-diffing.md), [profile](10-profiling.md)) | Data never raises; checks report `fail` | An unknown table or column raises; `run_checks` reports it in an `error` row |
 

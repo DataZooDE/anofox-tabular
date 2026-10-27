@@ -36,8 +36,8 @@ FROM signups ORDER BY id;
 4	true	true	NULL
 5	true	true	NULL
 6	false	false	invalid_format
-7	false	false	invalid_format
-8	false	false	invalid_format
+7	false	false	empty
+8	false	false	empty
 9	false	false	invalid_format
 
 # The dns stage sees the trimmed domain: a reserved domain is still recognised (no lookup)

@@ -87,7 +87,7 @@ FROM customers ORDER BY id;
 27	255	false	invalid_length
 28	70	true	NULL
 29	71	false	invalid_format
-30	0	false	invalid_format
+30	0	false	empty
 
 # The length limits also apply to a custom pattern
 statement ok

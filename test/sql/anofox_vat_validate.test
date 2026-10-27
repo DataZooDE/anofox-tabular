@@ -55,7 +55,7 @@ ORDER BY supplier_id;
 10014	UK980780684	false	NULL	unsupported_country
 10015	CHE-123.456.789	false	NULL	unsupported_country
 10016	DE	false	DE	invalid_format
-10017	(empty)	false	NULL	missing_prefix
+10017	(empty)	false	NULL	empty
 10018	NULL	NULL	NULL	NULL
 
 # NULL in gives a NULL struct, not a struct of NULLs
@@ -78,8 +78,9 @@ FROM supplier_master WHERE vat_id IS NOT NULL
 GROUP BY ALL ORDER BY reason;
 ----
 checksum_mismatch	2
+empty	1
 invalid_format	3
-missing_prefix	2
+missing_prefix	1
 ok	8
 unsupported_country	2
 

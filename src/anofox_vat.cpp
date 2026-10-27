@@ -186,6 +186,7 @@ static void VATIsValidFunc(DataChunk& args, ExpressionState& state,
 // anofox_vat_validate(vat) -> STRUCT(valid, country, reason)
 // The same check as vat_is_valid, with the reason a number is rejected.
 // country is the ISO code of a supported prefix (as in vat_split), else NULL.
+static constexpr const char* VAT_REASON_EMPTY = "empty";
 static constexpr const char* VAT_REASON_MISSING_PREFIX = "missing_prefix";
 static constexpr const char* VAT_REASON_UNSUPPORTED_COUNTRY = "unsupported_country";
 static constexpr const char* VAT_REASON_INVALID_FORMAT = "invalid_format";
@@ -217,7 +218,13 @@ static void VATValidateFunc(DataChunk& args, ExpressionState& state,
     bool has_letter_prefix = normalized.size() >= 2 && std::isalpha(static_cast<unsigned char>(normalized[0])) &&
                              std::isalpha(static_cast<unsigned char>(normalized[1]));
     auto split_result = registry.SplitVAT(input);
-    if (!has_letter_prefix) {
+    // A blank field (empty or whitespace only) is a missing value, not a number without prefix
+    const bool blank = std::all_of(input.begin(), input.end(), [](char c) {
+      return c == ' ' || c == '\t' || c == '\r' || c == '\n' || c == '\v' || c == '\f';
+    });
+    if (blank) {
+      reason = VAT_REASON_EMPTY;
+    } else if (!has_letter_prefix) {
       reason = VAT_REASON_MISSING_PREFIX;
     } else if (!split_result.has_value()) {
       reason = VAT_REASON_UNSUPPORTED_COUNTRY;
@@ -420,7 +427,7 @@ void RegisterVATFunctions(ExtensionLoader& loader) {
   }
   {
     FunctionDescription desc;
-    desc.description = "Validates a VAT number like vat_is_valid and says why it is rejected: a struct with valid, country (ISO code of a supported prefix, else NULL) and reason (missing_prefix, unsupported_country, invalid_format, checksum_mismatch; NULL when valid). Runs locally; does not query VIES.";
+    desc.description = "Validates a VAT number like vat_is_valid and says why it is rejected: a struct with valid, country (ISO code of a supported prefix, else NULL) and reason (empty for a blank value, missing_prefix, unsupported_country, invalid_format, checksum_mismatch; NULL when valid). Runs locally; does not query VIES.";
     desc.parameter_names = {"vat"};
     desc.parameter_types = {LogicalType::VARCHAR};
     desc.examples = {"SELECT vat_validate('ATU13585627');", "SELECT (vat_validate('DE 811 128 136')).reason;"};

@@ -105,12 +105,14 @@ The checks run in this order, and the first that fails gives the reason:
 
 | `reason` | Meaning |
 |----------|---------|
-| `missing_prefix` | After normalization the value does not start with two letters, e.g. `811128135` or an empty string |
+| `empty` | The value is blank: an empty string or whitespace only (a quoted `''` CSV cell) |
+| `missing_prefix` | After normalization the value does not start with two letters, e.g. `811128135` |
 | `unsupported_country` | Two letters that are not one of the 28 supported prefixes, e.g. `UK` (use `GB`) or `CH` |
 | `invalid_format` | The national part does not match the country's pattern: wrong length, a letter where a digit belongs, or nothing after the prefix |
 | `checksum_mismatch` | The pattern fits but the check digits are wrong (only for countries with a check-digit test, see [Supported countries](#supported-countries)) |
 
-A `NULL` input returns `NULL`.
+A `NULL` input returns `NULL`; a blank value is `valid = false` with the reason `empty`, and
+`vat_is_valid` returns `false` for it.
 
 ```sql
 SELECT vat_id, (r).valid, (r).country, (r).reason
