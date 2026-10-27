@@ -514,25 +514,43 @@ WHERE check_name = 'orders_arrived';
 The days before the first row of the table are not filled, so a new table does not start with
 an artificially low baseline.
 
-Then turn any `fail` or `error` into a failed statement with `error()`. The DuckDB CLI exits
-with a non-zero code when a statement fails, so a scheduler (cron, Airflow, a CI job) sees the
-failure:
+Then turn any `fail` or `error` into a failed statement with `error()`. Store the run first,
+so the history also has the failing run, and read the gate from the stored rows of that run
+instead of calling `run_checks` a second time (a second call would evaluate the checks again,
+at a later `run_ts`, and could disagree with what you stored). The gate names each failing
+row as `check_name[identifier]`, so a partitioned check says which partition failed:
 
 ```sql
+CREATE TABLE nightly_results AS SELECT * FROM run_checks('nightly_checks') LIMIT 0;
+INSERT INTO nightly_results SELECT * FROM run_checks('nightly_checks');
+
 SELECT CASE WHEN count(*) FILTER (WHERE status IN ('fail', 'error')) > 0
             THEN error('nightly gate failed: ' ||
-                       string_agg(check_name || '=' || status, ', ' ORDER BY check_name)
+                       string_agg(check_name || coalesce('[' || identifier || ']', '') || '=' || status,
+                                  ', ' ORDER BY check_name, identifier)
                            FILTER (WHERE status IN ('fail', 'error')))
             ELSE 'nightly gate passed' END AS gate
-FROM run_checks('nightly_checks');
+FROM nightly_results
+WHERE run_ts = (SELECT max(run_ts) FROM nightly_results);
 ```
 
 ```text
 Invalid Input Error: nightly gate failed: orders_arrived=fail, orders_fresh=fail
 ```
 
-Store the results first (section 4) and run the gate afterwards, so the history also has the
-failing run. Keep in mind what the checks do not cover:
+The DuckDB CLI exits with a non-zero code when a statement fails, so a scheduler (cron,
+Airflow, a CI job) sees the failure. Every row of one `run_checks` call has the same `run_ts`,
+so `max(run_ts)` selects the latest run.
+
+The checks table can also be a file kept in version control next to the job:
+`run_checks('nightly_checks.csv')` reads a CSV file with the columns of the checks table, like
+`FROM 'nightly_checks.csv'` does. A nightly job is then one CLI call:
+
+```sql no-run
+INSERT INTO nightly_results SELECT * FROM run_checks('nightly_checks.csv');
+```
+
+Keep in mind what the checks do not cover:
 
 - `schema_check` compares column names only, not their types. A column whose type changed from
   `DOUBLE` to `VARCHAR` still passes; add a `compliance` or `agg` check on it if the type

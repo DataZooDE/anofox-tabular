@@ -1050,8 +1050,9 @@ FROM metric_anomaly_iqr_events('orders', 'order_date', 'amount', 14, 1.5, 'upper
 Canonical name: `anofox_tab_run_checks`. Table function.
 
 Runs every check defined in a checks table and returns one uniform row per check, and per
-partition when the check has an `identifier_column`. `run_checks` works in UTC; see
-[Time zone](#time-zone).
+partition when the check has an `identifier_column`. The rows are ordered by `check_name`, then
+by `identifier` (compared as text, the `NULL` partition last), the same on every run.
+`run_checks` works in UTC; see [Time zone](#time-zone).
 
 ```text
 run_checks(checks_table VARCHAR)
@@ -1069,7 +1070,9 @@ attached DuckDB database. The checked tables may be TEMP tables or views. A tabl
 be qualified (`'mig.orders'`); see [Table and column arguments](00-conventions.md#table-and-column-arguments).
 
 A checks *view* (or a table of another database type, such as an attached Postgres database) is
-read through a second connection, which sees only committed data. A TEMP view is therefore the
+read through a second connection, which sees only committed data. So is a file:
+`run_checks('dq_checks.csv')` reads a CSV (or Parquet, JSON) file with the checks table's
+columns, as `FROM 'dq_checks.csv'` does. A TEMP view is therefore the
 error `run_checks: the checks view 'my_checks' is a TEMP view; ...`, and inside a transaction
 with uncommitted changes the view is refused instead of silently showing the committed
 definitions:
@@ -1082,7 +1085,7 @@ ignored. A checks table without a required column is an error that names it, for
 
 | Column | Type | Required | Description |
 |--------|------|----------|-------------|
-| `check_name` | `VARCHAR` | yes | Label of the check, unique in the table; results are ordered by it |
+| `check_name` | `VARCHAR` | yes | Label of the check, unique in the table; results are ordered by it, then by `identifier` |
 | `check_type` | `VARCHAR` | yes | One of the types below |
 | `table_name` | `VARCHAR` | yes | The table or view to check |
 | `column_name` | `VARCHAR` | no | The column; `NULL` where the type needs none. For the key of `duplicate_count` and `match_rate` a comma-separated list (`'order_id, customer_id'`) or a JSON array (`'["order_id", "customer_id"]'`) |

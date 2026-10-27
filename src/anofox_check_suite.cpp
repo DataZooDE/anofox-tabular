@@ -1818,6 +1818,8 @@ static unique_ptr<TableRef> RunChecksBindReplace(ClientContext &context, TableFu
 		}
 		sql += "(" + branches[i] + ")";
 	}
+	// A stable order: by check, then by partition (the NULL partition last)
+	sql = "SELECT * FROM (" + sql + ") __suite ORDER BY check_name NULLS LAST, identifier NULLS LAST";
 	return ParseSubquery(sql, context, "Failed to parse check suite query");
 }
 

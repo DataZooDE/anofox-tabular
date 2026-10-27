@@ -920,7 +920,8 @@ def run_checks(
     Returns
     -------
     list[dict]
-        One dict per check result with the uniform schema keys (``run_ts``, ``check_name``,
+        One dict per check result, ordered by ``check_name``, then ``identifier``, with the
+        uniform schema keys (``run_ts``, ``check_name``,
         ``check_type``, ``table_name``, ``column_name``, ``identifier``, ``value``,
         ``lower_threshold``, ``upper_threshold``, ``status``, ``message``).
     """
@@ -938,11 +939,14 @@ def run_checks(
         )
         cursor = conn.execute(
             f"SELECT * FROM {result_sql} "
-            f"WHERE run_ts = (SELECT MAX(run_ts) FROM {result_sql}) ORDER BY check_name"
+            f"WHERE run_ts = (SELECT MAX(run_ts) FROM {result_sql}) "
+            "ORDER BY check_name NULLS LAST, identifier NULLS LAST"
         )
     else:
         cursor = conn.execute(
-            "SELECT * FROM anofox_tab_run_checks(?) ORDER BY check_name", [checks_table]
+            "SELECT * FROM anofox_tab_run_checks(?) "
+            "ORDER BY check_name NULLS LAST, identifier NULLS LAST",
+            [checks_table],
         )
     columns = [d[0] for d in cursor.description]
     return [dict(zip(columns, row)) for row in cursor.fetchall()]
