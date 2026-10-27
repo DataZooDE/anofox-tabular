@@ -222,6 +222,37 @@ ORDER BY region;
 └─────────┴─────────────┴─────────┘
 ```
 
+A partition only exists when it has rows. A region that sent nothing today has no row in the
+result at all, so it is neither `pass` nor `fail`, and a gate on `status = 'fail'` never sees
+it. To catch a partition that disappeared, join the results to the list of partitions you
+expect: a dimension table such as `SELECT region FROM sales_regions`, or a literal list. Here
+the shop also sells in the region `east`, which sent no orders:
+
+```sql
+WITH expected(region) AS (VALUES ('east'), ('north'), ('south'), ('west')),
+     results AS (
+         SELECT identifier AS region, status
+         FROM run_checks('dq_checks')
+         WHERE check_name = 'status_by_region')
+SELECT e.region, coalesce(r.status, 'missing') AS status
+FROM expected e LEFT JOIN results r ON r.region = e.region
+ORDER BY e.region;
+```
+
+```text
+┌─────────┬─────────┐
+│ region  │ status  │
+│ varchar │ varchar │
+├─────────┼─────────┤
+│ east    │ missing │
+│ north   │ pass    │
+│ south   │ fail    │
+│ west    │ pass    │
+└─────────┴─────────┘
+```
+
+Treat `missing` like `fail` in the gate (section 7).
+
 The message of a failing check names the violated bound. For `values_in_set`,
 `duplicate_count` and `match_rate` it also shows up to 5 offending values, so you see the bad
 status without a second query:
