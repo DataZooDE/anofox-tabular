@@ -795,6 +795,19 @@ static string TolerantBooleanSQL(ClientContext &context, const CheckSpec &spec, 
 }
 
 // Build the inner derived table (value computation) for one check
+// The UTC calendar date of the check's date column, as the direct functions compute it
+// (UtcDateSQL): a TIMESTAMP WITH TIME ZONE column is bucketed by its UTC date without needing
+// ICU. A relation that is not a catalog table (e.g. a file) keeps the plain DATE cast.
+static string SuiteDateSQL(ClientContext &context, const CheckSpec &spec, const string &date_id) {
+	auto relation = LookupRelation(context, spec.table_name);
+	for (auto &column : relation.columns) {
+		if (StringUtil::CIEquals(column.name, spec.date_column)) {
+			return UtcDateSQL(date_id, column.type);
+		}
+	}
+	return "CAST(" + date_id + " AS DATE)";
+}
+
 static CheckBranch BuildCheckBranch(ClientContext &context, const CheckSpec &spec, const string &filter_sql) {
 	CheckBranch branch;
 	const string table_ref = BuildQueryTableRef(spec.table_name);
@@ -964,8 +977,9 @@ static CheckBranch BuildCheckBranch(ClientContext &context, const CheckSpec &spe
 		                      : "COUNT(DISTINCT " + QuoteSqlIdentifier(spec.count_column) + ")";
 		string ref_lit = spec.reference_date_sql.empty() ? "NULL" : spec.reference_date_sql;
 		auto window_days = ParseWindowDays(spec, 7);
+		string date_sql = SuiteDateSQL(context, spec, date_id);
 		branch.inner_sql =
-		    "WITH daily AS (SELECT CAST(" + date_id + " AS DATE) AS d, " + cnt_expr + " AS c FROM " + table_ref +
+		    "WITH daily AS (SELECT " + date_sql + " AS d, " + cnt_expr + " AS c FROM " + table_ref +
 		    " WHERE " + date_id + " IS NOT NULL" + (filter_sql.empty() ? "" : " AND (" + filter_sql + ")") +
 		    " GROUP BY 1), "
 		    "ref AS (SELECT COALESCE(" + ref_lit + ", MAX(d)) AS ref_d FROM daily), "
@@ -994,8 +1008,9 @@ static CheckBranch BuildCheckBranch(ClientContext &context, const CheckSpec &spe
 				throw BinderException("run_checks: check '" + spec.check_name + "': params.k must be a finite number");
 			}
 		}
+		string date_sql = SuiteDateSQL(context, spec, date_id);
 		branch.inner_sql =
-		    "WITH daily AS (SELECT CAST(" + date_id + " AS DATE) AS d, " + metric_expr + " AS m FROM " + table_ref +
+		    "WITH daily AS (SELECT " + date_sql + " AS d, " + metric_expr + " AS m FROM " + table_ref +
 		    " WHERE " + date_id + " IS NOT NULL" + (filter_sql.empty() ? "" : " AND (" + filter_sql + ")") +
 		    " GROUP BY 1), "
 		    "ref AS (SELECT COALESCE(" + ref_lit + ", MAX(d)) AS ref_d FROM daily), "
@@ -1015,12 +1030,13 @@ static CheckBranch BuildCheckBranch(ClientContext &context, const CheckSpec &spe
 		string arr = BuildAllowedArrayFromJson(spec);
 		string ref_lit = spec.reference_date_sql.empty() ? "NULL" : spec.reference_date_sql;
 		string window_val = std::to_string(ParseWindowDays(spec, 7));
+		string date_sql = SuiteDateSQL(context, spec, date_id);
 		branch.inner_sql =
-		    "WITH ref AS (SELECT COALESCE(" + ref_lit + ", MAX(CAST(" + date_id + " AS DATE))) AS ref_d FROM " +
+		    "WITH ref AS (SELECT COALESCE(" + ref_lit + ", MAX(" + date_sql + ")) AS ref_d FROM " +
 		    table_ref + "), "
 		    "win AS (SELECT CAST(" + col + " AS VARCHAR) AS v FROM " + table_ref + ", ref WHERE " + col +
-		    " IS NOT NULL AND " + date_id + " IS NOT NULL AND CAST(" + date_id + " AS DATE) > ref_d - " + window_val +
-		    " AND CAST(" + date_id + " AS DATE) <= ref_d" +
+		    " IS NOT NULL AND " + date_id + " IS NOT NULL AND " + date_sql + " > ref_d - " + window_val +
+		    " AND " + date_sql + " <= ref_d" +
 		    (filter_sql.empty() ? "" : " AND (" + filter_sql + ")") + ") "
 		    "SELECT CAST(SUM(CASE WHEN list_contains(" + arr +
 		    ", v) THEN 1 ELSE 0 END) AS DOUBLE) / NULLIF(COUNT(*), 0) AS value FROM win";

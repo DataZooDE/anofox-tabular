@@ -1,0 +1,45 @@
+# name: test/sql/anofox_check_suite_tz_dates.test
+# description: run_checks buckets a TIMESTAMP WITH TIME ZONE date column by its UTC date, like
+#              the direct functions (it cast to DATE, which needs ICU and follows the session
+#              time zone). The test runner has no ICU loaded.
+# group: [anofox_tabular]
+
+require anofox_tabular
+
+statement ok
+LOAD anofox_tabular
+
+# Web shop orders stored with time zone: 40 a day, then a spike to 120 on the last day
+statement ok
+CREATE TABLE shop_orders AS
+SELECT i AS order_id,
+       (TIMESTAMP '2026-10-20 08:00:00' + to_days((i % 6)::INTEGER) + to_minutes(i % 50))::TIMESTAMPTZ AS created_at,
+       CASE WHEN i % 7 = 0 THEN 'paypal' ELSE 'card' END AS payment
+FROM range(1, 241) t(i)
+UNION ALL
+SELECT 1000 + i, (TIMESTAMP '2026-10-26 09:00:00' + to_minutes(i))::TIMESTAMPTZ, 'card' FROM range(1, 121) t(i)
+
+statement ok
+CREATE TABLE tz_checks(check_name VARCHAR, check_type VARCHAR, table_name VARCHAR, column_name VARCHAR,
+  params VARCHAR, lower_threshold DOUBLE, upper_threshold DOUBLE, monitor_only BOOLEAN,
+  identifier_column VARCHAR, filter_expr VARCHAR)
+
+statement ok
+INSERT INTO tz_checks VALUES
+  ('order_spike', 'rel_count_change', 'shop_orders', NULL,
+   '{"date_column": "created_at", "window_days": 6, "reference_date": "2026-10-26"}', -0.5, 0.5, false, NULL, NULL),
+  ('payment_mix', 'rolling_values_in_set', 'shop_orders', 'payment',
+   '{"date_column": "created_at", "allowed_values": ["card", "paypal"], "window_days": 7, "reference_date": "2026-10-26"}',
+   0.99, NULL, false, NULL, NULL)
+
+# Both checks run (no 'error' row) and see the UTC days: the spike day has 120 orders vs 40/day
+query TT
+SELECT check_name, status FROM run_checks('tz_checks') ORDER BY check_name
+----
+order_spike	fail
+payment_mix	pass
+
+query R
+SELECT round(value, 1) FROM run_checks('tz_checks') WHERE check_name = 'order_spike'
+----
+2.0
