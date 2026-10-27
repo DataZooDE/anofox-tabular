@@ -215,3 +215,41 @@ class TestPhoneRuleDefaultRegion:
             assert conn.validate(df, {"phone": PhoneRule()}).passed
         finally:
             conn.execute("RESET anofox_tab_phonenumber_default_region").fetchall()
+
+
+class TestProfileSchemas:
+    """conn.profile('t') profiles the table the name resolves to, not every table named 't'."""
+
+    @pytest.fixture
+    def two_schemas(self, conn):
+        conn.execute("CREATE SCHEMA IF NOT EXISTS staging")
+        conn.execute(
+            "CREATE OR REPLACE TABLE customers AS SELECT * FROM (VALUES "
+            "(1, 'ana@example.com'), (2, NULL), (3, 'carla@example.org')) t(customer_id, email)"
+        )
+        conn.execute(
+            "CREATE OR REPLACE TABLE staging.customers AS SELECT * FROM (VALUES "
+            "(1, 'Ana', 'DE', DATE '2026-01-03'), (2, 'Bob', NULL, NULL)) "
+            "t(customer_id, full_name, country, signup_date)"
+        )
+        yield
+        conn.execute("DROP TABLE IF EXISTS customers")
+        conn.execute("DROP TABLE IF EXISTS staging.customers")
+        conn.execute("DROP SCHEMA IF EXISTS staging")
+
+    def test_plain_name_uses_search_path(self, conn, two_schemas):
+        result = conn.profile("customers")
+        assert result["column"].tolist() == ["customer_id", "email"]
+        assert result["row_count"].tolist() == [3, 3]
+        assert result[result["column"] == "email"]["null_count"].iloc[0] == 1
+
+    def test_schema_qualified_name(self, conn, two_schemas):
+        result = conn.profile("staging.customers")
+        assert result["column"].tolist() == ["customer_id", "full_name", "country", "signup_date"]
+        assert result["row_count"].tolist() == [2] * 4
+        assert result[result["column"] == "country"]["null_count"].iloc[0] == 1
+
+    def test_unknown_table_raises_catalog_error(self, conn, two_schemas):
+        import duckdb
+        with pytest.raises(duckdb.CatalogException):
+            conn.profile("staging.orders")

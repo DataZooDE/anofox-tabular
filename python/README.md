@@ -126,6 +126,9 @@ print(result.failures)    # DataFrame: column, row_id, value, rule
   or a DataFrame. A DataFrame is copied into a temporary table for the call and dropped
   afterwards. On a connection to a database file (`anofox.connect("my.db")`) that copy is
   written to the file while the call runs. Any other object raises `TypeError`.
+- **`conn.profile(name)`** resolves a table name like a query does: with tables of the same
+  name in several schemas it profiles the one the search path finds. Pass `"schema.table"`
+  for another schema; an unknown table raises `duckdb.CatalogException`.
 - **`conn.validate(df, schema)`** returns `ValidationResult(passed, failures)`. `failures` has
   one row per failing value with the columns `column`, `row_id`, `value` and `rule`. `row_id`
   is the index label of the failing row for a pandas DataFrame and its 0-based row position

@@ -13,6 +13,29 @@ from ._loader import AnofoxLoader, _DEFAULT_S3_BASE
 from ._sql import fetch_one, finish, quote_ident
 
 
+def _describe_table(conn: Any, name: str) -> tuple[str, list[tuple[str, str]]]:
+    """
+    Return ``(table_sql, [(column, type), ...])`` for the table *name* refers to.
+
+    *name* is a table name as DuckDB resolves it in a query (the search path
+    decides between same-named tables in different schemas), or a qualified
+    ``"schema.table"`` / ``"catalog.schema.table"``. A name that is itself a
+    table (even one containing dots) wins over the qualified reading.
+    """
+    def describe(table_sql: str) -> list[tuple[str, str]]:
+        return [(row[0], row[1]) for row in conn.execute(f"DESCRIBE {table_sql}").fetchall()]
+
+    table_sql = quote_ident(name)
+    try:
+        return table_sql, describe(table_sql)
+    except duckdb.CatalogException:
+        parts = name.split(".")
+        if not 2 <= len(parts) <= 3 or not all(parts):
+            raise
+    table_sql = ".".join(quote_ident(part) for part in parts)
+    return table_sql, describe(table_sql)
+
+
 class AnofoxConnection:
     """
     A DuckDB connection with the anofox_tabular extension loaded.
@@ -128,7 +151,10 @@ class AnofoxConnection:
         Parameters
         ----------
         df_or_table:
-            Either a pandas/polars DataFrame or a string table name.
+            Either a pandas/polars DataFrame or a table name. The name is
+            resolved like in a query (the search path picks among same-named
+            tables in different schemas); ``"schema.table"`` names a table in
+            another schema. An unknown table raises ``duckdb.CatalogException``.
         """
         from ._utils import detect_df_type, drop_df_table, register_df_as_table
 
@@ -142,20 +168,10 @@ class AnofoxConnection:
             registered = True
 
         try:
-            # Get column names and types
-            cols_result = self._conn.execute(
-                "SELECT column_name, data_type FROM information_schema.columns "
-                "WHERE table_name = ? ORDER BY ordinal_position",
-                [table_name],
-            ).fetchall()
-
-            # A plain name refers to a table in the search path; anything else
-            # (e.g. "schema.table") is used as written.
-            table_sql = quote_ident(table_name) if cols_result else table_name
-            if not cols_result:
-                # Fallback: describe the table
-                desc = self._conn.execute(f"DESCRIBE {table_sql}").fetchall()
-                cols_result = [(row[0], row[1]) for row in desc]
+            # DESCRIBE resolves the name like any query does (search path,
+            # "schema.table"), so a same-named table in another schema is not
+            # mixed in, as it would be with a lookup in information_schema.
+            table_sql, cols_result = _describe_table(self._conn, table_name)
 
             # Volume (total rows)
             total = fetch_one(self._conn, f"SELECT count(*) FROM {table_sql}")
