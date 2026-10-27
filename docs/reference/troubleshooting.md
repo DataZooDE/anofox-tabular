@@ -178,10 +178,17 @@ SELECT onnx_available, model_status FROM anofox_ner_status();
 | `DOWNLOADING` | The model is being downloaded |
 | `LOADED` | NER is active |
 | `NOT_DOWNLOADED` | The model is not on disk and `anofox_ner_auto_download` is `false` |
-| `FAILED` | Download or load failed; `status_message` says why |
+| `FAILED` | Download or load failed; `status_message` says why. After fixing the cause, `SET anofox_ner_device` or `SET anofox_ner_model` makes the next detection load again |
 | `NOT_AVAILABLE` | This build has no OpenVINO (`onnx_available = false`) |
 
-The model handles English text; values longer than 256 tokens are read in overlapping windows.
+A failed load does not stop detection: `NAME` falls back to the name dictionary, and
+`ORGANIZATION`, `LOCATION` and `MISC` are not detected. A common cause is a device the machine does
+not have (`SET anofox_ner_device = 'GPU'` without a GPU, `status_message` then starts with
+`OpenVINO error:`); `SET anofox_ner_device = 'CPU'` (or `'AUTO'`) and run the detection again.
+To make a missing model an error instead of a silent fallback, `SET anofox_ner_required = true`.
+
+The default model `bert-multi` handles German, English and eight other languages; values longer
+than 256 tokens are read in overlapping windows.
 Without the model, `pii_scan_table` reports `scanned (NER unavailable)` or
 `no_match (NER unavailable)`. See
 [PII detection](../api/06-pii.md#anofox_ner_status).

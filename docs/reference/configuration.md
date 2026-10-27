@@ -69,6 +69,7 @@ ORDER BY name;
 | `anofox_ner_model` | `VARCHAR` | `bert-multi` | [NER](#ner) |
 | `anofox_ner_device` | `VARCHAR` | `AUTO` | [NER](#ner) |
 | `anofox_ner_cache_size` | `BIGINT` | `10000` | [NER](#ner) |
+| `anofox_ner_required` | `BOOLEAN` | `false` | [NER](#ner) |
 | `anofox_telemetry_enabled` | `BOOLEAN` | `true` (`false` when `DATAZOO_DISABLE_TELEMETRY` is set) | [Telemetry](#telemetry) |
 | `anofox_telemetry_key` | `VARCHAR` | the project's PostHog key | [Telemetry](#telemetry) |
 | `datazoo_banner` | `BOOLEAN` | `true` | [Banner](#banner) |
@@ -186,9 +187,10 @@ uses an OpenVINO model that is downloaded on first use. See
 | Setting | Effect |
 |---------|--------|
 | `anofox_ner_auto_download` | `true` downloads the model (178 MB for the default `bert-multi`, see `anofox_ner_model`) from Hugging Face when it is not on disk. `false` never downloads: NER detection is skipped, the pattern recognizers keep working, `NAME` falls back to a name dictionary, `anofox_ner_status()` reports `NOT_DOWNLOADED` while the model is not on disk, and `pii_scan_table` marks its status with `(NER unavailable)`. |
-| `anofox_ner_model` | Model name: `bert-multi` (default) or `distilbert-multi` (German, English, French, Spanish, Italian, Dutch, Portuguese, Latvian, Arabic, Chinese), or `distilbert-en` (English only, 66 MB, the only model that tags `MISC`). Set it before the model is first loaded; switching afterwards is an error until the process restarts. See [NER model](../api/06-pii.md#ner-model). |
-| `anofox_ner_device` | OpenVINO device: `AUTO`, `CPU`, `GPU`, `GPU.0`, ... Takes effect at the next model load. |
+| `anofox_ner_model` | Model name: `bert-multi` (default) or `distilbert-multi` (German, English, French, Spanish, Italian, Dutch, Portuguese, Latvian, Arabic, Chinese), or `distilbert-en` (English only, 66 MB, the only model that tags `MISC`). Set it before the model is first loaded; switching afterwards is an error until the process restarts. Setting it after a load that failed (`FAILED`) or found no model (`NOT_DOWNLOADED`) makes the next detection load again. See [NER model](../api/06-pii.md#ner-model). |
+| `anofox_ner_device` | OpenVINO device: `AUTO` (picks a GPU if there is one, else the CPU), `CPU`, `GPU`, `NPU`, an indexed device such as `GPU.0` or `NPU.1`, or `AUTO:`, `HETERO:` or `MULTI:` followed by a comma-separated list of these devices (`HETERO:GPU,CPU`). Other names are an error at `SET`; names are stored in upper case. The device takes effect at the next model load: setting it after a load that failed (for example on `GPU` without a GPU) makes the next detection load the model again. Once the model is loaded, a new device takes effect only in a new process. |
 | `anofox_ner_cache_size` | Number of NER results kept in an LRU cache; `0` disables the cache |
+| `anofox_ner_required` | `false` (default): when the model is not available (`NOT_DOWNLOADED`, `FAILED`, `NOT_AVAILABLE`), detection goes on without it: `NAME` falls back to the name dictionary, and `ORGANIZATION`, `LOCATION` and `MISC` are not detected. `true`: a detection that needs the model (the default types, or a type list with `NAME`, `ORGANIZATION`, `LOCATION` or `MISC`) raises an error that names the status and how to fix it. Detections of pattern-based types only are not affected. |
 
 ## Telemetry
 

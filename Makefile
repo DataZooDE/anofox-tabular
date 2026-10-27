@@ -84,7 +84,9 @@ test_reldebug_internal:
 # The tests of the non-default models (test_ner_models) also guard on
 # ANOFOX_TEST_NER_MODELS: the model is chosen once per process, so each of them
 # runs in a process of its own (distilbert-en downloads 66 MB, distilbert-multi
-# 135 MB).
+# 135 MB). test_ner also runs each file in a process of its own and sets
+# ANOFOX_TEST_NER_FRESH_PROCESS for the tests that need a process in which no
+# detection has loaded the model yet (anofox_ner_device_retry.test).
 NER_MODEL_TESTS := test/sql/anofox_ner_model_distilbert_en.test test/sql/anofox_ner_model_distilbert_multi.test
 NER_TESTS := $(filter-out $(NER_MODEL_TESTS),$(shell command grep -l 'require-env OPENVINO_AVAILABLE' test/sql/*.test))
 NER_CHECK_OPENVINO := $(PROJ_DIR)scripts/duckdb-dev.sh -noheader -list -c "SELECT onnx_available FROM anofox_ner_status()" 2>/dev/null | grep -qx true \
@@ -92,7 +94,7 @@ NER_CHECK_OPENVINO := $(PROJ_DIR)scripts/duckdb-dev.sh -noheader -list -c "SELEC
 test_ner: release
 	@$(NER_CHECK_OPENVINO)
 	@for t in $(NER_TESTS); do \
-		DATAZOO_DISABLE_TELEMETRY=1 DNNL_MAX_CPU_ISA=AVX2 OPENVINO_AVAILABLE=1 ./build/release/test/unittest "$$t" || exit 1; \
+		DATAZOO_DISABLE_TELEMETRY=1 DNNL_MAX_CPU_ISA=AVX2 OPENVINO_AVAILABLE=1 ANOFOX_TEST_NER_FRESH_PROCESS=1 ./build/release/test/unittest "$$t" || exit 1; \
 	done
 
 test_ner_models: release

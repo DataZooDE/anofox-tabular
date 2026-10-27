@@ -530,6 +530,7 @@ struct PIIConfigSnapshot {
     std::vector<PIIType> enabled_types;  // Empty = all types enabled
     bool deep_validation = false;
     bool require_checksum = true;  // false: report checksum failures (IBAN, card) at lower confidence
+    bool ner_required = false;     // anofox_ner_required: error instead of dictionary fallback without NER
 
     bool IsTypeEnabled(PIIType type) const;
 };

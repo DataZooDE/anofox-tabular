@@ -1372,8 +1372,126 @@ void NERModelManager::SetDevice(const std::string &device_name) {
         std::lock_guard<std::mutex> lock(state_mutex_);
         device_name_ = device_name;
     }
-    AnofoxTrace(AnofoxLogLevel::Info,
-                "ner: Device set to '" + device_name + "' (reload required for changes to take effect)");
+    if (status_.load() == NERStatus::LOADED) {
+        AnofoxTrace(AnofoxLogLevel::Info, "ner: Device set to '" + device_name +
+                                              "'; the model is already loaded, so it takes effect in a new process");
+        return;
+    }
+    AnofoxTrace(AnofoxLogLevel::Info, "ner: Device set to '" + device_name + "' (takes effect at the next model load)");
+    RequestReload("anofox_ner_device changed");
+}
+
+namespace {
+
+// An OpenVINO device without a virtual-device prefix: CPU, or GPU / NPU with
+// an optional ".<index>" (GPU.0, NPU.1)
+bool IsPhysicalDeviceName(const std::string &name) {
+    if (name == "CPU" || name == "GPU" || name == "NPU") {
+        return true;
+    }
+    if ((name.rfind("GPU.", 0) == 0 || name.rfind("NPU.", 0) == 0) && name.size() > 4) {
+        return std::all_of(name.begin() + 4, name.end(), [](unsigned char c) { return std::isdigit(c) != 0; });
+    }
+    return false;
+}
+
+const char *NERStatusName(NERStatus status) {
+    switch (status) {
+        case NERStatus::NOT_LOADED: return "NOT_LOADED";
+        case NERStatus::DOWNLOADING: return "DOWNLOADING";
+        case NERStatus::LOADED: return "LOADED";
+        case NERStatus::FAILED: return "FAILED";
+        case NERStatus::NOT_AVAILABLE: return "NOT_AVAILABLE";
+        case NERStatus::NOT_DOWNLOADED: return "NOT_DOWNLOADED";
+    }
+    return "UNKNOWN";
+}
+
+} // anonymous namespace
+
+std::string NERModelManager::NormalizeDeviceName(const std::string &device_name) {
+    // OpenVINO spells devices in upper case; spaces around list items are dropped
+    std::string normalized;
+    for (unsigned char c : device_name) {
+        if (!std::isspace(c)) {
+            normalized += static_cast<char>(std::toupper(c));
+        }
+    }
+
+    bool valid = normalized == "AUTO" || IsPhysicalDeviceName(normalized);
+    const auto colon = normalized.find(':');
+    if (!valid && colon != std::string::npos) {
+        // Virtual devices over a list of physical devices: AUTO:GPU,CPU,
+        // HETERO:GPU,CPU, MULTI:GPU.1,CPU
+        const std::string prefix = normalized.substr(0, colon);
+        if (prefix == "AUTO" || prefix == "HETERO" || prefix == "MULTI") {
+            const std::string list = normalized.substr(colon + 1);
+            valid = !list.empty();
+            size_t start = 0;
+            while (valid && start <= list.size()) {
+                const size_t comma = std::min(list.find(',', start), list.size());
+                valid = IsPhysicalDeviceName(list.substr(start, comma - start));
+                start = comma + 1;
+            }
+        }
+    }
+    if (!valid) {
+        throw InvalidInputException("Unsupported anofox_ner_device '" + device_name +
+                                    "'. Use AUTO, CPU, GPU, NPU, an indexed device such as GPU.0, or AUTO:, HETERO: "
+                                    "or MULTI: followed by a comma-separated device list (HETERO:GPU,CPU)");
+    }
+    return normalized;
+}
+
+bool NERModelManager::RequestReload(const std::string &reason) {
+    // Only a load that ended without a model is retried; LOADED (immutable
+    // model) and DOWNLOADING (a load in progress) are left alone
+    for (auto from : {NERStatus::FAILED, NERStatus::NOT_DOWNLOADED}) {
+        auto expected = from;
+        if (status_.compare_exchange_strong(expected, NERStatus::NOT_LOADED)) {
+            SetStatusMessage(std::string("Model not loaded yet: ") + reason + " after status " + NERStatusName(from) +
+                             "; the next detection loads it again");
+            AnofoxTrace(AnofoxLogLevel::Info, std::string("ner: ") + reason + ", status " + NERStatusName(from) +
+                                                  " cleared; the next detection loads the model again");
+            return true;
+        }
+    }
+    return false;
+}
+
+void NERModelManager::RequireModel() {
+    if (status_.load() == NERStatus::LOADED) {
+        return;
+    }
+    // Loads the model, or waits for a load in progress in another thread
+    EnsureInitialized();
+    const auto snapshot = GetStatusSnapshot();
+    std::string hint;
+    switch (snapshot.status) {
+        case NERStatus::NOT_DOWNLOADED:
+            // The status message already says how to get the model
+            break;
+        case NERStatus::FAILED:
+            hint = " Fix the cause shown by anofox_ner_status(): SET anofox_ner_device or anofox_ner_model makes the "
+                   "next detection load the model again (e.g. SET anofox_ner_device = 'CPU').";
+            break;
+        case NERStatus::NOT_AVAILABLE:
+            hint = " This build has no NER support (OpenVINO is not included).";
+            break;
+        default:
+            return;  // LOADED
+    }
+    std::string message = snapshot.message;
+    while (!message.empty() && std::isspace(static_cast<unsigned char>(message.back()))) {
+        message.pop_back();
+    }
+    AnofoxTrace(AnofoxLogLevel::Warn, std::string("ner: anofox_ner_required is true but the model is ") +
+                                          NERStatusName(snapshot.status));
+    throw InvalidInputException(std::string("anofox_ner_required is true but the NER model is not available (status ") +
+                                NERStatusName(snapshot.status) + ": " + message + ")." + hint +
+                                " Or SET anofox_ner_required = false to fall back to the name dictionary for NAME "
+                                "(ORGANIZATION, LOCATION and MISC are then not detected), or restrict "
+                                "anofox_pii_enabled_types to types that need no NER model.");
 }
 
 void NERModelManager::SetAutoDownload(bool enabled) {
@@ -1489,6 +1607,10 @@ void SetNERModelOption(ClientContext &context, SetScope scope, Value &parameter)
 
     AnofoxTrace(AnofoxLogLevel::Info,
                 "ner: Model set to '" + model_name + "' (takes effect on first model load)");
+
+    // A load that failed (or found no assets) with the previous setting is
+    // retried by the next detection
+    NERModelManager::Instance().RequestReload("anofox_ner_model set");
 }
 
 void SetNERAutoDownloadOption(ClientContext &context, SetScope scope, Value &parameter) {
@@ -1502,8 +1624,19 @@ void SetNERDeviceOption(ClientContext &context, SetScope scope, Value &parameter
     if (parameter.IsNull()) {
         throw InvalidInputException("anofox_ner_device cannot be NULL");
     }
-    auto device_name = StringValue::Get(parameter);
+    auto device_name = NERModelManager::NormalizeDeviceName(StringValue::Get(parameter));
     NERModelManager::Instance().SetDevice(device_name);
+    parameter = Value(device_name);
+}
+
+void SetNERRequiredOption(ClientContext &context, SetScope scope, Value &parameter) {
+    if (parameter.IsNull()) {
+        throw InvalidInputException("anofox_ner_required cannot be NULL");
+    }
+    const bool required = BooleanValue::Get(parameter);
+    NERModelManager::Instance().SetRequired(required);
+    AnofoxTrace(AnofoxLogLevel::Info, std::string("ner: Model ") + (required ? "required" : "optional") +
+                                          " for NER-based PII detection");
 }
 
 } // anonymous namespace
@@ -1533,10 +1666,20 @@ void RegisterNEROptions(ExtensionLoader &loader) {
                               SetNERAutoDownloadOption);
 
     config.AddExtensionOption("anofox_ner_device",
-                              "OpenVINO device for NER inference: AUTO (default), CPU, GPU, GPU.0, etc.",
+                              "OpenVINO device for NER inference: AUTO (default), CPU, GPU, NPU, an indexed device "
+                              "(GPU.0) or AUTO:/HETERO:/MULTI: with a device list (HETERO:GPU,CPU); takes effect at "
+                              "the next model load, and setting it retries a load that failed",
                               LogicalTypeId::VARCHAR,
                               Value("AUTO"),
                               SetNERDeviceOption);
+
+    config.AddExtensionOption("anofox_ner_required",
+                              "Raise an error when PII detection needs the NER model (NAME, ORGANIZATION, LOCATION, "
+                              "MISC) and it is not available (NOT_DOWNLOADED, FAILED, NOT_AVAILABLE) instead of "
+                              "falling back to the name dictionary",
+                              LogicalTypeId::BOOLEAN,
+                              Value::BOOLEAN(false),
+                              SetNERRequiredOption);
 }
 
 } // namespace anofox

@@ -744,10 +744,42 @@ public:
     void ClearCache();
 
     /**
-     * Set OpenVINO inference device (e.g. "AUTO", "CPU", "GPU", "GPU.0")
-     * Takes effect on next model load
+     * Set OpenVINO inference device (e.g. "AUTO", "CPU", "GPU", "GPU.0").
+     * Takes effect on the next model load; a FAILED or NOT_DOWNLOADED load
+     * is cleared so the next detection loads again (see RequestReload).
      */
     void SetDevice(const std::string &device_name);
+
+    /**
+     * Validate an anofox_ner_device value and return it in OpenVINO's
+     * spelling (upper case, no spaces). Accepts AUTO, CPU, GPU, NPU, an
+     * indexed GPU or NPU (GPU.0) and AUTO:, HETERO: or MULTI: followed by a
+     * comma-separated list of such devices. Throws InvalidInputException.
+     */
+    static std::string NormalizeDeviceName(const std::string &device_name);
+
+    /**
+     * Clear a FAILED or NOT_DOWNLOADED load so the next detection runs
+     * LoadModel() again, after a setting the load depends on changed. A
+     * LOADED model stays loaded: compiled model and tokenizer are immutable
+     * once LOADED is published.
+     * @return true if a reload was scheduled
+     */
+    bool RequestReload(const std::string &reason);
+
+    /**
+     * anofox_ner_required: when true, a detection that needs the NER model
+     * raises an error instead of falling back to the name dictionary
+     */
+    void SetRequired(bool required) { required_.store(required); }
+    bool IsRequired() const { return required_.load(); }
+
+    /**
+     * Load the model if not done yet and throw an InvalidInputException
+     * naming the status and the fix when it cannot run (NOT_DOWNLOADED,
+     * FAILED, NOT_AVAILABLE). Used for anofox_ner_required.
+     */
+    void RequireModel();
 
     /**
      * Get current configured device name
@@ -847,6 +879,7 @@ private:
 
     std::atomic<NERStatus> status_{NERStatus::NOT_LOADED};
     std::atomic<bool> auto_download_{true};
+    std::atomic<bool> required_{false};
     std::mutex init_lock_;
 
     // Guards status_message_, model_path_, current_model_name_ and

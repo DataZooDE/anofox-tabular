@@ -524,6 +524,7 @@ PIIConfigSnapshot PIIConfig::Snapshot() const {
     snapshot.enabled_types = enabled_types_;
     snapshot.deep_validation = deep_validation_;
     snapshot.require_checksum = require_checksum_;
+    snapshot.ner_required = NERModelManager::Instance().IsRequired();
     return snapshot;
 }
 
@@ -2963,6 +2964,11 @@ std::vector<PIIMatch> PIIEngine::Detect(
 ) const {
     // An explicit non-empty types argument overrides the configured filter
     const std::vector<PIIType> &effective_types = !types.empty() ? types : config.enabled_types;
+
+    // anofox_ner_required: no silent dictionary fallback when the NER model cannot run
+    if (config.ner_required && WantsNERTypes(effective_types)) {
+        NERModelManager::Instance().RequireModel();
+    }
 
     std::vector<PIIMatch> all_matches;
 

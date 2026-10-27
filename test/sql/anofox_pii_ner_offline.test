@@ -79,6 +79,39 @@ email	EMAIL	3	scanned
 full_name	NULL	0	no_match
 remark	NULL	0	no_match
 
+statement ok
+SET anofox_pii_enabled_types = '';
+
+# anofox_ner_required = true: a detection that needs the model raises an
+# error naming the status and the fix instead of falling back silently
+statement ok
+SET anofox_ner_required = true;
+
+statement error
+SELECT pii_mask('Rückruf bitte an Sabine Weiß, Filiale Graz');
+----
+anofox_ner_required is true but the NER model is not available (status NOT_DOWNLOADED: NER model not downloaded: anofox_ner_auto_download is false. SET anofox_ner_auto_download = true to download it from Hugging Face
+
+statement error
+SELECT column_name, pii_type FROM pii_scan_table('crm_contacts');
+----
+SET anofox_ner_required = false to fall back to the name dictionary
+
+# Only pattern-based types: the model is not needed, so no error
+statement ok
+SET anofox_pii_enabled_types = 'EMAIL';
+
+query TTIT
+SELECT column_name, pii_type, match_count, status FROM pii_scan_table('crm_contacts') ORDER BY column_name, pii_type;
+----
+contact_id	NULL	0	skipped (INTEGER)
+email	EMAIL	3	scanned
+full_name	NULL	0	no_match
+remark	NULL	0	no_match
+
+statement ok
+SET anofox_ner_required = false;
+
 # Restore the process-wide settings for the tests that follow
 statement ok
 SET anofox_pii_enabled_types = '';

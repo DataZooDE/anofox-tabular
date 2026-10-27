@@ -1045,6 +1045,26 @@ SET anofox_ner_model = 'distilbert-en';
   and the pattern-based types keep working. `pii_scan_table` then reports
   `scanned (NER unavailable)` or `no_match (NER unavailable)` (see [`pii_scan_table`](#pii_scan_table)). To install the model by hand, place
   `model_quantized.onnx` and `tokenizer.json` in the model directory.
+- **Required model.** Without the model, detection goes on silently: `NAME` uses the name
+  dictionary, and `ORGANIZATION`, `LOCATION` and `MISC` are not found. Where that is not
+  acceptable (a masking job before an export, say), `SET anofox_ner_required = true`: a detection
+  that needs the model then raises an error such as `anofox_ner_required is true but the NER
+  model is not available (status NOT_DOWNLOADED: ...)`, which names the status and the fix.
+  Detections of pattern-based types only are not affected.
+- **Device and retries.** `anofox_ner_device` selects the OpenVINO device (`AUTO` by default; see
+  [Configuration: NER](../reference/configuration.md#ner)). A load that fails, for example
+  `SET anofox_ner_device = 'GPU'` on a machine without a GPU, leaves the status `FAILED` and
+  detection falls back as above. `SET anofox_ner_device` or `SET anofox_ner_model` afterwards
+  clears the failure, so the next detection loads the model again:
+
+  ```sql no-run
+  SET anofox_ner_device = 'GPU';
+  SELECT pii_mask('Customer John Smith called');  -- load fails: dictionary fallback, status FAILED
+  SET anofox_ner_device = 'CPU';                  -- status NOT_LOADED again
+  SELECT pii_mask('Customer John Smith called');  -- loads the model on the CPU
+  ```
+
+  Once the model is loaded it stays loaded: a new device takes effect only in a new process.
 - **Platforms.** Per `vcpkg.json`, OpenVINO is built only for x64 Linux and x64 macOS, and
   `CMakeLists.txt` disables it on musl. On other builds `onnx_available` is `false` and the status
   is `NOT_AVAILABLE`. Check with `anofox_ner_status()`.
@@ -1107,8 +1127,9 @@ need it, or on a sample first.
 | `anofox_pii_deep_validation` | Validate detected phone numbers with the built-in phone module. A match is dropped only when the module can judge the number and finds its length impossible: a number with `+CC` (or the default region's international prefix) for that country, a national number for `anofox_tab_phonenumber_default_region`. A national number in another country's format, such as `0171 1234567` with the default region `US`, cannot be judged and stays a match. |
 | `anofox_ner_auto_download` | Download the NER model on first use |
 | `anofox_ner_model` | The NER model: `distilbert-en`, `distilbert-multi` or `bert-multi` (see [NER model](#ner-model)); set it before the model is loaded |
-| `anofox_ner_device` | OpenVINO device (`AUTO`, `CPU`, `GPU`, ...) |
+| `anofox_ner_device` | OpenVINO device (`AUTO`, `CPU`, `GPU`, `GPU.0`, `HETERO:GPU,CPU`, ...); setting it retries a load that failed |
 | `anofox_ner_cache_size` | LRU cache size for NER results; 0 disables it |
+| `anofox_ner_required` | `true`: a detection that needs the NER model raises an error when the model is not available, instead of falling back to the name dictionary (see [NER model](#ner-model)) |
 
 Types, defaults and details are in [Configuration: PII](../reference/configuration.md#pii).
 

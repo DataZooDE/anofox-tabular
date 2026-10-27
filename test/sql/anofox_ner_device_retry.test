@@ -1,0 +1,124 @@
+# name: test/sql/anofox_ner_device_retry.test
+# description: A NER model load that failed on the configured device is retried after SET anofox_ner_device or SET anofox_ner_model, and anofox_ner_required turns the silent dictionary fallback into an error
+# group: [anofox_tabular]
+
+# The NER model state is process-wide and a loaded model stays loaded, so this
+# test needs a process in which no detection has loaded the model yet.
+# `make test_ner` runs every NER test file in a process of its own and sets
+# ANOFOX_TEST_NER_FRESH_PROCESS; by hand:
+#   OPENVINO_AVAILABLE=1 ANOFOX_TEST_NER_FRESH_PROCESS=1 build/release/test/unittest test/sql/anofox_ner_device_retry.test
+require-env OPENVINO_AVAILABLE
+
+require-env ANOFOX_TEST_NER_FRESH_PROCESS
+
+require anofox_tabular
+
+statement ok
+LOAD anofox_tabular
+
+query T
+SELECT model_status FROM anofox_ner_status();
+----
+NOT_LOADED
+
+# GPU.9 is a valid device name that no machine has: compiling the model fails
+statement ok
+SET anofox_ner_device = 'GPU.9';
+
+statement ok
+CREATE TABLE support_tickets AS SELECT * FROM (VALUES
+    (1001, 'Rückruf bitte an Sabine Weiß, Filiale Graz, wegen der Gutschrift'),
+    (1002, 'Customer John Smith asked for a copy of invoice 2024-0815')
+) t(ticket_id, body);
+
+# Without anofox_ner_required the failed load falls back to the name
+# dictionary (confidence 0.5)
+query IT
+SELECT ticket_id, list_transform(pii_detect(body), lambda m: m.type || ':' || m.text || ':' || m.confidence::VARCHAR)
+FROM support_tickets ORDER BY ticket_id;
+----
+1001	['NAME:Sabine Weiß:0.5']
+1002	['NAME:John Smith:0.5']
+
+query TT
+SELECT model_status, status_message LIKE 'OpenVINO error:%' FROM anofox_ner_status();
+----
+FAILED	true
+
+# With anofox_ner_required the same detection is an error that names the status
+statement ok
+SET anofox_ner_required = true;
+
+statement error
+SELECT pii_mask(body) FROM support_tickets;
+----
+anofox_ner_required is true but the NER model is not available (status FAILED: OpenVINO error:
+
+statement error
+SELECT pii_mask(body) FROM support_tickets;
+----
+SET anofox_ner_device or anofox_ner_model makes the next detection load the model again
+
+# Setting anofox_ner_model clears the failed state: the next detection loads
+# again (and fails again, because the device is still GPU.9)
+statement ok
+SET anofox_ner_model = 'bert-multi';
+
+query T
+SELECT model_status FROM anofox_ner_status();
+----
+NOT_LOADED
+
+statement error
+SELECT pii_mask(body) FROM support_tickets;
+----
+(status FAILED: OpenVINO error:
+
+# Setting a working device clears the failed state as well; the next
+# detection loads the model on the CPU
+statement ok
+SET anofox_ner_device = 'CPU';
+
+query T
+SELECT model_status FROM anofox_ner_status();
+----
+NOT_LOADED
+
+query IT
+SELECT ticket_id, pii_mask(body) FROM support_tickets ORDER BY ticket_id;
+----
+1001	Rückruf bitte an [NAME], Filiale [LOCATION], wegen der Gutschrift
+1002	Customer [NAME] asked for a copy of invoice 2024-0815
+
+query TT
+SELECT model_status, status_message FROM anofox_ner_status();
+----
+LOADED	Model loaded successfully (bert-multi, device: CPU)
+
+# NER matches carry the model score, not the dictionary's 0.5
+query T
+SELECT bool_and(m.confidence > 0.7) FROM (SELECT unnest(pii_detect(body)) AS m FROM support_tickets);
+----
+true
+
+# Once loaded, the model stays: a device change takes effect only in a new
+# process, and switching the model is still an error
+statement ok
+SET anofox_ner_device = 'GPU.9';
+
+query T
+SELECT model_status FROM anofox_ner_status();
+----
+LOADED
+
+statement error
+SET anofox_ner_model = 'distilbert-en';
+----
+anofox_ner_model cannot be changed after the NER model has been loaded
+
+# Restore the process-wide settings
+statement ok
+SET anofox_ner_required = false;
+
+statement ok
+SET anofox_ner_device = 'AUTO';
