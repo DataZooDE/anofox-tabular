@@ -1,0 +1,118 @@
+# name: test/sql/anofox_attached_relations.test
+# description: A database migration: the legacy orders live in the default database, the
+#              migrated copy in an attached database (ATTACH ... AS mig). A two-part name
+#              'mig.orders' resolves like DuckDB's binder does: schema.table in the default
+#              catalog first, else the table of the attached database 'mig'. The diff
+#              functions and run_checks accept it; a schema-qualified name still works.
+# group: [anofox_tabular]
+
+require anofox_tabular
+
+statement ok
+LOAD anofox_tabular
+
+statement ok
+SET anofox_tab_trace_enabled = false
+
+statement ok
+ATTACH ':memory:' AS mig
+
+statement ok
+CREATE TABLE orders (order_id INTEGER, customer VARCHAR, amount DECIMAL(10, 2), ordered_on DATE)
+
+statement ok
+INSERT INTO orders VALUES
+    (1001, 'Brauhaus Mueller GmbH', 120.00, DATE '2026-10-12'),
+    (1002, 'Nordsee Fisch KG',       45.50, DATE '2026-10-13'),
+    (1003, 'Alpen Sport AG',        310.00, DATE '2026-10-14'),
+    (1004, 'Rheinwerk Druck',        99.90, DATE '2026-10-15'),
+    (1005, 'Elbe Logistik',          12.00, DATE '2026-10-15')
+
+# The migration dropped order 1005, changed the amount of 1003 and added 1006
+statement ok
+CREATE TABLE mig.orders (order_id INTEGER, customer VARCHAR, amount DECIMAL(10, 2), ordered_on DATE,
+                         migrated_by VARCHAR)
+
+statement ok
+INSERT INTO mig.orders VALUES
+    (1001, 'Brauhaus Mueller GmbH', 120.00, DATE '2026-10-12', 'etl'),
+    (1002, 'Nordsee Fisch KG',       45.50, DATE '2026-10-13', 'etl'),
+    (1003, 'Alpen Sport AG',        301.00, DATE '2026-10-14', 'etl'),
+    (1004, 'Rheinwerk Druck',        99.90, DATE '2026-10-15', 'etl'),
+    (1006, 'Isar Kaffee',            18.40, DATE '2026-10-15', 'manual')
+
+query TI rowsort
+SELECT diff_type, order_id FROM diff_joindiff('orders', 'mig.orders', 'order_id')
+----
+added	1006
+changed	1003
+removed	1005
+
+query TI rowsort
+SELECT diff_type, order_id FROM diff_hashdiff('orders', 'mig.orders', 'order_id')
+----
+added	1006
+changed	1003
+removed	1005
+
+query TTTT
+SELECT column_name, source_type, target_type, drift FROM diff_schema('orders', 'mig.orders')
+----
+order_id	INTEGER	INTEGER	same
+customer	VARCHAR	VARCHAR	same
+amount	DECIMAL(10,2)	DECIMAL(10,2)	same
+ordered_on	DATE	DATE	same
+migrated_by	NULL	VARCHAR	added
+
+# The three-part name and a schema of the default database keep working
+query TI rowsort
+SELECT diff_type, order_id FROM diff_joindiff('memory.main.orders', 'mig.main.orders', 'order_id')
+----
+added	1006
+changed	1003
+removed	1005
+
+statement ok
+CREATE SCHEMA staging
+
+statement ok
+CREATE TABLE staging.orders AS SELECT * FROM orders
+
+query I
+SELECT count(*) FROM diff_joindiff('orders', 'staging.orders', 'order_id')
+----
+0
+
+# An unknown two-part name is still reported as missing
+statement error
+SELECT * FROM diff_joindiff('orders', 'nowhere.orders', 'order_id')
+----
+diff_joindiff: table or view 'nowhere.orders' does not exist
+
+# ===--------------------------------------------------------------------===
+# run_checks over the migrated table: the date column is found in the attached database
+# ===--------------------------------------------------------------------===
+
+statement ok
+CREATE TABLE migration_checks (check_name VARCHAR, check_type VARCHAR, table_name VARCHAR, column_name VARCHAR,
+                               params VARCHAR, lower_threshold DOUBLE, upper_threshold DOUBLE,
+                               monitor_only BOOLEAN, identifier_column VARCHAR, filter_expr VARCHAR)
+
+statement ok
+INSERT INTO migration_checks VALUES
+    ('mig_daily_orders', 'rel_count_change', 'mig.orders', NULL,
+     '{"date_column": "ordered_on", "reference_date": "2026-10-15", "window_days": 3}', -0.5, 1.5, false, NULL, NULL),
+    ('mig_amount_iqr', 'metric_anomaly_iqr', 'mig.orders', NULL,
+     '{"date_column": "ordered_on", "metric_column": "amount", "reference_date": "2026-10-15", "window_days": 3}',
+     NULL, NULL, true, NULL, NULL),
+    ('mig_volume', 'volume', 'mig.orders', NULL, NULL, 5, 5, false, NULL, NULL),
+    ('mig_customers_known', 'match_rate', 'mig.orders', 'customer',
+     '{"right_table": "orders", "right_keys": "customer"}', 0.8, NULL, false, NULL, NULL)
+
+query TTR
+SELECT check_name, status, round(value, 4) FROM run_checks('migration_checks') ORDER BY check_name
+----
+mig_amount_iqr	pass	59.15
+mig_customers_known	pass	0.8
+mig_daily_orders	pass	1.0
+mig_volume	pass	5.0

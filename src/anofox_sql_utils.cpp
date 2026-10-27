@@ -264,19 +264,49 @@ ResolveViewColumns(ClientContext &, VIEW &view) {
 }
 } // namespace
 
-optional_ptr<CatalogEntry> LookupRelationEntry(ClientContext &context, const string &table_name) {
+namespace {
+// The table or view `name` in `catalog`.`schema` (either may be empty: the search path
+// decides), or nullptr. Never throws.
+optional_ptr<CatalogEntry> TryGetRelationEntry(ClientContext &context, const string &catalog, const string &schema,
+                                               const string &name, const string &table_name) {
 	try {
-		auto qname = QualifiedName::Parse(table_name);
-		auto entry_name = duckdb_compat::QualifiedLocalName(qname);
-		EntryLookupInfo lookup_info(CatalogType::TABLE_ENTRY, duckdb_compat::EntryName(entry_name));
-		return Catalog::GetEntry(context, duckdb_compat::Ident(duckdb_compat::QualifiedCatalog(qname)),
-		                         duckdb_compat::Ident(duckdb_compat::QualifiedSchema(qname)), lookup_info,
+		EntryLookupInfo lookup_info(CatalogType::TABLE_ENTRY, duckdb_compat::EntryName(name));
+		return Catalog::GetEntry(context, duckdb_compat::Ident(catalog), duckdb_compat::Ident(schema), lookup_info,
 		                         OnEntryNotFound::RETURN_NULL);
 	} catch (const std::exception &ex) {
 		// e.g. an unknown catalog/schema or a file path: not a catalog relation
-		AnofoxTrace(AnofoxLogLevel::Debug, "catalog lookup of '" + table_name + "' failed: " + ex.what());
+		AnofoxTrace(AnofoxLogLevel::Debug, "catalog lookup of '" + table_name + "' as '" + catalog + "'.'" + schema +
+		                                       "' failed: " + ex.what());
 		return nullptr;
 	}
+}
+} // namespace
+
+optional_ptr<CatalogEntry> LookupRelationEntry(ClientContext &context, const string &table_name) {
+	string catalog;
+	string schema;
+	string name;
+	try {
+		auto qname = QualifiedName::Parse(table_name);
+		catalog = duckdb_compat::QualifiedCatalog(qname);
+		schema = duckdb_compat::QualifiedSchema(qname);
+		name = duckdb_compat::QualifiedLocalName(qname);
+	} catch (const std::exception &ex) {
+		AnofoxTrace(AnofoxLogLevel::Debug, "cannot parse relation name '" + table_name + "': " + ex.what());
+		return nullptr;
+	}
+	auto entry = TryGetRelationEntry(context, catalog, schema, name, table_name);
+	if (entry || !catalog.empty() || schema.empty()) {
+		return entry;
+	}
+	// A two-part name x.t is schema.table in the search path first, like DuckDB's binder,
+	// else table t in the default schema of the attached database x (ATTACH ... AS x)
+	entry = TryGetRelationEntry(context, schema, string(), name, table_name);
+	if (entry) {
+		AnofoxTrace(AnofoxLogLevel::Debug, "relation '" + table_name + "' resolved as table '" + name +
+		                                       "' of attached database '" + schema + "'");
+	}
+	return entry;
 }
 
 RelationInfo LookupRelation(ClientContext &context, const string &table_name) {

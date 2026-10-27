@@ -414,7 +414,8 @@ Behavior:
 - Two types are the same when their `DESCRIBE` text is equal: `DECIMAL(10,4)` to
   `DECIMAL(18,6)` is `retyped`.
 - The rows come in source column order, followed by the `added` columns in target column order.
-- The tables can be tables, views, TEMP tables or schema-qualified names (`billing.invoices`).
+- The tables can be tables, views, TEMP tables or qualified names: `billing.invoices` is a
+  table of the schema `billing` or, without such a schema, of the attached database `billing`.
   An unknown table or view is a binder error; a `NULL` argument is an error naming it.
 - Both parameters can be passed by name (`source_table :=`, `target_table :=`).
 

@@ -4066,17 +4066,9 @@ static std::string QueryErrorText(const ErrorData &error) {
 // Whether table_name names a TEMP table or view of the calling connection: the table
 // functions read the table through a sibling connection, which cannot see it
 static bool IsTempRelation(ClientContext &context, const std::string &table_name) {
-    const auto dot = table_name.find('.');
-    if (dot != std::string::npos) {
-        return StringUtil::CIEquals(table_name.substr(0, dot), TEMP_CATALOG);
-    }
-    try {
-        EntryLookupInfo lookup(CatalogType::TABLE_ENTRY, duckdb_compat::EntryName(table_name));
-        return Catalog::GetEntry(context, duckdb_compat::Ident(TEMP_CATALOG), duckdb_compat::Ident(INVALID_SCHEMA),
-                                 lookup, OnEntryNotFound::RETURN_NULL) != nullptr;
-    } catch (...) {
-        return false;
-    }
+    // resolved like every other relation name (LookupRelation: search path, attached databases)
+    auto relation = LookupRelation(context, table_name);
+    return relation.found && relation.is_temp;
 }
 
 // Whether a column of this type holds text: VARCHAR (JSON included) or a nested type (STRUCT,

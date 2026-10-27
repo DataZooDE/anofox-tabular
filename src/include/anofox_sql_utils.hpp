@@ -100,7 +100,8 @@ struct RelationInfo {
 RelationInfo LookupRelation(ClientContext &context, const string &table_name);
 
 // The catalog entry (table or view) `table_name` resolves to in the caller's context, or
-// nullptr. Never throws.
+// nullptr. Never throws. Resolved like DuckDB's binder: a two-part name x.t is table t of
+// schema x in the search path, else table t of the attached database x (default schema).
 optional_ptr<CatalogEntry> LookupRelationEntry(ClientContext &context, const string &table_name);
 
 // The column `column_name` (case-insensitive) of `relation`, or nullptr.

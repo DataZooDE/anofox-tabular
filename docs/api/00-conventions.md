@@ -122,6 +122,11 @@ messages but marks the position with a single `^` and lists the accepted named p
 Table functions take the table name as a string: `null_rate('orders', 'email', 0.05)`. Pass the
 plain name; the extension quotes it, so names with spaces or quotes work as they are.
 
+A qualified name resolves as in a DuckDB query: `'sales.orders'` is the table `orders` of the
+schema `sales` and, when no such schema exists, the table `orders` of the attached database
+`sales` (`ATTACH 'sales.duckdb' AS sales`); `'sales.main.orders'` names database, schema and
+table. Every function resolves names this way, `run_checks` and the diff functions included.
+
 Column lists come in two forms. Check the signature of each function:
 
 | Form | Example | Used by |
