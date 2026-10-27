@@ -232,6 +232,33 @@ profiling, PII table scans) need a regular table: pass a DataFrame, or a table y
 not a view you registered with `conn.register()`. Such a view passed by name raises
 `ValueError` with the hint to pass the DataFrame itself.
 
+All times are UTC, as in the SQL functions. A naive `datetime` (and text without an offset)
+passed as `reference_time`, `reference_date`, `start_date` or `end_date` is taken as UTC; a
+time zone aware `datetime` (also a `pandas.Timestamp`) and ISO text with an offset are the
+instant they name, whatever the session `TimeZone`. `define_checks` stores an aware `datetime`
+as naive UTC too:
+
+```python
+import datetime
+
+scans = pd.DataFrame({
+    "shipment_id": ["SHP-1001", "SHP-1002"],
+    "scanned_at": [datetime.datetime(2026, 7, 14, 8, 40), datetime.datetime(2026, 7, 14, 10, 0)],
+})
+berlin_summer = datetime.timezone(datetime.timedelta(hours=2))
+for reference in (
+    datetime.datetime(2026, 7, 14, 12, 0),                        # naive: UTC
+    datetime.datetime(2026, 7, 14, 14, 0, tzinfo=berlin_summer),  # the same instant
+):
+    result = quality.freshness(conn, scans, "scanned_at", "3 hours", reference_time=reference)
+    print(result["age_seconds"], result["status"])
+```
+
+```text
+7200 pass
+7200 pass
+```
+
 ## Nightly suite from Python
 
 For a scheduled job, keep the checks in a table and run them all at once:

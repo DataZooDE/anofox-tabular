@@ -35,6 +35,36 @@ _COLUMN_PARAMETERS = frozenset({
     "left_keys", "right_keys", "date_column", "count_column", "metric_column",
 })
 
+#: The parameters of the checks that take a point in time (bound as TIMESTAMP or DATE).
+_TIME_PARAMETERS = frozenset({"reference_time", "reference_date", "start_date", "end_date"})
+
+
+def _utc_naive(value: Any) -> Any:
+    """
+    *value* as the naive UTC time the SQL functions expect, if it is time zone aware.
+
+    The checks bind times as ``TIMESTAMP``/``DATE``, which DuckDB would derive from
+    an aware :class:`datetime.datetime` in the session time zone: a reference time
+    of 12:00 UTC would become 13:00 or 14:00 in Europe/Berlin. An aware datetime
+    (also a ``pandas.Timestamp``) or ISO 8601 text with a UTC offset (``"...+02:00"``,
+    ``"...Z"``) is converted to the UTC instant it names; anything else, including a
+    naive datetime (taken as UTC), is returned as it is.
+    """
+    moment = value
+    if isinstance(value, str):
+        text = value.strip()
+        if text[-1:] in ("Z", "z"):
+            text = text[:-1] + "+00:00"
+        try:
+            moment = datetime.datetime.fromisoformat(text)
+        except ValueError:
+            return value
+    if isinstance(moment, datetime.datetime) and moment.utcoffset() is not None:
+        utc = moment.astimezone(datetime.timezone.utc).replace(tzinfo=None)
+        to_pydatetime = getattr(utc, "to_pydatetime", None)  # pandas.Timestamp
+        return to_pydatetime() if to_pydatetime is not None else utc
+    return value
+
 
 def _column_label(value: Any) -> Any:
     """An integer column label (pandas allows them) as the string DuckDB knows the column by."""
@@ -52,7 +82,8 @@ def _dataframe_check(*table_params: str) -> Callable[[F], F]:
 
     A pandas DataFrame may have integer column labels (``read_csv(header=None)``);
     its copy in DuckDB names those columns ``"0"``, ``"1"``, ... . The column
-    parameters are passed to SQL as those strings.
+    parameters are passed to SQL as those strings. Time zone aware reference
+    times and dates are passed as naive UTC (see :func:`_utc_naive`).
     """
     def decorator(func: F) -> F:
         signature = inspect.signature(func)
@@ -62,6 +93,8 @@ def _dataframe_check(*table_params: str) -> Callable[[F], F]:
             bound = signature.bind(*args, **kwargs)
             for name in _COLUMN_PARAMETERS.intersection(bound.arguments):
                 bound.arguments[name] = _column_label(bound.arguments[name])
+            for name in _TIME_PARAMETERS.intersection(bound.arguments):
+                bound.arguments[name] = _utc_naive(bound.arguments[name])
             return func(*bound.args, **bound.kwargs)
 
         return accepts_dataframes(*table_params)(wrapper)  # type: ignore[return-value]
@@ -204,14 +237,18 @@ def freshness(
         Largest allowed age of the newest row, as an interval string, e.g. ``"24 hours"``.
     reference_time:
         Time the age is measured from, as a timestamp string or
-        :class:`datetime.datetime` (default: now).
+        :class:`datetime.datetime` (default: the current time in UTC). All times are
+        UTC: a naive datetime and text without an offset are taken as UTC; a time zone
+        aware datetime and text with an offset (``"2026-07-14T14:00:00+02:00"``) are
+        the instant they name, whatever the session ``TimeZone``.
 
     Returns
     -------
     dict
         ``{"status": "pass"|"fail", "metric_value": datetime, "threshold": datetime,
-        "age_seconds": int, "message": str, ...}``. ``threshold`` is returned as a
-        naive timestamp in the session time zone.
+        "age_seconds": int, "message": str, ...}``. ``metric_value`` and ``threshold``
+        are naive UTC timestamps; ``reference_time`` is echoed as passed to SQL
+        (an aware value as naive UTC).
     """
     params: list = [table_name, timestamp_column, max_age]
     reference_sql = ""
@@ -666,7 +703,8 @@ def rel_count_change(
     lower_threshold / upper_threshold:
         Acceptable relative change bounds (defaults -0.5/0.5; ``None`` = unbounded).
     reference_date:
-        ISO date string; omit for the latest date present in the data.
+        ISO date string, :class:`datetime.date` or :class:`datetime.datetime` (an aware
+        one counts on its UTC date); omit for the latest date present in the data.
     start_date / end_date:
         ISO date strings of an inclusive daily range, given together instead of
         ``reference_date``; the check is evaluated for every day of the range.
@@ -732,7 +770,8 @@ def metric_anomaly_iqr(
     mode:
         ``"both"`` (default), ``"upper"`` or ``"lower"`` — which bound(s) to enforce.
     reference_date:
-        ISO date string; omit for the latest date present in the data.
+        ISO date string, :class:`datetime.date` or :class:`datetime.datetime` (an aware
+        one counts on its UTC date); omit for the latest date present in the data.
     start_date / end_date:
         ISO date strings of an inclusive daily range, given together instead of
         ``reference_date``; the check is evaluated for every day of the range.
@@ -801,7 +840,8 @@ def rolling_values_in_set(
     min_rate:
         Minimum acceptable in-set rate (default 1.0).
     reference_date:
-        ISO date string; omit for the latest date present in the data.
+        ISO date string, :class:`datetime.date` or :class:`datetime.datetime` (an aware
+        one counts on its UTC date); omit for the latest date present in the data.
     start_date / end_date:
         ISO date strings of an inclusive daily range, given together instead of
         ``reference_date``; the check is evaluated for every day of the range.
@@ -842,7 +882,8 @@ def define_checks(conn: Any, checks: list[dict], checks_table: str = "dq_checks"
 
     Each dict supports the keys ``check_name``, ``check_type``, ``table_name`` (required)
     plus ``column_name``, ``params`` (a dict, stored as JSON; ``datetime.date`` and
-    ``datetime.datetime`` values are stored as ISO 8601 strings, ``Decimal`` as a number),
+    ``datetime.datetime`` values are stored as ISO 8601 strings, an aware datetime as
+    naive UTC, ``Decimal`` as a number),
     ``lower_threshold``,
     ``upper_threshold``, ``monitor_only``, ``identifier_column`` and ``filter_expr``.
 
@@ -888,6 +929,8 @@ def define_checks(conn: Any, checks: list[dict], checks_table: str = "dq_checks"
 
 def _json_param(value: Any) -> Any:
     """JSON form of a check parameter json.dumps cannot encode itself."""
+    if isinstance(value, datetime.datetime):
+        return _utc_naive(value).isoformat()  # aware: as naive UTC, 2026-03-11T06:00:00
     if isinstance(value, (datetime.date, datetime.time)):
         return value.isoformat()  # date: 2026-03-08, datetime: 2026-03-11T06:00:00
     if isinstance(value, Decimal):

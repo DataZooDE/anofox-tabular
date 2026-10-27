@@ -705,3 +705,95 @@ class TestTempTableNamesHidden:
             "SELECT count(*) FROM duckdb_tables() WHERE table_name LIKE '\\_anofox\\_%' ESCAPE '\\'"
         ).fetchall()[0][0]
         assert leftover == 0
+
+
+class TestAwareReferenceTimes:
+    """
+    A time zone aware reference time is the instant it names: it is bound as naive
+    UTC, whatever the session TimeZone. A naive datetime (and text without an
+    offset) is UTC, like in the SQL functions.
+    """
+
+    @pytest.fixture
+    def berlin(self, conn):
+        previous = conn.execute("SELECT current_setting('TimeZone')").fetchone()[0]
+        conn.execute("SET TimeZone = 'Europe/Berlin'")
+        yield
+        conn.execute(f"SET TimeZone = '{previous}'")
+
+    @pytest.fixture(params=["pandas", "polars"])
+    def shipments(self, request):
+        import datetime
+        rows = {
+            "shipment_id": ["SHP-1001", "SHP-1002", "SHP-1003"],
+            "carrier": ["DHL", "UPS", "DPD"],
+            "scanned_at": [  # naive UTC, newest 2026-07-14 10:00 UTC
+                datetime.datetime(2026, 7, 14, 6, 15),
+                datetime.datetime(2026, 7, 14, 8, 40),
+                datetime.datetime(2026, 7, 14, 10, 0),
+            ],
+        }
+        if request.param == "pandas":
+            import pandas as pd
+            return pd.DataFrame(rows)
+        import polars as pl
+        return pl.DataFrame(rows)
+
+    @pytest.mark.parametrize("reference", [
+        "aware_utc", "aware_plus_two", "naive_utc", "pandas_aware", "iso_text_with_offset",
+    ])
+    def test_freshness_reference_time_is_an_instant(self, conn, berlin, shipments, reference):
+        import datetime
+        import pandas as pd
+        from anofox import quality
+        utc_noon = datetime.datetime(2026, 7, 14, 12, 0, tzinfo=datetime.timezone.utc)
+        value = {
+            "aware_utc": utc_noon,
+            "aware_plus_two": utc_noon.astimezone(datetime.timezone(datetime.timedelta(hours=2))),
+            "naive_utc": utc_noon.replace(tzinfo=None),
+            "pandas_aware": pd.Timestamp(utc_noon).tz_convert("Europe/Berlin"),
+            "iso_text_with_offset": "2026-07-14T14:00:00+02:00",
+        }[reference]
+        result = quality.freshness(conn, shipments, "scanned_at", "3 hours", reference_time=value)
+        assert result["age_seconds"] == 7200  # 2 h old, not 2 h + the Berlin offset
+        assert result["status"] == "pass"
+        assert result["threshold"] == datetime.datetime(2026, 7, 14, 9, 0)
+
+    def test_reference_date_from_aware_datetime_is_its_utc_date(self, conn, berlin, daily_table):
+        import datetime
+        from anofox import quality
+        # 01:00 in Berlin (CET, +01) on 2026-03-14 is 2026-03-13 in UTC: a normal day.
+        berlin_time = datetime.datetime(
+            2026, 3, 14, 0, 30, tzinfo=datetime.timezone(datetime.timedelta(hours=1))
+        )
+        result = quality.rel_count_change(conn, daily_table, "event_date", reference_date=berlin_time)
+        assert result["status"] == "pass"
+        rows = quality.rel_count_change(
+            conn, daily_table, "event_date", start_date=berlin_time, end_date=berlin_time
+        )
+        assert [r["reference_date"] for r in rows] == [datetime.date(2026, 3, 13)]
+
+    def test_define_checks_stores_aware_datetime_as_utc(self, conn, berlin):
+        import datetime
+        from anofox import quality
+        conn.execute(
+            "CREATE OR REPLACE TABLE _scans AS SELECT * FROM (VALUES "
+            "('SHP-1001', TIMESTAMP '2026-07-14 08:40:00'), ('SHP-1002', TIMESTAMP '2026-07-14 10:00:00')"
+            ") t(shipment_id, scanned_at)"
+        )
+        try:
+            quality.define_checks(conn, [{
+                "check_name": "scans_fresh", "check_type": "freshness", "table_name": "_scans",
+                "column_name": "scanned_at",
+                "params": {"reference_time": datetime.datetime(
+                    2026, 7, 14, 14, 0, tzinfo=datetime.timezone(datetime.timedelta(hours=2)))},
+                "upper_threshold": 10800.0,
+            }], "_scan_checks")
+            stored = conn.execute("SELECT params FROM _scan_checks").fetchone()[0]
+            assert '"reference_time": "2026-07-14T12:00:00"' in stored
+            [result] = quality.run_checks(conn, "_scan_checks")
+            assert result["value"] == 7200.0
+            assert result["status"] == "pass", result["message"]
+        finally:
+            conn.execute("DROP TABLE IF EXISTS _scans")
+            conn.execute("DROP TABLE IF EXISTS _scan_checks")
