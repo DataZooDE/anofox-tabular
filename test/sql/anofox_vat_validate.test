@@ -1,0 +1,110 @@
+# name: test/sql/anofox_vat_validate.test
+# description: vat_validate explains why a VAT number is rejected (missing_prefix,
+#              unsupported_country, invalid_format, checksum_mismatch), over a messy
+#              supplier master column; vat_normalize keeps the prefix as written.
+# group: [anofox_tabular]
+
+require anofox_tabular
+
+statement ok
+LOAD anofox_tabular;
+
+# A supplier master export as it arrives from several ERP systems: spacing,
+# punctuation, lower case, the Greek EL/GR prefixes, UK numbers under GB and XI,
+# typos, wrong check digits, a number without prefix and a non-EU country.
+statement ok
+CREATE TABLE supplier_master AS SELECT * FROM (VALUES
+    (10001, 'Wiener Metallbau GmbH',     'ATU13585627'),
+    (10002, 'Grazer Holzwerk KG',        'ATU13585626'),
+    (10003, 'Müller Antriebstechnik AG', 'DE 811 128 135'),
+    (10004, 'Bremer Logistik GmbH',      'DE81112813O'),
+    (10005, 'Hansa Druck GmbH',          '811128135'),
+    (10006, 'Lyon Emballages SAS',       'FR 40 303 265 045'),
+    (10007, 'Bordeaux Vins SARL',        'FR41303265045'),
+    (10008, 'Rotterdam Haven BV',        'nl 1234.56.782.b01'),
+    (10009, 'Utrecht Software BV',       'NL8048369514B01'),
+    (10010, 'Athens Marble SA',          'EL094259216'),
+    (10011, 'Thessaloniki Foods SA',     'GR123456783'),
+    (10012, 'Leeds Textiles Ltd',        'GB980780684'),
+    (10013, 'Belfast Engineering Ltd',   'XI123456782'),
+    (10014, 'London Trading Ltd',        'UK980780684'),
+    (10015, 'Zürich Präzision AG',       'CHE-123.456.789'),
+    (10016, 'Neue Lieferant (tbd)',      'DE'),
+    (10017, 'Leerer Datensatz',          ''),
+    (10018, 'Kein Eintrag GmbH',         NULL)
+) t(supplier_id, supplier_name, vat_id);
+
+query ITTTT
+SELECT supplier_id, vat_id, (v).valid, (v).country, (v).reason
+FROM (SELECT supplier_id, vat_id, vat_validate(vat_id) AS v FROM supplier_master)
+ORDER BY supplier_id;
+----
+10001	ATU13585627	true	AT	NULL
+10002	ATU13585626	false	AT	checksum_mismatch
+10003	DE 811 128 135	true	DE	NULL
+10004	DE81112813O	false	DE	invalid_format
+10005	811128135	false	NULL	missing_prefix
+10006	FR 40 303 265 045	true	FR	NULL
+10007	FR41303265045	false	FR	checksum_mismatch
+10008	nl 1234.56.782.b01	true	NL	NULL
+10009	NL8048369514B01	false	NL	invalid_format
+10010	EL094259216	true	GR	NULL
+10011	GR123456783	true	GR	NULL
+10012	GB980780684	true	GB	NULL
+10013	XI123456782	true	XI	NULL
+10014	UK980780684	false	NULL	unsupported_country
+10015	CHE-123.456.789	false	NULL	unsupported_country
+10016	DE	false	DE	invalid_format
+10017	(empty)	false	NULL	missing_prefix
+10018	NULL	NULL	NULL	NULL
+
+# NULL in gives a NULL struct, not a struct of NULLs
+query I
+SELECT count(*) FROM supplier_master WHERE vat_validate(vat_id) IS NULL;
+----
+1
+
+# valid agrees with vat_is_valid on every non-NULL row
+query I
+SELECT count(*) FROM supplier_master
+WHERE vat_id IS NOT NULL AND (vat_validate(vat_id)).valid <> vat_is_valid(vat_id);
+----
+0
+
+# The reasons summarised for a data-quality report
+query TI
+SELECT coalesce((vat_validate(vat_id)).reason, 'ok') AS reason, count(*)
+FROM supplier_master WHERE vat_id IS NOT NULL
+GROUP BY ALL ORDER BY reason;
+----
+checksum_mismatch	2
+invalid_format	3
+missing_prefix	2
+ok	8
+unsupported_country	2
+
+# Canonical name, parameter name and the return type
+query T
+SELECT anofox_tab_vat_validate('ATU13585627') = vat_validate('ATU13585627');
+----
+true
+
+query T
+SELECT typeof(vat_validate('DE811128135'));
+----
+STRUCT("valid" BOOLEAN, country VARCHAR, reason VARCHAR)
+
+query TT
+SELECT DISTINCT function_name, parameters::VARCHAR FROM duckdb_functions()
+WHERE function_name IN ('vat_validate', 'anofox_tab_vat_validate') ORDER BY function_name;
+----
+anofox_tab_vat_validate	[vat]
+vat_validate	[vat]
+
+# vat_normalize only cleans the text and keeps the prefix as written (GR stays
+# GR); vat_format(..., 'iso') gives the VAT prefix EL used by VIES, so it is the
+# form to compare or deduplicate VAT numbers on.
+query TTT
+SELECT vat_normalize('gr 123-456-783'), vat_format('gr 123-456-783', 'iso'), vat_format('EL123456783', 'iso');
+----
+GR123456783	EL123456783	EL123456783

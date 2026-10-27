@@ -147,7 +147,26 @@ ORDER BY id;
 ```
 
 `vat_is_valid` checks the format of every country and the check digits of most of them; it does
-not ask VIES whether the number is registered. See [VAT](../api/05-vat.md).
+not ask VIES whether the number is registered. When a number fails, `vat_validate` says why:
+
+```sql
+SELECT v AS vat, (vat_validate(v)).reason AS reason
+FROM (VALUES ('DE136695977'), ('DE13669597'), ('136695976'), ('UK123456789')) t(v);
+```
+
+```text
+┌─────────────┬─────────────────────┐
+│     vat     │       reason        │
+│   varchar   │       varchar       │
+├─────────────┼─────────────────────┤
+│ DE136695977 │ checksum_mismatch   │
+│ DE13669597  │ invalid_format      │
+│ 136695976   │ missing_prefix      │
+│ UK123456789 │ unsupported_country │
+└─────────────┴─────────────────────┘
+```
+
+See [VAT](../api/05-vat.md).
 
 ## 5. Money
 

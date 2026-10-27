@@ -42,6 +42,7 @@ contains letters are accepted without a check-digit test.
 | Function | Canonical name | Input | Returns |
 |----------|----------------|-------|---------|
 | [`vat_is_valid`](#vat_is_valid) | `anofox_tab_vat_is_valid` | VAT number | `BOOLEAN` |
+| [`vat_validate`](#vat_validate) | `anofox_tab_vat_validate` | VAT number | `STRUCT(valid BOOLEAN, country VARCHAR, reason VARCHAR)` |
 | [`vat_is_valid_syntax`](#vat_is_valid_syntax) | `anofox_tab_vat_is_valid_syntax` | VAT number | `BOOLEAN` |
 | [`vat_exists`](#vat_exists) | `anofox_tab_vat_exists` | VAT number | `BOOLEAN` |
 | [`vat`](#vat) | `anofox_tab_vat` | VAT number | `STRUCT(country VARCHAR, digits VARCHAR)` |
@@ -83,6 +84,55 @@ digits where the country has them.
 vat_is_valid(vat_number VARCHAR) -> BOOLEAN
 ```
 
+### `vat_validate`
+
+Canonical name: `anofox_tab_vat_validate`. Scalar function.
+
+The same check as `vat_is_valid`, with the reason a number is rejected. Use it to see what is
+wrong in a supplier column instead of only counting the invalid rows.
+
+```text
+vat_validate(vat VARCHAR) -> STRUCT(valid BOOLEAN, country VARCHAR, reason VARCHAR)
+```
+
+| Field | Description |
+|-------|-------------|
+| `valid` | The same value as `vat_is_valid`; never `NULL` for a non-`NULL` input |
+| `country` | The country of a supported prefix as an ISO code, as in [`vat_split`](#vat_split) (`EL` becomes `GR`); `NULL` when the prefix is missing or not supported |
+| `reason` | `NULL` when the number is valid, else one of the reasons below |
+
+The checks run in this order, and the first that fails gives the reason:
+
+| `reason` | Meaning |
+|----------|---------|
+| `missing_prefix` | After normalization the value does not start with two letters, e.g. `811128135` or an empty string |
+| `unsupported_country` | Two letters that are not one of the 28 supported prefixes, e.g. `UK` (use `GB`) or `CH` |
+| `invalid_format` | The national part does not match the country's pattern: wrong length, a letter where a digit belongs, or nothing after the prefix |
+| `checksum_mismatch` | The pattern fits but the check digits are wrong (only for countries with a check-digit test, see [Supported countries](#supported-countries)) |
+
+A `NULL` input returns `NULL`.
+
+```sql
+SELECT vat_id, (r).valid, (r).country, (r).reason
+FROM (SELECT id, vat_id, vat_validate(vat_id) AS r FROM suppliers)
+ORDER BY id;
+```
+
+```text
+┌────────────────┬─────────────┬─────────────┬─────────────────────┐
+│     vat_id     │ (r)."valid" │ (r).country │     (r).reason      │
+│    varchar     │   boolean   │   varchar   │       varchar       │
+├────────────────┼─────────────┼─────────────┼─────────────────────┤
+│ DE111111125    │ true        │ DE          │ NULL                │
+│ de 111-111-125 │ true        │ DE          │ NULL                │
+│ DE123456789    │ false       │ DE          │ checksum_mismatch   │
+│ EL123456783    │ true        │ GR          │ NULL                │
+│ XI123456782    │ true        │ XI          │ NULL                │
+│ UK123456789    │ false       │ NULL        │ unsupported_country │
+│ DE12           │ false       │ DE          │ invalid_format      │
+└────────────────┴─────────────┴─────────────┴─────────────────────┘
+```
+
 ### `vat_is_valid_syntax`
 
 Canonical name: `anofox_tab_vat_is_valid_syntax`. Scalar function.
@@ -97,10 +147,10 @@ vat_is_valid_syntax(vat_number VARCHAR) -> BOOLEAN
 
 Canonical name: `anofox_tab_vat_exists`. Scalar function.
 
-Checks only that the value starts with a supported prefix followed by a number (at least one
-digit after the prefix). A bare country code such as `'DE'`, or a prefix followed by letters
-only, is `false`. It does not check the length or pattern, and it does not check that the number
-is registered.
+`vat_exists` only checks that the value starts with a known country prefix; it does not query
+the EU VIES service and does not tell whether the number is registered. The prefix must be
+followed by a number (at least one digit). A bare country code such as `'DE'`, or a prefix followed by letters
+only, is `false`. It does not check the length or pattern.
 
 ```text
 vat_exists(vat_number VARCHAR) -> BOOLEAN
@@ -201,7 +251,10 @@ FROM suppliers ORDER BY id;
 
 Canonical name: `anofox_tab_vat_normalize`. Scalar function.
 
-Removes spaces and punctuation and converts to upper case. It does not validate.
+Removes spaces and punctuation and converts to upper case. It does not validate and keeps the
+prefix as written: `GR123456783` stays `GR123456783`. The VAT prefix of Greece is `EL` (the
+prefix VIES uses), so to compare or deduplicate VAT numbers use `vat_format(vat, 'iso')`, which
+writes Greek numbers with `EL` whichever prefix the input had.
 
 ```text
 vat_normalize(vat_number VARCHAR) -> VARCHAR
@@ -229,6 +282,7 @@ argument is a binder error.
 
 ```sql
 SELECT vat_normalize('de 111-111-125') AS normalized,
+       vat_normalize('gr 123-456-783') AS greece_normalized,
        vat_format('de 111-111-125', 'iso') AS iso,
        vat_format('GR123456783', 'iso') AS greece_iso,
        vat_format('GR123456783', 'plain') AS plain,
@@ -237,12 +291,12 @@ SELECT vat_normalize('de 111-111-125') AS normalized,
 ```
 
 ```text
-┌─────────────┬─────────────┬─────────────┬───────────┬───────────────┬─────────────┐
-│ normalized  │     iso     │ greece_iso  │   plain   │ austria_plain │ unparseable │
-│   varchar   │   varchar   │   varchar   │  varchar  │    varchar    │   varchar   │
-├─────────────┼─────────────┼─────────────┼───────────┼───────────────┼─────────────┤
-│ DE111111125 │ DE111111125 │ EL123456783 │ 123456783 │ U13585627     │ NULL        │
-└─────────────┴─────────────┴─────────────┴───────────┴───────────────┴─────────────┘
+┌─────────────┬───────────────────┬─────────────┬─────────────┬───────────┬───────────────┬─────────────┐
+│ normalized  │ greece_normalized │     iso     │ greece_iso  │   plain   │ austria_plain │ unparseable │
+│   varchar   │      varchar      │   varchar   │   varchar   │  varchar  │    varchar    │   varchar   │
+├─────────────┼───────────────────┼─────────────┼─────────────┼───────────┼───────────────┼─────────────┤
+│ DE111111125 │ GR123456783       │ DE111111125 │ EL123456783 │ 123456783 │ U13585627     │ NULL        │
+└─────────────┴───────────────────┴─────────────┴─────────────┴───────────┴───────────────┴─────────────┘
 ```
 
 ```sql

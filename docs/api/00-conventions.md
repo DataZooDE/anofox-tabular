@@ -56,7 +56,9 @@ ORDER BY function_name;
 │ anofox_tab_vat_is_valid_syntax │ scalar        │
 │ anofox_tab_vat_normalize       │ scalar        │
 │ anofox_tab_vat_split           │ scalar        │
+│ anofox_tab_vat_validate        │ scalar        │
 └────────────────────────────────┴───────────────┘
+  10 rows                              2 columns
 ```
 
 ## Modules
@@ -236,7 +238,7 @@ unknown currency code raises, because a money value without a valid currency can
 | [Postal](02-postal.md) | No error: parts that libpostal does not find are `NULL` | none; missing data starts the download, and a failed download raises |
 | [Phone](03-phone.md) | `phonenumber_is_valid` is `false`; `phonenumber_format` and `phonenumber_region` are `NULL`; `phonenumber_parse` has `valid = false` and a `reason`. An unsupported `region` argument makes the row invalid (`unsupported_region`) | An unknown format raises; an unsupported code in `SET anofox_tab_phonenumber_default_region` raises |
 | [Money](04-money.md) | An unknown currency code raises in `money` and `money_from_cents`; arithmetic on two currencies raises | An unknown `money_format` style raises |
-| [VAT](05-vat.md) | `vat_is_valid` is `false`; `vat_format`, `vat_split` and `vat_country_name` are `NULL`; `vat_normalize` only cleans the text and does not validate | An unknown `vat_format` style raises |
+| [VAT](05-vat.md) | `vat_is_valid` is `false`; `vat_validate` has `valid = false` and a `reason`; `vat_format`, `vat_split` and `vat_country_name` are `NULL`; `vat_normalize` only cleans the text and does not validate | An unknown `vat_format` style raises |
 | [PII](06-pii.md) | No error: text without PII gives an empty list or the unchanged text | An unknown mask strategy raises |
 | Table functions ([checks](07-data-quality.md), [anomaly](08-anomaly-detection.md), [diff](09-diffing.md), [profile](10-profiling.md)) | Data never raises; checks report `fail` | An unknown table or column raises; `run_checks` reports it in an `error` row |
 

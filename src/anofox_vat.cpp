@@ -7,6 +7,7 @@
 #include "duckdb/common/vector_operations/vector_operations.hpp"
 
 #include <algorithm>
+#include <cctype>
 
 namespace duckdb {
 
@@ -182,6 +183,66 @@ static void VATIsValidFunc(DataChunk& args, ExpressionState& state,
   });
 }
 
+// anofox_vat_validate(vat) -> STRUCT(valid, country, reason)
+// The same check as vat_is_valid, with the reason a number is rejected.
+// country is the ISO code of a supported prefix (as in vat_split), else NULL.
+static constexpr const char* VAT_REASON_MISSING_PREFIX = "missing_prefix";
+static constexpr const char* VAT_REASON_UNSUPPORTED_COUNTRY = "unsupported_country";
+static constexpr const char* VAT_REASON_INVALID_FORMAT = "invalid_format";
+static constexpr const char* VAT_REASON_CHECKSUM_MISMATCH = "checksum_mismatch";
+
+static LogicalType GetVATValidateType() {
+  child_list_t<LogicalType> struct_children;
+  struct_children.push_back(make_pair("valid", LogicalTypeId::BOOLEAN));
+  struct_children.push_back(make_pair("country", LogicalTypeId::VARCHAR));
+  struct_children.push_back(make_pair("reason", LogicalTypeId::VARCHAR));
+  return LogicalType::STRUCT(struct_children);
+}
+
+static void VATValidateFunc(DataChunk& args, ExpressionState& state,
+                            Vector& result) {
+  auto& registry = VATRegistry::Instance();
+  auto& entries = StructVector::GetEntries(result);
+  auto& valid_vec = anofox::VectorRef(entries[0]);
+  auto& country_vec = anofox::VectorRef(entries[1]);
+  auto& reason_vec = anofox::VectorRef(entries[2]);
+  auto valid_data = duckdb_compat::FlatData<bool>(valid_vec);
+  auto country_data = duckdb_compat::FlatData<string_t>(country_vec);
+  auto reason_data = duckdb_compat::FlatData<string_t>(reason_vec);
+
+  IterateSingleStringInput(args, result, [&](std::string_view input, size_t idx) {
+    const char* reason = nullptr;
+    std::string country;
+    auto normalized = registry.NormalizeVAT(input);
+    bool has_letter_prefix = normalized.size() >= 2 && std::isalpha(static_cast<unsigned char>(normalized[0])) &&
+                             std::isalpha(static_cast<unsigned char>(normalized[1]));
+    auto split_result = registry.SplitVAT(input);
+    if (!has_letter_prefix) {
+      reason = VAT_REASON_MISSING_PREFIX;
+    } else if (!split_result.has_value()) {
+      reason = VAT_REASON_UNSUPPORTED_COUNTRY;
+    } else {
+      country = split_result->first;
+      const auto& digits = split_result->second;
+      if (!registry.IsValidSyntax(country, digits)) {
+        reason = VAT_REASON_INVALID_FORMAT;
+      } else if (!registry.IsValidChecksum(country, digits)) {
+        reason = VAT_REASON_CHECKSUM_MISMATCH;
+      }
+    }
+    valid_data[idx] = reason == nullptr;
+    FlatVector::SetNull(valid_vec, idx, false);
+    FlatVector::SetNull(country_vec, idx, country.empty());
+    if (!country.empty()) {
+      country_data[idx] = StringVector::AddString(country_vec, country);
+    }
+    FlatVector::SetNull(reason_vec, idx, reason == nullptr);
+    if (reason) {
+      reason_data[idx] = StringVector::AddString(reason_vec, reason);
+    }
+  });
+}
+
 // ============================================================================
 // Extension registration
 // ============================================================================
@@ -229,6 +290,11 @@ unique_ptr<FunctionData> VatCountryNameBind(ClientContext &) {
 
 unique_ptr<FunctionData> VatFormatBind(ClientContext &) {
   PostHogTelemetry::Instance().RecordFunctionCall("vat_format");
+  return nullptr;
+}
+
+unique_ptr<FunctionData> VatValidateBind(ClientContext &) {
+  PostHogTelemetry::Instance().RecordFunctionCall("vat_validate");
   return nullptr;
 }
 
@@ -351,6 +417,17 @@ void RegisterVATFunctions(ExtensionLoader& loader) {
     ScalarFunction is_valid_func("anofox_tab_vat_is_valid", {LogicalTypeId::VARCHAR}, LogicalTypeId::BOOLEAN, VATIsValidFunc);
     is_valid_func.SetBindCallback(&anofox::ScalarContextBind<VatIsValidBind>::Bind);
     anofox::RegisterScalarFunctionWithAlias(loader, is_valid_func, "vat_is_valid", {std::move(desc)});
+  }
+  {
+    FunctionDescription desc;
+    desc.description = "Validates a VAT number like vat_is_valid and says why it is rejected: a struct with valid, country (ISO code of a supported prefix, else NULL) and reason (missing_prefix, unsupported_country, invalid_format, checksum_mismatch; NULL when valid). Runs locally; does not query VIES.";
+    desc.parameter_names = {"vat"};
+    desc.parameter_types = {LogicalType::VARCHAR};
+    desc.examples = {"SELECT vat_validate('ATU13585627');", "SELECT (vat_validate('DE 811 128 136')).reason;"};
+    desc.categories = {"vat", "validation"};
+    ScalarFunction validate_func("anofox_tab_vat_validate", {LogicalTypeId::VARCHAR}, GetVATValidateType(), VATValidateFunc);
+    validate_func.SetBindCallback(&anofox::ScalarContextBind<VatValidateBind>::Bind);
+    anofox::RegisterScalarFunctionWithAlias(loader, validate_func, "vat_validate", {std::move(desc)});
   }
 }
 
