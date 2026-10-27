@@ -1,4 +1,5 @@
 #include "anofox_profile.hpp"
+#include "anofox_check.hpp"
 #include "anofox_trace.hpp"
 #include "anofox_function_alias.hpp"
 #include "anofox_sql_utils.hpp"
@@ -392,6 +393,54 @@ static unique_ptr<GlobalTableFunctionState> ProfileTableInit(ClientContext &,
 	return make_uniq<ProfileTableGlobalState>();
 }
 
+// The bound (SumOverflowRiskSQL) for the exact AVG of a column of type `col_type`, and for the
+// spread of a DECIMAL's exact centring, not to overflow; empty for a type whose sum cannot
+// overflow (AggregateOverflowBoundSQL)
+static string ProfileOverflowBoundSQL(const string &col_type) {
+	auto upper = StringUtil::Upper(col_type);
+	if (upper == "HUGEINT") {
+		return AggregateOverflowBoundSQL("SUM", LogicalType(LogicalTypeId::HUGEINT));
+	}
+	// DECIMAL(width,scale) as LogicalType::ToString renders it
+	auto open = upper.find('(');
+	auto comma = upper.find(',');
+	auto close = upper.find(')');
+	if (!StringUtil::StartsWith(upper, "DECIMAL(") || comma == string::npos || close == string::npos ||
+	    close < comma) {
+		return string();
+	}
+	try {
+		auto width = std::stoi(upper.substr(open + 1, comma - open - 1));
+		auto scale = std::stoi(upper.substr(comma + 1, close - comma - 1));
+		return AggregateOverflowBoundSQL("SUM", LogicalType::DECIMAL(static_cast<uint8_t>(width),
+		                                                             static_cast<uint8_t>(scale)));
+	} catch (std::exception &) {
+		return string();
+	}
+}
+
+// Trace the statistics profile_table reports as NULL because they would overflow (see
+// ProfileOverflowBoundSQL); `row` is one result row of BuildColumnProfileSQL
+static void TraceOverflowedStatistics(const vector<Value> &row) {
+	const auto column_type = row[1].ToString();
+	if (ProfileOverflowBoundSQL(column_type).empty()) {
+		return;
+	}
+	const int64_t values = row[2].GetValue<int64_t>() - row[3].GetValue<int64_t>();
+	vector<string> overflowed;
+	if (values > 0 && row[9].IsNull()) {
+		overflowed.push_back("mean");
+	}
+	if (values > 1 && row[11].IsNull()) {
+		overflowed.push_back("stddev, skewness, kurtosis");
+	}
+	if (!overflowed.empty()) {
+		AnofoxTrace(AnofoxLogLevel::Warn, "profile_table: " + StringUtil::Join(overflowed, ", ") + " of column '" +
+		                                      row[0].ToString() + "' (" + column_type +
+		                                      ") would overflow the exact sum; reported as NULL");
+	}
+}
+
 static string BuildColumnProfileSQL(const string &col_name, const string &col_type,
                                     ColumnCategory cat, bool is_sampled,
                                     int64_t actual_sample_size) {
@@ -438,6 +487,23 @@ static string BuildColumnProfileSQL(const string &col_name, const string &col_ty
 		stddev_sql = "STDDEV_SAMP(" + centred + ")";
 		skewness_sql = "SKEWNESS(" + centred + ")";
 		kurtosis_sql = "KURTOSIS(" + centred + ")";
+	}
+	// SUM-based statistics of a HUGEINT or wide DECIMAL column (ProfileOverflowBoundSQL): where
+	// the exact sum (mean) or the exact differences (spread and shape of a DECIMAL) could leave
+	// their type, the statistic is NULL instead of an Out of Range error failing the profile
+	string overflow_bound = cat == ColumnCategory::NUMERIC ? ProfileOverflowBoundSQL(col_type) : "";
+	if (!overflow_bound.empty()) {
+		string safe_sum = "(SELECT NOT " + SumOverflowRiskSQL(ec, overflow_bound) + " FROM src)";
+		mean_sql = "CAST(AVG(CASE WHEN " + safe_sum + " THEN " + ec + " END) AS DOUBLE)";
+		if (StringUtil::StartsWith(centering_type, "DECIMAL")) {
+			string safe_range = "(SELECT COALESCE(MAX(CAST(" + ec + " AS DOUBLE)) - MIN(CAST(" + ec +
+			                    " AS DOUBLE)), 0) < " + overflow_bound + " FROM src)";
+			string centred = CenteredDoubleSQL("(CASE WHEN " + safe_range + " THEN " + ec + " END)", centering_type,
+			                                   "(SELECT " + CenteringReferenceSQL(ec, centering_type) + " FROM src)");
+			stddev_sql = "STDDEV_SAMP(" + centred + ")";
+			skewness_sql = "SKEWNESS(" + centred + ")";
+			kurtosis_sql = "KURTOSIS(" + centred + ")";
+		}
 	}
 	string nan_sql = num_bint("CAST(COUNT(*) FILTER (WHERE isnan(" + dbl + ")) AS BIGINT)");
 	string inf_sql = num_bint("CAST(COUNT(*) FILTER (WHERE isinf(" + dbl + ")) AS BIGINT)");
@@ -662,6 +728,7 @@ static void ProfileTableExecute(ClientContext &context, TableFunctionInput &data
 				for (idx_t col = 0; col < chunk->ColumnCount(); col++) {
 					row_vals.push_back(chunk->GetValue(col, row));
 				}
+				TraceOverflowedStatistics(row_vals);
 				state.rows.push_back(std::move(row_vals));
 			}
 		}

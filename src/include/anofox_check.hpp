@@ -78,6 +78,17 @@ bool IsTimeColumnType(const LogicalType &type);
 // <what>" for a column that is no time column (IsTimeColumnType)
 string TimeColumnTypeError(const LogicalType &type, const string &what);
 
+// SUM and AVG of a HUGEINT or a DECIMAL column wider than 18 digits accumulate in a HUGEINT
+// and raise "Overflow in HUGEINT addition" when the sum leaves its range. The bound (a SQL
+// DOUBLE literal, with a margin) for SumOverflowRiskSQL; empty when `agg_upper` of `type`
+// cannot overflow.
+string AggregateOverflowBoundSQL(const string &agg_upper, const LogicalType &type);
+// SQL condition: the exact SUM of column_sql could overflow, i.e. the DOUBLE sum of its positive
+// or of its negative values reaches bound_sql (AggregateOverflowBoundSQL). Every partial sum of
+// the exact aggregate lies between those two, whatever the order of the rows. over_clause is
+// appended to each aggregate (" OVER (PARTITION BY ...)" for a window; empty for a plain one).
+string SumOverflowRiskSQL(const string &column_sql, const string &bound_sql, const string &over_clause = "");
+
 // The baseline columns of rel_count_change ("<avg> AS baseline_avg, <days> AS baseline_days")
 // over a CTE daily(d DATE, c) for the reference date ref_expr: the window_days days strictly
 // before it. By default the days with rows are averaged; with fill_missing_days the calendar

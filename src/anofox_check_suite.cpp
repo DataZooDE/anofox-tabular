@@ -1037,6 +1037,9 @@ struct CheckBranch {
 	AggregateSQL agg;
 	// Further columns of the simple aggregate path's inner query ("<expr> AS <name>")
 	vector<string> extra_columns;
+	// When set, the inner query also exposes __overflow (the aggregate would overflow its exact
+	// accumulator); such a row is an 'error' row with this message (a SQL literal)
+	string overflow_message_sql;
 };
 
 // How many offending values a failing values_in_set / duplicate_count / match_rate message shows
@@ -1210,7 +1213,26 @@ static CheckBranch BuildCheckBranch(ClientContext &context, const CheckSpec &spe
 		std::transform(agg_upper.begin(), agg_upper.end(), agg_upper.begin(), ::toupper);
 		string col = QuoteSqlIdentifier(spec.column_name);
 		auto probe = BindProbe(context, "SELECT " + col + " FROM " + table_ref + " LIMIT 0");
-		branch.agg = BuildAggregateSQL(agg_upper, col, probe.types[0]);
+		auto &column_type = probe.types[0];
+		string agg_input = col;
+		auto overflow_bound = AggregateOverflowBoundSQL(agg_upper, column_type);
+		if (!overflow_bound.empty()) {
+			// SUM/AVG of a HUGEINT or wide DECIMAL column: a sum beyond the exact accumulator would
+			// raise an Out of Range error and abort the whole suite. Where the DOUBLE sums say it
+			// could (SumOverflowRiskSQL), the rows are left out of the aggregate (NULL) and the
+			// row of this check (or partition) is an 'error' row instead.
+			string partition = grouped ? "PARTITION BY " + branch.identifier_sql : "";
+			source_sql = "(SELECT *, " + SumOverflowRiskSQL(col, overflow_bound, " OVER (" + partition + ")") +
+			             " AS __anofox_overflow FROM " + table_ref + where_clause + ") __src";
+			agg_input = "CASE WHEN __anofox_overflow THEN NULL ELSE " + col + " END";
+			branch.extra_columns.push_back("COALESCE(bool_or(__anofox_overflow), FALSE) AS __overflow");
+			branch.overflow_message_sql = "'" +
+			                              EscapeSqlStringLiteral("check '" + spec.check_name + "' (agg) cannot run: " +
+			                                                     agg + " of " + column_type.ToString() + " column '" +
+			                                                     spec.column_name + "' overflows its exact sum") +
+			                              "'";
+		}
+		branch.agg = BuildAggregateSQL(agg_upper, agg_input, column_type);
 		value_expr = branch.agg.value_expr;
 		branch.nonfinite_count_expr = branch.agg.nonfinite_count_expr;
 		if (branch.agg.IsExact()) {
@@ -1588,6 +1610,10 @@ static string BuildBranchSQL(const CheckSpec &spec, const CheckBranch &branch, c
 	                     value_text + " || ' > upper ' || " + upper_text + " || ')'" +
 	                     samples_suffix + " "
 	                     "     ELSE " + within_message + " END)";
+	if (!branch.overflow_message_sql.empty()) {
+		status_sql = "CASE WHEN __c.__overflow THEN 'error' ELSE " + status_sql + " END";
+		message_sql = "CASE WHEN __c.__overflow THEN " + branch.overflow_message_sql + " ELSE " + message_sql + " END";
+	}
 	if (!branch.unevaluated_expr.empty()) {
 		message_sql += " || CASE WHEN __c.__unevaluated > 0 THEN '; ' || CAST(__c.__unevaluated AS VARCHAR) || "
 		               "' row(s) could not be evaluated (counted as non-compliant)' ELSE '' END";

@@ -379,6 +379,30 @@ string TimeColumnTypeError(const LogicalType &type, const string &what) {
 	       what;
 }
 
+string AggregateOverflowBoundSQL(const string &agg_upper, const LogicalType &type) {
+	if (agg_upper != "SUM" && agg_upper != "AVG") {
+		return string();
+	}
+	// The largest unscaled sum that is safe: below 10^38 (the DECIMAL(38) range, inside the
+	// HUGEINT one), with a margin for the rounding of the DOUBLE sum
+	double bound = 9.9e37;
+	if (type.id() == LogicalTypeId::DECIMAL) {
+		if (DecimalType::GetWidth(type) <= 18) {
+			return string();
+		}
+		bound /= std::pow(10.0, DecimalType::GetScale(type));
+	} else if (type.id() != LogicalTypeId::HUGEINT) {
+		return string();
+	}
+	return "CAST('" + Value::DOUBLE(bound).ToString() + "' AS DOUBLE)";
+}
+
+string SumOverflowRiskSQL(const string &column_sql, const string &bound_sql, const string &over_clause) {
+	const string value = "CAST(" + column_sql + " AS DOUBLE)";
+	return "(GREATEST(COALESCE(SUM(GREATEST(" + value + ", 0))" + over_clause + ", 0), COALESCE(SUM(GREATEST(-" +
+	       value + ", 0))" + over_clause + ", 0)) >= " + bound_sql + ")";
+}
+
 string InfiniteTimeSQL(const string &column_sql, const LogicalType &type, const string &text_cast_type) {
 	string value =
 	    type.id() == LogicalTypeId::VARCHAR ? "TRY_CAST(" + column_sql + " AS " + text_cast_type + ")" : column_sql;
@@ -414,7 +438,22 @@ static string GenerateAggCheckSQL(const string &table_ref, const string &column_
 	string col_id = QuoteSqlIdentifier(column_name);
 	string agg_upper = agg_keyword;
 	std::transform(agg_upper.begin(), agg_upper.end(), agg_upper.begin(), ::toupper);
-	auto agg = BuildAggregateSQL(agg_upper, col_id, column_type);
+	// SUM/AVG of a HUGEINT or wide DECIMAL column whose sum leaves the exact accumulator: a clear
+	// error instead of DuckDB's "Overflow in HUGEINT addition" (AggregateOverflowBoundSQL)
+	string source = table_ref;
+	string agg_input = col_id;
+	string overflow_status = "";
+	auto overflow_bound = AggregateOverflowBoundSQL(agg_upper, column_type);
+	if (!overflow_bound.empty()) {
+		source = "(SELECT *, " + SumOverflowRiskSQL(col_id, overflow_bound, " OVER ()") +
+		         " AS __anofox_overflow FROM " + table_ref + ") __src";
+		agg_input = "CASE WHEN __anofox_overflow THEN NULL ELSE " + col_id + " END";
+		overflow_status = "  WHEN overflow THEN error('" +
+		                  EscapeSqlStringLiteral("agg_check: " + agg_keyword + " of " + column_type.ToString() +
+		                                         " column '" + column_name + "' overflows its exact sum") +
+		                  "') ";
+	}
+	auto agg = BuildAggregateSQL(agg_upper, agg_input, column_type);
 	string compared = agg.IsExact() ? "exact_value" : "value";
 	string below = BoundViolationSQL(compared, lower, agg, true);
 	string above = BoundViolationSQL(compared, upper, agg, false);
@@ -424,7 +463,7 @@ static string GenerateAggCheckSQL(const string &table_ref, const string &column_
 	string nonfinite = agg.nonfinite_count_expr.empty() ? "0" : agg.nonfinite_count_expr;
 
 	return "SELECT "
-		"CASE "
+		"CASE " + overflow_status +
 		"  WHEN value IS NULL THEN 'pass' "
 		"  WHEN isnan(value) THEN 'fail' "
 		"  WHEN " + below + " OR " + above + " THEN 'fail' "
@@ -446,7 +485,8 @@ static string GenerateAggCheckSQL(const string &table_ref, const string &column_
 		"END AS message "
 		"FROM (SELECT " + agg.value_expr + " AS value, " +
 		(agg.IsExact() ? agg.exact_expr : string("CAST(NULL AS DOUBLE)")) + " AS exact_value, " + nonfinite +
-		" AS nonfinite_count FROM " + table_ref + ")";
+		" AS nonfinite_count, " + (overflow_bound.empty() ? string("FALSE") : "COALESCE(bool_or(__anofox_overflow), FALSE)") +
+		" AS overflow FROM " + source + ")";
 }
 
 string BuildDuplicateCountExpr(const vector<string> &column_names) {

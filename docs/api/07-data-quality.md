@@ -543,6 +543,13 @@ the message prints the exact value (`sum value 918624.95 is within acceptable ra
 `value` column stays `DOUBLE`. `avg` and `stddev`, and every aggregate of a `FLOAT` or
 `DOUBLE` column, are `DOUBLE`.
 
+`sum` and `avg` add up the exact values. On a `HUGEINT` column or a `DECIMAL` column wider than
+18 digits that sum can leave the type's range (three balances of `9e37` in a
+`DECIMAL(38,0)` column); the check then raises
+`agg_check: avg of DECIMAL(38,0) column 'balance_wei' overflows its exact sum` instead of
+DuckDB's `Overflow in HUGEINT addition`. In [`run_checks`](#run_checks) such a check is an
+`error` row instead, and the other checks of the suite still run.
+
 A `-inf` lower or `+inf` upper threshold means no bound, like `NULL`, and is returned as
 `NULL`. A `NaN` threshold, a `+inf` lower or a `-inf` upper threshold is a binder error, for
 example `agg_check: upper_threshold must not be NaN (NULL or +inf mean no upper bound)`.
@@ -1136,7 +1143,7 @@ The `value` column holds the measure of each type:
 | `distinct_count` | distinct values | none | yes |
 | `regex_match` | match rate | `pattern` (required) | yes |
 | `values_in_set` | share in set | `allowed_values` (JSON array of strings) | yes |
-| `agg` | the aggregate (`min`, `max`, `sum` of an integer or `DECIMAL` column and `median` of a `DECIMAL` column are compared exactly, as in [`agg_check`](#agg_check)) | `agg` (required): `avg`, `min`, `max`, `sum`, `median`, `stddev` | yes |
+| `agg` | the aggregate (`min`, `max`, `sum` of an integer or `DECIMAL` column and `median` of a `DECIMAL` column are compared exactly, as in [`agg_check`](#agg_check); a `sum` or `avg` that overflows its exact sum is an `error` row) | `agg` (required): `avg`, `min`, `max`, `sum`, `median`, `stddev` | yes |
 | `duplicate_count` | duplicates | none (the key is `column_name`: a comma-separated list or a JSON array) | yes |
 | `compliance` | compliance rate | `expression` (required) | yes |
 | `freshness` | age in seconds (the thresholds are seconds too); `column_name` must be a date, timestamp or text column | `reference_time` (default: the current UTC time, no ICU needed) | yes |
@@ -1232,7 +1239,7 @@ at all, the check still returns one row with a NULL `identifier` (`pass` with
 | `pass` | `value` is within the thresholds; or the check has neither a `lower_threshold` nor an `upper_threshold` (a monitor row that only records the value; message `<check_type> value <value>: no thresholds configured (monitor)`); or `value` is NULL (nothing to evaluate; message `No value to evaluate; check passed trivially`), unless `fail_on_empty` is set |
 | `fail` | `value` is outside a threshold; or `params.fail_on_empty` is `true` and there are no rows to evaluate. For `freshness` also a NULL `value` (empty table, all-NULL column or, with `identifier_column`, a group without timestamps), like the direct [`freshness`](#freshness) function; message `No timestamp values found (table is empty or column is all NULL)` |
 | `warn` | as `fail`, for a check with `monitor_only = true` |
-| `error` | the check could not run; `value` is NULL and the message says why |
+| `error` | the check could not run; `value` is NULL and the message says why. Also an `agg` check whose `sum` or `avg` overflows its exact sum (`check 'avg_balance' (agg) cannot run: avg of DECIMAL(38,0) column 'balance_wei' overflows its exact sum`), per partition with an `identifier_column` |
 
 A `NaN` value (for example an `agg` average over a column with NaN values) is `fail` (or `warn`),
 with the message `agg value is NaN: the column contains <n> NaN/Inf value(s)`.

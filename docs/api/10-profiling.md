@@ -98,6 +98,13 @@ NaN and `±Inf` values (for example `nan` and `inf` in a CSV file) are left out 
 `nan_count` and `inf_count` count them. A column with no finite value has `NULL` there.
 `distinct_count`, `is_unique` and `is_constant` still count NaN and `±Inf` as values.
 
+The mean of a `HUGEINT` or `DECIMAL` column wider than 18 digits is computed from its exact
+sum. When that sum would leave the column's range (above about 1e38 for `HUGEINT` and
+`DECIMAL(38,0)`), `mean` is `NULL` instead of an overflow error failing the profile. For such a
+`DECIMAL` column `stddev`, `skewness` and `kurtosis` are `NULL` too when the spread between the
+smallest and the largest value is that large. The other statistics and columns are profiled,
+and a warning trace names the column.
+
 Integer, `HUGEINT` and `DECIMAL` columns stay exact above 2^53: `mean`, `median`, `p25` and `p75`
 are taken on the column itself, and `stddev`, `skewness` and `kurtosis` on the differences to a
 reference value computed in the column's own type, so `9007199254740992` and `9007199254740993`
