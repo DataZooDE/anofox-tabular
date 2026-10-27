@@ -689,7 +689,8 @@ Scans the `VARCHAR` columns of a table and returns one row per column and PII ty
 one row for every column without a match, so the result accounts for every column: an audit can
 show which columns were scanned and found clean, and which were not scanned at all. It accepts
 regular tables and views, not TEMP tables (see
-[Conventions](00-conventions.md#table-and-column-arguments)).
+[Conventions](00-conventions.md#table-and-column-arguments)); a TEMP table is an error that says
+so and suggests copying it into a regular table.
 
 ```text
 pii_scan_table(table_name VARCHAR [, columns VARCHAR]) -> TABLE(
@@ -785,7 +786,7 @@ FROM pii_scan_table('customers', 'email,note');
 Canonical name: `anofox_tab_pii_audit_table`. Table function.
 
 Returns one row per PII match, with the original and the masked value. Like `pii_scan_table` it
-accepts regular tables and views, not TEMP tables.
+accepts regular tables and views, not TEMP tables; a TEMP table is an error that says so.
 
 ```text
 pii_audit_table(table_name VARCHAR [, columns VARCHAR] [, id_column := VARCHAR]) -> TABLE(

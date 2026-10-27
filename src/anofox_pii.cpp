@@ -12,6 +12,7 @@
 
 #include "duckdb/catalog/catalog.hpp"
 #include "duckdb/catalog/catalog_entry/table_catalog_entry.hpp"
+#include "duckdb/common/error_data.hpp"
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/common/types/value.hpp"
 #include "duckdb/common/types/vector.hpp"
@@ -3794,6 +3795,33 @@ struct PIIScanColumn {
     bool scan;
 };
 
+// The error of a query run on a sibling connection, as "<Type> Error: <message>" without the
+// "LINE 1: SELECT ..." excerpt of the internal query (which is not the user's SQL)
+static std::string QueryErrorText(const ErrorData &error) {
+    std::string message = error.Message();
+    const auto line = message.find("\n\nLINE ");
+    if (line != std::string::npos) {
+        message.erase(line);
+    }
+    return message;
+}
+
+// Whether table_name names a TEMP table or view of the calling connection: the table
+// functions read the table through a sibling connection, which cannot see it
+static bool IsTempRelation(ClientContext &context, const std::string &table_name) {
+    const auto dot = table_name.find('.');
+    if (dot != std::string::npos) {
+        return StringUtil::CIEquals(table_name.substr(0, dot), TEMP_CATALOG);
+    }
+    try {
+        EntryLookupInfo lookup(CatalogType::TABLE_ENTRY, duckdb_compat::EntryName(table_name));
+        return Catalog::GetEntry(context, duckdb_compat::Ident(TEMP_CATALOG), duckdb_compat::Ident(INVALID_SCHEMA),
+                                 lookup, OnEntryNotFound::RETURN_NULL) != nullptr;
+    } catch (...) {
+        return false;
+    }
+}
+
 // The columns pii_scan_table reports, in table order. Without a filter: every column, VARCHAR
 // columns scanned and the others marked as skipped. With a filter: exactly the named columns,
 // all scanned.
@@ -3803,7 +3831,14 @@ static std::vector<PIIScanColumn> ResolvePIIScanPlan(ClientContext &context, con
     Connection con(*context.db);
     auto result = con.Query("SELECT * FROM " + BuildQueryTableRef(table_name) + " LIMIT 0");
     if (result->HasError()) {
-        throw InvalidInputException("%s: cannot read table '%s': %s", function_name, table_name, result->GetError());
+        if (IsTempRelation(context, table_name)) {
+            throw InvalidInputException("%s: '%s' is a TEMP table, which is not supported: the table is read "
+                                        "through a separate connection that cannot see TEMP tables. Copy it into a "
+                                        "regular table first (CREATE TABLE ... AS SELECT * FROM %s)",
+                                        function_name, table_name, table_name);
+        }
+        throw InvalidInputException("%s: cannot read table '%s': %s", function_name, table_name,
+                                    QueryErrorText(result->GetErrorObject()));
     }
     auto result_names = duckdb_compat::ResultNames(*result);
     auto &result_types = duckdb_compat::ResultTypes(*result);
@@ -4054,6 +4089,10 @@ void PIIAuditTableFunction(ClientContext &context, TableFunctionInput &input, Da
                 }
             }
         }
+    } catch (const Exception &) {
+        // Already a DuckDB error with a pii_audit_table message; wrapping it
+        // would show its JSON serialisation
+        throw;
     } catch (const std::exception &e) {
         throw InvalidInputException("pii_audit_table: Failed to audit table - %s", e.what());
     }
@@ -4287,7 +4326,7 @@ void PIIScanTableFunction(ClientContext &context, TableFunctionInput &input, Dat
             auto result = StreamQuery(con, query);
             if (result->HasError()) {
                 AnofoxTrace(AnofoxLogLevel::Warn, "pii_scan_table: Error querying column " + col_name);
-                state.pending.push_back(MakePIIScanStatusRow(col_name, 0, "error (" + result->GetError() + ")"));
+                state.pending.push_back(MakePIIScanStatusRow(col_name, 0, "error (" + QueryErrorText(result->GetErrorObject()) + ")"));
                 continue;
             }
 
@@ -4373,6 +4412,10 @@ void PIIScanTableFunction(ClientContext &context, TableFunctionInput &input, Dat
                           return PIITypeToString(a.pii_type) < PIITypeToString(b.pii_type);
                       });
         }
+    } catch (const Exception &) {
+        // Already a DuckDB error with a pii_scan_table message; wrapping it
+        // would show its JSON serialisation
+        throw;
     } catch (const std::exception &e) {
         throw InvalidInputException("pii_scan_table: Failed to scan table - %s", e.what());
     }
