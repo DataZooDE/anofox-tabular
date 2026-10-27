@@ -1188,25 +1188,22 @@ static CheckBranch BuildCheckBranch(ClientContext &context, const CheckSpec &spe
 		string col = QuoteSqlIdentifier(spec.column_name);
 		auto probe = BindProbe(context, "SELECT " + col + " FROM " + table_ref + " LIMIT 0");
 		auto &column_type = probe.types[0];
-		string agg_input = col;
-		auto overflow_bound = AggregateOverflowBoundSQL(agg_upper, column_type);
-		if (!overflow_bound.empty()) {
-			// SUM/AVG of a HUGEINT or wide DECIMAL column: a sum beyond the exact accumulator would
-			// raise an Out of Range error and abort the whole suite. Where the DOUBLE sums say it
-			// could (SumOverflowRiskSQL), the rows are left out of the aggregate (NULL) and the
-			// row of this check (or partition) is an 'error' row instead.
-			string partition = grouped ? "PARTITION BY " + branch.identifier_sql : "";
-			source_sql = "(SELECT *, " + SumOverflowRiskSQL(col, overflow_bound, " OVER (" + partition + ")") +
-			             " AS __anofox_overflow FROM " + table_ref + where_clause + ") __src";
-			agg_input = "CASE WHEN __anofox_overflow THEN NULL ELSE " + col + " END";
-			branch.extra_columns.push_back("COALESCE(bool_or(__anofox_overflow), FALSE) AS __overflow");
+		branch.agg = BuildAggregateSQL(agg_upper, col, column_type);
+		if (IsWideSumAggregate(agg_upper, column_type)) {
+			// SUM/AVG of a HUGEINT or wide DECIMAL column: summed without DuckDB's overflow on a
+			// partial sum (BuildAggregateSQL reads the risk column of its rows). An exact sum
+			// beyond its type would abort the whole suite: the row of this check (or partition)
+			// is an 'error' row instead.
+			source_sql = "(SELECT *, " +
+			             WideSumRiskColumnSQL(col, column_type, "FROM " + table_ref + where_clause) + " FROM " +
+			             table_ref + where_clause + ") __src";
+			branch.extra_columns.push_back("COALESCE(" + branch.agg.overflow_expr + ", FALSE) AS __overflow");
 			branch.overflow_message_sql = "'" +
 			                              EscapeSqlStringLiteral("check '" + spec.check_name + "' (agg) cannot run: " +
 			                                                     agg + " of " + column_type.ToString() + " column '" +
 			                                                     spec.column_name + "' overflows its exact sum") +
 			                              "'";
 		}
-		branch.agg = BuildAggregateSQL(agg_upper, agg_input, column_type);
 		value_expr = branch.agg.value_expr;
 		branch.nonfinite_count_expr = branch.agg.nonfinite_count_expr;
 		if (branch.agg.IsExact()) {

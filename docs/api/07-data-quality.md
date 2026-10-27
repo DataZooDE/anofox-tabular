@@ -549,11 +549,15 @@ the message prints the exact value (`sum value 918624.95 is within acceptable ra
 `DOUBLE` column, are `DOUBLE`.
 
 `sum` and `avg` add up the exact values. On a `HUGEINT` column or a `DECIMAL` column wider than
-18 digits that sum can leave the type's range (three balances of `9e37` in a
-`DECIMAL(38,0)` column); the check then raises
-`agg_check: avg of DECIMAL(38,0) column 'balance_wei' overflows its exact sum` instead of
-DuckDB's `Overflow in HUGEINT addition`. In [`run_checks`](#run_checks) such a check is an
-`error` row instead, and the other checks of the suite still run.
+18 digits the sum is computed without an intermediate overflow: large values that cancel out
+(`6e37`, `-6e37`, `6e37` in a `DECIMAL(38,0)` column) and a single value at the type's maximum
+are summed exactly, whatever the order of the rows. Only when the exact sum itself leaves the
+range (two balances of `6e37`: `1.2e38` does not fit `DECIMAL(38,0)`) does the check raise
+`agg_check: sum of DECIMAL(38,0) column 'balance_wei' overflows its exact sum` instead of
+DuckDB's `Overflow in HUGEINT addition`. The range is that of the result: `DECIMAL(38,s)` for
+`sum` of a `DECIMAL`, `HUGEINT` for `sum` of a `HUGEINT` and for `avg` (whose exact sum is kept
+in a `HUGEINT`, so the `avg` of those two balances is `6e37`). In [`run_checks`](#run_checks)
+such a check is an `error` row instead, and the other checks of the suite still run.
 
 A `-inf` lower or `+inf` upper threshold means no bound, like `NULL`, and is returned as
 `NULL`. A `NaN` threshold, a `+inf` lower or a `-inf` upper threshold is a binder error, for
@@ -1162,7 +1166,7 @@ The `value` column holds the measure of each type:
 | `distinct_count` | distinct values | none | yes |
 | `regex_match` | match rate | `pattern` (required) | yes |
 | `values_in_set` | share in set | `allowed_values` (JSON array of strings) | yes |
-| `agg` | the aggregate (`min`, `max`, `sum` of an integer or `DECIMAL` column and `median` of a `DECIMAL` column are compared exactly, as in [`agg_check`](#agg_check); a `sum` or `avg` that overflows its exact sum is an `error` row) | `agg` (required): `avg`, `min`, `max`, `sum`, `median`, `stddev` | yes |
+| `agg` | the aggregate (`min`, `max`, `sum` of an integer or `DECIMAL` column and `median` of a `DECIMAL` column are compared exactly, as in [`agg_check`](#agg_check); a `sum` or `avg` whose exact sum leaves its range is an `error` row) | `agg` (required): `avg`, `min`, `max`, `sum`, `median`, `stddev` | yes |
 | `duplicate_count` | duplicates | none (the key is `column_name`: a comma-separated list or a JSON array) | yes |
 | `compliance` | compliance rate | `expression` (required) | yes |
 | `freshness` | age in seconds (the thresholds are seconds too); `column_name` must be a date, timestamp or text column | `reference_time` (default: the current UTC time, no ICU needed) | yes |

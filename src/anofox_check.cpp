@@ -219,6 +219,65 @@ string BuildNonFiniteCountExpr(const string &double_expr) {
 	return "COUNT(*) FILTER (WHERE NOT isfinite(" + double_expr + "))";
 }
 
+bool IsWideSumAggregate(const string &agg_upper, const LogicalType &type) {
+	if (agg_upper != "SUM" && agg_upper != "AVG") {
+		return false;
+	}
+	return type.id() == LogicalTypeId::HUGEINT ||
+	       (type.id() == LogicalTypeId::DECIMAL && DecimalType::GetWidth(type) > 18);
+}
+
+string WideSumRiskColumnSQL(const string &column_sql, const LogicalType &type, const string &rows_sql) {
+	// Below 10^38 (the DECIMAL(38) range, inside the HUGEINT one) in unscaled units, with a
+	// margin for the rounding of the DOUBLE sums
+	double bound = 9.9e37;
+	if (type.id() == LogicalTypeId::DECIMAL) {
+		bound /= std::pow(10.0, DecimalType::GetScale(type));
+	}
+	const string value = "CAST(" + column_sql + " AS DOUBLE)";
+	return "(SELECT COALESCE(GREATEST(SUM(GREATEST(" + value + ", 0)), SUM(GREATEST(-" + value + ", 0))) >= CAST('" +
+	       Value::DOUBLE(bound).ToString() + "' AS DOUBLE), FALSE) " + rows_sql + ") AS " + WIDE_SUM_RISK_COLUMN;
+}
+
+namespace {
+
+// The pieces of an exact SUM of a HUGEINT or wide DECIMAL column that cannot overflow (for the
+// rows where WIDE_SUM_RISK_COLUMN is set; NULL otherwise). Each value, as its unscaled HUGEINT
+// u, is split into u >> 64 (a BIGINT-sized high part) and u & (2^64 - 1) (the low 64 bits),
+// which are summed separately: neither sum can leave the HUGEINT range below 2^63 rows. The
+// exact sum is high * 2^64 + low with high = high_sum + (low_sum >> 64), low = low_sum & mask.
+struct SplitSumSQL {
+	string present; // whether the split sums were taken (the risk column was set on some row)
+	string high;
+	string low;
+	string fits_hugeint; // the exact sum is within the HUGEINT range
+	string total;        // the exact sum as HUGEINT (only where fits_hugeint)
+};
+
+SplitSumSQL BuildSplitSumSQL(const string &column_sql, const LogicalType &type) {
+	string unscaled = column_sql;
+	if (type.id() == LogicalTypeId::DECIMAL) {
+		// DuckDB prints a DECIMAL with all its scale digits: without the point it is the
+		// unscaled integer
+		unscaled = DecimalType::GetScale(type) == 0
+		               ? "CAST(" + column_sql + " AS HUGEINT)"
+		               : "CAST(replace(CAST(" + column_sql + " AS VARCHAR), '.', '') AS HUGEINT)";
+	}
+	const string mask = "CAST('18446744073709551615' AS HUGEINT)";
+	const string when_risk = string("CASE WHEN ") + WIDE_SUM_RISK_COLUMN + " THEN ";
+	const string high_sum = "SUM(" + when_risk + "(" + unscaled + ") >> 64 END)";
+	const string low_sum = "SUM(" + when_risk + "(" + unscaled + ") & " + mask + " END)";
+	SplitSumSQL result;
+	result.present = "(" + high_sum + " IS NOT NULL)";
+	result.high = "(" + high_sum + " + (" + low_sum + " >> 64))";
+	result.low = "(" + low_sum + " & " + mask + ")";
+	result.fits_hugeint = "(" + result.high + " BETWEEN -9223372036854775808 AND 9223372036854775807)";
+	result.total = "(" + result.high + " * CAST('18446744073709551616' AS HUGEINT) + " + result.low + ")";
+	return result;
+}
+
+} // anonymous namespace
+
 AggregateSQL BuildAggregateSQL(const string &agg_upper, const string &column_sql, const LogicalType &column_type) {
 	AggregateSQL result;
 	bool is_integer = false;
@@ -238,6 +297,58 @@ AggregateSQL BuildAggregateSQL(const string &agg_upper, const string &column_sql
 		break;
 	}
 	const bool is_decimal = column_type.id() == LogicalTypeId::DECIMAL;
+	if (IsWideSumAggregate(agg_upper, column_type)) {
+		// Rows without the risk of an overflow (WideSumRiskColumnSQL) take DuckDB's own
+		// aggregate; otherwise the exact sum is assembled from the split sums
+		const string plain = "CASE WHEN " + string(WIDE_SUM_RISK_COLUMN) + " THEN NULL ELSE " + column_sql + " END";
+		auto split = BuildSplitSumSQL(column_sql, column_type);
+		const uint8_t scale = is_decimal ? DecimalType::GetScale(column_type) : 0;
+		if (agg_upper == "AVG") {
+			// The average itself always fits; its exact sum must fit the HUGEINT accumulator
+			// sum / (count * 10^scale) as quotient plus remainder, so the DOUBLE is rounded once
+			// like DuckDB's own average (6e37 / 3 is 2e+37, not 2.0000000000000001e+37)
+			string average = "CAST(" + split.total + " AS DOUBLE) / (CAST(COUNT(" + column_sql +
+			                 ") AS DOUBLE) * CAST('1e" + std::to_string(scale) + "' AS DOUBLE))";
+			if (scale <= 18) {
+				const string divisor = "(CAST(COUNT(" + column_sql + ") AS HUGEINT) * CAST('1" + string(scale, '0') +
+				                       "' AS HUGEINT))";
+				average = "CAST(" + split.total + " // " + divisor + " AS DOUBLE) + CAST(" + split.total + " % " +
+				          divisor + " AS DOUBLE) / CAST(" + divisor + " AS DOUBLE)";
+			}
+			result.value_expr = "CASE WHEN NOT " + split.present + " THEN CAST(AVG(" + plain + ") AS DOUBLE) WHEN " +
+			                    split.fits_hugeint + " THEN " + average + " END";
+			result.overflow_expr = "CASE WHEN NOT " + split.present + " THEN FALSE ELSE NOT " + split.fits_hugeint + " END";
+			return result;
+		}
+		result.exact_scale = scale;
+		if (is_decimal) {
+			result.exact_type = "DECIMAL(38," + std::to_string(scale) + ")";
+			// |sum| < 10^38 unscaled; the unscaled integer back to the DECIMAL by its exponent
+			const string limit = "CAST('100000000000000000000000000000000000000' AS HUGEINT)";
+			const string in_range = "(" + split.total + " < " + limit + " AND " + split.total + " > -" + limit + ")";
+			// The unscaled integer back to the DECIMAL: its digits with the point inserted
+			string as_decimal = "CAST(" + split.total + " AS DECIMAL(38,0))";
+			if (scale > 0) {
+				const string unit = "CAST('1" + string(scale, '0') + "' AS HUGEINT)";
+				const string magnitude = "abs(" + split.total + ")";
+				as_decimal = "CAST(CASE WHEN " + split.total + " < 0 THEN '-' ELSE '' END || CAST(" + magnitude +
+				             " // " + unit + " AS VARCHAR) || '.' || lpad(CAST(" + magnitude + " % " + unit +
+				             " AS VARCHAR), " + std::to_string(scale) + ", '0') AS " + result.exact_type + ")";
+			}
+			result.exact_expr = "CASE WHEN NOT " + split.present + " THEN CAST(SUM(" + plain + ") AS " +
+			                    result.exact_type + ") WHEN NOT " + split.fits_hugeint + " THEN NULL WHEN " + in_range +
+			                    " THEN " + as_decimal + " END";
+			result.overflow_expr = "CASE WHEN NOT " + split.present + " THEN FALSE WHEN NOT " + split.fits_hugeint +
+			                       " THEN TRUE ELSE NOT " + in_range + " END";
+		} else {
+			result.exact_type = "HUGEINT";
+			result.exact_expr = "CASE WHEN NOT " + split.present + " THEN CAST(SUM(" + plain + ") AS HUGEINT) WHEN " +
+			                    split.fits_hugeint + " THEN " + split.total + " END";
+			result.overflow_expr = "CASE WHEN NOT " + split.present + " THEN FALSE ELSE NOT " + split.fits_hugeint + " END";
+		}
+		result.value_expr = "CAST(" + result.exact_expr + " AS DOUBLE)";
+		return result;
+	}
 	if (is_integer || is_decimal) {
 		// MEDIAN of an integer column interpolates (a DOUBLE); of a DECIMAL column it stays DECIMAL
 		const bool exact =
@@ -458,22 +569,21 @@ static string GenerateAggCheckSQL(const string &table_ref, const string &column_
 	string col_id = QuoteSqlIdentifier(column_name);
 	string agg_upper = agg_keyword;
 	std::transform(agg_upper.begin(), agg_upper.end(), agg_upper.begin(), ::toupper);
-	// SUM/AVG of a HUGEINT or wide DECIMAL column whose sum leaves the exact accumulator: a clear
-	// error instead of DuckDB's "Overflow in HUGEINT addition" (AggregateOverflowBoundSQL)
+	// SUM/AVG of a HUGEINT or wide DECIMAL column: summed without DuckDB's overflow on a partial
+	// sum (BuildAggregateSQL); an exact sum beyond its type is a clear error instead of DuckDB's
+	// "Overflow in HUGEINT addition"
 	string source = table_ref;
-	string agg_input = col_id;
 	string overflow_status = "";
-	auto overflow_bound = AggregateOverflowBoundSQL(agg_upper, column_type);
-	if (!overflow_bound.empty()) {
-		source = "(SELECT *, " + SumOverflowRiskSQL(col_id, overflow_bound, " OVER ()") +
-		         " AS __anofox_overflow FROM " + table_ref + ") __src";
-		agg_input = "CASE WHEN __anofox_overflow THEN NULL ELSE " + col_id + " END";
+	const bool wide_sum = IsWideSumAggregate(agg_upper, column_type);
+	if (wide_sum) {
+		source = "(SELECT *, " + WideSumRiskColumnSQL(col_id, column_type, "FROM " + table_ref) + " FROM " +
+		         table_ref + ") __src";
 		overflow_status = "  WHEN overflow THEN error('" +
 		                  EscapeSqlStringLiteral("agg_check: " + agg_keyword + " of " + column_type.ToString() +
 		                                         " column '" + column_name + "' overflows its exact sum") +
 		                  "') ";
 	}
-	auto agg = BuildAggregateSQL(agg_upper, agg_input, column_type);
+	auto agg = BuildAggregateSQL(agg_upper, col_id, column_type);
 	string compared = agg.IsExact() ? "exact_value" : "value";
 	string below = BoundViolationSQL(compared, lower, agg, true);
 	string above = BoundViolationSQL(compared, upper, agg, false);
@@ -505,7 +615,7 @@ static string GenerateAggCheckSQL(const string &table_ref, const string &column_
 		"END AS message "
 		"FROM (SELECT " + agg.value_expr + " AS value, " +
 		(agg.IsExact() ? agg.exact_expr : string("CAST(NULL AS DOUBLE)")) + " AS exact_value, " + nonfinite +
-		" AS nonfinite_count, " + (overflow_bound.empty() ? string("FALSE") : "COALESCE(bool_or(__anofox_overflow), FALSE)") +
+		" AS nonfinite_count, " + (wide_sum ? "COALESCE(" + agg.overflow_expr + ", FALSE)" : string("FALSE")) +
 		" AS overflow FROM " + source + ")";
 }
 

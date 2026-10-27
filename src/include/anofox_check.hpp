@@ -53,6 +53,9 @@ struct AggregateSQL {
 	uint8_t exact_scale = 0;
 	// COUNT of the NaN/Inf values; empty when the column cannot hold them
 	string nonfinite_count_expr;
+	// SUM/AVG of a wide column (IsWideSumAggregate): whether the exact sum leaves its type (a
+	// DECIMAL(38) for a DECIMAL SUM, else the HUGEINT accumulator). The aggregate is then NULL.
+	string overflow_expr;
 
 	bool IsExact() const {
 		return !exact_expr.empty();
@@ -86,9 +89,9 @@ bool IsTimeColumnType(const LogicalType &type);
 // <what>" for a column that is no time column (IsTimeColumnType)
 string TimeColumnTypeError(const LogicalType &type, const string &what);
 
-// SUM and AVG of a HUGEINT or a DECIMAL column wider than 18 digits accumulate in a HUGEINT
-// and raise "Overflow in HUGEINT addition" when the sum leaves its range. The bound (a SQL
-// DOUBLE literal, with a margin) for SumOverflowRiskSQL; empty when `agg_upper` of `type`
+// profile_table: SUM and AVG of a HUGEINT or a DECIMAL column wider than 18 digits accumulate
+// in a HUGEINT and raise "Overflow in HUGEINT addition" when the sum leaves its range. The bound
+// (a SQL DOUBLE literal, with a margin) for SumOverflowRiskSQL; empty when `agg_upper` of `type`
 // cannot overflow.
 string AggregateOverflowBoundSQL(const string &agg_upper, const LogicalType &type);
 // SQL condition: the exact SUM of column_sql could overflow, i.e. the DOUBLE sum of its positive
@@ -96,6 +99,19 @@ string AggregateOverflowBoundSQL(const string &agg_upper, const LogicalType &typ
 // the exact aggregate lies between those two, whatever the order of the rows. over_clause is
 // appended to each aggregate (" OVER (PARTITION BY ...)" for a window; empty for a plain one).
 string SumOverflowRiskSQL(const string &column_sql, const string &bound_sql, const string &over_clause = "");
+
+// agg_check / run_checks: SUM and AVG of a HUGEINT or a DECIMAL column wider than 18 digits. DuckDB accumulates them in
+// a HUGEINT and raises "Overflow in HUGEINT addition" as soon as a partial sum leaves its range,
+// which depends on the order of the rows (6e37, 6e37, -6e37 can fail although the sum fits).
+// BuildAggregateSQL sums such a column exactly instead; the rows it reads must carry the column
+// WideSumRiskColumnSQL adds.
+bool IsWideSumAggregate(const string &agg_upper, const LogicalType &type);
+constexpr const char *WIDE_SUM_RISK_COLUMN = "__anofox_wide_sum";
+// "<subquery> AS __anofox_wide_sum": whether DuckDB's own aggregate could overflow on the rows
+// "SELECT ... <rows_sql>" (e.g. "FROM t WHERE ..."), i.e. the DOUBLE sum of their positive or of
+// their negative values gets near 10^38 (unscaled); every partial sum lies between those two.
+// Without that risk the aggregate is DuckDB's own, with it the exact split sum.
+string WideSumRiskColumnSQL(const string &column_sql, const LogicalType &type, const string &rows_sql);
 
 // The baseline columns of rel_count_change ("<avg> AS baseline_avg, <days> AS baseline_days")
 // over a CTE daily(d DATE, c) for the reference date ref_expr: the window_days days strictly
