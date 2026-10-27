@@ -530,11 +530,14 @@ print(changes.sort_values("id").to_string(index=False))
 ```
 
 ```text
-diff_type  id  price
-  removed   1    NaN
-  changed   3   35.0
-    added   4   40.0
+diff_type  id  price changed_columns
+  removed   1    NaN            <NA>
+  changed   3   35.0         [price]
+    added   4   40.0            <NA>
 ```
+
+`changed_columns` lists the columns that differ in a `changed` row; it is missing for `added`
+and `removed` rows.
 
 `diff.diff_schema` compares the columns instead of the rows: one row per column of either
 DataFrame (or table), with its type on each side and the drift (`same`, `added`, `removed` or

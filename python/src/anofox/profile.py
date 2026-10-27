@@ -69,9 +69,9 @@ def profile_summary(
     Returns
     -------
     DataFrame (pandas, or polars for a polars input)
-        One row with 11 columns: row_count, column_count, numeric_columns,
+        One row with 12 columns: row_count, column_count, numeric_columns,
         string_columns, temporal_columns, boolean_columns,
-        complex_columns, total_nulls, total_null_rate,
+        complex_columns, other_columns, total_nulls, total_null_rate,
         duplicate_row_count, estimated_memory_bytes (a rough estimate:
         row_count * column_count * 8).
     """

@@ -167,6 +167,13 @@ class TestProfileSummary:
         assert "complex_columns" in result.columns
         assert result["complex_columns"].iloc[0] == 0  # all scalars
 
+    def test_type_buckets_add_up_to_column_count(self, conn, profile_table_fixture):
+        from anofox import profile
+        row = profile.profile_summary(conn, profile_table_fixture).iloc[0]
+        buckets = ["numeric_columns", "string_columns", "temporal_columns",
+                   "boolean_columns", "complex_columns", "other_columns"]
+        assert sum(int(row[b]) for b in buckets) == int(row["column_count"])
+
     def test_has_total_nulls_field(self, conn, profile_table_fixture):
         from anofox import profile
         result = profile.profile_summary(conn, profile_table_fixture)
