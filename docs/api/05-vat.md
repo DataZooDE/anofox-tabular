@@ -260,6 +260,24 @@ writes Greek numbers with `EL` whichever prefix the input had.
 vat_normalize(vat_number VARCHAR) -> VARCHAR
 ```
 
+Full-width letters, digits and punctuation (`ＤＥ８１１ １２８ １３５`, as typed with an East
+Asian input method) and the ideographic space are first folded to ASCII, so they are kept as the
+letters and digits they stand for. Every VAT function normalizes its input this way. Other
+characters outside ASCII are removed.
+
+```sql
+SELECT vat_normalize('ＤＥ８１１　１２８　１３５') AS normalized, vat_is_valid('ＤＥ８１１１２８１３５') AS valid;
+```
+
+```text
+┌─────────────┬─────────┐
+│ normalized  │  valid  │
+│   varchar   │ boolean │
+├─────────────┼─────────┤
+│ DE811128135 │ true    │
+└─────────────┴─────────┘
+```
+
 ### `vat_format`
 
 Canonical name: `anofox_tab_vat_format`. Scalar function.

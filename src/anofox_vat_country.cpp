@@ -1,4 +1,5 @@
 #include "anofox_vat.hpp"
+#include "anofox_text_fold.hpp"
 #include <algorithm>
 #include <cctype>
 #include <regex>
@@ -101,10 +102,13 @@ bool VATRegistry::IsValidSyntax(const std::string& country,
 }
 
 std::string VATRegistry::NormalizeVAT(std::string_view input) const {
+  // Full-width letters and digits (East Asian input methods) become ASCII first,
+  // otherwise the loop below would delete them as non-ASCII bytes
+  const std::string folded = anofox::FoldFullWidthForms(input);
   std::string result;
-  result.reserve(input.size());
+  result.reserve(folded.size());
   // Convert to uppercase and remove spaces, punctuation
-  for (unsigned char c : input) {
+  for (unsigned char c : folded) {
     if (std::isalnum(c)) {
       result += static_cast<char>(std::toupper(c));
     }
