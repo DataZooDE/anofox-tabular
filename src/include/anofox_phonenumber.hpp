@@ -19,6 +19,9 @@ struct PhoneNumberParts {
 	bool valid = false;
 	int country_code = 0;
 	std::string national_number;
+	//! The region the number was read in: the region argument or the default
+	//! region for a national number, the country code's region otherwise. Set
+	//! also for an invalid number once the region is known; empty before that.
 	std::string region_code;
 	std::string type;
 	//! True if the national number matches the region's fixed-line or mobile
@@ -30,6 +33,15 @@ struct PhoneNumberParts {
 	//! Digits of a trailing extension ("ext. 123", "x123", "Durchwahl 123") that
 	//! was split off before validation; empty when the input has none.
 	std::string extension;
+	//! A national number (no '+', no international prefix) read in the default
+	//! region because the region argument was NULL or empty
+	bool read_in_default_region = false;
+
+	//! The reason phonenumber_parse reports: region_missing instead of
+	//! invalid_length / invalid_pattern when the number was read in the default
+	//! region only because no region was given. `reason` keeps the precise
+	//! cause for internal callers (PII deep validation judges the length).
+	std::string ReportedReason() const;
 };
 
 //! Values of the `reason` field of phonenumber_parse
@@ -41,6 +53,10 @@ struct PhoneNumberInvalidReason {
 	static constexpr const char *INVALID_COUNTRY_CODE = "unsupported_country_code";
 	static constexpr const char *INVALID_LENGTH = "invalid_length";
 	static constexpr const char *INVALID_PATTERN = "invalid_pattern";
+	//! A national number (no '+', no international prefix) given without a region
+	//! argument that is invalid under the default region: the region, not the
+	//! number, is the likely problem
+	static constexpr const char *REGION_MISSING = "region_missing";
 };
 
 enum class PhoneNumberFormatOption {

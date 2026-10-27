@@ -43,6 +43,29 @@ surrounding spaces are ignored (`' gb '` is `GB`); a `region` of only spaces cou
 invalid but does not stop the query. The [default-region setting](#default-region) is
 configuration instead and rejects an unsupported code with an error when it is set.
 
+A number without `+` read in the default region only because `region` is `NULL` (or empty) can
+fail just because it is from another country: `030 12345678` is a Berlin number but not a US
+one. `phonenumber_parse` then reports reason `region_missing` instead of `invalid_length` or
+`invalid_pattern`, and its `region` field shows the default region that was used:
+
+```sql
+SELECT phone,
+       (phonenumber_parse(phone, NULL)).region AS region,
+       (phonenumber_parse(phone, NULL)).reason AS reason,
+       (phonenumber_parse(phone, 'DE')).valid AS valid_in_de
+FROM (VALUES ('030 12345678'), ('+49 30 12345678')) t(phone);
+```
+
+```text
+┌─────────────────┬─────────┬────────────────┬─────────────┐
+│      phone      │ region  │     reason     │ valid_in_de │
+│     varchar     │ varchar │    varchar     │   boolean   │
+├─────────────────┼─────────┼────────────────┼─────────────┤
+│ 030 12345678    │ US      │ region_missing │ true        │
+│ +49 30 12345678 │ DE      │ NULL           │ true        │
+└─────────────────┴─────────┴────────────────┴─────────────┘
+```
+
 ```sql
 SELECT phonenumber_format('020 7946 0958', 'UK', 'E164') AS uk,
        phonenumber_format('020 7946 0958', ' gb ', 'E164') AS gb,
@@ -86,8 +109,12 @@ SELECT phonenumber_format('0049 30 12345678', 'DE', 'E164') AS idd,
 ### Labels, extensions and letters
 
 Phone fields typed by people carry more than digits. The parser reads spaces, `-`, `.`, `/` and
-parentheses as separators and handles three more cases:
+parentheses as separators and handles four more cases:
 
+- **Full-width characters** typed with an East Asian input method are read as their ASCII
+  forms (Unicode NFKC): `０３０ １２３４５６７８` is `030 12345678` and `＋４９` is `+49`. Digits of
+  other scripts, such as Arabic-Indic digits, are not converted and are ignored like any other
+  separator.
 - **A leading label** is dropped: `Tel`, `Telefon`, `Telephone`, `Phone`, `Mobil`, `Mobile`,
   `Cell` or `Fax` (any case), followed by `.`, `:` or a space. `Tel: 030 12345678`,
   `Mobil 0171 1234567` and the RFC 3966 form `tel:+49-30-12345678` are all valid.
@@ -159,10 +186,10 @@ phonenumber_parse(phone VARCHAR, region VARCHAR) -> STRUCT(
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `valid` | `BOOLEAN` | `true` when the number is valid, the same as `phonenumber_is_valid`; the other fields except `reason` are `NULL` when it is not |
+| `valid` | `BOOLEAN` | `true` when the number is valid, the same as `phonenumber_is_valid`; the other fields except `region` and `reason` are `NULL` when it is not |
 | `country_code` | `INTEGER` | Country calling code, e.g. `1`, `44`, `49` |
 | `national_number` | `VARCHAR` | The number without country code and formatting |
-| `region` | `VARCHAR` | Region code, e.g. `US`, `GB` |
+| `region` | `VARCHAR` | Region code, e.g. `US`, `GB`: the region the number was read in. For a number without `+` that is the `region` argument, or the default region when it is `NULL`; for a number with `+` the region of its country code. Also set for an invalid number once the region is known; `NULL` for `not_a_number`, `invalid_characters`, `unsupported_region` and `unsupported_country_code` |
 | `type` | `VARCHAR` | `fixed_line`, `mobile`, `fixed_line_or_mobile` or `toll_free` |
 | `reason` | `VARCHAR` | `NULL` when the number is valid, else why it is not (see below) |
 | `extension` | `VARCHAR` | Digits of a trailing extension (`ext. 123`, `x123`, `Durchwahl 123`), see [Labels, extensions and letters](#labels-extensions-and-letters); `NULL` when there is none or the number is not valid |
@@ -175,6 +202,7 @@ phonenumber_parse(phone VARCHAR, region VARCHAR) -> STRUCT(
 | `unsupported_country_code` | The country code after `+` (or the international prefix) is not one of the supported regions, e.g. `+43` (Austria) |
 | `invalid_length` | The national number has a length that the region does not use |
 | `invalid_pattern` | The length fits, but the digits are not in a fixed-line, mobile or toll-free range of the region |
+| `region_missing` | A number without `+` or international prefix, `region` is `NULL` or empty, and the number is invalid (length or range) in the default region. Pass the customer's country as `region`, or store the number with `+` |
 
 ```sql
 SELECT id, phone,
@@ -271,7 +299,7 @@ phonenumber_format(phone VARCHAR, region VARCHAR, format VARCHAR) -> VARCHAR
 |-----------|------|-------------|
 | `phone` | `VARCHAR` | The number |
 | `region` | `VARCHAR` | Region hint, or `NULL` for the default region |
-| `format` | `VARCHAR` | `E164`, `INTERNATIONAL`, `NATIONAL` or `RFC3966`, case-insensitive |
+| `format` | `VARCHAR` | `E164`, `INTERNATIONAL`, `NATIONAL` or `RFC3966`, case-insensitive; surrounding spaces are ignored |
 
 Returns `NULL` unless the number is valid, the same check as
 [`phonenumber_is_valid`](#phonenumber_is_valid): a number that cannot be parsed, has an

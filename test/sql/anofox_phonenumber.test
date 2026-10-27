@@ -432,8 +432,8 @@ ORDER BY id;
 2	false	NULL	NULL	NULL	NULL	unsupported_region
 3	true	44	2079460018	GB	fixed_line	NULL
 4	false	NULL	NULL	NULL	NULL	unsupported_country_code
-5	false	NULL	NULL	NULL	NULL	invalid_length
-6	false	NULL	NULL	NULL	NULL	invalid_pattern
+5	false	NULL	NULL	US	NULL	invalid_length
+6	false	NULL	NULL	DE	NULL	invalid_pattern
 7	false	NULL	NULL	NULL	NULL	not_a_number
 8	true	49	3012345678	DE	fixed_line	NULL
 

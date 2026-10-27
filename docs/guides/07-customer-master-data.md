@@ -120,6 +120,25 @@ for numbers of a possible length outside an assigned range, so the stored column
 numbers and `reason` explains the gaps. See [Phone numbers](../api/03-phone.md) for the supported
 regions.
 
+Without a region (a `NULL` country), a local number is read in the default region, `US` unless
+`anofox_tab_phonenumber_default_region` is set. It then fails with reason `region_missing`, and
+the `region` field shows the region it was read in, so a missing country column is not mistaken
+for a bad number:
+
+```sql
+SELECT (phonenumber_parse('030 12345678', NULL)).region AS region,
+       (phonenumber_parse('030 12345678', NULL)).reason AS reason;
+```
+
+```text
+┌─────────┬────────────────┐
+│ region  │     reason     │
+│ varchar │    varchar     │
+├─────────┼────────────────┤
+│ US      │ region_missing │
+└─────────┴────────────────┘
+```
+
 ## 4. VAT numbers
 
 The VAT functions expect the country prefix. Add it where it is missing, then validate:

@@ -136,6 +136,40 @@ PhoneInput SplitPhoneInput(const std::string& raw) {
 	return input;
 }
 
+//! Maps the full-width forms U+FF01..U+FF5E to their ASCII counterparts and the
+//! ideographic space U+3000 to a blank, as Unicode NFKC does: numbers typed with
+//! an East Asian input method ("０３０ １２３４５６７８", "＋４９") read like
+//! ASCII. Other non-ASCII characters are left unchanged.
+std::string FoldFullWidthForms(const std::string& input) {
+	if (std::all_of(input.begin(), input.end(), [](char c) { return static_cast<unsigned char>(c) < 0x80; })) {
+		return input;
+	}
+	std::string folded;
+	folded.reserve(input.size());
+	for (size_t i = 0; i < input.size(); i++) {
+		const auto b0 = static_cast<unsigned char>(input[i]);
+		if (i + 2 < input.size() && (b0 == 0xEF || b0 == 0xE3)) {
+			const auto b1 = static_cast<unsigned char>(input[i + 1]);
+			const auto b2 = static_cast<unsigned char>(input[i + 2]);
+			// U+3000 IDEOGRAPHIC SPACE = E3 80 80
+			if (b0 == 0xE3 && b1 == 0x80 && b2 == 0x80) {
+				folded += ' ';
+				i += 2;
+				continue;
+			}
+			// U+FF01..U+FF3F = EF BC 81..BF, U+FF40..U+FF5E = EF BD 80..9E
+			if (b0 == 0xEF && ((b1 == 0xBC && b2 >= 0x81 && b2 <= 0xBF) || (b1 == 0xBD && b2 >= 0x80 && b2 <= 0x9E))) {
+				const unsigned codepoint = 0xFF00u + ((b1 - 0xBCu) << 6) + (b2 - 0x80u);
+				folded += static_cast<char>(codepoint - 0xFF00u + 0x20u);
+				i += 2;
+				continue;
+			}
+		}
+		folded += input[i];
+	}
+	return folded;
+}
+
 // Helper to normalize phone number string (remove spaces, hyphens, parentheses, etc.)
 std::string NormalizePhoneNumber(const std::string& input) {
 	std::string normalized;
@@ -332,8 +366,9 @@ PhoneNumberParts PhoneNumberManager::Parse(const std::string& raw_number, const 
 
 	PhoneNumberParts parts;
 
-	// Drop a leading label, split off a trailing extension, then normalize
-	auto input = SplitPhoneInput(raw_number);
+	// Fold full-width digits/signs to ASCII, drop a leading label, split off a
+	// trailing extension, then normalize
+	auto input = SplitPhoneInput(FoldFullWidthForms(raw_number));
 	std::string normalized = NormalizePhoneNumber(input.number);
 	if (normalized.empty() || normalized == "+") {
 		AnofoxTrace(AnofoxLogLevel::Debug, "PhoneNumber parse failed: empty number");
@@ -377,6 +412,7 @@ PhoneNumberParts PhoneNumberManager::Parse(const std::string& raw_number, const 
 			           "PhoneNumber parse: international prefix " + idd + " of region " + region_code + " in " + normalized);
 			normalized = "+" + normalized.substr(idd.size());
 		} else {
+			parts.read_in_default_region = hint_upper.empty();
 			country_code = hint_metadata->country_code;
 			national_number = normalized;
 			// Remove national prefix if present
@@ -412,6 +448,7 @@ PhoneNumberParts PhoneNumberManager::Parse(const std::string& raw_number, const 
 		parts.reason = PhoneNumberInvalidReason::UNSUPPORTED_REGION;
 		return parts;
 	}
+	parts.region_code = region_code;
 
 	// Validate length
 	if (!metadata->IsValidLength(national_number.size())) {
@@ -433,6 +470,10 @@ PhoneNumberParts PhoneNumberManager::Parse(const std::string& raw_number, const 
 	if (!parts.matches_valid_pattern) {
 		// Possible (length fits) but not in a fixed-line, mobile or toll-free range
 		parts.reason = PhoneNumberInvalidReason::INVALID_PATTERN;
+	}
+	if (parts.read_in_default_region && !parts.reason.empty()) {
+		AnofoxTrace(AnofoxLogLevel::Debug, "PhoneNumber parse: national number " + normalized +
+		                                       " invalid in default region " + region_code + " (no region given)");
 	}
 
 	AnofoxTrace(AnofoxLogLevel::Debug,
@@ -707,8 +748,18 @@ std::string NormalizeRegionCode(const std::string& region) {
 	return normalized;
 }
 
+std::string PhoneNumberParts::ReportedReason() const {
+	if (read_in_default_region && (reason == PhoneNumberInvalidReason::INVALID_LENGTH ||
+	                               reason == PhoneNumberInvalidReason::INVALID_PATTERN)) {
+		return PhoneNumberInvalidReason::REGION_MISSING;
+	}
+	return reason;
+}
+
 PhoneNumberFormatOption ParseFormatOption(const std::string& format_str) {
-	auto upper = StringUtil::Upper(format_str);
+	auto trimmed = format_str;
+	StringUtil::Trim(trimmed);
+	auto upper = StringUtil::Upper(trimmed);
 	if (upper == "E164") {
 		return PhoneNumberFormatOption::E164;
 	}
@@ -722,7 +773,7 @@ PhoneNumberFormatOption ParseFormatOption(const std::string& format_str) {
 		return PhoneNumberFormatOption::RFC3966;
 	}
 	throw InvalidInputException(
-	    "Unknown phone number format '%s'. Expected one of E164, INTERNATIONAL, NATIONAL, RFC3966", format_str);
+	    "Unknown phone number format '%s'. Expected one of E164, INTERNATIONAL, NATIONAL, RFC3966", trimmed);
 }
 
 } // namespace phonenumber
@@ -877,11 +928,16 @@ void PhoneParseFunction(DataChunk& args, ExpressionState& state, Vector& result)
 		} else {
 			FlatVector::SetNull(country_code_vec, i, true);
 			FlatVector::SetNull(national_number_vec, i, true);
-			FlatVector::SetNull(region_vec, i, true);
+			// The region the number was read in, so a failure under the
+			// default region shows which region that was
+			FlatVector::SetNull(region_vec, i, parts.region_code.empty());
+			if (!parts.region_code.empty()) {
+				region_data_out[i] = StringVector::AddString(region_vec, parts.region_code);
+			}
 			FlatVector::SetNull(type_vec, i, true);
 			FlatVector::SetNull(extension_vec, i, true);
 			FlatVector::SetNull(reason_vec, i, false);
-			reason_data[i] = StringVector::AddString(reason_vec, parts.reason);
+			reason_data[i] = StringVector::AddString(reason_vec, parts.ReportedReason());
 		}
 	}
 }
