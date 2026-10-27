@@ -44,9 +44,13 @@ def email_is_valid(
     email_or_df: Union[str, Any],
     mode: str = "regex",
     column: Optional[str] = None,
-) -> Union[bool, Any]:
+) -> Union[Optional[bool], Any]:
     """
     Check whether an email address is valid.
+
+    With mode ``"dns"`` or ``"smtp"`` a check that cannot finish (a timeout,
+    an unreachable server) gives ``None`` rather than ``False``, like SQL
+    ``email_is_valid``; ``email_validate`` returns the reason.
 
     Parameters
     ----------
@@ -62,14 +66,15 @@ def email_is_valid(
 
     Returns
     -------
-    bool
-        When *email_or_df* is a string.
+    bool or None
+        When *email_or_df* is a string; ``None`` for an unknown outcome.
     DataFrame
         When *email_or_df* is a DataFrame; contains all original columns
-        plus ``email_is_valid`` (bool).
+        plus ``email_is_valid`` (bool, missing for an unknown outcome).
     """
     if isinstance(email_or_df, str):
-        return bool(fetch_one(conn, "SELECT anofox_tab_email_is_valid(?, ?)", [email_or_df, mode]))
+        result = fetch_one(conn, "SELECT anofox_tab_email_is_valid(?, ?)", [email_or_df, mode])
+        return None if result is None else bool(result)
 
     # DataFrame path
     df_type = check_row_input(email_or_df, column)

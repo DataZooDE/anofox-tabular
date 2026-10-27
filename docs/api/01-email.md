@@ -81,7 +81,10 @@ result is invalid with stage `unsupported`.
 
 Canonical name: `anofox_tab_email_is_valid`. Scalar function.
 
-Returns `true` when the address passes every stage of the chosen mode.
+Returns `true` when the address passes every stage of the chosen mode, `false` when a stage
+gives a definite answer that it does not, and `NULL` when a `dns` or `smtp` check could not
+finish (a timeout, an unreachable server, a temporary SMTP refusal). See
+[Definite and unknown outcomes](#definite-and-unknown-outcomes).
 
 ```text
 email_is_valid(email VARCHAR [, mode VARCHAR]) -> BOOLEAN
@@ -92,7 +95,8 @@ email_is_valid(email VARCHAR [, mode VARCHAR]) -> BOOLEAN
 | `email` | `VARCHAR` | required | The address to check |
 | `mode` | `VARCHAR` | `anofox_tab_email_default_validation` (`regex`) | `regex`, `dns` or `smtp` |
 
-A `NULL` email returns `NULL`. An empty string returns `false`.
+A `NULL` email returns `NULL`. An empty string returns `false`. The `regex` mode never returns
+`NULL` for a non-`NULL` address.
 
 ```sql
 SELECT address, email_is_valid(address) AS valid
@@ -131,9 +135,9 @@ email_validate(email VARCHAR [, mode VARCHAR]) -> STRUCT(
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `valid` | `BOOLEAN` | `true` when every stage of the mode passed |
+| `valid` | `BOOLEAN` | `true` when every stage of the mode passed, `false` for a definite failure, `NULL` when the check could not finish (see [Definite and unknown outcomes](#definite-and-unknown-outcomes)) |
 | `stage` | `VARCHAR` | The last stage that ran: `regex`, `dns`, `smtp`, or `unsupported` for an unknown mode |
-| `reason` | `VARCHAR` | `NULL` when valid; otherwise a code from [Reason codes](#reason-codes) |
+| `reason` | `VARCHAR` | `NULL` when valid; otherwise a code from [Reason codes](#reason-codes), also when `valid` is `NULL` |
 | `mx_hosts` | `VARCHAR[]` | MX hosts found by the `dns` and `smtp` stages; empty for `regex` |
 | `smtp_debug.transcript` | `VARCHAR[]` | The SMTP conversation of the `smtp` stage; empty otherwise |
 
@@ -206,37 +210,70 @@ SELECT email_validate('support@example.org', 'dns');
 
 ### Reason codes
 
-| Stage | Reason | Meaning |
-|-------|--------|---------|
-| `regex` | `invalid_format` | The address does not match the regex pattern |
-| `regex` | `invalid_length` | The address is longer than 254 characters, or its local part longer than 64 |
-| `unsupported` | `validation_not_implemented` | The mode is not `regex`, `dns`, `smtp` or `full` |
-| `dns` | `dns_resolution_failed` | No domain could be taken from the address |
-| `dns` | `dns_empty_domain` | The domain is empty |
-| `dns` | `dns_reserved_domain` | The domain is `localhost`, ends in `.localhost`, or is in the reserved top-level domain `example`, `invalid`, `test` or `local`; it is not looked up |
-| `dns` | `dns_domain_not_found` | The domain does not exist (NXDOMAIN) |
-| `dns` | `dns_no_records` | The domain has neither MX nor address records |
-| `dns` | `dns_null_mx` | The domain publishes a Null MX record (RFC 7505): it accepts no mail |
-| `dns` | `dns_timeout` | The lookup did not finish within `anofox_tab_email_dns_timeout_ms` × `anofox_tab_email_dns_tries` |
-| `dns` | `dns_server_unreachable` | The DNS server refused the connection |
-| `dns` | `dns_out_of_memory` | The resolver ran out of memory |
-| `dns` | `dns_init_failed` | The resolver library could not be initialized |
-| `dns` | `dns_loop_failure`, `dns_pending_incomplete` | The resolver stopped before all queries finished |
-| `dns` | `dns_poll_failed_<errno>` | Waiting on the resolver sockets failed |
-| `dns` | `dns_error_<status>` | Any other c-ares status code |
-| `smtp` | `smtp_no_hosts` | No mail host to try |
-| `smtp` | `smtp_dns_reserved_domain` | The mail host is a reserved name such as `localhost` and is not contacted |
-| `smtp` | `smtp_dns_no_addresses`, `smtp_dns_timeout`, `smtp_dns_incomplete`, `smtp_dns_init_failed`, `smtp_dns_poll_failed_<errno>`, `smtp_dns_*` | The mail host name could not be resolved to an address |
-| `smtp` | `smtp_socket_init_failed` | The socket subsystem is unavailable |
-| `smtp` | `smtp_connect_error`, `smtp_connect_timeout` | No TCP connection to the mail host |
-| `smtp` | `smtp_greeting_error`, `smtp_greeting_timeout`, `smtp_invalid_greeting` | The server greeting was missing or not `220` |
-| `smtp` | `smtp_helo_rejected` | The server rejected `EHLO` |
-| `smtp` | `smtp_mail_from_rejected` | The server rejected `MAIL FROM` |
-| `smtp` | `smtp_recipient_rejected` | The server rejected `RCPT TO`: the mailbox does not exist |
-| `smtp` | `smtp_read_error`, `smtp_read_timeout`, `smtp_write_error`, `smtp_write_timeout` | The connection failed during the conversation |
-| `smtp` | `smtp_invalid_response`, `smtp_response_too_large` | The server sent a malformed or oversized reply |
-| `smtp` | `smtp_overall_timeout` | The whole SMTP check ran out of time |
-| `smtp` | `smtp_verification_failed` | SMTP failed without a more specific reason |
+The `valid` column shows what `email_validate(...).valid` and `email_is_valid` return for each
+reason.
+
+| Stage | Reason | `valid` | Meaning |
+|-------|--------|---------|---------|
+| `regex` | `invalid_format` | `false` | The address does not match the regex pattern |
+| `regex` | `invalid_length` | `false` | The address is longer than 254 characters, or its local part longer than 64 |
+| `unsupported` | `validation_not_implemented` | `false` | The mode is not `regex`, `dns`, `smtp` or `full` |
+| `dns` | `dns_resolution_failed` | `false` | No domain could be taken from the address |
+| `dns` | `dns_empty_domain` | `false` | The domain is empty |
+| `dns` | `dns_reserved_domain` | `false` | The domain is `localhost`, ends in `.localhost`, or is in the reserved top-level domain `example`, `invalid`, `test` or `local`; it is not looked up |
+| `dns` | `dns_domain_not_found` | `false` | The domain does not exist (NXDOMAIN) |
+| `dns` | `dns_no_records` | `false` | The domain has neither MX nor address records |
+| `dns` | `dns_null_mx` | `false` | The domain publishes a Null MX record (RFC 7505): it accepts no mail |
+| `dns` | `dns_timeout` | `NULL` | The lookup did not finish within `anofox_tab_email_dns_timeout_ms` × `anofox_tab_email_dns_tries` |
+| `dns` | `dns_server_unreachable` | `NULL` | The DNS server refused the connection |
+| `dns` | `dns_out_of_memory` | `NULL` | The resolver ran out of memory |
+| `dns` | `dns_init_failed` | `NULL` | The resolver library could not be initialized |
+| `dns` | `dns_loop_failure`, `dns_pending_incomplete` | `NULL` | The resolver stopped before all queries finished |
+| `dns` | `dns_poll_failed_<errno>` | `NULL` | Waiting on the resolver sockets failed |
+| `dns` | `dns_error_<status>` | `NULL` | Any other c-ares status code, such as a server failure (SERVFAIL) |
+| `smtp` | `smtp_no_hosts` | `false` | No mail host to try |
+| `smtp` | `smtp_dns_reserved_domain` | `false` | The mail host is a reserved name such as `localhost` and is not contacted |
+| `smtp` | `smtp_dns_domain_not_found`, `smtp_dns_no_records`, `smtp_dns_no_addresses` | `false` | The mail host name does not exist or has no address |
+| `smtp` | `smtp_dns_timeout`, `smtp_dns_incomplete`, `smtp_dns_init_failed`, `smtp_dns_poll_failed_<errno>`, other `smtp_dns_*` | `NULL` | The mail host name could not be resolved in time |
+| `smtp` | `smtp_socket_init_failed` | `NULL` | The socket subsystem is unavailable |
+| `smtp` | `smtp_connect_error`, `smtp_connect_timeout` | `NULL` | No TCP connection to the mail host (often a blocked port 25) |
+| `smtp` | `smtp_greeting_error`, `smtp_greeting_timeout`, `smtp_invalid_greeting` | `NULL` | The server greeting was missing or not `220` |
+| `smtp` | `smtp_helo_rejected` | `NULL` | The server rejected `EHLO` |
+| `smtp` | `smtp_mail_from_rejected` | `NULL` | The server rejected `MAIL FROM`: it refuses the sender, which says nothing about the recipient |
+| `smtp` | `smtp_recipient_rejected` | `false` | The server rejected `RCPT TO` permanently (5xx): the mailbox does not exist. The other mail hosts of the domain are not asked |
+| `smtp` | `smtp_recipient_deferred` | `NULL` | The server refused `RCPT TO` temporarily (4xx), e.g. greylisting |
+| `smtp` | `smtp_read_error`, `smtp_read_timeout`, `smtp_write_error`, `smtp_write_timeout` | `NULL` | The connection failed during the conversation |
+| `smtp` | `smtp_invalid_response`, `smtp_response_too_large` | `NULL` | The server sent a malformed or oversized reply |
+| `smtp` | `smtp_overall_timeout` | `NULL` | The whole SMTP check ran out of time |
+| `smtp` | `smtp_verification_failed` | `NULL` | SMTP failed without a more specific reason |
+
+### Definite and unknown outcomes
+
+A `dns` or `smtp` check can end without an answer: the DNS server does not reply in time, port
+25 is blocked, or the mail server asks to try again later. Such an outcome says nothing about the
+address, so `valid` is `NULL` and `reason` says what happened. `false` is reserved for definite
+answers: bad syntax, a reserved or non-existent domain, a domain without mail hosts, or a mailbox
+that the mail server rejects. A reason code not in the table above is treated as unknown.
+
+Count the outcomes separately, and re-check the unknown ones later:
+
+```sql no-run
+-- Uses the network
+SELECT count(*) FILTER (WHERE v)          AS valid,
+       count(*) FILTER (WHERE NOT v)      AS invalid,
+       count(*) FILTER (WHERE v IS NULL)  AS unknown
+FROM (SELECT email_is_valid(email, 'dns') AS v FROM customers);
+```
+
+In a `WHERE` clause, `email_is_valid(email, 'dns')` keeps only the confirmed addresses, and
+`NOT email_is_valid(email, 'dns')` only the definitely invalid ones; the unknown rows are in
+neither. A 1 ms DNS budget forces the unknown outcome for a domain the resolver has not cached:
+
+```sql no-run
+SET anofox_tab_email_dns_timeout_ms = 1;
+SELECT (r).valid, (r).reason FROM (SELECT email_validate('lena@some-uncached-domain.com', 'dns') AS r);
+-- valid = NULL, reason = dns_timeout
+```
 
 ### DNS cache
 

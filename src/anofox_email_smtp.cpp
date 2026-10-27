@@ -924,6 +924,14 @@ SmtpResult AttemptHost(const std::string &email, const std::string &host, const 
                        "SMTP RCPT TO response failed reason=" + attempt.reason);
 			return attempt;
 		}
+		if (code / 100 == 4) {
+			// 4xx is a temporary refusal (greylisting, rate limit, mailbox busy):
+			// it says nothing definite about the mailbox
+			attempt.reason = "smtp_recipient_deferred";
+            EmailTrace(AnofoxLogLevel::Debug,
+                       "SMTP RCPT TO deferred code=" + std::to_string(code));
+			return attempt;
+		}
 		if (code / 100 != 2) {
 			attempt.reason = "smtp_recipient_rejected";
             EmailTrace(AnofoxLogLevel::Debug,
@@ -1022,6 +1030,13 @@ SmtpResult SmtpClient::Verify(const std::string &email, const std::vector<std::s
 		if (attempt.success) {
 			aggregated.success = true;
 			aggregated.reason.clear();
+			return aggregated;
+		}
+		if (attempt.reason == "smtp_recipient_rejected") {
+			// A permanent (5xx) refusal of the mailbox by a mail host is the
+			// answer; other hosts of the domain are not asked again
+			aggregated.success = false;
+			aggregated.reason = attempt.reason;
 			return aggregated;
 		}
 		if (!attempt.reason.empty()) {

@@ -601,8 +601,14 @@ DnsResult DnsResolver::ResolveUncached(const std::string &domain) {
 		return result;
 	}
 
-	// Capture the most relevant failure reason.
-	if (mx_state.status != ARES_SUCCESS) {
+	// Capture the most relevant failure reason. A definite "no MX records"
+	// answer with an address lookup that did not finish (e.g. timed out) is not
+	// a definite failure: report the address lookup's reason instead.
+	bool addrinfo_unfinished = addrinfo_state.status != ARES_SUCCESS && addrinfo_state.status != ARES_EDESTRUCTION &&
+	                           addrinfo_state.status != ARES_ENOTFOUND && addrinfo_state.status != ARES_ENODATA;
+	if (mx_state.status == ARES_ENODATA && addrinfo_unfinished) {
+		result.reason = MapAresStatus(addrinfo_state.status);
+	} else if (mx_state.status != ARES_SUCCESS) {
 		result.reason = MapAresStatus(mx_state.status);
 	} else if (addrinfo_state.status != ARES_SUCCESS && addrinfo_state.status != ARES_EDESTRUCTION) {
 		result.reason = MapAresStatus(addrinfo_state.status);

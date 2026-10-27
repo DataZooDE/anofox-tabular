@@ -63,9 +63,14 @@ addresses and typos like `gmail.con`. It needs network access and caches one res
 per domain:
 
 ```sql no-run
-SELECT id, (email_validate(lower(trim(email)), 'dns')).reason
+SELECT id, (email_validate(lower(trim(email)), 'dns')).valid,
+       (email_validate(lower(trim(email)), 'dns')).reason
 FROM customers;
 ```
+
+When a lookup cannot finish (a timeout, an unreachable DNS server), `valid` is `NULL` rather than
+`false`, and `reason` says what happened (`dns_timeout`, `dns_server_unreachable`): the address is
+not known to be bad. Section 6 shows how to score such rows.
 
 See [Email](../api/01-email.md) for all reason codes.
 
@@ -190,6 +195,23 @@ ORDER BY field;
 │ phone    │           0.833 │
 └──────────┴─────────────────┘
 ```
+
+`compliance` counts a row whose expression is `NULL` as not compliant. That matters for checks
+that can end without an answer, such as `email_is_valid(email, 'dns')`, which is `NULL` when the
+DNS lookup timed out. Choose what an unknown result counts as in the expression itself:
+
+```sql no-run
+-- Uses the network. Unknown outcomes count against the score (strict) ...
+SELECT round(compliance_rate, 3)
+FROM compliance('customers', 'email_is_valid(lower(trim(email)), ''dns'')');
+-- ... or are given the benefit of the doubt
+SELECT round(compliance_rate, 3)
+FROM compliance('customers', 'coalesce(email_is_valid(lower(trim(email)), ''dns''), true)');
+```
+
+To leave them out of the score entirely, score a view of the rows with a known result, e.g.
+`CREATE VIEW checked AS SELECT * FROM customers WHERE email_is_valid(lower(trim(email)), 'dns') IS NOT NULL`,
+and run `compliance('checked', ...)`. Re-check the excluded rows later.
 
 ## 7. Addresses
 

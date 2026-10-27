@@ -21,6 +21,7 @@
 #include <limits>
 #include <mutex>
 #include <regex>
+#include <unordered_set>
 #include "anofox_tabular_banner.hpp"
 
 namespace duckdb {
@@ -53,6 +54,29 @@ constexpr const char *DEFAULT_REGEX_PATTERN =
 constexpr size_t EMAIL_MAX_LENGTH = 254;
 constexpr size_t EMAIL_MAX_LOCAL_LENGTH = 64;
 
+} // namespace
+
+namespace email {
+
+EmailFailureKind ClassifyEmailFailure(const std::string &reason) {
+	// Answers about the address itself; everything else (timeouts, unreachable
+	// servers, temporary SMTP replies, local resolver/socket errors) is unknown.
+	static const std::unordered_set<std::string> DEFINITE_REASONS = {
+	    // regex stage and an unknown mode
+	    EMAIL_REASON_REGEX_FAIL, EMAIL_REASON_TOO_LONG, EMAIL_REASON_UNSUPPORTED,
+	    // dns stage: authoritative negative answers and names never looked up
+	    EMAIL_REASON_DNS_FAIL, "dns_empty_domain", "dns_reserved_domain", "dns_domain_not_found", "dns_no_records",
+	    "dns_null_mx", "mx_record_absent",
+	    // smtp stage: the mail host does not exist or the server refused the mailbox (5xx)
+	    "smtp_no_hosts", "smtp_dns_reserved_domain", "smtp_dns_domain_not_found", "smtp_dns_no_records",
+	    "smtp_dns_no_addresses", "smtp_recipient_rejected"};
+	return DEFINITE_REASONS.count(reason) ? EmailFailureKind::DEFINITE : EmailFailureKind::UNKNOWN;
+}
+
+} // namespace email
+
+namespace {
+
 struct EmailValidationResult {
 	bool valid = false;
 	std::string stage;
@@ -60,6 +84,12 @@ struct EmailValidationResult {
 	std::vector<std::string> mx_hosts;
 	std::vector<std::string> smtp_transcript;
 };
+
+//! A failed check that could not reach an answer (see email::ClassifyEmailFailure):
+//! reported as valid = NULL.
+bool IsUnknownOutcome(const EmailValidationResult &result) {
+	return !result.valid && email::ClassifyEmailFailure(result.reason) == email::EmailFailureKind::UNKNOWN;
+}
 
 bool IsSupportedValidationMode(const std::string &mode) {
 	return mode == EMAIL_STAGE_REGEX || mode == EMAIL_STAGE_DNS || mode == EMAIL_STAGE_SMTP;
@@ -481,7 +511,8 @@ void EmailValidateFunction(DataChunk &args, ExpressionState &, Vector &result) {
 		auto validation =
 		    ValidateEmailAddress(std::string_view(email.GetData(), email.GetSize()), mode_arg.Get(row), *regex_ptr);
 
-		FlatVector::SetNull(valid_vec, row, false);
+		// valid is NULL when the check could not reach an answer; reason says why
+		FlatVector::SetNull(valid_vec, row, IsUnknownOutcome(validation));
 		valid_data[row] = validation.valid;
 
 		FlatVector::SetNull(stage_vec, row, false);
@@ -524,11 +555,11 @@ void EmailIsValidFunction(DataChunk &args, ExpressionState &, Vector &result) {
 			FlatVector::SetNull(result, row, true);
 			continue;
 		}
-		FlatVector::SetNull(result, row, false);
-
 		auto &email = email_values[email_idx];
 		auto validation =
 		    ValidateEmailAddress(std::string_view(email.GetData(), email.GetSize()), mode_arg.Get(row), *regex_ptr);
+		// NULL when the check could not reach an answer (timeout, unreachable server)
+		FlatVector::SetNull(result, row, IsUnknownOutcome(validation));
 		bool_data[row] = validation.valid;
 	}
 }
@@ -798,7 +829,7 @@ void RegisterEmailFunctions(ExtensionLoader &loader) {
 
 	{
 		FunctionDescription desc;
-		desc.description = "Validates an email address using the specified validation mode ('regex', 'dns', or 'smtp'). Returns a struct with validation details. Defaults to the configured mode.";
+		desc.description = "Validates an email address using the specified validation mode ('regex', 'dns', or 'smtp'). Returns a struct with validation details; valid is NULL when a DNS or SMTP check could not finish (timeout, unreachable server). Defaults to the configured mode.";
 		desc.parameter_names = {"email", "mode"};
 		desc.examples = {"SELECT email_validate('user@example.com');", "SELECT email_validate('user@example.com', 'dns');"};
 		desc.categories = {"email", "validation"};

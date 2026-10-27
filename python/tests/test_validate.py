@@ -26,6 +26,16 @@ class TestEmailIsValid:
         from anofox.validate import email_is_valid
         assert email_is_valid(conn, "not-an-email", mode="regex") is False
 
+    def test_unknown_dns_outcome_is_none(self, conn):
+        import uuid
+        from anofox.validate import email_is_valid
+        # A 1 ms DNS budget and an uncached random domain: the lookup cannot finish
+        conn.execute("SET anofox_tab_email_dns_timeout_ms = 1")
+        try:
+            assert email_is_valid(conn, f"lena@{uuid.uuid4().hex}-anofox.com", mode="dns") is None
+        finally:
+            conn.execute("RESET anofox_tab_email_dns_timeout_ms")
+
     def test_mode_is_forwarded(self, conn):
         from anofox.validate import email_is_valid
         # Just check it doesn't raise — mode forwarding is verified by function executing
