@@ -19,12 +19,11 @@ import datetime
 import functools
 import inspect
 import json
-import numbers
 from decimal import Decimal
 from typing import Any, Callable, Optional, TypeVar, Union
 
 from ._sql import quote_table_name, run
-from ._table import TableLike, accepts_dataframes, without_temp_names
+from ._table import TableLike, accepts_dataframes, column_label, column_list, without_temp_names
 
 
 F = TypeVar("F", bound=Callable[..., Any])
@@ -66,15 +65,6 @@ def _utc_naive(value: Any) -> Any:
     return value
 
 
-def _column_label(value: Any) -> Any:
-    """An integer column label (pandas allows them) as the string DuckDB knows the column by."""
-    if isinstance(value, numbers.Integral) and not isinstance(value, bool):
-        return str(value)
-    if isinstance(value, (list, tuple)):
-        return [_column_label(v) for v in value]
-    return value
-
-
 def _dataframe_check(*table_params: str) -> Callable[[F], F]:
     """
     :func:`~anofox._table.accepts_dataframes` for a check, which also takes
@@ -92,7 +82,7 @@ def _dataframe_check(*table_params: str) -> Callable[[F], F]:
         def wrapper(*args: Any, **kwargs: Any) -> Any:
             bound = signature.bind(*args, **kwargs)
             for name in _COLUMN_PARAMETERS.intersection(bound.arguments):
-                bound.arguments[name] = _column_label(bound.arguments[name])
+                bound.arguments[name] = column_label(bound.arguments[name])
             for name in _TIME_PARAMETERS.intersection(bound.arguments):
                 bound.arguments[name] = _utc_naive(bound.arguments[name])
             return func(*bound.args, **bound.kwargs)
@@ -337,7 +327,7 @@ cursor, {"column": column_name, "multiplier": multiplier})
 def schema_check(
     conn: Any,
     table_name: TableLike,
-    required_columns: list[str],
+    required_columns: Union[str, list[str]],
 ) -> dict:
     """
     Check that a table contains all required columns.
@@ -349,7 +339,7 @@ def schema_check(
     table_name:
         Name of the DuckDB table or view, or a pandas/polars DataFrame.
     required_columns:
-        List of column names that must be present.
+        List of column names that must be present (a single name means that one column).
 
     Returns
     -------
@@ -358,7 +348,7 @@ def schema_check(
     """
     cursor = conn.execute(
         "SELECT * FROM anofox_tab_schema_check(?, ?::VARCHAR[])",
-        [table_name, list(required_columns)],
+        [table_name, column_list(required_columns)],
     )
     return _parse_table_result(
 cursor, {"required_columns": required_columns})

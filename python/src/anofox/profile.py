@@ -8,16 +8,16 @@ DataFrame, else pandas).
 
 from __future__ import annotations
 
-from typing import Any, Optional, Union
+from typing import Any, Optional, Sequence, Union
 
 from ._sql import fetch_frame
-from ._table import DataFrame, output_df_type, table_inputs
+from ._table import DataFrame, column_list, output_df_type, table_inputs
 
 
 def profile_table(
     conn: Any,
     table_or_df: Union[str, Any],
-    columns: Optional[list[str]] = None,
+    columns: Union[str, Sequence[str], None] = None,
     sample_size: int = 1_000_000,
     exact: bool = False,
 ) -> DataFrame:
@@ -31,7 +31,8 @@ def profile_table(
     table_or_df:
         Table name string or a pandas/polars DataFrame.
     columns:
-        Optional list of column names to restrict profiling to.
+        Optional list of column names to restrict profiling to; a single name
+        (``"email"``) profiles that one column.
     sample_size:
         Maximum rows to sample (default 1,000,000).  When ``exact=False``
         and the table has more rows, a random sample is taken.
@@ -54,7 +55,7 @@ def profile_table(
         return fetch_frame(
             conn,
             "SELECT * FROM anofox_tab_profile_table(?, ?::VARCHAR[], ?::BIGINT, ?::BOOLEAN)",
-            [table_name, list(columns or []), sample_size, bool(exact)],
+            [table_name, column_list(columns) or [], sample_size, bool(exact)],
             output_df_type(table_or_df),
         )
 
@@ -85,10 +86,13 @@ def profile_summary(
 def profile_correlations(
     conn: Any,
     table_or_df: Union[str, Any],
-    columns: Optional[list[str]] = None,
+    columns: Union[str, Sequence[str], None] = None,
 ) -> DataFrame:
     """
     Pairwise Pearson and Spearman correlations for numeric columns.
+
+    *columns* restricts the pairs to these columns (a list; a single name means
+    that one column); ``None`` uses every numeric column.
 
     Returns
     -------
@@ -99,6 +103,6 @@ def profile_correlations(
         return fetch_frame(
             conn,
             "SELECT * FROM anofox_tab_profile_correlations(?, ?::VARCHAR[])",
-            [table_name, list(columns or [])],
+            [table_name, column_list(columns) or []],
             output_df_type(table_or_df),
         )

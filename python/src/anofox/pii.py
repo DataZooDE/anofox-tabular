@@ -14,6 +14,7 @@ from ._table import (
     TableLike,
     apply_scalar,
     check_row_input,
+    column_list,
     is_missing,
     output_df_type,
     table_inputs,
@@ -251,7 +252,7 @@ def pii_scan_table(
     with enabled_types(conn, types), table_inputs(conn, table_name) as (resolved,):
         params: list = [resolved]
         if columns is not None:
-            params.append(columns if isinstance(columns, str) else ",".join(columns))
+            params.append(columns if isinstance(columns, str) else ",".join(column_list(columns)))
         placeholders = ", ".join("?" for _ in params)
         return fetch_frame(
             conn, f"SELECT * FROM anofox_tab_pii_scan_table({placeholders})", params,
@@ -297,7 +298,7 @@ def pii_audit_table(
     with enabled_types(conn, types), table_inputs(conn, table_name) as (resolved,):
         params: list = [resolved]
         if columns is not None:
-            params.append(columns if isinstance(columns, str) else ",".join(columns))
+            params.append(columns if isinstance(columns, str) else ",".join(column_list(columns)))
         placeholders = ", ".join("?" for _ in params)
         id_arg = id_column_arg(id_column, params)
         return fetch_frame(

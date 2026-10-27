@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import functools
 import inspect
+import numbers
 import re
 from decimal import Decimal
 from contextlib import contextmanager
@@ -173,6 +174,44 @@ def _registered_view_error(conn: Any, error: BaseException, inputs: tuple) -> Op
                 "cannot see it: pass the DataFrame itself instead, or create a regular "
                 f"table with CREATE TABLE ... AS SELECT * FROM {quote_ident(value)}"
             )
+    return None
+
+
+def column_label(value: Any) -> Any:
+    """
+    A column label as the name DuckDB knows the column by.
+
+    pandas allows integer column labels (``read_csv(header=None)``); the copy of
+    such a DataFrame in DuckDB names those columns ``"0"``, ``"1"``, ... . An
+    integer becomes that string, a list or tuple a list of labels; anything else
+    (a name, ``None``) is returned as it is.
+    """
+    if isinstance(value, numbers.Integral) and not isinstance(value, bool):
+        return str(value)
+    if isinstance(value, (list, tuple)):
+        return [column_label(v) for v in value]
+    return value
+
+
+def column_list(columns: Any) -> Optional[list]:
+    """
+    *columns* as a list of column names, for a parameter that takes several columns.
+
+    A single name (a string, or an integer label) means a list of that one
+    column, not of its characters; ``None`` stays ``None``.
+    """
+    if columns is None:
+        return None
+    if isinstance(columns, str) or isinstance(columns, numbers.Integral):
+        return [column_label(columns)]
+    return [column_label(c) for c in columns]
+
+
+def frame_column(df: Any, name: str) -> Any:
+    """The column of DataFrame *df* that DuckDB calls *name* (also for an integer label), else None."""
+    for label in df.columns:
+        if str(label) == name:
+            return df[label]
     return None
 
 

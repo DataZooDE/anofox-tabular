@@ -17,7 +17,7 @@ import warnings
 from typing import Any, Optional, Sequence, Union
 
 from ._sql import fetch_frame, id_column_arg, quote_ident
-from ._table import DataFrame, output_df_type, table_inputs
+from ._table import DataFrame, column_label, frame_column, output_df_type, table_inputs
 
 
 #: Fewest scored rows for which ``isolation_forest`` and ``isolation_forest_mv``
@@ -82,6 +82,7 @@ def isolation_forest(
     """
     _check_output_mode("isolation_forest", output_mode)
     _check_id_column("isolation_forest", output_mode, id_column)
+    column, id_column = column_label(column), column_label(id_column)
     table_or_df = _nan_as_null(table_or_df)
     with table_inputs(conn, table_or_df) as (table_name,):
         _check_has_values(conn, table_or_df, table_name, [column])
@@ -147,6 +148,7 @@ def isolation_forest_mv(
     """
     _check_output_mode("isolation_forest_mv", output_mode)
     _check_id_column("isolation_forest_mv", output_mode, id_column)
+    id_column = column_label(id_column)
     cols_csv = _columns_csv(columns)
     table_or_df = _nan_as_null(table_or_df)
     with table_inputs(conn, table_or_df) as (table_name,):
@@ -198,6 +200,7 @@ def dbscan(
     """
     _check_output_mode("dbscan", output_mode)
     _check_id_column("dbscan", output_mode, id_column)
+    column, id_column = column_label(column), column_label(id_column)
     # The extension's per-row DBSCAN mode is named 'clusters'; keep the
     # package-level "scores" naming consistent with the other detectors.
     sql_mode = "clusters" if output_mode == "scores" else output_mode
@@ -248,6 +251,7 @@ def dbscan_mv(
     """
     _check_output_mode("dbscan_mv", output_mode)
     _check_id_column("dbscan_mv", output_mode, id_column)
+    id_column = column_label(id_column)
     cols_csv = _columns_csv(columns)
     sql_mode = "clusters" if output_mode == "scores" else output_mode
     table_or_df = _nan_as_null(table_or_df)
@@ -324,6 +328,7 @@ def outlier_tree(
     """
     _check_output_mode("outlier_tree", output_mode)
     _check_id_column("outlier_tree", output_mode, id_column)
+    id_column = column_label(id_column)
     cols_csv = _columns_csv(columns)
     table_or_df = _nan_as_null(table_or_df)
     with table_inputs(conn, table_or_df) as (table_name,):
@@ -388,9 +393,11 @@ def _columns_csv(columns: Union[str, Sequence[str]]) -> str:
 
     The extension splits the list at every comma (there is no quoting), so a
     column whose name contains a comma cannot be selected: it raises ValueError.
+    Integer labels (pandas ``read_csv(header=None)``) become ``"0"``, ``"1"``, ... .
     """
     if isinstance(columns, str):
         return columns
+    columns = [str(column_label(column)) for column in columns]
     for column in columns:
         if "," in column:
             raise ValueError(
@@ -413,11 +420,9 @@ def _check_has_values(conn: Any, table_or_df: Any, table_name: str, columns: Seq
     """
     if isinstance(table_or_df, str):
         return
-    for name in (c.strip() for c in columns):
-        if name not in table_or_df.columns:
-            continue
-        series = table_or_df[name]
-        if _is_untyped_all_missing(series):
+    for name in (str(c).strip() for c in columns):
+        series = frame_column(table_or_df, name)
+        if series is not None and _is_untyped_all_missing(series):
             raise ValueError(
                 f"column {name!r} has no non-null values; the anomaly detectors need "
                 "at least one number in it"

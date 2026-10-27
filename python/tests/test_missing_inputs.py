@@ -206,3 +206,97 @@ class TestIntegerColumnNames:
         assert quality.values_in_set(conn, orders, 3, ["DE", "AT"])["status"] == "pass"
         assert quality.distinct_count(conn, orders, 0, min_distinct=3)["status"] == "pass"
         assert quality.schema_check(conn, orders, [0, 2])["status"] == "pass"
+
+
+class TestIntegerColumnLabelsOutsideQuality:
+    """Integer column labels work in the anomaly, profile, diff and PII wrappers too."""
+
+    @pytest.fixture
+    def readings(self):
+        # A sensor export without a header: 0 = sensor id, 1 = temperature, 2 = humidity.
+        rows = [f"TMP-{100 + i},{21.0 + (i % 5) * 0.3:.1f},{45 + i % 4}" for i in range(39)]
+        rows.append("TMP-139,58.4,12")
+        return pd.read_csv(io.StringIO("\n".join(rows) + "\n"), header=None)
+
+    def test_isolation_forest_single_column(self, conn, readings):
+        from anofox import anomaly
+        out = anomaly.isolation_forest(conn, readings, 1, output_mode="scores",
+                                       id_column=0, seed=42, contamination=0.05)
+        assert out.columns.tolist()[:2] == ["row_id", "0"]
+        assert out.loc[out["is_anomaly"], "0"].tolist() == ["TMP-139"]
+
+    @pytest.mark.parametrize("function", ["isolation_forest_mv", "dbscan_mv", "outlier_tree"])
+    def test_multivariate_int_labels(self, conn, readings, function):
+        from anofox import anomaly
+        kwargs = {"seed": 42} if function == "isolation_forest_mv" else {}
+        result = getattr(anomaly, function)(conn, readings, [1, 2], **kwargs)
+        assert isinstance(result, dict)
+
+    def test_dbscan_single_column(self, conn, readings):
+        from anofox import anomaly
+        result = anomaly.dbscan(conn, readings, 1, epsilon=0.5, min_points=3)
+        assert result["noise_count"] == 1
+
+    def test_all_none_int_column_names_the_column(self, conn, readings):
+        from anofox import anomaly
+        readings[3] = None
+        with pytest.raises(ValueError, match="column '3' has no non-null values"):
+            anomaly.isolation_forest(conn, readings, 3)
+
+    def test_profile_int_labels(self, conn, readings):
+        from anofox import profile
+        out = profile.profile_table(conn, readings, columns=[1, 2])
+        assert out["column_name"].tolist() == ["1", "2"]
+        corr = profile.profile_correlations(conn, readings, columns=[1, 2])
+        assert len(corr) == 1
+
+    def test_diff_int_labels(self, conn, readings):
+        from anofox import diff
+        after = readings.copy()
+        after.loc[5, 1] = 30.0
+        changes = diff.joindiff(conn, readings, after, primary_keys=0, compare_columns=[1])
+        assert changes["diff_type"].tolist() == ["changed"]
+
+    def test_pii_scan_int_labels(self, conn):
+        from anofox import pii
+        notes = pd.DataFrame({0: ["T-1", "T-2"], 1: ["mail ana@example.com", "no contact data"]})
+        out = pii.pii_scan_table(conn, notes, columns=[1], types=["EMAIL"])
+        assert out["column_name"].unique().tolist() == ["1"]
+
+
+class TestSingleColumnString:
+    """A single column name passed where a list is accepted means [name], not its characters."""
+
+    @pytest.fixture(params=["pandas", "polars"])
+    def leads(self, request):
+        rows = {
+            "lead_id": [f"L-{i}" for i in range(1, 7)],
+            "email": ["ana@brandt.de", "bob@kroll.at", None, "eva@meier.ch", "x", "ops@brandt.de"],
+            "score": [12.0, 48.5, 33.0, 71.2, 5.0, 64.9],
+            "visits": [1, 4, 3, 7, 1, 6],
+        }
+        if request.param == "pandas":
+            return pd.DataFrame(rows)
+        import polars as pl
+        return pl.DataFrame(rows)
+
+    def test_profile_table(self, conn, leads):
+        from anofox import profile
+        out = profile.profile_table(conn, leads, columns="email")
+        assert list(out["column_name"]) == ["email"]
+
+    def test_profile_correlations(self, conn, leads):
+        from anofox import profile
+        both = profile.profile_correlations(conn, leads, columns=["score", "visits"])
+        assert len(both) == 1
+        assert len(profile.profile_correlations(conn, leads, columns="score")) == 0  # no pair
+
+    def test_schema_check(self, conn, leads):
+        from anofox import quality
+        result = quality.schema_check(conn, leads, "email")
+        assert result["status"] == "pass"
+
+    def test_joindiff_compare_columns(self, conn, leads):
+        from anofox import diff
+        changes = diff.joindiff(conn, leads, leads, primary_keys="lead_id", compare_columns="email")
+        assert len(changes) == 0

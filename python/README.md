@@ -143,8 +143,12 @@ print(checks.checks["null_rate"]["null_rate"])
   `anofox.validate`, `anofox.vat`, `anofox.money` or `anofox.pii` gives `None`, like SQL `NULL`.
   A text column that holds only missing values, such as the `float64` NaN column pandas reads
   for an empty CSV column, gives missing results in the row-wise helpers.
-- **Column labels.** The `anofox.quality` checks also take integer column labels (pandas
-  `read_csv(header=None)` gives `0`, `1`, ...); the result names the column `"0"`, `"1"`, ...
+- **Column labels.** The `anofox.quality`, `anofox.anomaly`, `anofox.profile`, `anofox.diff`
+  and PII table functions also take integer column labels (pandas `read_csv(header=None)` gives
+  `0`, `1`, ...), also as `id_column`; the result names the column `"0"`, `"1"`, ... . Where a
+  list of columns is accepted (`profile_table(columns=)`, `profile_correlations`,
+  `schema_check`, `joindiff(compare_columns=)`), a single name such as `"email"` means that one
+  column, not its characters.
 - **Row-wise results** (`email_is_valid`, `email_validate`, `phone_is_valid`, `phone_parse`,
   `phone_format`, `phone_region`, the `anofox.vat` functions, `make_money`, `pii_detect`,
   `pii_mask` with `column=`) are a copy of the input plus one column. They keep

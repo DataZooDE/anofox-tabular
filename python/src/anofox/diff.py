@@ -7,7 +7,7 @@ from __future__ import annotations
 from typing import Any, Optional, Union
 
 from ._sql import fetch_frame
-from ._table import DataFrame, output_df_type, table_inputs
+from ._table import DataFrame, column_label, column_list, output_df_type, table_inputs
 
 
 def joindiff(
@@ -35,7 +35,8 @@ def joindiff(
         Column name(s) forming the primary key.  Either a string (single
         key) or a list of strings (compound key).
     compare_columns:
-        Columns to compare.  When *None* all non-key columns are compared.
+        Columns to compare (a list; a single name means that one column).
+        When *None* all non-key columns are compared.
     include_unchanged:
         Include unchanged rows in the result (default False).
 
@@ -53,7 +54,7 @@ def joindiff(
         query = f"SELECT * FROM anofox_tab_diff_joindiff(?, ?, {pk_sql}"
         if compare_columns is not None:
             query += ", ?::VARCHAR[]"
-            params.append(list(compare_columns))
+            params.append(column_list(compare_columns))
             if include_unchanged:
                 query += ", true"
         query += ")"
@@ -158,6 +159,7 @@ def diff_schema(
 
 def _format_pk(primary_keys: Union[str, list[str]]) -> tuple[str, Any]:
     """Return the placeholder SQL and the bound value of the primary key argument."""
+    primary_keys = column_label(primary_keys)
     if isinstance(primary_keys, str):
         return "?", primary_keys
     if len(primary_keys) == 1:
