@@ -1008,7 +1008,7 @@ static string KeyTextSQL(const vector<string> &key_exprs) {
 }
 
 static string ThresholdLiteral(const Value &threshold) {
-	return threshold.IsNull() ? "CAST(NULL AS DOUBLE)" : "CAST(" + threshold.ToString() + " AS DOUBLE)";
+	return DoubleThresholdSQL(threshold);
 }
 
 // Types that support identifier partitioning via a plain GROUP BY on the target table
@@ -1055,6 +1055,9 @@ struct SuiteDate {
 	string date_sql;
 	// SQL counting the rows whose non-NULL date value did not parse; empty when every value does
 	string skipped_sql;
+	// SQL counting the rows with an infinite date (an SCD2 valid_to of the current version),
+	// which date_sql turns into NULL: they are ignored like a row without a date
+	string infinite_sql;
 };
 
 static SuiteDate SuiteDateSQL(ClientContext &context, const CheckSpec &spec, const string &filter_sql) {
@@ -1078,25 +1081,33 @@ static SuiteDate SuiteDateSQL(ClientContext &context, const CheckSpec &spec, con
 		                      "; expected DATE, TIMESTAMP, TIMESTAMP WITH TIME ZONE or a VARCHAR holding dates");
 	}
 	SuiteDate result;
-	result.date_sql = UtcDateSQL(date_id, type);
+	const string parsed_sql = UtcDateSQL(date_id, type);
+	const string infinite = InfiniteTimeSQL(date_id, type, "DATE");
+	const string filter_and = filter_sql.empty() ? "" : " AND (" + filter_sql + ")";
+	result.date_sql = "CASE WHEN " + infinite + " THEN NULL ELSE " + parsed_sql + " END";
+	result.infinite_sql = "(SELECT COUNT(*) FROM " + table_ref + " WHERE " + infinite + filter_and + ")";
 	if (type.id() == LogicalTypeId::VARCHAR) {
 		result.skipped_sql = "(SELECT COUNT(*) FROM " + table_ref + " WHERE " + date_id + " IS NOT NULL AND " +
-		                     result.date_sql + " IS NULL" + (filter_sql.empty() ? "" : " AND (" + filter_sql + ")") +
-		                     ")";
+		                     parsed_sql + " IS NULL" + filter_and + ")";
 	}
 	return result;
 }
 
 // Expose the count of rows a time-aware check skipped for an unparsable date (__skipped_dates)
-// next to the columns of its inner query, with the message suffix that reports it
+// and ignored for an infinite one (__infinite_dates) next to the columns of its inner query,
+// with the message suffixes that report them
 static void AddSkippedDates(CheckBranch &branch, const CheckSpec &spec, const SuiteDate &date) {
-	if (date.skipped_sql.empty()) {
-		return;
+	if (!date.skipped_sql.empty()) {
+		branch.inner_sql =
+		    "SELECT __d.*, " + date.skipped_sql + " AS __skipped_dates FROM (" + branch.inner_sql + ") __d";
+		branch.message_suffixes.push_back("CASE WHEN __c.__skipped_dates > 0 THEN '; ' || CAST(__c.__skipped_dates AS "
+		                                  "VARCHAR) || ' row(s) skipped (" +
+		                                  EscapeSqlStringLiteral(spec.date_column) + " is not a date)' ELSE '' END");
 	}
-	branch.inner_sql = "SELECT __d.*, " + date.skipped_sql + " AS __skipped_dates FROM (" + branch.inner_sql + ") __d";
-	branch.message_suffixes.push_back("CASE WHEN __c.__skipped_dates > 0 THEN '; ' || CAST(__c.__skipped_dates AS "
-	                                  "VARCHAR) || ' row(s) skipped (" +
-	                                  EscapeSqlStringLiteral(spec.date_column) + " is not a date)' ELSE '' END");
+	branch.inner_sql =
+	    "SELECT __e.*, " + date.infinite_sql + " AS __infinite_dates FROM (" + branch.inner_sql + ") __e";
+	branch.message_suffixes.push_back("CASE WHEN __c.__infinite_dates > 0 THEN '; ' || CAST(__c.__infinite_dates AS "
+	                                  "VARCHAR) || ' row(s) with an infinite date ignored' ELSE '' END");
 }
 
 // Build the inner derived table (value computation) for one check
@@ -1221,7 +1232,14 @@ static CheckBranch BuildCheckBranch(ClientContext &context, const CheckSpec &spe
 		// try_parse: an unparseable text value must not abort the whole suite; text with a UTC
 		// offset is the instant it names
 		string ts_expr = UtcTimestampSQL(col, probe.types[0], true);
-		value_expr = "CAST(EXTRACT(EPOCH FROM (" + ref_time + " - MAX(" + ts_expr + "))) AS DOUBLE)";
+		// An infinite timestamp (an SCD2 valid_to of the current version) is no update time:
+		// ignored, and the message says how many rows were
+		string infinite = InfiniteTimeSQL(col, probe.types[0], "TIMESTAMP");
+		value_expr = "CAST(EXTRACT(EPOCH FROM (" + ref_time + " - MAX(" + ts_expr + ") FILTER (WHERE NOT " + infinite +
+		             "))) AS DOUBLE)";
+		branch.extra_columns.push_back("COUNT(*) FILTER (WHERE " + infinite + ") AS __infinite");
+		branch.message_suffixes.push_back("CASE WHEN __c.__infinite > 0 THEN '; ' || CAST(__c.__infinite AS "
+		                                  "VARCHAR) || ' row(s) with an infinite timestamp ignored' ELSE '' END");
 		branch.null_value_fails = true;
 		branch.null_value_message = "No timestamp values found (table is empty or column is all NULL)";
 	} else if (spec.check_type == "occurrence") {
@@ -1611,7 +1629,10 @@ static bool IsRateCheck(const string &check_type) {
 	       check_type == "compliance" || check_type == "match_rate" || check_type == "rolling_values_in_set";
 }
 
-static void ValidateCheckThresholds(const CheckSpec &spec) {
+static void ValidateCheckThresholds(CheckSpec &spec) {
+	// -inf lower / +inf upper: no bound, like NULL; NaN or the other infinity: an error row
+	spec.lower_threshold = NormalizeBoundThreshold(spec.lower_threshold, "run_checks", "lower_threshold", true);
+	spec.upper_threshold = NormalizeBoundThreshold(spec.upper_threshold, "run_checks", "upper_threshold", false);
 	ValidateThresholdOrder(spec.lower_threshold, spec.upper_threshold, "run_checks", "lower_threshold",
 	                       "upper_threshold");
 	if (!IsRateCheck(spec.check_type)) {
@@ -1634,7 +1655,7 @@ static void ValidateCheckThresholds(const CheckSpec &spec) {
 // The SQL of one check in the uniform result schema. Every problem that keeps the check
 // from running (missing table or column, invalid configuration, a query that does not
 // bind) is thrown here and turned into an 'error' row by the caller.
-static string BuildValidatedCheckSQL(ClientContext &context, const CheckSpec &spec) {
+static string BuildValidatedCheckSQL(ClientContext &context, CheckSpec spec) {
 	RequireSupportedCheckType(spec);
 	if (!spec.config_error.empty()) {
 		throw BinderException(spec.config_error);
@@ -1647,6 +1668,13 @@ static string BuildValidatedCheckSQL(ClientContext &context, const CheckSpec &sp
 		throw BinderException("identifier_column is not supported for check_type '%s'", spec.check_type);
 	}
 	ValidateCheckThresholds(spec);
+	// A reference at infinity has no days before it and no age
+	if (StringUtil::Contains(spec.reference_date_sql, "infinity") ||
+	    StringUtil::Contains(spec.reference_time_sql, "infinity")) {
+		throw BinderException("params.%s must be a finite %s",
+		                      spec.reference_date_sql.empty() ? "reference_time" : "reference_date",
+		                      spec.reference_date_sql.empty() ? "timestamp" : "date");
+	}
 
 	string filter_sql;
 	if (!spec.filter_expr.empty()) {

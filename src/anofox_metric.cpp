@@ -1,4 +1,5 @@
 #include "anofox_metric.hpp"
+#include "anofox_check.hpp"
 #include "anofox_isolation_forest.hpp"
 #include "anofox_dbscan.hpp"
 #include "anofox_function_alias.hpp"
@@ -325,6 +326,12 @@ static string GenerateFreshnessSQL(const string &table_ref, const string &timest
 	                     "CAST(-" + age_sql + " AS VARCHAR) || 's after the reference time; check for clock skew or "
 	                     "a time zone mismatch' ELSE '' END";
 
+	// An infinite timestamp (an SCD2 valid_to of the current version) is no update time: it is
+	// ignored, and the message says how many rows were
+	string infinite = InfiniteTimeSQL(col_id, column_type, "TIMESTAMP");
+	string infinite_note = "CASE WHEN infinite_count > 0 THEN '. ' || CAST(infinite_count AS VARCHAR) || "
+	                       "' row(s) with an infinite timestamp ignored' ELSE '' END";
+
 	// Empty-input semantics: an empty table or all-NULL timestamp column yields one row with
 	// status 'fail', NULL metric_value/age_seconds and an explicit message (freshness cannot
 	// be demonstrated without data).
@@ -344,9 +351,10 @@ static string GenerateFreshnessSQL(const string &table_ref, const string &timest
 		"    'Data is fresh. Latest update: ' || CAST(latest_timestamp AS VARCHAR) || ' (age: ' || CAST(" + age_sql + " AS VARCHAR) || 's)' || " + future_note + " "
 		"  ELSE "
 		"    'Data is stale. Latest update: ' || CAST(latest_timestamp AS VARCHAR) || ' (age: ' || CAST(" + age_sql + " AS VARCHAR) || 's, max allowed: ' || CAST(EXTRACT(EPOCH FROM " + max_age_interval + ")::BIGINT AS VARCHAR) || 's)' "
-		"END AS message "
+		"END || " + infinite_note + " AS message "
 		"FROM (SELECT "
-		"  MAX(" + UtcTimestampSQL(col_id, column_type) + ") AS latest_timestamp, "
+		"  MAX(" + UtcTimestampSQL(col_id, column_type) + ") FILTER (WHERE NOT " + infinite + ") AS latest_timestamp, "
+		"  COUNT(*) FILTER (WHERE " + infinite + ") AS infinite_count, "
 		+ ref_time + " - " + max_age_interval + " AS threshold_timestamp "
 		"FROM " + table_ref + ")";
 }
@@ -484,6 +492,10 @@ static unique_ptr<TableRef> MetricFreshnessBindReplace(ClientContext &context, T
 	Value max_age = input.inputs[2];
 	// NULL reference_time = the current UTC time
 	Value reference_time = (input.inputs.size() > 3) ? input.inputs[3] : Value();
+	if (!reference_time.IsNull() &&
+	    !Value::IsFinite(reference_time.DefaultCastAs(LogicalType(LogicalTypeId::TIMESTAMP)).GetValue<timestamp_t>())) {
+		throw BinderException("freshness: reference_time must be a finite timestamp");
+	}
 
 	string table_ref = BuildQueryTableRef(table_name);
 	auto column_type = RequireRelationColumns(context, "freshness", table_name, {timestamp_column})[0].type;

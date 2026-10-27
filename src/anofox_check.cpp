@@ -7,10 +7,13 @@
 #include "duckdb/parser/parser.hpp"
 #include "duckdb/parser/tableref/subqueryref.hpp"
 #include "duckdb/common/exception.hpp"
+#include "duckdb/common/error_data.hpp"
+#include "duckdb/planner/binder.hpp"
 #include "duckdb_compat.hpp"
 #include "anofox_tabular_banner.hpp"
 
 #include <algorithm>
+#include <cmath>
 
 namespace duckdb {
 namespace anofox {
@@ -308,6 +311,39 @@ string ThresholdTextSQL(const Value &threshold, const AggregateSQL &agg) {
 		fraction += string(agg.exact_scale - fraction.size(), '0');
 	}
 	return "'" + decimal.Text(fraction) + "'";
+}
+
+Value NormalizeBoundThreshold(const Value &threshold, const string &function_name, const string &name, bool is_lower) {
+	if (threshold.IsNull()) {
+		return Value(LogicalType(LogicalTypeId::DOUBLE));
+	}
+	double number = threshold.GetValue<double>();
+	const string open_side = is_lower ? "NULL or -inf mean no lower bound" : "NULL or +inf mean no upper bound";
+	if (std::isnan(number)) {
+		throw BinderException("%s: %s must not be NaN (%s)", function_name, name, open_side);
+	}
+	if (std::isinf(number)) {
+		if ((number < 0) == is_lower) {
+			return Value(LogicalType(LogicalTypeId::DOUBLE));
+		}
+		throw BinderException("%s: %s must not be %s (%s)", function_name, name, number > 0 ? "+inf" : "-inf",
+		                      open_side);
+	}
+	return threshold;
+}
+
+string InfiniteTimeSQL(const string &column_sql, const LogicalType &type, const string &text_cast_type) {
+	string value =
+	    type.id() == LogicalTypeId::VARCHAR ? "TRY_CAST(" + column_sql + " AS " + text_cast_type + ")" : column_sql;
+	return "COALESCE(NOT isfinite(" + value + "), FALSE)";
+}
+
+// The message suffix "; <n> row(s) with an infinite date ignored" as a SQL VARCHAR expression,
+// '' when no row of table_ref has an infinite date
+static string InfiniteDatesSuffixSQL(const string &table_ref, const string &date_id, const LogicalType &date_type) {
+	string count = "(SELECT COUNT(*) FROM " + table_ref + " WHERE " + InfiniteTimeSQL(date_id, date_type, "DATE") + ")";
+	return "CASE WHEN " + count + " > 0 THEN '; ' || CAST(" + count +
+	       " AS VARCHAR) || ' row(s) with an infinite date ignored' ELSE '' END";
 }
 
 // Helper: Generate SQL for aggregate assertions (avg/min/max/sum/median/stddev vs thresholds).
@@ -619,12 +655,16 @@ static string GenerateRelCountChangeSQL(const string &table_ref, const string &d
 	string lower_val = DoubleThresholdSQL(lower);
 	string upper_val = DoubleThresholdSQL(upper);
 	string date_id = QuoteSqlIdentifier(date_column);
+	// An infinite date (an SCD2 valid_to of the current version) is no day of data: ignored, and
+	// the message says how many rows were
+	string infinite = InfiniteTimeSQL(date_id, date_type, "DATE");
+	string infinite_suffix = InfiniteDatesSuffixSQL(table_ref, date_id, date_type);
 	string window_val = std::to_string(window_days);
 	string cnt_expr = count_column.empty() ? "COUNT(*)" : "COUNT(DISTINCT " + QuoteSqlIdentifier(count_column) + ")";
 
 	return "WITH daily AS ("
 		"SELECT " + UtcDateSQL(date_id, date_type) + " AS d, " + cnt_expr + " AS c "
-		"FROM " + table_ref + " WHERE " + date_id + " IS NOT NULL GROUP BY 1"
+		"FROM " + table_ref + " WHERE " + date_id + " IS NOT NULL AND NOT " + infinite + " GROUP BY 1"
 		"), "
 		"ref AS (" + BuildReferenceDatesSQL(dates, "MAX(d)", "daily") + "), "
 		"refstats AS ("
@@ -664,7 +704,7 @@ static string GenerateRelCountChangeSQL(const string &table_ref, const string &d
 		"  ELSE "
 		"    'Count ' || CAST(ref_c AS VARCHAR) || ' on ' || CAST(ref_d AS VARCHAR) || ' is within ' || "
 		"    " + RoundedNumberSQL("rel_change") + " || ' of baseline average ' || " + RoundedNumberSQL("baseline_avg") + " "
-		"END AS message "
+		"END || " + infinite_suffix + " AS message "
 		"FROM summary ORDER BY reference_date";
 }
 
@@ -679,6 +719,10 @@ static string GenerateMetricAnomalyIQRSQL(const string &table_ref, const string 
                                           const ReferenceDates &dates) {
 	string k_val = DoubleThresholdSQL(k, "1.5");
 	string date_id = QuoteSqlIdentifier(date_column);
+	// An infinite date (an SCD2 valid_to of the current version) is no day of data: ignored, and
+	// the message says how many rows were
+	string infinite = InfiniteTimeSQL(date_id, date_type, "DATE");
+	string infinite_suffix = InfiniteDatesSuffixSQL(table_ref, date_id, date_type);
 	string window_val = std::to_string(window_days);
 	string metric_expr =
 	    metric_column.empty() ? "CAST(COUNT(*) AS DOUBLE)" : "AVG(CAST(" + QuoteSqlIdentifier(metric_column) + " AS DOUBLE))";
@@ -696,7 +740,7 @@ static string GenerateMetricAnomalyIQRSQL(const string &table_ref, const string 
 
 	return "WITH daily AS ("
 		"SELECT " + UtcDateSQL(date_id, date_type) + " AS d, " + metric_expr + " AS m "
-		"FROM " + table_ref + " WHERE " + date_id + " IS NOT NULL GROUP BY 1"
+		"FROM " + table_ref + " WHERE " + date_id + " IS NOT NULL AND NOT " + infinite + " GROUP BY 1"
 		"), "
 		"ref AS (" + BuildReferenceDatesSQL(dates, "MAX(d)", "daily") + "), "
 		// One baseline per reference date: the days strictly before it within the window
@@ -734,7 +778,7 @@ static string GenerateMetricAnomalyIQRSQL(const string &table_ref, const string 
 		"  ELSE "
 		"    'Metric ' || " + RoundedNumberSQL("metric_value") + " || ' on ' || CAST(reference_date AS VARCHAR) || "
 		"    ' is within IQR bounds [' || " + RoundedNumberSQL("lower_bound") + " || ', ' || " + RoundedNumberSQL("upper_bound") + " || ']' "
-		"END AS message "
+		"END || " + infinite_suffix + " AS message "
 		"FROM summary ORDER BY reference_date";
 }
 
@@ -750,11 +794,15 @@ static string GenerateRollingValuesInSetSQL(const string &table_ref, const strin
 	string col_id = QuoteSqlIdentifier(column_name);
 	string col_str = "CAST(" + col_id + " AS VARCHAR)";
 	string date_id = QuoteSqlIdentifier(date_column);
+	// An infinite date (an SCD2 valid_to of the current version) is no day of data: ignored, and
+	// the message says how many rows were
+	string infinite = InfiniteTimeSQL(date_id, date_type, "DATE");
+	string infinite_suffix = InfiniteDatesSuffixSQL(table_ref, date_id, date_type);
 	string window_val = std::to_string(window_days);
 
 	return "WITH dv AS ("
 		"SELECT " + UtcDateSQL(date_id, date_type) + " AS d, " + col_str + " AS v, COUNT(*) AS n FROM " + table_ref +
-		" WHERE " + date_id + " IS NOT NULL GROUP BY 1, 2"
+		" WHERE " + date_id + " IS NOT NULL AND NOT " + infinite + " GROUP BY 1, 2"
 		"), "
 		"ref AS (" + BuildReferenceDatesSQL(dates, "MAX(d)", "dv") + "), "
 		"stats AS ("
@@ -788,7 +836,7 @@ static string GenerateRollingValuesInSetSQL(const string &table_ref, const strin
 		"  ELSE "
 		"    'In-set rate ' || " + RoundedNumberSQL("in_set_rate") + " || ' (' || CAST(in_set_count AS VARCHAR) || '/' || "
 		"    CAST(total_count AS VARCHAR) || ') over the trailing " + window_val + " day(s) is below minimum ' || CAST(" + min_val + " AS VARCHAR) "
-		"END AS message "
+		"END || " + infinite_suffix + " AS message "
 		"FROM rates ORDER BY reference_date";
 }
 
@@ -831,6 +879,16 @@ static ReferenceDates ReadReferenceDates(TableFunctionBindInput &input, idx_t re
 		}
 		dates.reference_date = named_reference->DefaultCastAs(LogicalType(LogicalTypeId::DATE));
 	}
+	// A reference date at infinity has no days before it
+	auto require_finite = [&](const Value &date, const char *name) {
+		if (date.IsNull()) {
+			return;
+		}
+		if (!Value::IsFinite(date.DefaultCastAs(LogicalType(LogicalTypeId::DATE)).GetValue<date_t>())) {
+			throw BinderException("%s: %s must be a finite date", function_name, name);
+		}
+	};
+	require_finite(dates.reference_date, "reference_date");
 	auto start = duckdb_compat::FindNamedParameter(input.named_parameters, "start_date");
 	auto end = duckdb_compat::FindNamedParameter(input.named_parameters, "end_date");
 	if (!start && !end) {
@@ -847,6 +905,8 @@ static ReferenceDates ReadReferenceDates(TableFunctionBindInput &input, idx_t re
 	}
 	dates.start_date = start->DefaultCastAs(LogicalType(LogicalTypeId::DATE));
 	dates.end_date = end->DefaultCastAs(LogicalType(LogicalTypeId::DATE));
+	require_finite(dates.start_date, "start_date");
+	require_finite(dates.end_date, "end_date");
 	if (dates.start_date.GetValue<date_t>() > dates.end_date.GetValue<date_t>()) {
 		throw BinderException(function_name + ": start_date must not be after end_date (" +
 		                      dates.start_date.ToString() + " > " + dates.end_date.ToString() + ")");
@@ -954,10 +1014,8 @@ static unique_ptr<TableRef> CheckAggBindReplace(ClientContext &context, TableFun
 	if (std::find(ALLOWED_AGGS.begin(), ALLOWED_AGGS.end(), agg) == ALLOWED_AGGS.end()) {
 		throw BinderException("agg_check: agg must be one of 'avg', 'min', 'max', 'sum', 'median', 'stddev'");
 	}
-	ValidateFiniteDouble(input.inputs[3], "agg_check", "lower_threshold");
-	ValidateFiniteDouble(input.inputs[4], "agg_check", "upper_threshold");
-	auto &lower = input.inputs[3];
-	auto &upper = input.inputs[4];
+	auto lower = NormalizeBoundThreshold(input.inputs[3], "agg_check", "lower_threshold", true);
+	auto upper = NormalizeBoundThreshold(input.inputs[4], "agg_check", "upper_threshold", false);
 	ValidateThresholdOrder(lower, upper, "agg_check", "lower_threshold", "upper_threshold");
 	auto column = RequireRelationColumns(context, "agg_check", table_name, {column_name})[0];
 	RequireNumericColumn(context, "agg_check", table_name, column_name);
@@ -1093,8 +1151,8 @@ static string BuildRelCountChangeSQL(ClientContext &context, TableFunctionBindIn
 	// Defaults apply only when the argument is absent; an explicit NULL means unbounded
 	Value lower = (input.inputs.size() > 4) ? input.inputs[4] : Value::DOUBLE(-0.5);
 	Value upper = (input.inputs.size() > 5) ? input.inputs[5] : Value::DOUBLE(0.5);
-	ValidateFiniteDouble(lower, "rel_count_change", "lower_threshold");
-	ValidateFiniteDouble(upper, "rel_count_change", "upper_threshold");
+	lower = NormalizeBoundThreshold(lower, "rel_count_change", "lower_threshold", true);
+	upper = NormalizeBoundThreshold(upper, "rel_count_change", "upper_threshold", false);
 	ValidateThresholdOrder(lower, upper, "rel_count_change", "lower_threshold", "upper_threshold");
 	auto dates = ReadReferenceDates(input, 6, "rel_count_change");
 	bool fill_missing_days = false;

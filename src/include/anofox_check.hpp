@@ -54,6 +54,15 @@ string BoundViolationSQL(const string &value_sql, const Value &threshold, const 
 // is written as, with at least the aggregate's scale (200 on a DECIMAL(10,2) column is 200.00)
 string ThresholdTextSQL(const Value &threshold, const AggregateSQL &agg);
 
+// A lower or upper threshold as the checks use it: NULL, -inf for a lower and +inf for an upper
+// bound mean no bound and come back as NULL; NaN and the other infinity throw
+// "<function_name>: <name> must not be NaN (...)".
+Value NormalizeBoundThreshold(const Value &threshold, const string &function_name, const string &name, bool is_lower);
+
+// SQL condition: the value of column_sql (a DATE, TIMESTAMP or TIMESTAMP WITH TIME ZONE column,
+// or text read as a `text_cast_type` such as "DATE") is infinity or -infinity. FALSE for NULL.
+string InfiniteTimeSQL(const string &column_sql, const LogicalType &type, const string &text_cast_type);
+
 // The baseline columns of rel_count_change ("<avg> AS baseline_avg, <days> AS baseline_days")
 // over a CTE daily(d DATE, c) for the reference date ref_expr: the window_days days strictly
 // before it. By default the days with rows are averaged; with fill_missing_days the calendar

@@ -37,6 +37,10 @@ The arguments are checked when the query is bound:
   (`'orders.csv'`); a file that cannot be read is `<function>: cannot read table '<name>': <cause>`.
 - A lower bound greater than the upper bound is an error, for example
   `volume: min_rows (100) must not be greater than max_rows (10)`.
+- The value bounds of `agg_check` and `rel_count_change` accept `-inf` as lower and `+inf` as
+  upper bound, meaning no bound, like `NULL`. `NaN`, a `+inf` lower or a `-inf` upper bound is
+  an error, for example
+  `agg_check: upper_threshold must not be NaN (NULL or +inf mean no upper bound)`.
 - Count bounds (`min_rows`, `max_distinct`, `iqr_multiplier`, ...) must not be negative, and a
   `zscore` threshold must be positive.
 - Rates (`max_null_rate`, `min_match_rate`, `min_rate`, ...) must be between 0 and 1, for
@@ -54,6 +58,10 @@ ends with `; <n> NaN/Inf value(s) ignored`. `agg_check`, and an `agg` check in `
 assert one aggregate value instead: they report a `NaN` value and fail when the column contains
 NaN or `±Inf` values, with the message
 `<agg> value is NaN: the column contains <n> NaN/Inf value(s)`.
+
+`infinity` and `-infinity` timestamps and dates (the open end of an SCD2 validity range) are
+ignored by `freshness` and the time-aware checks, which say in the message how many rows they
+ignored.
 
 Timestamps are compared in UTC. A `TIMESTAMP WITH TIME ZONE` column is read as its UTC instant
 (in `freshness`) and bucketed by its UTC date (in the time-aware checks), whatever the session
@@ -303,6 +311,13 @@ is 3600s after the reference time; check for clock skew or a time zone mismatch`
 An empty table, or a column that is all `NULL`, fails with `metric_value` and `age_seconds`
 `NULL` and the message `No timestamp values found (table is empty or column is all NULL)`.
 
+`infinity` and `-infinity` values are not update times and are ignored: the `valid_to` column
+of a slowly changing dimension (SCD2), which is `infinity` for the current version of each
+row, measures the newest closed version, and the message says how many rows were ignored:
+`Data is fresh. Latest update: 2026-10-24 18:00:00 (age: 43200s). 5 row(s) with an infinite timestamp ignored`.
+A column that holds only infinite values fails like an empty one. A `reference_time` of
+`infinity` is an error: `freshness: reference_time must be a finite timestamp`.
+
 Units: the direct function takes `max_age` as an `INTERVAL` and reports the age in seconds
 (`age_seconds`, and `age: 90000s, max allowed: 86400s` in the message of a stale table). A
 `freshness` check in [`run_checks`](#run_checks) has no `INTERVAL`: its `value` is the age in
@@ -497,8 +512,8 @@ agg_check(table_name VARCHAR, column_name VARCHAR, agg VARCHAR, lower_threshold 
 | `table_name` | `VARCHAR` | required | Table or view |
 | `column_name` | `VARCHAR` | required | Numeric column |
 | `agg` | `VARCHAR` | required | `avg`, `min`, `max`, `sum`, `median` or `stddev`; any other value is a binder error |
-| `lower_threshold` | `DOUBLE` | required | Lower bound; `NULL` = unbounded |
-| `upper_threshold` | `DOUBLE` | required | Upper bound; `NULL` = unbounded |
+| `lower_threshold` | `DOUBLE` | required | Lower bound; `NULL` or `-inf` = unbounded |
+| `upper_threshold` | `DOUBLE` | required | Upper bound; `NULL` or `+inf` = unbounded |
 
 The column must be numeric (or `BOOLEAN`); another type is a binder error. An empty table or an
 all-NULL column gives `value = NULL` and passes. When a `FLOAT` or `DOUBLE` column contains
@@ -514,6 +529,10 @@ upper bound of `9007199254740992`. A threshold is compared as the decimal it is 
 the message prints the exact value (`sum value 918624.95 is within acceptable range`). The
 `value` column stays `DOUBLE`. `avg` and `stddev`, and every aggregate of a `FLOAT` or
 `DOUBLE` column, are `DOUBLE`.
+
+A `-inf` lower or `+inf` upper threshold means no bound, like `NULL`, and is returned as
+`NULL`. A `NaN` threshold, a `+inf` lower or a `-inf` upper threshold is a binder error, for
+example `agg_check: upper_threshold must not be NaN (NULL or +inf mean no upper bound)`.
 
 ```sql
 SELECT status, agg, round(value, 2) AS value, message
@@ -723,6 +742,13 @@ its UTC date), or text holding dates (`'2026-10-21'`); a text value that is no d
 `'n/a'`, counts as no date and its row is left out. A text timestamp with a UTC offset counts on
 its UTC date (`'2026-10-25 22:30:00-05'` on 2026-10-26); text without an offset is a UTC date.
 
+An `infinity` or `-infinity` date (the `valid_to` of the current version in a slowly changing
+dimension) is no day of data either: such rows are left out, so the default reference date is
+the latest finite date, and the message ends with how many rows were, for example
+`Count 6 on 2026-10-24 deviates by 2.0 from baseline average 2.0; 5 row(s) with an infinite date ignored`.
+A `reference_date`, `start_date` or `end_date` of `infinity` is a binder error
+(`rel_count_change: reference_date must be a finite date`).
+
 All three also accept the named parameters `start_date := DATE` and `end_date := DATE`. With
 them, the check evaluates every day of the inclusive range and returns one row per date,
 ordered by `reference_date`, with the same columns. Each row equals the single-date call for
@@ -770,8 +796,8 @@ rel_count_change(table_name VARCHAR, date_column VARCHAR
 | `date_column` | `VARCHAR` | required | Date or timestamp column; cast to `DATE` (a `TIMESTAMP WITH TIME ZONE` by its UTC date) |
 | `count_column` | `VARCHAR` | `NULL` | Column counted with `COUNT(DISTINCT ...)` per day; `NULL` = daily row count |
 | `window_days` | `BIGINT` | `7` | Baseline length: the days strictly before the reference date |
-| `lower_threshold` | `DOUBLE` | `-0.5` | Lowest allowed relative change |
-| `upper_threshold` | `DOUBLE` | `0.5` | Highest allowed relative change |
+| `lower_threshold` | `DOUBLE` | `-0.5` | Lowest allowed relative change; `NULL` or `-inf` = unbounded |
+| `upper_threshold` | `DOUBLE` | `0.5` | Highest allowed relative change; `NULL` or `+inf` = unbounded |
 | `reference_date` | `DATE` | `NULL` = latest date in the data | The date to evaluate |
 | `start_date`, `end_date` | `DATE`, named | none | Evaluate every day of this range |
 | `fill_missing_days` | `BOOLEAN`, named | `false` | Count calendar days without rows as 0 in the baseline |
@@ -1059,8 +1085,8 @@ ignored. A checks table without a required column is an error that names it, for
 | `table_name` | `VARCHAR` | yes | The table or view to check |
 | `column_name` | `VARCHAR` | no | The column; `NULL` where the type needs none. Comma-separated for `duplicate_count` |
 | `params` | `VARCHAR` | no | A JSON object with type-specific parameters, or `NULL` |
-| `lower_threshold` | `DOUBLE` | no | Fail when `value` is below it; `NULL` = unbounded |
-| `upper_threshold` | `DOUBLE` | no | Fail when `value` is above it; `NULL` = unbounded |
+| `lower_threshold` | `DOUBLE` | no | Fail when `value` is below it; `NULL` or `-inf` = unbounded |
+| `upper_threshold` | `DOUBLE` | no | Fail when `value` is above it; `NULL` or `+inf` = unbounded |
 | `monitor_only` | `BOOLEAN` | no | `true` records `'warn'` instead of `'fail'` |
 | `identifier_column` | `VARCHAR` | no | One result row per distinct value of this column; the rows where it is NULL form one more partition, reported with a NULL `identifier` |
 | `filter_expr` | `VARCHAR` | no | SQL boolean pre-filter on the checked table |
@@ -1107,6 +1133,14 @@ be a `DATE`, `TIMESTAMP` or `TIMESTAMP WITH TIME ZONE` column, or text holding d
 value that is not a date (`'n/a'`) does not stop the suite: its row is skipped and the message
 says how many rows were, for example
 `rel_count_change value -0.5 is within thresholds; 2 row(s) skipped (shipped_on is not a date)`.
+An `infinity` or `-infinity` date (the `valid_to` of the current version in an SCD2 dimension)
+is left out the same way, so the default reference date is the latest finite date, and the
+message says how many rows were:
+`rel_count_change value 2.0 violates thresholds (2.0 > upper 0.5); 5 row(s) with an infinite date ignored`.
+A `freshness` check ignores infinite timestamps likewise
+(`freshness value 43200.0 seconds is within thresholds; 5 row(s) with an infinite timestamp ignored`).
+A `reference_date` or `reference_time` of `infinity` is an `error` row
+(`params.reference_date must be a finite date`).
 A column of another type (a `BIGINT` such as `20261021`) is an `error` row:
 `params.date_column 'event_day' has type BIGINT; expected DATE, TIMESTAMP, TIMESTAMP WITH TIME ZONE or a VARCHAR holding dates`.
 
@@ -1157,6 +1191,11 @@ at all, the check still returns one row with a NULL `identifier` (`pass` with
 A `NaN` value (for example an `agg` average over a column with NaN values) is `fail` (or `warn`),
 with the message `agg value is NaN: the column contains <n> NaN/Inf value(s)`.
 
+A `-inf` `lower_threshold` or `+inf` `upper_threshold` means no bound, exactly like `NULL`
+(the result row shows `NULL`). A `NaN` threshold, a `+inf` lower or a `-inf` upper threshold
+is an `error` row:
+`check 'orders_rows' (volume) cannot run: upper_threshold must not be NaN (NULL or +inf mean no upper bound)`.
+
 The message of a `fail` or `warn` row names the violated bound, for example
 `null_rate value 0.099 violates thresholds (0.099 > upper 0.05)` or
 `values_in_set value 0.751 violates thresholds (0.751 < lower 0.95)`. For `values_in_set`,
@@ -1187,6 +1226,7 @@ are, for example:
 - a `date_column` that is not a date, timestamp or text column (see above)
 - a `compliance` expression or `filter_expr` that does not parse or references an unknown column
 - a `match_rate` `right_table` that does not exist
+- a `NaN` threshold, a `+inf` lower or a `-inf` upper threshold (see above)
 - `lower_threshold` greater than `upper_threshold`, or a rate threshold outside 0 to 1 for
   `null_rate`, `regex_match`, `values_in_set`, `compliance`, `match_rate` and
   `rolling_values_in_set`
