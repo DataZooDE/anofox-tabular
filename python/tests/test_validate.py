@@ -247,7 +247,7 @@ class TestPhoneFormatApi:
     def test_region_and_format(self, conn):
         from anofox.validate import phone_format
         assert phone_format(conn, "030 901820", "DE", "INTERNATIONAL") == "+49 30 901820"
-        assert phone_format(conn, "030 901820", region="DE", fmt="RFC3966") == "tel:+49-30-901820"
+        assert phone_format(conn, "030 901820", region="DE", format="RFC3966") == "tel:+49-30-901820"
 
     def test_default_region_setting_applies(self, conn):
         from anofox.validate import phone_format, phone_is_valid, phone_region
@@ -259,7 +259,7 @@ class TestPhoneFormatApi:
     def test_dataframe_region_column(self, conn):
         from anofox.validate import phone_format
         df = _customers()
-        out = phone_format(conn, df, fmt="INTERNATIONAL", column="phone", region_column="country")
+        out = phone_format(conn, df, format="INTERNATIONAL", column="phone", region_column="country")
         assert out.index.tolist() == [11, 7, 3, 5]
         assert out["phone_format"].tolist()[:3] == ["+49 30 901820", "+1 650 253 0000", "+33 1 42 68 53 00"]
         assert out["phone_format"].isna().tolist() == [False, False, False, True]
@@ -291,3 +291,28 @@ class TestPhoneRegionApi:
         assert out.index.tolist() == [11, 7, 3, 5]
         assert out["phone_region"].tolist()[:3] == ["DE", "US", "FR"]
         assert out["phone_region"].isna().tolist()[3]
+
+
+class TestPhoneFormatKeyword:
+    """phone_format takes format=; fmt= still works but is deprecated."""
+
+    def test_format_keyword(self, conn):
+        from anofox import validate
+        assert validate.phone_format(conn, "+49 30 901820", region="DE", format="NATIONAL") == "030 901820"
+
+    def test_format_keyword_on_dataframe(self, conn):
+        import pandas as pd
+        from anofox import validate
+        crm = pd.DataFrame({"phone": ["+49 30 901820", "+33 1 42 68 53 00"]}, index=["C-17", "C-18"])
+        out = validate.phone_format(conn, crm, column="phone", format="INTERNATIONAL")
+        assert out["phone_format"].tolist() == ["+49 30 901820", "+33 1 42 68 53 00"]
+
+    def test_fmt_is_deprecated_alias(self, conn):
+        from anofox import validate
+        with pytest.warns(DeprecationWarning, match="format="):
+            assert validate.phone_format(conn, "+49 30 901820", fmt="RFC3966") == "tel:+49-30-901820"
+
+    def test_both_raise(self, conn):
+        from anofox import validate
+        with pytest.raises(TypeError, match="fmt"):
+            validate.phone_format(conn, "+49 30 901820", format="E164", fmt="E164")

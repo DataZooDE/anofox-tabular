@@ -8,6 +8,7 @@ or a pandas/polars DataFrame (returns a DataFrame with an added result column).
 from __future__ import annotations
 
 import json
+import warnings
 from typing import Any, Optional, Union
 
 from ._sql import fetch_one, quote_ident
@@ -230,9 +231,11 @@ def phone_format(
     conn: Any,
     phone_or_df: Union[str, Any],
     region: Optional[str] = None,
-    fmt: str = "E164",
+    format: Optional[str] = None,  # noqa: A002 - the SQL argument's name
     column: Optional[str] = None,
     region_column: Optional[str] = None,
+    *,
+    fmt: Optional[str] = None,
 ) -> Union[Optional[str], Any]:
     """
     Format a phone number, like SQL ``phonenumber_format(phone, region, format)``.
@@ -247,7 +250,7 @@ def phone_format(
         Region hint for every value, e.g. ``"DE"``. Default ``None``: the
         setting ``anofox_tab_phonenumber_default_region`` applies (``US``
         unless changed).
-    fmt:
+    format:
         Output format: ``"E164"`` (default), ``"INTERNATIONAL"``,
         ``"NATIONAL"``, or ``"RFC3966"``; an unknown format raises a DuckDB error.
     column:
@@ -255,6 +258,9 @@ def phone_format(
     region_column:
         DataFrame only: column holding the region hint of each row. Cannot be
         combined with *region*.
+    fmt:
+        Deprecated alias of *format* (emits a :class:`DeprecationWarning`);
+        passing both raises :class:`TypeError`.
 
     Returns
     -------
@@ -265,10 +271,19 @@ def phone_format(
         When *phone_or_df* is a DataFrame: a copy with an added
         ``phone_format`` column (input index and row order kept).
     """
+    if fmt is not None:
+        if format is not None:
+            raise TypeError("phone_format() got both 'format' and its deprecated alias 'fmt'; pass only format=")
+        warnings.warn(
+            "phone_format(fmt=...) is deprecated; use format=", DeprecationWarning, stacklevel=2
+        )
+        format = fmt
+    if format is None:
+        format = "E164"
     region_sql, region_params = _region_arg(region, region_column, isinstance(phone_or_df, str))
     if isinstance(phone_or_df, str):
         return fetch_one(
-            conn, "SELECT anofox_tab_phonenumber_format(?, ?, ?)", [phone_or_df, *region_params, fmt]
+            conn, "SELECT anofox_tab_phonenumber_format(?, ?, ?)", [phone_or_df, *region_params, format]
         )
 
     df_type = check_row_input(phone_or_df, column)
@@ -276,7 +291,7 @@ def phone_format(
     return apply_scalar(
         conn, phone_or_df, df_type,
         f"anofox_tab_phonenumber_format({quote_ident(column)}, {region_sql}, ?)",
-        [*region_params, fmt], "phone_format",
+        [*region_params, format], "phone_format",
     )
 
 
