@@ -5,12 +5,17 @@ releases. One source tree serves two DuckDB lines at the same time:
 
 | Line | DuckDB | extension-ci-tools | Where |
 |------|--------|--------------------|-------|
-| 2.0 (cyanoptera) | `v2.0.0` (commit `d54cbbe3df17e8e5ce68312f483b4155836112aa`), the `./duckdb` submodule pin | `v2.0-cyanoptera` | local builds, `duckdb-next-build` CI job, `Next20Tests.yml`, `NERTests.yml`, community-extensions `repo.ref` |
+| 2.0 (cyanoptera) | `v2.0.0` (commit `d54cbbe3df17e8e5ce68312f483b4155836112aa`), the `./duckdb` submodule pin | `v2.0-cyanoptera` | local builds, `duckdb-next-*` CI jobs (build, smoke test, deploy), `Next20Tests.yml`, `NERTests.yml`, community-extensions `repo.ref` |
 | v1.5 (variegata) | `v1.5.6` | `v1.5-variegata` | `duckdb-v1_5_6-*` CI jobs, releases, community-extensions `repo.variegata` |
 
 Local development happens on 2.0, the line community-extensions publishes by default. v1.5.6 is
 checked by CI on every pull request; to run it locally, see [Checking v1.5.6
 locally](#checking-v156-locally).
+
+Both lines deploy to `https://get.erpl.io/<duckdb tag>/<platform>/` (`v1.5.6/`, `v2.0.0/`), the
+fallback of the Python package's loader: the latest build on every push to `main`, the
+versioned path only on release tags. A smoke test installs each artifact into the stock DuckDB
+CLI of its line before the deploy.
 
 duckdb/community-extensions builds `repo.ref` against the 2.0 commit above (`duckdb_commit` in
 its `build.yml`) and `repo.variegata` against v1.5.6, so both have to build from the same commit.
@@ -113,8 +118,9 @@ cd python && ANOFOX_EXT_PATH=../build/release/extension/anofox_tabular/anofox_ta
    `.github/workflows/MainDistributionPipeline.yml`.
 2. **2.0 commit or tag** (when community-extensions moves `duckdb_commit` in its `build.yml`):
    bump `./duckdb` to it and `./extension-ci-tools` to the matching branch, update
-   `duckdb_commit` in the `duckdb-next-build` job, `DUCKDB_COMMIT` in `Next20Tests.yml`, the vcpkg
-   commit in `NERTests.yml` and this file.
+   `duckdb_commit` in the `duckdb-next-build` job and `duckdb_version` in the three
+   `duckdb-next-*` jobs, `DUCKDB_COMMIT` in `Next20Tests.yml`, the vcpkg commit in
+   `NERTests.yml` and this file.
 3. Survey every compile error against the exact commit (`ninja -k 0`) and map each one to an
    existing helper or a new duckdb-compat helper.
 4. Run the suite through `build/release/test/unittest "test/*"` on both lines, deleting the

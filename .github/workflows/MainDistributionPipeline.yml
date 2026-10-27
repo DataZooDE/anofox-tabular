@@ -58,13 +58,11 @@ jobs:
       deploy_versioned: ${{ startsWith(github.ref, 'refs/tags/v') }}
 
   # DuckDB 2.0, the line community-extensions builds repo.ref against: same
-  # inputs as its build.yml (docs/UPDATING.md). No smoke test (no stock 2.0
-  # CLI) and no deploy (a pre-release binary only loads into that build). The
-  # SQL tests skip here - the prebuilt DuckDB's version string differs from the
-  # extension's - so Next20Tests.yml runs them on macOS against a DuckDB built
-  # from source.
+  # inputs as its build.yml (docs/dev/updating-duckdb.md). The SQL tests skip
+  # here - the prebuilt DuckDB's version string differs from the extension's -
+  # so Next20Tests.yml runs them on macOS against a DuckDB built from source.
   duckdb-next-build:
-    name: Build extension binaries (v2.0 pre-release)
+    name: Build extension binaries (v2.0.0)
     uses: duckdb/extension-ci-tools/.github/workflows/_extension_distribution.yml@v2.0-cyanoptera
     with:
       duckdb_version: v2.0.0
@@ -73,6 +71,36 @@ jobs:
       extension_name: anofox_tabular
       artifact_postfix: _v2.0
       exclude_archs: wasm_mvp;wasm_eh;wasm_threads;windows_amd64_mingw;linux_amd64_musl;linux_arm64
+
+  # The stock DuckDB 2.0.0 CLI (a tar.gz release asset) installs and loads
+  # each 2.0 artifact before it is deployed, as for v1.5.6.
+  duckdb-next-smoke-test:
+    name: Smoke test (v2.0.0)
+    needs: duckdb-next-build
+    uses: ./.github/workflows/_extension_smoke_test.yml
+    with:
+      duckdb_version: v2.0.0
+      extension_name: anofox_tabular
+      artifact_postfix: _v2.0
+      exclude_archs: 'wasm_mvp;wasm_eh;wasm_threads;windows_amd64_mingw;linux_amd64_musl;linux_arm64'
+
+  # Publishes the 2.0 builds to get.erpl.io/v2.0.0/<platform>/ (and the
+  # versioned path on tags) under the same rules as the v1.5.6 deploy. The
+  # build job uploads its artifacts as
+  # anofox_tabular-v2.0.0-extension-<arch>_v2.0, hence artifact_postfix.
+  duckdb-next-deploy:
+    name: Deploy extension binaries (v2.0.0)
+    needs: [duckdb-next-build, duckdb-next-smoke-test]
+    uses: ./.github/workflows/_extension_deploy.yml
+    secrets: inherit
+    with:
+      duckdb_version: v2.0.0
+      extension_name: anofox_tabular
+      artifact_postfix: _v2.0
+      exclude_archs: wasm_mvp;wasm_eh;wasm_threads;windows_amd64_mingw;linux_amd64_musl;linux_arm64
+      deploy_latest: ${{ startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/main' }}
+      # Versioned paths only from tag runs (see duckdb-v1_5_6-deploy).
+      deploy_versioned: ${{ startsWith(github.ref, 'refs/tags/v') }}
 
   # Disabled format and tidy checks - local development environment doesn't match CI formatter versions
   # code-quality-check:
