@@ -273,11 +273,12 @@ static unique_ptr<TableRef> ProfileSummaryBindReplace(ClientContext &context,
 
 struct ProfileTableBindData : public TableFunctionData {
 	string table_name;
-	vector<string> columns;
+	// The profiled columns (name, type), resolved and validated at bind time
+	vector<pair<string, string>> columns;
 	int64_t sample_size;
 	bool exact;
 
-	ProfileTableBindData(string tbl, vector<string> cols, int64_t sample, bool exact_mode)
+	ProfileTableBindData(string tbl, vector<pair<string, string>> cols, int64_t sample, bool exact_mode)
 	    : table_name(std::move(tbl)), columns(std::move(cols)), sample_size(sample),
 	      exact(exact_mode) {}
 };
@@ -362,7 +363,12 @@ static unique_ptr<FunctionData> ProfileTableBind(ClientContext &context,
 	names.emplace_back("nan_count");          return_types.emplace_back(LogicalType(LogicalTypeId::BIGINT));
 	names.emplace_back("inf_count");          return_types.emplace_back(LogicalType(LogicalTypeId::BIGINT));
 
-	return make_uniq<ProfileTableBindData>(table_name, columns, sample_size, exact);
+	// Resolve the table and the requested columns now: an unknown table or column is a bind
+	// error, raised before the result (and its header) is produced
+	Connection con(*context.db);
+	auto resolved_columns = IntrospectColumns(con, "profile_table", table_name, columns);
+
+	return make_uniq<ProfileTableBindData>(table_name, std::move(resolved_columns), sample_size, exact);
 }
 
 static unique_ptr<GlobalTableFunctionState> ProfileTableInit(ClientContext &,
@@ -588,8 +594,7 @@ static void ProfileTableExecute(ClientContext &context, TableFunctionInput &data
 		bool is_sampled = !bind_data.exact && actual_row_count > bind_data.sample_size;
 		int64_t actual_sample_size = is_sampled ? bind_data.sample_size : actual_row_count;
 
-		// Introspect columns
-		auto columns = IntrospectColumns(con, "profile_table", bind_data.table_name, bind_data.columns);
+		auto &columns = bind_data.columns;
 		if (columns.empty()) {
 			return;
 		}
@@ -650,9 +655,10 @@ static void ProfileTableExecute(ClientContext &context, TableFunctionInput &data
 
 struct ProfileCorrelationsBindData : public TableFunctionData {
 	string table_name;
-	vector<string> columns;
+	// The candidate columns (name, type), resolved and validated at bind time
+	vector<pair<string, string>> columns;
 
-	ProfileCorrelationsBindData(string tbl, vector<string> cols)
+	ProfileCorrelationsBindData(string tbl, vector<pair<string, string>> cols)
 	    : table_name(std::move(tbl)), columns(std::move(cols)) {}
 };
 
@@ -691,7 +697,11 @@ static unique_ptr<FunctionData> ProfileCorrelationsBind(ClientContext &context,
 	names.emplace_back("spearman"); return_types.emplace_back(LogicalType(LogicalTypeId::DOUBLE));
 	names.emplace_back("n");        return_types.emplace_back(LogicalType(LogicalTypeId::BIGINT));
 
-	return make_uniq<ProfileCorrelationsBindData>(table_name, columns);
+	// Resolve the table and the requested columns at bind time (see profile_table)
+	Connection con(*context.db);
+	auto resolved_columns = IntrospectColumns(con, "profile_correlations", table_name, columns);
+
+	return make_uniq<ProfileCorrelationsBindData>(table_name, std::move(resolved_columns));
 }
 
 static unique_ptr<GlobalTableFunctionState> ProfileCorrelationsInit(ClientContext &,
@@ -712,10 +722,9 @@ static void ProfileCorrelationsExecute(ClientContext &context, TableFunctionInpu
 
 		Connection con(*context.db);
 
-		// Get all (or filtered) numeric columns
-		auto all_cols = IntrospectColumns(con, "profile_correlations", bind_data.table_name, bind_data.columns);
+		// The numeric columns among the resolved ones
 		vector<string> numeric_cols;
-		for (auto &[name, type] : all_cols) {
+		for (auto &[name, type] : bind_data.columns) {
 			if (ClassifyColumn(type) == ColumnCategory::NUMERIC) {
 				numeric_cols.push_back(name);
 			}

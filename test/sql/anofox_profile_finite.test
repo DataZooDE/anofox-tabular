@@ -1,6 +1,8 @@
 # name: test/sql/anofox_profile_finite.test
 # description: profile_table reports min_val, max_val and top_values over the finite values of
-#              a numeric column (NaN and +/-Inf are only counted in nan_count / inf_count).
+#              a numeric column (NaN and +/-Inf are only counted in nan_count / inf_count),
+#              and validates the table and its columns at bind time, so an unknown column is
+#              an error before any result is produced.
 # group: [anofox_tabular]
 
 require anofox_tabular
@@ -59,3 +61,29 @@ query TTT
 SELECT min_val, max_val, top_values::VARCHAR FROM profile_table('status_codes')
 ----
 nan	ok	[{'value': ok, 'count': 2}, {'value': nan, 'count': 1}]
+
+# ===--------------------------------------------------------------------===
+# Validation at bind time: an unknown column or table fails before execution,
+# so EXPLAIN / DESCRIBE (which only bind) already raise the error
+# ===--------------------------------------------------------------------===
+
+statement error
+EXPLAIN SELECT * FROM profile_table('meter_readings', ['kwh', 'kwh_total'])
+----
+profile_table: column 'kwh_total' not found in table 'meter_readings'
+
+statement error
+DESCRIBE SELECT * FROM profile_table('meter_reading')
+----
+meter_reading
+
+statement error
+EXPLAIN SELECT * FROM profile_correlations('meter_readings', ['kwh', 'kwh_total'])
+----
+profile_correlations: column 'kwh_total' not found in table 'meter_readings'
+
+# Column names still match case-insensitively
+query T
+SELECT column_name FROM profile_table('meter_readings', ['KWH'])
+----
+kwh
