@@ -1,0 +1,108 @@
+# name: test/sql/anofox_check_suite_filter.test
+# description: A nightly run_checks suite says how much data a check actually saw: a check with
+#              a filter_expr reports "filter matched <kept>/<total> rows", a compliance check
+#              reports the rows its expression could not evaluate, and params.fail_on_empty
+#              turns "nothing to evaluate" (an empty table, or a filter matching no rows) into a
+#              failure instead of a silent pass.
+# group: [anofox_tabular]
+
+require anofox_tabular
+
+statement ok
+LOAD anofox_tabular
+
+statement ok
+SET anofox_tab_trace_enabled = false
+
+# ===--------------------------------------------------------------------===
+# 399 orders loaded on 2026-10-01 .. 2026-10-25; tonight's load (2026-10-26) did not arrive.
+# Every 50th order has an unparseable amount, every 20th no customer email.
+# ===--------------------------------------------------------------------===
+
+statement ok
+CREATE TABLE nightly_orders AS
+SELECT 10000 + i AS order_id,
+       ['north', 'south', 'west'][1 + i % 3] AS region,
+       CASE WHEN i % 20 = 0 THEN NULL ELSE 'customer' || i || '@example.com' END AS customer_email,
+       ['completed', 'pending', 'shipped'][1 + i % 3] AS status,
+       CASE WHEN i % 50 = 0 THEN 'n/a' ELSE CAST(round(5 + (i * 7.31) % 400, 2) AS VARCHAR) END AS amount_text,
+       DATE '2026-10-01' + CAST(i % 25 AS INTEGER) AS loaded_on
+FROM range(399) t(i)
+
+statement ok
+CREATE TABLE orders_staging (order_id INTEGER, customer_email VARCHAR, loaded_on DATE)
+
+statement ok
+CREATE TABLE nightly_checks (
+    check_name VARCHAR, check_type VARCHAR, table_name VARCHAR, column_name VARCHAR,
+    params VARCHAR, lower_threshold DOUBLE, upper_threshold DOUBLE,
+    monitor_only BOOLEAN, identifier_column VARCHAR, filter_expr VARCHAR
+)
+
+statement ok
+INSERT INTO nightly_checks VALUES
+    ('a_tonight_volume',   'volume',        'nightly_orders', NULL,             NULL,
+     1, NULL, false, NULL, 'loaded_on = DATE ''2026-10-26'''),
+    ('b_tonight_emails',   'null_rate',     'nightly_orders', 'customer_email', NULL,
+     NULL, 0.1, false, NULL, 'loaded_on = DATE ''2026-10-26'''),
+    ('c_tonight_strict',   'null_rate',     'nightly_orders', 'customer_email', '{"fail_on_empty": true}',
+     NULL, 0.1, false, NULL, 'loaded_on = DATE ''2026-10-26'''),
+    ('d_last_load_status', 'values_in_set', 'nightly_orders', 'status',
+     '{"allowed_values": ["completed", "pending", "shipped"]}', 1.0, NULL, false, NULL, 'loaded_on = DATE ''2026-10-25'''),
+    ('e_amount_parses',    'compliance',    'nightly_orders', NULL,
+     '{"expression": "CAST(amount_text AS DECIMAL(10, 2)) > 0"}', 0.9, NULL, false, NULL, NULL),
+    ('f_staging_emails',   'null_rate',     'orders_staging', 'customer_email', '{"fail_on_empty": true}',
+     NULL, 0.1, false, NULL, NULL),
+    ('g_region_strict',    'null_rate',     'nightly_orders', 'customer_email', '{"fail_on_empty": true}',
+     NULL, 0.1, false, 'region', 'loaded_on = DATE ''2026-10-26'''),
+    ('g_region_lenient',   'null_rate',     'nightly_orders', 'customer_email', NULL,
+     NULL, 0.1, false, 'region', 'loaded_on = DATE ''2026-10-26'''),
+    ('h_tonight_monitor',  'distinct_count', 'nightly_orders', 'status',        '{"fail_on_empty": true}',
+     NULL, NULL, true, NULL, 'loaded_on = DATE ''2026-10-26'''),
+    ('i_bad_flag',         'volume',        'nightly_orders', NULL,             '{"fail_on_empty": "yes"}',
+     1, NULL, false, NULL, NULL),
+    ('j_last_load_fresh',  'freshness',     'nightly_orders', 'loaded_on',
+     '{"reference_time": "2026-10-26 06:00:00", "fail_on_empty": false}', NULL, 86400, false, NULL, NULL)
+
+query TTT
+SELECT check_name, status, message FROM run_checks('nightly_checks') ORDER BY check_name
+----
+a_tonight_volume	fail	volume value 0.0 violates thresholds (0.0 < lower 1.0); filter matched 0/399 rows
+b_tonight_emails	pass	null_rate value 0.0 is within thresholds; filter matched 0/399 rows
+c_tonight_strict	fail	No rows to evaluate: filter matched 0/399 rows (fail_on_empty)
+d_last_load_status	pass	values_in_set value 1.0 is within thresholds; filter matched 15/399 rows
+e_amount_parses	pass	compliance value 0.98 is within thresholds; 8 row(s) could not be evaluated (counted as non-compliant)
+f_staging_emails	fail	No rows to evaluate: table 'orders_staging' is empty (fail_on_empty)
+g_region_lenient	pass	No value to evaluate; check passed trivially; filter matched 0/399 rows
+g_region_strict	fail	No rows to evaluate: filter matched 0/399 rows (fail_on_empty)
+h_tonight_monitor	warn	No rows to evaluate: filter matched 0/399 rows (fail_on_empty)
+i_bad_flag	error	check 'i_bad_flag' (volume) cannot run: params.fail_on_empty must be true or false
+j_last_load_fresh	fail	freshness value 108000.0 seconds violates thresholds (108000.0 seconds > upper 86400.0 seconds)
+
+# The empty-input rows keep the uniform schema: no value, the configured thresholds
+query TTRR
+SELECT check_name, identifier, value, upper_threshold FROM run_checks('nightly_checks')
+WHERE check_name IN ('c_tonight_strict', 'g_region_strict') ORDER BY check_name
+----
+c_tonight_strict	NULL	NULL	0.1
+g_region_strict	NULL	NULL	0.1
+
+# With rows after the filter, fail_on_empty changes nothing and grouped checks report the
+# filter per partition
+statement ok
+CREATE TABLE weekly_checks AS SELECT * FROM nightly_checks LIMIT 0
+
+statement ok
+INSERT INTO weekly_checks VALUES
+    ('region_emails', 'null_rate', 'nightly_orders', 'customer_email', '{"fail_on_empty": true}',
+     NULL, 0.1, false, 'region', 'loaded_on >= DATE ''2026-10-24''')
+
+query TTT
+SELECT identifier, status, message FROM run_checks('weekly_checks') ORDER BY identifier
+----
+north	pass	null_rate value 0.0 is within thresholds; filter matched 10/133 rows
+south	pass	null_rate value 0.0 is within thresholds; filter matched 10/133 rows
+west	pass	null_rate value 0.0 is within thresholds; filter matched 11/133 rows
+
+statement ok
+DROP TABLE nightly_checks; DROP TABLE weekly_checks; DROP TABLE nightly_orders; DROP TABLE orders_staging

@@ -58,7 +58,7 @@ query TTT
 SELECT check_name, status, message FROM run_checks('nightly_checks') ORDER BY check_name
 ----
 amount_iqr	error	check 'amount_iqr' (metric_anomaly_iqr) cannot run: params.reference_date 'yesterday' is not a valid date (expected YYYY-MM-DD)
-fresh_ok	pass	freshness value 44100.0 is within thresholds
+fresh_ok	pass	freshness value 44100.0 seconds is within thresholds
 orders_change	error	check 'orders_change' (rel_count_change) cannot run: params.reference_date '2026-13-01' is not a valid date (expected YYYY-MM-DD)
 orders_fresh	error	check 'orders_fresh' (freshness) cannot run: params.reference_time '29.10.2026' is not a valid timestamp (expected YYYY-MM-DD[ HH:MM[:SS]][+HH[:MM]])
 orders_window	error	check 'orders_window' (rel_count_change) cannot run: params.window_days 'a week' is not a positive integer
@@ -96,10 +96,10 @@ INSERT INTO nightly_checks VALUES
 query TTT
 SELECT check_name, status, message FROM run_checks('nightly_checks') ORDER BY check_name
 ----
-orders_change	error	check 'orders_change' (rel_count_change) cannot run: unknown params key 'refernce_date' (valid keys for rel_count_change: date_column, count_column, window_days, reference_date)
-rows_loaded	error	check 'rows_loaded' (volume) cannot run: unknown params key 'window_days' (volume takes no params keys)
+orders_change	error	check 'orders_change' (rel_count_change) cannot run: unknown params key 'refernce_date' (valid keys for rel_count_change: date_column, count_column, window_days, reference_date, fail_on_empty)
+rows_loaded	error	check 'rows_loaded' (volume) cannot run: unknown params key 'window_days' (valid keys for volume: fail_on_empty)
 rows_plain	pass	volume value 8.0 is within thresholds
-status_ok	error	check 'status_ok' (values_in_set) cannot run: unknown params keys 'alowed', 'patern' (valid keys for values_in_set: allowed_values)
+status_ok	error	check 'status_ok' (values_in_set) cannot run: unknown params keys 'alowed', 'patern' (valid keys for values_in_set: allowed_values, fail_on_empty)
 
 # B-F7: the message names the violated bound and shows up to 5 sample offending values
 # B-F8: a check with neither threshold is a monitor row
@@ -182,7 +182,7 @@ sampled_rows	pass	8.0
 query T
 SELECT message FROM run_checks('nightly_checks') WHERE check_name = 'orphans'
 ----
-volume value 2.0 violates thresholds (2.0 > upper 0.0)
+volume value 2.0 violates thresholds (2.0 > upper 0.0); filter matched 2/8 rows
 
 # When all customers exist the referential check passes
 statement ok

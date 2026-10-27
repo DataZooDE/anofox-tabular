@@ -56,7 +56,7 @@ query TTTT
 SELECT check_name, identifier, status, message FROM run_checks('fe_checks') ORDER BY check_name, identifier
 ----
 fresh	NULL	fail	No timestamp values found (table is empty or column is all NULL)
-fresh_grp	a	pass	freshness value 1800.0 is within thresholds
+fresh_grp	a	pass	freshness value 1800.0 seconds is within thresholds
 fresh_grp	b	fail	No timestamp values found (table is empty or column is all NULL)
 fresh_mon	NULL	warn	No timestamp values found (table is empty or column is all NULL)
 status_set	NULL	pass	No value to evaluate; check passed trivially

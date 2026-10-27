@@ -126,7 +126,8 @@ SELECT 'avg amount', status FROM agg_check('orders', 'amount', 'avg', 20, 80);
 
 When the list of checks grows, keep it in a table. Each row is one check; `run_checks` runs
 them all and returns the same columns for every check. The checks table must be a regular
-table, not a TEMP table. All ten columns must exist.
+table, not a TEMP table. `check_name`, `check_type` and `table_name` are required; the other
+seven columns are optional and read as `NULL` when the table leaves them out.
 
 ```sql
 CREATE TABLE dq_checks (
@@ -430,14 +431,14 @@ SELECT check_name, value, status, message FROM run_checks('nightly_checks');
 ```
 
 ```text
-┌────────────────┬──────────┬─────────┬──────────────────────────────────────────────────────────────────────────┐
-│   check_name   │  value   │ status  │                                 message                                  │
-│    varchar     │  double  │ varchar │                                 varchar                                  │
-├────────────────┼──────────┼─────────┼──────────────────────────────────────────────────────────────────────────┤
-│ order_id_dupes │      0.0 │ pass    │ duplicate_count value 0.0 is within thresholds                           │
-│ orders_arrived │     -1.0 │ fail    │ rel_count_change value -1.0 violates thresholds (-1.0 < lower -0.5)      │
-│ orders_fresh   │ 194400.0 │ fail    │ freshness value 194400.0 violates thresholds (194400.0 > upper 129600.0) │
-└────────────────┴──────────┴─────────┴──────────────────────────────────────────────────────────────────────────┘
+┌────────────────┬──────────┬─────────┬──────────────────────────────────────────────────────────────────────────────────────────────────┐
+│   check_name   │  value   │ status  │                                             message                                              │
+│    varchar     │  double  │ varchar │                                             varchar                                              │
+├────────────────┼──────────┼─────────┼──────────────────────────────────────────────────────────────────────────────────────────────────┤
+│ order_id_dupes │      0.0 │ pass    │ duplicate_count value 0.0 is within thresholds                                                   │
+│ orders_arrived │     -1.0 │ fail    │ rel_count_change value -1.0 violates thresholds (-1.0 < lower -0.5)                              │
+│ orders_fresh   │ 194400.0 │ fail    │ freshness value 194400.0 seconds violates thresholds (194400.0 seconds > upper 129600.0 seconds) │
+└────────────────┴──────────┴─────────┴──────────────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
 `orders_arrived` compares the 0 orders of 2026-03-15 with the average of the 7 days before
@@ -478,8 +479,11 @@ failing run. Keep in mind what the checks do not cover:
 - `schema_check` compares column names only, not their types. A column whose type changed from
   `DOUBLE` to `VARCHAR` still passes; add a `compliance` or `agg` check on it if the type
   matters.
-- `rolling_values_in_set` passes when its window holds no rows (nothing to evaluate), so a
-  missing load does not fail it. Pair it with a volume or `rel_count_change` check anchored to
+- A check with nothing to evaluate passes trivially. For a check whose `filter_expr` matches
+  no row the message says so (`...; filter matched 0/399 rows`), but the status is `pass`; set
+  `"fail_on_empty": true` in its `params` to make an empty table or an empty filter result
+  fail. `rolling_values_in_set` also passes when only its window is empty, so pair it with a
+  volume or `rel_count_change` check anchored to
   the expected date, as above.
 - A check that cannot run (missing table or column, a misspelled `params` key, a malformed
   `reference_date`) is an `error` row, not a failed query; the gate above treats it like a

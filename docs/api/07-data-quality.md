@@ -262,7 +262,7 @@ freshness(table_name VARCHAR, timestamp_column VARCHAR, max_age INTERVAL [, refe
 |-----------|------|---------|-------------|
 | `table_name` | `VARCHAR` | required | Table or view |
 | `timestamp_column` | `VARCHAR` | required | Timestamp column |
-| `max_age` | `INTERVAL` | required | Largest allowed age of the newest row |
+| `max_age` | `INTERVAL` | required | Largest allowed age of the newest row, for example `INTERVAL '1 day'` |
 | `reference_time` | `TIMESTAMP` | current time (also for `NULL`) | The time the age is measured from |
 
 | Column | Type | Description |
@@ -299,6 +299,12 @@ is 3600s after the reference time; check for clock skew or a time zone mismatch`
 
 An empty table, or a column that is all `NULL`, fails with `metric_value` and `age_seconds`
 `NULL` and the message `No timestamp values found (table is empty or column is all NULL)`.
+
+Units: the direct function takes `max_age` as an `INTERVAL` and reports the age in seconds
+(`age_seconds`, and `age: 90000s, max allowed: 86400s` in the message of a stale table). A
+`freshness` check in [`run_checks`](#run_checks) has no `INTERVAL`: its `value` is the age in
+seconds and its thresholds are seconds too (`86400` for one day); its messages say so
+(`freshness value 79200.0 seconds is within thresholds`).
 
 ---
 
@@ -985,26 +991,35 @@ run_checks(checks_table VARCHAR)
 ### The checks table
 
 The checks table must be a regular table, not a TEMP table: `run_checks` reads it through a
-second connection when the query is bound. The checked tables may be TEMP tables or views. All
-ten columns must exist:
+second connection when the query is bound. A TEMP checks table is the error
+`run_checks: the checks table 'my_checks' is a TEMP table; the checks table must be a regular, non-temporary table (...)`.
+The checked tables may be TEMP tables or views.
 
-| Column | Type | Description |
-|--------|------|-------------|
-| `check_name` | `VARCHAR` | Label of the check; results are ordered by it |
-| `check_type` | `VARCHAR` | One of the types below |
-| `table_name` | `VARCHAR` | The table or view to check |
-| `column_name` | `VARCHAR` | The column; `NULL` where the type needs none. Comma-separated for `duplicate_count` |
-| `params` | `VARCHAR` | A JSON object with type-specific parameters, or `NULL` |
-| `lower_threshold` | `DOUBLE` | Fail when `value` is below it; `NULL` = unbounded |
-| `upper_threshold` | `DOUBLE` | Fail when `value` is above it; `NULL` = unbounded |
-| `monitor_only` | `BOOLEAN` | `true` records `'warn'` instead of `'fail'` |
-| `identifier_column` | `VARCHAR` | Optional: one result row per distinct value of this column |
-| `filter_expr` | `VARCHAR` | Optional SQL boolean pre-filter on the checked table |
+Three columns are required; the other seven are optional, and a missing optional column reads
+as `NULL` (`monitor_only` as `false`). Further columns, such as an owner or a description, are
+ignored. A checks table without a required column is an error that names it, for example
+`run_checks: checks table 'my_checks' is missing the required column check_type (required: check_name, check_type, table_name; optional: ...)`.
+
+| Column | Type | Required | Description |
+|--------|------|----------|-------------|
+| `check_name` | `VARCHAR` | yes | Label of the check; results are ordered by it |
+| `check_type` | `VARCHAR` | yes | One of the types below |
+| `table_name` | `VARCHAR` | yes | The table or view to check |
+| `column_name` | `VARCHAR` | no | The column; `NULL` where the type needs none. Comma-separated for `duplicate_count` |
+| `params` | `VARCHAR` | no | A JSON object with type-specific parameters, or `NULL` |
+| `lower_threshold` | `DOUBLE` | no | Fail when `value` is below it; `NULL` = unbounded |
+| `upper_threshold` | `DOUBLE` | no | Fail when `value` is above it; `NULL` = unbounded |
+| `monitor_only` | `BOOLEAN` | no | `true` records `'warn'` instead of `'fail'` |
+| `identifier_column` | `VARCHAR` | no | One result row per distinct value of this column |
+| `filter_expr` | `VARCHAR` | no | SQL boolean pre-filter on the checked table |
 
 ### Check types
 
-`run_checks` runs 14 check types. `zscore`, `iqr` and `schema_check` are not available in a
-suite. The `value` column holds the measure of each type:
+`run_checks` runs 14 check types. `zscore`, `iqr`, `schema_check` and the `_events` functions
+are not available in a suite; such a row is an `error` row with the message
+`check type 'zscore' is not supported in run_checks (use the zscore() function)`. The direct
+`agg_check` is the type `agg` here (`check type 'agg_check' is called 'agg' in run_checks ...`).
+The `value` column holds the measure of each type:
 
 | `check_type` | `value` | `params` keys | `identifier_column` |
 |--------------|---------|---------------|---------------------|
@@ -1016,7 +1031,7 @@ suite. The `value` column holds the measure of each type:
 | `agg` | the aggregate | `agg` (required): `avg`, `min`, `max`, `sum`, `median`, `stddev` | yes |
 | `duplicate_count` | duplicates | none | yes |
 | `compliance` | compliance rate | `expression` (required) | yes |
-| `freshness` | age in seconds | `reference_time` (default: the current UTC time, no ICU needed) | yes |
+| `freshness` | age in seconds (the thresholds are seconds too) | `reference_time` (default: the current UTC time, no ICU needed) | yes |
 | `occurrence` | frequency of the extreme value | `mode`: `max` (default) or `min` | no |
 | `match_rate` | match rate | `right_table`, `right_keys` (required), `left_keys` (default `column_name`) | no |
 | `rel_count_change` | relative change | `date_column` (required), `count_column`, `window_days` (7), `reference_date` | no |
@@ -1027,9 +1042,16 @@ For `metric_anomaly_iqr` the IQR bounds replace the table's thresholds and appea
 `lower_threshold` and `upper_threshold`. The `mode` parameter of the direct function is not
 available in a suite; both bounds apply.
 
-`params` may only hold the keys listed for its type. Any other key, for example a misspelled
-`refernce_date`, is an `error` row that lists the valid keys:
-`unknown params key 'refernce_date' (valid keys for rel_count_change: date_column, count_column, window_days, reference_date)`.
+Every type also accepts the `params` key `fail_on_empty` (`true` or `false`, default `false`):
+with `true` a check that has no rows to evaluate (an empty table, or a `filter_expr` that
+matches no row) is `fail` (or `warn`) with a NULL `value` and the message
+`No rows to evaluate: filter matched 0/399 rows (fail_on_empty)` or
+`No rows to evaluate: table 'orders_staging' is empty (fail_on_empty)`, instead of passing
+trivially.
+
+`params` may only hold the keys listed for its type and `fail_on_empty`. Any other key, for
+example a misspelled `refernce_date`, is an `error` row that lists the valid keys:
+`unknown params key 'refernce_date' (valid keys for rel_count_change: date_column, count_column, window_days, reference_date, fail_on_empty)`.
 Typed values are checked when the suite is built: `reference_date` must be a date
 (`YYYY-MM-DD`), `reference_time` a timestamp (`YYYY-MM-DD[ HH:MM[:SS]]`, optionally with a UTC
 offset such as `+02:00`), `window_days` a positive integer and `k` a finite number. A malformed
@@ -1040,12 +1062,20 @@ other checks run.
 `filter_expr` accepts the date tokens `${today}`, `${yesterday}`, `${today+N}`, `${today-N}`,
 `${yesterday+N}` and `${yesterday-N}` (UTC dates), for example `order_date >= ${today-7}`.
 
+The message of a check with a `filter_expr` ends with how many rows the filter kept, for
+example `null_rate value 0.0 is within thresholds; filter matched 0/399 rows`: a nightly check
+whose filter matches nothing (the load did not arrive) is visible as such. With an
+`identifier_column` the counts are those of the row's partition; when the filter leaves no row
+at all, the check still returns one row with a NULL `identifier` (`pass` with
+`No value to evaluate; check passed trivially; filter matched 0/399 rows`, or `fail` with
+`fail_on_empty`).
+
 ### Status
 
 | `status` | Meaning |
 |----------|---------|
-| `pass` | `value` is within the thresholds; or the check has neither a `lower_threshold` nor an `upper_threshold` (a monitor row that only records the value; message `<check_type> value <value>: no thresholds configured (monitor)`); or `value` is NULL (nothing to evaluate; message `No value to evaluate; check passed trivially`) |
-| `fail` | `value` is outside a threshold. For `freshness` also a NULL `value` (empty table, all-NULL column or, with `identifier_column`, a group without timestamps), like the direct [`freshness`](#freshness) function; message `No timestamp values found (table is empty or column is all NULL)` |
+| `pass` | `value` is within the thresholds; or the check has neither a `lower_threshold` nor an `upper_threshold` (a monitor row that only records the value; message `<check_type> value <value>: no thresholds configured (monitor)`); or `value` is NULL (nothing to evaluate; message `No value to evaluate; check passed trivially`), unless `fail_on_empty` is set |
+| `fail` | `value` is outside a threshold; or `params.fail_on_empty` is `true` and there are no rows to evaluate. For `freshness` also a NULL `value` (empty table, all-NULL column or, with `identifier_column`, a group without timestamps), like the direct [`freshness`](#freshness) function; message `No timestamp values found (table is empty or column is all NULL)` |
 | `warn` | as `fail`, for a check with `monitor_only = true` |
 | `error` | the check could not run; `value` is NULL and the message says why |
 
@@ -1072,7 +1102,7 @@ are, for example:
   `column 'coupon_code' not found in table 'nightly_orders' (available columns: ...)`.
   Column names match case-insensitively.
 - an `agg` check on a column that is not numeric
-- an unknown `check_type`, invalid `params` JSON, a missing required `params` key, a `params`
+- an unknown `check_type` or one that exists only as a direct function, invalid `params` JSON, a missing required `params` key, a `params`
   key the type does not accept, or a malformed typed `params` value (see above)
 - a `compliance` expression or `filter_expr` that does not parse or references an unknown column
 - a `match_rate` `right_table` that does not exist
@@ -1084,7 +1114,10 @@ are, for example:
 A user-supplied `compliance` expression or `filter_expr` that fails at runtime on some rows (for
 example a `CAST` of free text such as `'n/a'`) does not stop the call: such rows count as not
 compliant in a `compliance` check and are left out by `filter_expr`, as if the expression were
-wrapped in `TRY()`. Check the expression on its own when a rate looks too low. The standalone
+wrapped in `TRY()`. The message of a `compliance` check says how many rows its expression could
+not evaluate, for example
+`compliance value 0.98 is within thresholds; 8 row(s) could not be evaluated (counted as non-compliant)`.
+Check the expression on its own when a rate looks too low. The standalone
 [`compliance`](#compliance) function does not do this; there a failing expression is an error.
 
 DuckDB cannot wrap an expression that contains a subquery or a volatile function such as
