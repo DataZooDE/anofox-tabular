@@ -1,0 +1,142 @@
+# name: test/sql/anofox_email_regex_re2.test
+# description: anofox_tab_email_regex_pattern is compiled with RE2 (linear-time matching): a
+#              pattern with catastrophic backtracking under a backtracking engine returns at once,
+#              a pattern RE2 cannot compile (backreference, lookaround) or an invalid one is
+#              rejected at SET time and the previous pattern stays active, and the default
+#              pattern keeps its syntax rules (including the non-numeric top-level label).
+# group: [anofox_tabular]
+
+require anofox_tabular
+
+statement ok
+LOAD anofox_tabular;
+
+statement ok
+SET anofox_tab_trace_level='warn';
+
+# Other test files share the process-wide email settings
+statement ok
+RESET anofox_tab_email_regex_pattern;
+
+statement ok
+SET anofox_tab_email_default_validation='regex';
+
+# Nested quantifiers: exponential for a backtracking engine (std::regex took minutes on 35
+# characters), linear for RE2. 10,000 rows of the worst case finish quickly.
+statement ok
+SET anofox_tab_email_regex_pattern='^(a+)+$';
+
+query TT
+SELECT email_is_valid(repeat('a', 34) || '!'), email_is_valid(repeat('a', 34));
+----
+false	true
+
+query II
+SELECT count(*) FILTER (WHERE email_is_valid(repeat('a', 30 + (i % 30)) || '!')),
+       count(*) FILTER (WHERE NOT email_is_valid(repeat('a', 30 + (i % 30)) || '!'))
+FROM range(10000) r(i);
+----
+0	10000
+
+query TT
+SELECT (email_validate(repeat('a', 40) || '!')).reason, (email_validate(repeat('a', 64))).valid;
+----
+invalid_format	true
+
+# A backreference is not supported by RE2: the SET fails and the old pattern stays active
+statement error
+SET anofox_tab_email_regex_pattern='^(\w+)@\1\.com$';
+----
+Invalid email regex pattern
+
+query T
+SELECT value FROM email_config() WHERE key = 'regex_pattern';
+----
+^(a+)+$
+
+# Lookahead / lookbehind are not supported either
+statement error
+SET anofox_tab_email_regex_pattern='^(?!info@).+@.+$';
+----
+Invalid email regex pattern
+
+statement error
+SET anofox_tab_email_regex_pattern='^.+(?<!\.)@.+$';
+----
+Invalid email regex pattern
+
+# A malformed pattern
+statement error
+SET anofox_tab_email_regex_pattern='^[a-z+@';
+----
+Invalid email regex pattern
+
+query T
+SELECT email_is_valid(repeat('a', 34));
+----
+true
+
+# A company rule: only addresses of the own domains, case-insensitive with an inline flag
+statement ok
+SET anofox_tab_email_regex_pattern='(?i)^[a-z0-9._%+-]+@(?:data-zoo\.de|anofox\.com)$';
+
+query TT
+SELECT email, email_is_valid(email)
+FROM (VALUES ('jana.koch@data-zoo.de'), ('Support@AnoFox.com'), ('jana.koch@gmail.com'),
+             ('jana.koch@data-zoo.de.evil.io')) t(email)
+ORDER BY email;
+----
+Support@AnoFox.com	true
+jana.koch@data-zoo.de	true
+jana.koch@data-zoo.de.evil.io	false
+jana.koch@gmail.com	false
+
+# The match covers the whole address even without anchors (like the former regex_match)
+statement ok
+SET anofox_tab_email_regex_pattern='[a-z]+@[a-z]+\.de';
+
+query TT
+SELECT email_is_valid('max@web.de'), email_is_valid('max@web.de.com');
+----
+true	false
+
+# Non-ASCII addresses: the pattern sees UTF-8 characters, not bytes
+statement ok
+SET anofox_tab_email_regex_pattern='^.@[a-z]+\.de$';
+
+query TT
+SELECT email_is_valid('ü@web.de'), email_is_valid('üü@web.de');
+----
+true	false
+
+statement ok
+RESET anofox_tab_email_regex_pattern;
+
+# The default pattern still rejects an all-digit top-level label but accepts a digit-led one
+query TTTTTT
+SELECT email_is_valid('max@10.0.0.1'), email_is_valid('max@web.123'), email_is_valid('max@web.1a'),
+       email_is_valid('max@web.a1'), email_is_valid('max@123.de'), email_is_valid('max@web.1-2');
+----
+false	false	true	true	true	true
+
+query T
+SELECT value FROM email_config() WHERE key = 'regex_pattern';
+----
+^[A-Za-z0-9!#$%&'*+/=?^_`{|}~-]+(?:\.[A-Za-z0-9!#$%&'*+/=?^_`{|}~-]+)*@(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)*[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$
+
+# The default restored after a custom pattern applies the numeric top-level label rule again
+statement ok
+SET anofox_tab_email_regex_pattern='^.+@.+$';
+
+query T
+SELECT email_is_valid('max@web.123');
+----
+true
+
+statement ok
+RESET anofox_tab_email_regex_pattern;
+
+query T
+SELECT email_is_valid('max@web.123');
+----
+false

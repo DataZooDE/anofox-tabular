@@ -20,9 +20,10 @@
 #include <string_view>
 #include <limits>
 #include <mutex>
-#include <regex>
 #include <unordered_set>
 #include "anofox_tabular_banner.hpp"
+
+#include "re2/re2.h"
 
 namespace duckdb {
 namespace anofox {
@@ -39,16 +40,18 @@ constexpr const char *EMAIL_REASON_SMTP_FAIL = "smtp_verification_failed";
 constexpr const char *DEFAULT_VALIDATION = "regex";
 //! Default pattern: an RFC 5322 dot-atom local part (no leading, trailing or
 //! consecutive dots; quoted local parts are not accepted) and a domain of
-//! LDH labels of 1-63 characters that neither start nor end with '-', whose
-//! last label is not all digits. Length limits are checked before the regex
-//! (see EMAIL_MAX_LENGTH / EMAIL_MAX_LOCAL_LENGTH).
+//! LDH labels of 1-63 characters that neither start nor end with '-'. Length
+//! limits are checked before the regex (see EMAIL_MAX_LENGTH /
+//! EMAIL_MAX_LOCAL_LENGTH). The default pattern also requires a last domain label
+//! that is not all digits (an IP address is no domain); RE2 has no lookahead, so
+//! that rule is checked in code (see LastLabelIsNumeric) whenever this pattern is
+//! the active one.
 constexpr const char *DEFAULT_REGEX_PATTERN =
     R"(^[A-Za-z0-9!#$%&'*+/=?^_`{|}~-]+(?:\.[A-Za-z0-9!#$%&'*+/=?^_`{|}~-]+)*@)"
-    R"((?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)*(?![0-9]+$)[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$)";
+    R"((?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)*[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$)";
 //! RFC 5321 limits: 254 characters for a usable address (the 256-octet path
 //! minus the angle brackets), 64 for the local part. Applied to every pattern,
-//! including a custom anofox_tab_email_regex_pattern, before the regex runs, so
-//! huge inputs never reach std::regex.
+//! including a custom anofox_tab_email_regex_pattern, before the regex runs.
 constexpr size_t EMAIL_MAX_LENGTH = 254;
 constexpr size_t EMAIL_MAX_LOCAL_LENGTH = 64;
 
@@ -122,6 +125,38 @@ std::string_view ExtractDomain(std::string_view email) {
 	return email.substr(domain_offset);
 }
 
+//! The active regex-stage pattern, compiled once per SET and shared read-only by
+//! all threads (RE2's matching methods are const and thread-safe).
+struct CompiledEmailPattern {
+	explicit CompiledEmailPattern(const std::string &pattern, const duckdb_re2::RE2::Options &options)
+	    : regex(pattern, options), is_default(pattern == DEFAULT_REGEX_PATTERN) {
+	}
+	duckdb_re2::RE2 regex;
+	//! Whether this is the built-in pattern, which also rejects an all-digit last label
+	bool is_default;
+};
+
+std::shared_ptr<const CompiledEmailPattern> CompileEmailPattern(const std::string &pattern) {
+	duckdb_re2::RE2::Options options;
+	options.set_log_errors(false);
+	auto compiled = std::make_shared<const CompiledEmailPattern>(pattern, options);
+	if (!compiled->regex.ok()) {
+		EmailTrace(AnofoxLogLevel::Warn, "Rejecting email regex pattern '" + pattern + "': " + compiled->regex.error());
+		throw InvalidInputException("Invalid email regex pattern: %s (RE2 syntax; backreferences and "
+		                            "lookahead/lookbehind are not supported)",
+		                            compiled->regex.error());
+	}
+	return compiled;
+}
+
+//! Whether the label after the last '.' (or after the '@' for a single-label
+//! domain) consists of digits only, as in max@10.0.0.1.
+bool LastLabelIsNumeric(std::string_view email) {
+	auto start = email.find_last_of(".@");
+	auto label = start == std::string_view::npos ? email : email.substr(start + 1);
+	return !label.empty() && std::all_of(label.begin(), label.end(), [](char c) { return c >= '0' && c <= '9'; });
+}
+
 class EmailConfig {
 public:
 	static EmailConfig &Get() {
@@ -135,15 +170,16 @@ public:
 		default_validation = normalized;
 	}
 
+	//! Compiles `pattern` with RE2, whose matching time is linear in the input: a
+	//! pattern such as '^(a+)+$' cannot stall the process the way a backtracking
+	//! engine does. A pattern RE2 cannot compile (syntax error, backreference,
+	//! lookahead/lookbehind) is rejected here, at SET time, and the previous
+	//! pattern stays active.
 	void SetRegexPattern(const std::string &pattern) {
+		auto compiled = CompileEmailPattern(pattern);
 		std::lock_guard<std::mutex> lock(config_mutex);
-		try {
-			auto compiled = std::make_shared<std::regex>(pattern, std::regex_constants::ECMAScript);
-			regex_pattern = pattern;
-			regex_compiled = std::move(compiled);
-		} catch (const std::regex_error &ex) {
-			throw InvalidInputException("Invalid email regex pattern: %s", ex.what());
-		}
+		regex_pattern = pattern;
+		regex_compiled = std::move(compiled);
 	}
 
 	std::string GetDefaultValidation() {
@@ -151,7 +187,7 @@ public:
 		return default_validation;
 	}
 
-	std::shared_ptr<const std::regex> GetCompiledRegex() {
+	std::shared_ptr<const CompiledEmailPattern> GetCompiledRegex() {
 		std::lock_guard<std::mutex> lock(config_mutex);
 		return regex_compiled;
 	}
@@ -278,12 +314,12 @@ private:
 	std::mutex config_mutex;
 	std::string default_validation = DEFAULT_VALIDATION;
 	std::string regex_pattern = DEFAULT_REGEX_PATTERN;
-	std::shared_ptr<std::regex> regex_compiled;
+	std::shared_ptr<const CompiledEmailPattern> regex_compiled;
 	email::DnsOptions dns_options;
 	email::SmtpOptions smtp_options;
 };
 
-EmailValidationResult ValidateRegex(std::string_view email, const std::regex &regex) {
+EmailValidationResult ValidateRegex(std::string_view email, const CompiledEmailPattern &pattern) {
 	EmailValidationResult result;
 	result.stage = EMAIL_STAGE_REGEX;
 	auto at_pos = email.rfind('@');
@@ -293,7 +329,11 @@ EmailValidationResult ValidateRegex(std::string_view email, const std::regex &re
 		result.reason = EMAIL_REASON_TOO_LONG;
 		return result;
 	}
-	if (std::regex_match(email.begin(), email.end(), regex)) {
+	bool matches = duckdb_re2::RE2::FullMatch(duckdb_re2::StringPiece(email.data(), email.size()), pattern.regex);
+	if (matches && pattern.is_default && LastLabelIsNumeric(email)) {
+		matches = false;
+	}
+	if (matches) {
 		result.valid = true;
 	} else {
 		result.valid = false;
@@ -319,7 +359,7 @@ std::string_view TrimEmailWhitespace(std::string_view email) {
 //! NormalizeValidationMode and `regex` is the compiled pattern; both are hoisted
 //! out of the per-chunk row loops so the hot regex path does no per-row setup.
 EmailValidationResult ValidateEmailAddress(std::string_view raw_email, const std::string &normalized_mode,
-                                           const std::regex &regex) {
+                                           const CompiledEmailPattern &regex) {
 	// Every stage (regex, DNS, SMTP) sees the address without surrounding whitespace
 	const auto email = TrimEmailWhitespace(raw_email);
 	// Trace message construction is guarded so disabled tracing costs nothing per row.

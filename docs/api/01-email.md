@@ -46,6 +46,44 @@ The default pattern accepts what mail systems accept in practice:
   address fails with reason `invalid_length`. The length check runs before the pattern, also
   for a custom `anofox_tab_email_regex_pattern`.
 
+### Custom patterns
+
+`SET anofox_tab_email_regex_pattern = '...'` replaces the default pattern for the session's
+process. The pattern is compiled with [RE2](https://github.com/google/re2/wiki/Syntax), the
+engine of DuckDB's `regexp_*` functions, which matches in time linear in the address length:
+a pattern with nested quantifiers such as `'^(a+)+$'` cannot stall the query. The pattern must
+match the whole address (as if it were anchored with `^...$`), and inline flags such as `(?i)`
+work. RE2 does not support backreferences (`\1`) or lookahead and lookbehind (`(?=...)`,
+`(?!...)`, `(?<=...)`, `(?<!...)`): such a pattern, like a malformed one, is rejected by the
+`SET` itself and the previous pattern stays active.
+
+```sql
+SET anofox_tab_email_regex_pattern = '(?i)^[a-z0-9._%+-]+@(?:data-zoo\.de|anofox\.com)$';
+SELECT email_is_valid('Jana.Koch@Data-Zoo.de') AS own_domain, email_is_valid('jana.koch@gmail.com') AS other;
+RESET anofox_tab_email_regex_pattern;
+```
+
+```text
+┌────────────┬─────────┐
+│ own_domain │  other  │
+│  boolean   │ boolean │
+├────────────┼─────────┤
+│ true       │ false   │
+└────────────┴─────────┘
+```
+
+```sql
+SET anofox_tab_email_regex_pattern = '^(?!info@).+@.+$';
+```
+
+```text
+Invalid Input Error: Invalid email regex pattern: invalid perl operator: (?! (RE2 syntax; backreferences and lookahead/lookbehind are not supported)
+```
+
+The rule that the last domain label may not be all digits is part of the default only; RE2 has
+no lookahead, so it is checked next to the pattern while the default pattern is active. A custom
+pattern decides on its own.
+
 Whitespace around the address (spaces, tabs, line breaks) is ignored in every mode, as
 `vat_is_valid` ignores it around a VAT number: `' max@web.de '` is valid, and the `dns` and
 `smtp` stages use the trimmed address. Whitespace inside the address (`'max muster@web.de'`)
@@ -305,25 +343,25 @@ SELECT * FROM email_config();
 ```
 
 ```text
-┌─────────────────────────┬──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
-│           key           │                                                                                        value                                                                                         │
-│         varchar         │                                                                                       varchar                                                                                        │
-├─────────────────────────┼──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┤
-│ default_validation      │ regex                                                                                                                                                                                │
-│ regex_pattern           │ ^[A-Za-z0-9!#$%&'*+/=?^_`{|}~-]+(?:\.[A-Za-z0-9!#$%&'*+/=?^_`{|}~-]+)*@(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)*(?![0-9]+$)[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$ │
-│ dns_timeout_ms          │ 1000                                                                                                                                                                                 │
-│ dns_tries               │ 1                                                                                                                                                                                    │
-│ dns_cache_ttl_s         │ 300                                                                                                                                                                                  │
-│ dns_cache_max_entries   │ 10000                                                                                                                                                                                │
-│ smtp_port               │ 25                                                                                                                                                                                   │
-│ smtp_connect_timeout_ms │ 5000                                                                                                                                                                                 │
-│ smtp_read_timeout_ms    │ 5000                                                                                                                                                                                 │
-│ smtp_helo_domain        │ duckdb.local                                                                                                                                                                         │
-│ smtp_mail_from          │ validator@duckdb.local                                                                                                                                                               │
-│ trace_enabled           │ true                                                                                                                                                                                 │
-│ trace_level             │ info                                                                                                                                                                                 │
-└─────────────────────────┴──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
-  13 rows                                                                                                                                                                                              2 columns
+┌─────────────────────────┬───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│           key           │                                                                                   value                                                                                   │
+│         varchar         │                                                                                  varchar                                                                                  │
+├─────────────────────────┼───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+│ default_validation      │ regex                                                                                                                                                                     │
+│ regex_pattern           │ ^[A-Za-z0-9!#$%&'*+/=?^_`{|}~-]+(?:\.[A-Za-z0-9!#$%&'*+/=?^_`{|}~-]+)*@(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)*[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$ │
+│ dns_timeout_ms          │ 1000                                                                                                                                                                      │
+│ dns_tries               │ 1                                                                                                                                                                         │
+│ dns_cache_ttl_s         │ 300                                                                                                                                                                       │
+│ dns_cache_max_entries   │ 10000                                                                                                                                                                     │
+│ smtp_port               │ 25                                                                                                                                                                        │
+│ smtp_connect_timeout_ms │ 5000                                                                                                                                                                      │
+│ smtp_read_timeout_ms    │ 5000                                                                                                                                                                      │
+│ smtp_helo_domain        │ duckdb.local                                                                                                                                                              │
+│ smtp_mail_from          │ validator@duckdb.local                                                                                                                                                    │
+│ trace_enabled           │ true                                                                                                                                                                      │
+│ trace_level             │ info                                                                                                                                                                      │
+└─────────────────────────┴───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+  13 rows                                                                                                                                                                                   2 columns
 ```
 
 The settings themselves are described in [Configuration](../reference/configuration.md#email).
