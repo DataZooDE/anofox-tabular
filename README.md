@@ -66,6 +66,12 @@ The community build can be older than these docs. Check which release you have:
 SELECT extension_version FROM duckdb_extensions() WHERE extension_name = 'anofox_tabular';
 ```
 
+On DuckDB 2.0 this is the date version of the release (`v2026.10.25`). The community build for
+DuckDB v1.5.6 reports the short git commit hash of the release instead (for example `3f9c2ab`).
+To map a hash to its release, open `https://github.com/DataZooDE/anofox-tabular/commit/<hash>`
+(GitHub lists the release tags that contain the commit), or run `git tag --contains <hash>` in
+a clone of the repository.
+
 Some parts depend on the platform: the NER-based PII types (names, organizations, locations)
 need OpenVINO, which the Linux x64 and macOS x64 builds include, and the postal module is not
 available on Windows.

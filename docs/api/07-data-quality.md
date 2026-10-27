@@ -1161,7 +1161,7 @@ The `value` column holds the measure of each type:
 | `freshness` | age in seconds (the thresholds are seconds too); `column_name` must be a date, timestamp or text column | `reference_time` (default: the current UTC time, no ICU needed) | yes |
 | `occurrence` | frequency of the extreme value | `mode`: `max` (default) or `min` | no |
 | `match_rate` | match rate over the rows with a non-NULL key | `right_table`, `right_keys` (required), `left_keys` (default `column_name`); the keys as a comma-separated string or a JSON array (`["customer_id", "region"]`) | no |
-| `rel_count_change` | relative change | `date_column` (required), `count_column` (counted with `COUNT(DISTINCT ...)` per day; default: rows), `window_days` (7), `reference_date`, `fill_missing_days` (`false`) | no |
+| `rel_count_change` | relative change; without `lower_threshold` and `upper_threshold` a monitor row that only records it (the direct function defaults to -0.5 and 0.5) | `date_column` (required), `count_column` (counted with `COUNT(DISTINCT ...)` per day; default: rows), `window_days` (7), `reference_date`, `fill_missing_days` (`false`) | no |
 | `metric_anomaly_iqr` | daily metric: `AVG` of `metric_column`, else of `column_name`, else the row count (0 on a reference date without rows) | `date_column` (required), `metric_column`, `window_days` (30), `k` (1.5), `reference_date` | no |
 | `rolling_values_in_set` | share in set | `date_column` (required), `allowed_values`, `window_days` (7), `reference_date` | no |
 

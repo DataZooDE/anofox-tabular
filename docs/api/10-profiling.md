@@ -70,8 +70,8 @@ Output columns:
 | `null_rate` | `DOUBLE` | `null_count / row_count` |
 | `distinct_count` | `BIGINT` | Distinct non-`NULL` values |
 | `distinct_rate` | `DOUBLE` | `distinct_count / row_count` |
-| `min_val` | `VARCHAR` | Minimum as text; finite values only for numeric columns; `NULL` for `STRUCT`, `MAP` and `UNION` |
-| `max_val` | `VARCHAR` | Maximum as text; finite values only for numeric columns; `NULL` for `STRUCT`, `MAP` and `UNION` |
+| `min_val` | `VARCHAR` | Minimum as text; finite values only for numeric columns; `NULL` for `LIST`, `STRUCT`, `MAP` and `UNION` |
+| `max_val` | `VARCHAR` | Maximum as text; finite values only for numeric columns; `NULL` for `LIST`, `STRUCT`, `MAP` and `UNION` |
 | `mean` | `DOUBLE` | Numeric columns only; finite values only |
 | `median` | `DOUBLE` | Numeric columns only; finite values only |
 | `stddev` | `DOUBLE` | Numeric columns only; finite values only |

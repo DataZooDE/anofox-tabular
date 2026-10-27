@@ -538,9 +538,17 @@ WHERE run_ts = (SELECT max(run_ts) FROM nightly_results);
 Invalid Input Error: nightly gate failed: orders_arrived=fail, orders_fresh=fail
 ```
 
-The DuckDB CLI exits with a non-zero code when a statement fails, so a scheduler (cron,
-Airflow, a CI job) sees the failure. Every row of one `run_checks` call has the same `run_ts`,
-so `max(run_ts)` selects the latest run.
+Every row of one `run_checks` call has the same `run_ts`, so `max(run_ts)` selects the latest
+run. Run the job file with `-bail`:
+
+```bash
+duckdb -bail warehouse.duckdb < nightly_gate.sql
+```
+
+With `-bail` the DuckDB CLI stops at the failing gate and exits with a non-zero code, so a
+scheduler (cron, Airflow, a CI job) sees the failure and the statements after the gate (for
+example publishing the night's data) do not run. Without it the CLI still exits with a non-zero
+code, but only after it has run every statement of the file.
 
 The checks table can also be a file kept in version control next to the job:
 `run_checks('nightly_checks.csv')` reads a CSV file with the columns of the checks table, like

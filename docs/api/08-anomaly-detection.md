@@ -118,7 +118,7 @@ isolation_forest(table_name VARCHAR, column_name VARCHAR
 | `n_trees` | `BIGINT` | `100` | Number of trees, 1 to 500 |
 | `sample_size` | `BIGINT` | `256` | Rows sampled per tree, 1 to 10000 |
 | `contamination` | `DOUBLE` | `0.1` | Expected share of anomalies, 0.0 to 0.5 |
-| `output_mode` | `VARCHAR` | `'summary'` | `'summary'` or `'scores'` (lowercase) |
+| `output_mode` | `VARCHAR` | `'summary'` | `'summary'` or `'scores'` (case-insensitive) |
 | `seed` | `BIGINT` | `NULL` (random) | Fixed seed for reproducible scores; `NULL` keeps it random |
 | `id_column` | `VARCHAR` | none | Named only; `'scores'` mode only. See [Identifier pass-through](#identifier-pass-through-id_column) |
 
@@ -216,7 +216,7 @@ isolation_forest_mv(table_name VARCHAR, column_names VARCHAR
 | 3 | `n_trees` | `BIGINT` | `100` | Number of trees, 1 to 500 |
 | 4 | `sample_size` | `BIGINT` | `256` | Rows sampled per tree, 1 to 10000 |
 | 5 | `contamination` | `DOUBLE` | `0.1` | Expected share of anomalies, 0.0 to 0.5 |
-| 6 | `output_mode` | `VARCHAR` | `'summary'` | `'summary'` or `'scores'` (lowercase) |
+| 6 | `output_mode` | `VARCHAR` | `'summary'` | `'summary'` or `'scores'` (case-insensitive) |
 | 7 | `seed` | `BIGINT` | `NULL` (random) | Fixed seed; `NULL` keeps it random |
 | 8 | `ndim` | `BIGINT` | `1` | Columns combined per split, at least 1. Above 1 the trees split on random hyperplanes (Extended Isolation Forest) |
 | 9 | `coef_type` | `VARCHAR` | `'uniform'` | Distribution of the hyperplane coefficients: `'uniform'` or `'normal'` |
@@ -379,7 +379,7 @@ dbscan(table_name VARCHAR, column_name VARCHAR
 | `column_name` | `VARCHAR` | required | Numeric column |
 | `eps` | `DOUBLE` | `0.5` | Neighborhood radius, a finite number above 0 |
 | `min_pts` | `BIGINT` | `5` | Neighbors needed for a core point, at least 1 |
-| `output_mode` | `VARCHAR` | `'summary'` | `'summary'` or `'clusters'` (lowercase) |
+| `output_mode` | `VARCHAR` | `'summary'` | `'summary'` or `'clusters'` (case-insensitive) |
 | `id_column` | `VARCHAR` | none | Named only; `'clusters'` mode only |
 
 A `NULL` for `eps`, `min_pts` or `output_mode` keeps the default.
@@ -570,7 +570,7 @@ outlier_tree(table_name VARCHAR, columns VARCHAR, output_mode VARCHAR,
 |-----------|------|---------|-------------|
 | `table_name` | `VARCHAR` | required | Table or view to read |
 | `columns` | `VARCHAR` | required | Comma-separated columns to analyze |
-| `output_mode` | `VARCHAR` | required | `'summary'` for one summary row, `'outliers'` for one row per outlier (lowercase; any other value is an error, `NULL` means `'summary'`) |
+| `output_mode` | `VARCHAR` | required | `'summary'` for one summary row, `'outliers'` for one row per outlier value, so a row with outliers in two columns gives two rows (case-insensitive; any other value is an error, `NULL` means `'summary'`) |
 | `max_depth` | `INTEGER` | `4` | Maximum tree depth, 1 to 1024 |
 | `max_perc_outliers` | `DOUBLE` | `0.01` | Largest share of a group that may be flagged, above 0 and at most 1 |
 | `min_size_numeric` | `INTEGER` | `25` | Smallest group for a numeric target, at least 1 |
