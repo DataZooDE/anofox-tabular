@@ -1,0 +1,217 @@
+# name: test/sql/anofox_sibling_search_path.test
+# description: The functions that read their input through a second connection (profiling,
+#              anomaly detection, PII table scans, run_checks over a checks view) resolve an
+#              unqualified table name like the caller's own query: in the schema chosen with
+#              SET schema, and in the database chosen with USE. A missing table is reported
+#              without the internal SQL.
+# group: [anofox_tabular]
+
+require anofox_tabular
+
+statement ok
+LOAD anofox_tabular
+
+statement ok
+SET anofox_tab_trace_enabled = false
+
+# A staging schema with the order export of a wholesaler; order 4117 is a data entry error
+statement ok
+CREATE SCHEMA stg
+
+statement ok
+CREATE TABLE stg.orders AS
+SELECT 4100 + i AS order_id,
+       ['Brauhaus Mueller GmbH', 'Nordsee Fisch KG', 'Alpen Sport AG', 'Rheinwerk Druck', 'Elbe Logistik'][i % 5 + 1]
+           AS customer,
+       ['einkauf@brauhaus-mueller.de', 'bestellung@nordsee-fisch.de', 'orders@alpensport.ch',
+        'info@rheinwerk-druck.de', 'dispo@elbe-logistik.de'][i % 5 + 1] AS contact_email,
+       CASE WHEN i = 17 THEN 9800.0 ELSE 80.0 + (i * 37) % 50 END AS amount,
+       1 + i % 4 AS items
+FROM range(30) t(i)
+
+statement ok
+CREATE TABLE stg.order_check_defs (check_name VARCHAR, check_type VARCHAR, table_name VARCHAR, column_name VARCHAR,
+                                   params VARCHAR, lower_threshold DOUBLE, upper_threshold DOUBLE,
+                                   monitor_only BOOLEAN, identifier_column VARCHAR, filter_expr VARCHAR)
+
+statement ok
+INSERT INTO stg.order_check_defs VALUES
+    ('order_volume', 'volume', 'orders', NULL, NULL, 10, NULL, false, NULL, NULL),
+    ('email_present', 'null_rate', 'orders', 'contact_email', NULL, NULL, 0.0, false, NULL, NULL)
+
+# The checks are maintained in a table and published as a view
+statement ok
+CREATE VIEW stg.order_checks AS SELECT * FROM stg.order_check_defs
+
+statement ok
+SET schema = 'stg'
+
+# A direct check already resolved the name in the caller's schema
+query T
+SELECT status FROM volume('orders', 10, NULL)
+----
+pass
+
+query TIII
+SELECT column_name, row_count, null_count, distinct_count FROM profile_table('orders') ORDER BY column_name
+----
+amount	30	0	30
+contact_email	30	0	5
+customer	30	0	5
+items	30	0	4
+order_id	30	0	30
+
+query III
+SELECT row_count, column_count, numeric_columns FROM profile_summary('orders')
+----
+30	5	3
+
+query TTR
+SELECT column_a, column_b, round(pearson, 3) FROM profile_correlations('orders', ['amount', 'items'])
+----
+amount	items	-0.078
+
+query TII
+SELECT status, outlier_count, total_count FROM isolation_forest('orders', 'amount', 100, 256, 0.05, 'summary')
+----
+fail	2	30
+
+query I
+SELECT order_id FROM isolation_forest('orders', 'amount', 100, 256, 0.05, 'scores', 42, id_column := 'order_id')
+WHERE is_anomaly ORDER BY order_id
+----
+4100
+4117
+
+query TIII
+SELECT status, cluster_count, noise_count, total_count FROM dbscan('orders', 'amount', 10.0, 3, 'summary')
+----
+fail	1	1	30
+
+query TT
+SELECT column_name, outlier_value FROM outlier_tree('orders', 'amount', 'outliers')
+----
+amount	9800
+
+query TI
+SELECT pii_type, match_count FROM pii_scan_table('orders', 'contact_email')
+----
+EMAIL	30
+
+query I
+SELECT count(*) FROM pii_audit_table('orders', 'contact_email')
+----
+30
+
+query TT
+SELECT check_name, status FROM run_checks('order_checks')
+----
+email_present	pass
+order_volume	pass
+
+# A missing table names the function and the table, not the internal query
+statement error
+SELECT * FROM profile_table('order_archive')
+----
+profile_table: table 'order_archive' does not exist
+
+statement error
+SELECT * FROM profile_summary('order_archive')
+----
+profile_summary: table 'order_archive' does not exist
+
+statement error
+SELECT * FROM profile_correlations('order_archive')
+----
+profile_correlations: table 'order_archive' does not exist
+
+statement error
+SELECT * FROM isolation_forest('order_archive', 'amount', 100, 256, 0.05, 'summary')
+----
+isolation_forest: table 'order_archive' does not exist
+
+statement error
+SELECT * FROM pii_scan_table('order_archive')
+----
+pii_scan_table: table 'order_archive' does not exist
+
+statement error
+SELECT * FROM profile_table('order_archive')
+----
+<!REGEX>:.*(query_table|Catalog Error).*
+
+statement error
+SELECT * FROM dbscan('order_archive', 'amount', 10.0, 3, 'summary')
+----
+<!REGEX>:.*(query_table|Catalog Error).*
+
+# USE: the same export copied into an attached database, read by its unqualified name
+statement ok
+ATTACH ':memory:' AS warehouse
+
+statement ok
+USE warehouse
+
+statement ok
+CREATE TABLE orders AS SELECT * FROM memory.stg.orders WHERE order_id <> 4117
+
+statement ok
+CREATE TABLE order_check_defs AS SELECT * FROM memory.stg.order_check_defs
+
+statement ok
+CREATE VIEW order_checks AS SELECT * FROM warehouse.main.order_check_defs
+
+query TII
+SELECT column_name, row_count, distinct_count FROM profile_table('orders', ['amount'])
+----
+amount	29	29
+
+query I
+SELECT row_count FROM profile_summary('orders')
+----
+29
+
+query I
+SELECT count(*) FROM profile_correlations('orders')
+----
+3
+
+query I
+SELECT total_count FROM isolation_forest('orders', 'amount', 100, 256, 0.05, 'summary')
+----
+29
+
+query III
+SELECT cluster_count, noise_count, total_count FROM dbscan('orders', 'amount', 10.0, 3, 'summary')
+----
+1	0	29
+
+query TI
+SELECT status, total_rows FROM outlier_tree('orders', 'amount', 'summary')
+----
+pass	29
+
+query TI
+SELECT pii_type, match_count FROM pii_scan_table('orders', 'contact_email')
+----
+EMAIL	29
+
+query I
+SELECT count(*) FROM pii_audit_table('orders', 'contact_email')
+----
+29
+
+query TT
+SELECT check_name, status FROM run_checks('order_checks')
+----
+email_present	pass
+order_volume	pass
+
+# A fully qualified name of the other database still works
+query I
+SELECT row_count FROM profile_summary('memory.stg.orders')
+----
+30
+
+statement ok
+USE memory

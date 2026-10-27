@@ -8,11 +8,13 @@
 - Get a quick overview of a table: rows, column types, nulls, duplicate rows
 - Find correlated numeric columns
 
-The profiling functions read the table through a second connection. Pass a regular table or a
-view; a TEMP table is rejected with
+The profiling functions read the table through a second connection. It resolves the table name
+like your session does (`SET schema`, `USE`) and shows `TIMESTAMP WITH TIME ZONE` values in your
+session's `TimeZone`. Pass a regular table or a view; a TEMP table is rejected with
 `TEMP tables are not supported by profile_table; use a regular table`. They see only committed
 data, so inside a transaction with uncommitted changes they refuse to run; call them after
-`COMMIT`. See [Conventions](00-conventions.md#table-and-column-arguments).
+`COMMIT`. An unknown table is `profile_table: table 'ordrs' does not exist`. See
+[Conventions](00-conventions.md#table-and-column-arguments).
 
 ## Functions
 
@@ -70,7 +72,7 @@ Output columns:
 | `null_rate` | `DOUBLE` | `null_count / row_count` |
 | `distinct_count` | `BIGINT` | Distinct non-`NULL` values |
 | `distinct_rate` | `DOUBLE` | `distinct_count / row_count` |
-| `min_val` | `VARCHAR` | Minimum as text; finite values only for numeric columns; `NULL` for `LIST`, `STRUCT`, `MAP` and `UNION` |
+| `min_val` | `VARCHAR` | Minimum as text (a `TIMESTAMP WITH TIME ZONE` in the session `TimeZone`); finite values only for numeric columns; `NULL` for `LIST`, `STRUCT`, `MAP` and `UNION` |
 | `max_val` | `VARCHAR` | Maximum as text; finite values only for numeric columns; `NULL` for `LIST`, `STRUCT`, `MAP` and `UNION` |
 | `mean` | `DOUBLE` | Numeric columns only; finite values only |
 | `median` | `DOUBLE` | Numeric columns only; finite values only |

@@ -52,12 +52,12 @@ SELECT count(*) FROM (FROM pii_audit_table('pv') EXCEPT FROM pii_audit_table('pv
 statement error
 SELECT * FROM pii_scan_table('no_such_relation');
 ----
-pii_scan_table: cannot read table 'no_such_relation'
+pii_scan_table: table 'no_such_relation' does not exist
 
 statement error
 SELECT * FROM pii_audit_table('no_such_relation');
 ----
-pii_audit_table: cannot read table 'no_such_relation'
+pii_audit_table: table 'no_such_relation' does not exist
 
 # --- mask strategies ---
 

@@ -561,7 +561,7 @@ static ChecksRows ReadChecksThroughConnection(ClientContext &context, const stri
 		                      "instead of a view",
 		                      relation.is_view ? "view" : "table", checks_table);
 	}
-	Connection con(*context.db);
+	auto con = OpenSiblingConnection(context);
 	vector<string> available;
 	if (relation.found && !relation.columns.empty()) {
 		for (auto &column : relation.columns) {

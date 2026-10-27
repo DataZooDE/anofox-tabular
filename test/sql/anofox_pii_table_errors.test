@@ -56,12 +56,12 @@ email	EMAIL	2	scanned
 statement error
 SELECT * FROM pii_scan_table('crm_contacts_2023');
 ----
-<REGEX>:Invalid Input Error: pii_scan_table: cannot read table 'crm_contacts_2023': Catalog Error: Table with name crm_contacts_2023 does not exist!.*
+<REGEX>:Binder Error: pii_scan_table: table 'crm_contacts_2023' does not exist.*
 
 statement error
 SELECT * FROM pii_audit_table('crm_contacts_2023');
 ----
-<REGEX>:Invalid Input Error: pii_audit_table: cannot read table 'crm_contacts_2023': Catalog Error: Table with name crm_contacts_2023 does not exist!.*
+<REGEX>:Binder Error: pii_audit_table: table 'crm_contacts_2023' does not exist.*
 
 # ... and shows neither JSON nor the internal query_table SQL
 statement error

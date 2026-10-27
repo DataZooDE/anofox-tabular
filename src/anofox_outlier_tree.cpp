@@ -1087,7 +1087,7 @@ static void OutlierTreeExecute(ClientContext &context, TableFunctionInput &data_
     if (!state.executed) {
         state.executed = true;
 
-        Connection con(*context.db);
+        auto con = OpenSiblingConnection(context);
 
         // Column types were resolved and checked at bind time
         const idx_t n_cols = bind_data.column_names.size();

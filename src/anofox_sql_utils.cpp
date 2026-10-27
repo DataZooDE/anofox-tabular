@@ -2,12 +2,14 @@
 
 #include "anofox_trace.hpp"
 #include "duckdb/catalog/catalog.hpp"
+#include "duckdb/catalog/catalog_search_path.hpp"
 #include "duckdb/catalog/catalog_entry/table_catalog_entry.hpp"
 #include "duckdb/catalog/catalog_entry/view_catalog_entry.hpp"
 #include "duckdb/catalog/entry_lookup_info.hpp"
 #include "duckdb/common/error_data.hpp"
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/string_util.hpp"
+#include "duckdb/main/client_data.hpp"
 #include "duckdb/parser/qualified_name.hpp"
 #include "duckdb/planner/binder.hpp"
 #include "duckdb/transaction/meta_transaction.hpp"
@@ -283,19 +285,9 @@ vector<ResolvedColumn> ResolveColumns(ClientContext &context, const string &func
                                       const vector<string> &requested) {
 	RejectTempTable(context, function_name, table_name);
 	RejectUncommittedChanges(context, function_name);
-	Connection con(*context.db);
-	auto result = con.Query("SELECT * FROM " + BuildQueryTableRef(table_name) + " LIMIT 0");
-	if (result->HasError()) {
-		throw BinderException("%s: cannot read table '%s': %s", function_name, table_name, result->GetError());
-	}
-	auto result_names = duckdb_compat::ResultNames(*result);
-	vector<string> available_names(result_names.begin(), result_names.end());
-	auto &result_types = duckdb_compat::ResultTypes(*result);
-
-	vector<ResolvedColumn> columns;
-	for (auto idx : MatchColumnNames(function_name, table_name, available_names, requested)) {
-		columns.push_back({available_names[idx], result_types[idx]});
-	}
+	// Bound in the caller's context: the sibling connection that reads the rows later resolves
+	// the name the same way (OpenSiblingConnection), and errors name the table, not internal SQL
+	auto columns = RequireRelationColumns(context, function_name, table_name, requested);
 	AnofoxTrace(AnofoxLogLevel::Debug, function_name + ": resolved " + std::to_string(columns.size()) +
 	                                       " column(s) of '" + table_name + "'");
 	return columns;
@@ -637,6 +629,50 @@ SiblingInterruptForwarder::~SiblingInterruptForwarder() {
 	}
 	stop_signal_.notify_one();
 	watcher_.join();
+}
+
+//===--------------------------------------------------------------------===//
+// Sibling connections (see the header)
+//===--------------------------------------------------------------------===//
+namespace {
+// Session settings copied onto a sibling connection: they change how a value renders (TimeZone:
+// a TIMESTAMPTZ cast to text) or computes (Calendar: date parts of a TIMESTAMPTZ). Settings the
+// generated SQL depends on (integer_division, ...) are deliberately not copied.
+constexpr const char *INHERITED_SESSION_SETTINGS[] = {"TimeZone", "Calendar"};
+
+void SetOnSibling(Connection &sibling, const string &setting, const string &value) {
+	// SESSION: a SET without scope may change the global value of an extension option
+	auto result = sibling.Query("SET SESSION " + QuoteSqlIdentifier(setting) + " = '" + EscapeSqlStringLiteral(value) +
+	                            "'");
+	if (result->HasError()) {
+		AnofoxTrace(AnofoxLogLevel::Warn, "sibling connection: cannot set " + setting + " = '" + value +
+		                                      "': " + result->GetError());
+		return;
+	}
+	AnofoxTrace(AnofoxLogLevel::Debug, "sibling connection: " + setting + " = '" + value + "'");
+}
+} // namespace
+
+Connection OpenSiblingConnection(ClientContext &context) {
+	Connection sibling(*context.db);
+	// The search path as SET schema / SET search_path / USE left it in the caller's session
+	auto &caller_paths = ClientData::Get(context).catalog_search_path->GetSetPaths();
+	if (!caller_paths.empty()) {
+		SetOnSibling(sibling, "search_path", CatalogSearchEntry::ListToString(caller_paths));
+	}
+	for (auto setting : INHERITED_SESSION_SETTINGS) {
+		Value caller_value;
+		if (!context.TryGetCurrentSetting(setting, caller_value) || caller_value.IsNull()) {
+			continue; // e.g. ICU is not loaded
+		}
+		Value sibling_value;
+		if (sibling.context->TryGetCurrentSetting(setting, sibling_value) &&
+		    sibling_value.ToString() == caller_value.ToString()) {
+			continue;
+		}
+		SetOnSibling(sibling, setting, caller_value.ToString());
+	}
+	return sibling;
 }
 
 } // namespace anofox

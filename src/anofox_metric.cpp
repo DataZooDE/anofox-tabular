@@ -935,7 +935,7 @@ static void IsolationForestExecute(ClientContext &context, TableFunctionInput &d
 	if (!state.executed) {
 		state.executed = true;
 
-		Connection con(*context.db);
+		auto con = OpenSiblingConnection(context);
 
 		// Step 1: Detect column types from the source table
 		std::vector<bool> is_categorical(bind_data.column_names.size(), false);
@@ -1477,7 +1477,7 @@ static void DBSCANExecute(ClientContext &context, TableFunctionInput &data_p, Da
 	if (!state.executed) {
 		state.executed = true;
 
-		Connection con(*context.db);
+		auto con = OpenSiblingConnection(context);
 
 		// Materialize the selected columns as DOUBLE, skipping rows with NULLs
 		// (same query path as the isolation forest table function)

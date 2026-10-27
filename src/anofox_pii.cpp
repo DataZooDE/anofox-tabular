@@ -4355,7 +4355,7 @@ static bool ContainsText(const LogicalType &type) {
 static std::vector<PIIScanColumn> ResolvePIIScanPlan(ClientContext &context, const std::string &function_name,
                                                      const std::string &table_name,
                                                      const std::vector<std::string> &column_filter) {
-    Connection con(*context.db);
+    auto con = OpenSiblingConnection(context);
     auto result = con.Query("SELECT * FROM " + BuildQueryTableRef(table_name) + " LIMIT 0");
     if (result->HasError()) {
         if (IsTempRelation(context, table_name)) {
@@ -4364,6 +4364,8 @@ static std::vector<PIIScanColumn> ResolvePIIScanPlan(ClientContext &context, con
                                         "regular table first (CREATE TABLE ... AS SELECT * FROM %s)",
                                         function_name, table_name, table_name);
         }
+        // A table the caller cannot read either: "<fn>: table 't' does not exist", like the checks
+        RequireRelationColumns(context, function_name, table_name);
         throw InvalidInputException("%s: cannot read table '%s': %s", function_name, table_name,
                                     QueryErrorText(result->GetErrorObject()));
     }
@@ -4576,7 +4578,7 @@ void PIIAuditTableFunction(ClientContext &context, TableFunctionInput &input, Da
 
                 // Execute as a streaming query on a dedicated connection
                 // (the connection must outlive the streaming result)
-                state.connection = make_uniq<Connection>(*context.db);
+                state.connection = make_uniq<Connection>(OpenSiblingConnection(context));
                 auto result = StreamQuery(*state.connection, query);
                 if (result->HasError()) {
                     AnofoxTrace(AnofoxLogLevel::Warn, "pii_audit_table: Error querying column " + col_name);
@@ -4910,7 +4912,7 @@ void PIIScanTableFunction(ClientContext &context, TableFunctionInput &input, Dat
                                 QuoteSqlIdentifier(col_name) + " IS NOT NULL";
 
             // Execute as a streaming query using a new connection
-            Connection con(*context.db);
+            auto con = OpenSiblingConnection(context);
             auto result = StreamQuery(con, query);
             if (result->HasError()) {
                 AnofoxTrace(AnofoxLogLevel::Warn, "pii_scan_table: Error querying column " + col_name);

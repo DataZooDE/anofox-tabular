@@ -116,15 +116,22 @@ static bool IsComplexCategory(ColumnCategory cat) {
 // The columns of `table_name` (name, type) in table order. A non-empty `filter` restricts
 // them to the named columns; names match case-insensitively like DuckDB identifiers, and an
 // unknown name is an error naming `function_name` instead of a silent miss.
-static vector<pair<string, string>> IntrospectColumns(Connection &con, const string &function_name,
-                                                       const string &table_name, const vector<string> &filter) {
+static vector<pair<string, string>> IntrospectColumns(ClientContext &context, Connection &con,
+                                                       const string &function_name, const string &table_name,
+                                                       const vector<string> &filter) {
 	vector<pair<string, string>> result;
+
+	// Bind in the caller's context first: a missing table or column is reported by name
+	// ("<fn>: table 't' does not exist"), not as an error of the internal query below
+	RequireRelationColumns(context, function_name, table_name, filter);
 
 	string sql = "SELECT * FROM query_table('" + EscapeStringLiteral(table_name) + "') LIMIT 0";
 
 	auto res = con.Query(sql);
 	if (res->HasError()) {
-		throw InvalidInputException("Failed to introspect table '%s': %s", table_name, res->GetError());
+		auto cause = res->GetErrorObject().RawMessage();
+		throw BinderException("%s: cannot read table '%s': %s", function_name, table_name,
+		                      cause.substr(0, cause.find('\n')));
 	}
 
 	auto res_names = duckdb_compat::ResultNames(*res);
@@ -238,9 +245,9 @@ static unique_ptr<TableRef> ProfileSummaryBindReplace(ClientContext &context,
 	            "profile: profile_summary introspecting '" + table_name + "'");
 
 	// Open a sibling connection to introspect columns and compute null counts at bind time.
-	Connection con(*context.db);
+	auto con = OpenSiblingConnection(context);
 	SiblingInterruptForwarder forward_interrupt(context, con);
-	auto columns = IntrospectColumns(con, "profile_summary", table_name, {});
+	auto columns = IntrospectColumns(context, con, "profile_summary", table_name, {});
 
 	int64_t column_count = 0;
 	int64_t numeric_columns = 0;
@@ -381,9 +388,9 @@ static unique_ptr<FunctionData> ProfileTableBind(ClientContext &context,
 
 	// Resolve the table and the requested columns now: an unknown table or column is a bind
 	// error, raised before the result (and its header) is produced
-	Connection con(*context.db);
+	auto con = OpenSiblingConnection(context);
 	SiblingInterruptForwarder forward_interrupt(context, con);
-	auto resolved_columns = IntrospectColumns(con, "profile_table", table_name, columns);
+	auto resolved_columns = IntrospectColumns(context, con, "profile_table", table_name, columns);
 
 	return make_uniq<ProfileTableBindData>(table_name, std::move(resolved_columns), sample_size, exact);
 }
@@ -674,7 +681,7 @@ static void ProfileTableExecute(ClientContext &context, TableFunctionInput &data
 		                ", sample_size=" + std::to_string(bind_data.sample_size) +
 		                ", exact=" + (bind_data.exact ? "true" : "false") + ")");
 
-		Connection con(*context.db);
+		auto con = OpenSiblingConnection(context);
 		SiblingInterruptForwarder forward_interrupt(context, con);
 
 		// Determine actual row count to decide if sampling is needed
@@ -801,9 +808,9 @@ static unique_ptr<FunctionData> ProfileCorrelationsBind(ClientContext &context,
 	names.emplace_back("n");        return_types.emplace_back(LogicalType(LogicalTypeId::BIGINT));
 
 	// Resolve the table and the requested columns at bind time (see profile_table)
-	Connection con(*context.db);
+	auto con = OpenSiblingConnection(context);
 	SiblingInterruptForwarder forward_interrupt(context, con);
-	auto resolved_columns = IntrospectColumns(con, "profile_correlations", table_name, columns);
+	auto resolved_columns = IntrospectColumns(context, con, "profile_correlations", table_name, columns);
 
 	return make_uniq<ProfileCorrelationsBindData>(table_name, std::move(resolved_columns));
 }
@@ -824,7 +831,7 @@ static void ProfileCorrelationsExecute(ClientContext &context, TableFunctionInpu
 		AnofoxTrace(AnofoxLogLevel::Debug,
 		            "profile_correlations: scanning '" + bind_data.table_name + "'");
 
-		Connection con(*context.db);
+		auto con = OpenSiblingConnection(context);
 		SiblingInterruptForwarder forward_interrupt(context, con);
 
 		// The numeric columns among the resolved ones, with the SQL of their values as DOUBLE:

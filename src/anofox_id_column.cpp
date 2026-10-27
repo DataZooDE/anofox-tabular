@@ -35,7 +35,7 @@ IdColumn BindIdColumn(ClientContext &context, TableFunctionBindInput &input, con
 	// Resolve the column against the source table with a sibling connection
 	// (LIMIT 0 only binds the query); the match is case-insensitive like
 	// DuckDB's own column resolution, the reported name is the table's
-	Connection con(*context.db);
+	auto con = OpenSiblingConnection(context);
 	auto result = con.Query("SELECT * FROM " + BuildQueryTableRef(table_name) + " LIMIT 0");
 	if (result->HasError()) {
 		throw BinderException("%s: failed to resolve id_column '%s' in table '%s': %s", function_name, requested,

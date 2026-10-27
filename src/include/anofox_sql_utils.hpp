@@ -84,10 +84,12 @@ struct ResolvedColumn {
 vector<idx_t> MatchColumnNames(const string &function_name, const string &table_name,
                                const vector<string> &available_names, const vector<string> &requested);
 
-// Resolve `requested` column names of `table_name` (see MatchColumnNames). The relation is
-// bound with a sibling connection (LIMIT 0 reads no rows), so like the functions that read
-// through such a connection it cannot see TEMP tables of the calling connection: a name that
-// resolves to a TEMP table in the caller's context is rejected (RejectTempTable).
+// Resolve `requested` column names of `table_name` (see MatchColumnNames) for a function that
+// reads the table through a sibling connection (OpenSiblingConnection). The relation is bound
+// in the caller's context (RequireRelationColumns: no rows are read, a missing table is
+// "<fn>: table '<t>' does not exist"); a TEMP table, which the sibling connection cannot see,
+// is rejected (RejectTempTable), and so is a transaction with uncommitted changes
+// (RejectUncommittedChanges).
 vector<ResolvedColumn> ResolveColumns(ClientContext &context, const string &function_name, const string &table_name,
                                       const vector<string> &requested);
 
@@ -218,6 +220,20 @@ string CenteredDoubleSQL(const string &column_sql, const string &centering_type,
 // otherwise be a DECIMAL(4,3), 1 an INTEGER).
 string DoubleThresholdSQL(const Value &value, const string &null_default = "NULL");
 string BigintThresholdSQL(const Value &value, const string &null_default = "NULL");
+
+//===--------------------------------------------------------------------===//
+// Sibling connections
+//===--------------------------------------------------------------------===//
+// A connection on the caller's database for a function that reads its input outside the
+// caller's query (a "sibling connection"). It is set up like the caller's session, so names
+// resolve and values render as in the caller's own query:
+// - the search path (SET schema, SET search_path, USE): an unqualified name finds the table of
+//   the schema / database the caller chose, a view is read the same way;
+// - the session settings in INHERITED_SESSION_SETTINGS (TimeZone, Calendar): a TIMESTAMPTZ cast
+//   to text shows the caller's time zone.
+// It still sees the last committed data only and none of the caller's TEMP objects
+// (RejectTempTable, RejectUncommittedChanges). Every Connection(*context.db) goes through it.
+Connection OpenSiblingConnection(ClientContext &context);
 
 } // namespace anofox
 } // namespace duckdb

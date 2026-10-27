@@ -135,6 +135,25 @@ A qualified name resolves as in a DuckDB query: `'sales.orders'` is the table `o
 schema `sales` and, when no such schema exists, the table `orders` of the attached database
 `sales` (`ATTACH 'sales.duckdb' AS sales`); `'sales.main.orders'` names database, schema and
 table. Every function resolves names this way, `run_checks` and the diff functions included.
+An unqualified name is looked up like in your own queries: in the schema chosen with
+`SET schema` or `SET search_path`, and in the database chosen with `USE`. This holds for the
+functions that read the table through a second connection (see below) as well:
+
+```sql
+CREATE SCHEMA staging;
+CREATE TABLE staging.orders AS SELECT i AS order_id, 20.0 + i % 9 AS amount FROM range(40) t(i);
+SET schema = 'staging';
+SELECT row_count, column_count FROM profile_summary('orders');
+```
+
+```text
+┌───────────┬──────────────┐
+│ row_count │ column_count │
+│   int64   │    int64     │
+├───────────┼──────────────┤
+│        40 │            2 │
+└───────────┴──────────────┘
+```
 
 Column lists come in two forms. Check the signature of each function:
 
@@ -150,7 +169,7 @@ and every direct data quality check (`volume`, `null_rate`, ... `rolling_values_
 unknown column name is an error naming the column and the table; `run_checks` reports it in an
 `error` row of that check; `schema_check` reports a missing required column as `fail`. An
 unknown table is an error such as `null_rate: table 'ordrs' does not exist` in the data quality
-checks, and an empty name is `<function>: table_name must not be empty`.
+checks, the profiling, anomaly detection and PII table functions, and an empty name is `<function>: table_name must not be empty`.
 
 The table, column and key arguments of a table function are required: a `NULL` there is a
 binder error `<function>: <argument> must not be NULL`, also when it comes from a `NULL`
@@ -171,7 +190,10 @@ LINE 1: SELECT * FROM null_rate(NULL, 'v', 0.1);
                       ^^^^^^^^^^^^^^^^^^^^^^^^^
 ```
 
-Some functions read the table through a second connection. That connection cannot see TEMP
+Some functions read the table through a second connection. That connection takes over the
+search path of your session (`SET schema`, `SET search_path`, `USE`) and its `TimeZone` and
+`Calendar` settings, so names resolve and a `TIMESTAMP WITH TIME ZONE` value shown as text
+(`profile_table`'s `min_val`, for example) reads as in your own queries. It cannot see TEMP
 tables of your session, so these functions reject a TEMP table when the query is bound, with
 `TEMP tables are not supported by <function>; use a regular table`:
 
