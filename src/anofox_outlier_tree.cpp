@@ -262,7 +262,9 @@ void OutlierTree::FindOutliersInNumericCluster(
         outlier.cluster_sd = stats.sd;
         outlier.cluster_median = stats.median;
         outlier.cluster_size = stats.n_samples;
-        outlier.z_score = z_score;
+        // An infinite value (or one so far out that the robust z overflows) is an outlier
+        // without a meaningful z-score: reported as NULL, not inf
+        outlier.z_score = std::isfinite(z_score) ? z_score : std::numeric_limits<double>::quiet_NaN();
         outlier.lower_bound = lower_bound;
         outlier.upper_bound = upper_bound;
         outlier.conditions = conditions;
@@ -556,16 +558,29 @@ NumericClusterStats OutlierTree::ComputeNumericStats(
 
     stats.n_samples = values.size();
 
-    // Mean
-    double sum = std::accumulate(values.begin(), values.end(), 0.0);
-    stats.mean = sum / stats.n_samples;
-
-    // Standard deviation
-    double sq_sum = 0.0;
+    // Mean and standard deviation over the values scaled by their largest magnitude, so values
+    // near the DOUBLE range (1e308) do not overflow the sums. A result that is itself out of
+    // range stays inf and is reported as NULL.
+    double scale = 0.0;
     for (double v : values) {
-        sq_sum += (v - stats.mean) * (v - stats.mean);
+        scale = std::max(scale, std::abs(v));
     }
-    stats.sd = stats.n_samples > 1 ? std::sqrt(sq_sum / (stats.n_samples - 1)) : 0.0;
+    if (scale == 0.0) {
+        scale = 1.0;
+    }
+    double scaled_sum = 0.0;
+    for (double v : values) {
+        scaled_sum += v / scale;
+    }
+    double scaled_mean = scaled_sum / stats.n_samples;
+    stats.mean = scaled_mean * scale;
+
+    double scaled_sq_sum = 0.0;
+    for (double v : values) {
+        double diff = v / scale - scaled_mean;
+        scaled_sq_sum += diff * diff;
+    }
+    stats.sd = stats.n_samples > 1 ? std::sqrt(scaled_sq_sum / (stats.n_samples - 1)) * scale : 0.0;
 
     // Sort for quantiles
     std::sort(values.begin(), values.end());
@@ -622,10 +637,23 @@ void OutlierTree::GenerateExplanation(
 
     // Describe the outlier
     if (column_info[outlier.target_column_idx].type == FeatureType::NUMERIC) {
-        oss << " is unusually " << (outlier.z_score > 0 ? "high" : "low")
-            << " (mean: " << std::fixed << std::setprecision(2) << outlier.cluster_mean
-            << ", SD: " << outlier.cluster_sd
-            << ", z-score: " << outlier.z_score << ")";
+        // The direction from the value itself: the z-score is NaN for an infinite value
+        bool is_high = std::holds_alternative<double>(outlier.outlier_value) &&
+                       std::get<double>(outlier.outlier_value) > outlier.cluster_median;
+        // A statistic out of the DOUBLE range is NULL in the result and "n/a" here
+        auto format_stat = [](double stat) {
+            std::ostringstream stat_text;
+            if (std::isfinite(stat)) {
+                stat_text << std::fixed << std::setprecision(2) << stat;
+            } else {
+                stat_text << "n/a";
+            }
+            return stat_text.str();
+        };
+        oss << " is unusually " << (is_high ? "high" : "low")
+            << " (mean: " << format_stat(outlier.cluster_mean)
+            << ", SD: " << format_stat(outlier.cluster_sd)
+            << ", z-score: " << format_stat(outlier.z_score) << ")";
     } else {
         oss << " is unusually rare (cluster size: " << outlier.cluster_size << ")";
     }
@@ -1128,12 +1156,20 @@ static void OutlierTreeExecute(ClientContext &context, TableFunctionInput &data_
             } else {
                 FlatVector::SetNull(outlier_value_num_vec, i, true);
             }
-            cluster_means[i] = outlier.cluster_mean;
-            cluster_sds[i] = outlier.cluster_sd;
+            // NaN/inf statistics (an infinite outlier value, values near the DOUBLE range) are NULL
+            auto set_finite_or_null = [&](idx_t column, auto target, double stat) {
+                if (std::isfinite(stat)) {
+                    target[i] = stat;
+                } else {
+                    FlatVector::SetNull(output.data[base + column], i, true);
+                }
+            };
+            set_finite_or_null(3, cluster_means, outlier.cluster_mean);
+            set_finite_or_null(4, cluster_sds, outlier.cluster_sd);
             cluster_sizes[i] = static_cast<int64_t>(outlier.cluster_size);
-            z_scores[i] = outlier.z_score;
-            lower_bounds[i] = outlier.lower_bound;
-            upper_bounds[i] = outlier.upper_bound;
+            set_finite_or_null(6, z_scores, outlier.z_score);
+            set_finite_or_null(7, lower_bounds, outlier.lower_bound);
+            set_finite_or_null(8, upper_bounds, outlier.upper_bound);
             conditions[i] = StringVector::AddString(conditions_vec, outlier.GetConditionsJSON());
             explanations[i] = StringVector::AddString(explanation_vec, outlier.explanation);
             outlier_scores[i] = outlier.outlier_score;

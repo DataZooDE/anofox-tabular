@@ -538,6 +538,12 @@ thresholds for small tables.
 
 **Output, `'outliers'` mode** (one row per outlier value):
 
+NaN and `±Inf` values of a numeric target are left out of the group statistics, which are
+computed over the finite values. An infinite value is still reported as an outlier, with
+`z_score` `NULL` and `z-score: n/a` in the explanation. A statistic that does not fit in a
+`DOUBLE` (values near ±1.8e308) is `NULL` too, so the output never contains `inf` or `NaN`
+statistics.
+
 | Column | Type | Description |
 |--------|------|-------------|
 | `row_id` | `BIGINT` | 1-based row number in the table; skipped `NULL` rows keep their number. See [Row numbering](#row-numbering-row_id) |
@@ -545,10 +551,10 @@ thresholds for small tables.
 | `column_name` | `VARCHAR` | Column with the outlier |
 | `outlier_value` | `VARCHAR` | The value as text |
 | `outlier_value_num` | `DOUBLE` | The value as a number for numeric columns, `NULL` for categorical ones |
-| `cluster_mean` | `DOUBLE` | Mean of the group |
-| `cluster_sd` | `DOUBLE` | Standard deviation of the group |
-| `cluster_size` | `BIGINT` | Rows in the group |
-| `z_score` | `DOUBLE` | Distance from the group in standard deviations |
+| `cluster_mean` | `DOUBLE` | Mean of the group's finite values |
+| `cluster_sd` | `DOUBLE` | Standard deviation of the group's finite values |
+| `cluster_size` | `BIGINT` | Rows in the group with a finite value |
+| `z_score` | `DOUBLE` | Distance from the group in robust standard deviations (median and MAD); `NULL` for an infinite value |
 | `lower_bound` | `DOUBLE` | Lower end of the group's normal range |
 | `upper_bound` | `DOUBLE` | Upper end of the group's normal range |
 | `conditions` | `VARCHAR` | JSON array of the conditions that define the group |
