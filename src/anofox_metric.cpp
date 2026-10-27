@@ -513,7 +513,7 @@ struct IsolationForestGlobalState : public GlobalTableFunctionState {
 	int64_t total_count = 0;
 	int64_t outlier_count = 0;
 	double avg_value = 0.0;
-	bool avg_is_null = false;  // scored rows exist, but none has a finite value
+	bool avg_is_null = false;  // no scored row has a finite value
 };
 
 // Classifies the numeric feature values of one row for the isolation forest:
@@ -534,8 +534,9 @@ static void FinishIsolationForestScores(IsolationForestGlobalState &state, const
 		if (n_finite > 0) {
 			state.avg_value = finite_sum / static_cast<double>(n_finite);
 		} else {
+			// No finite value scored (empty table, all NULL/NaN, or only +-Inf): NULL, as documented
 			state.avg_value = 0.0;
-			state.avg_is_null = n_rows > 0;
+			state.avg_is_null = true;
 		}
 	}
 	state.threshold = forest ? forest->ComputeThreshold(finite_scores) : std::numeric_limits<double>::infinity();
