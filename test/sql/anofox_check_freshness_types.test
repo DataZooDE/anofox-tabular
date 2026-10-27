@@ -1,0 +1,221 @@
+# name: test/sql/anofox_check_freshness_types.test
+# description: freshness on a column that cannot hold timestamps (BIGINT, DOUBLE, TIME, ENUM,
+#              BOOLEAN) is a clear error (a binder error of the direct function, an 'error' row
+#              in run_checks) instead of a misleading message or a raw binder/conversion error.
+#              Text that does not parse is skipped and counted in the message of the direct
+#              freshness, run_checks freshness and the direct time-aware checks. The direct
+#              freshness also takes the reference time as an instant (now(), a TIMESTAMPTZ).
+# group: [anofox_tabular]
+
+require anofox_tabular
+
+statement ok
+LOAD anofox_tabular
+
+statement ok
+SET anofox_tab_trace_enabled = false
+
+statement ok
+CREATE TYPE device_state AS ENUM ('online', 'offline')
+
+# Heartbeats of warehouse scanners: the device firmware writes its own clock as epoch seconds,
+# the gateway a text timestamp (some firmware versions send 'n/a' or a time of day only)
+statement ok
+CREATE TABLE scanner_heartbeats (
+    device_id VARCHAR, seen_epoch BIGINT, seen_epoch_s DOUBLE, seen_at TIMESTAMP, seen_at_text VARCHAR,
+    shift_start TIME, state device_state, is_online BOOLEAN)
+
+statement ok
+INSERT INTO scanner_heartbeats VALUES
+    ('SCN-0101', 1793520000, 1793520000.0, TIMESTAMP '2026-10-27 08:00:00', '2026-10-27 08:00:00', TIME '06:00:00', 'online', true),
+    ('SCN-0102', 1793523600, 1793523600.0, TIMESTAMP '2026-10-27 09:00:00', '2026-10-27 09:00:00', TIME '06:00:00', 'online', true),
+    ('SCN-0103', 1793527200, 1793527200.0, TIMESTAMP '2026-10-27 10:00:00', 'n/a', TIME '14:00:00', 'offline', false),
+    ('SCN-0104', 1793527800, 1793527800.0, TIMESTAMP '2026-10-27 10:10:00', '10:10', TIME '14:00:00', 'online', true)
+
+# ===--------------------------------------------------------------------===
+# Direct freshness: column types
+# ===--------------------------------------------------------------------===
+
+statement error
+SELECT * FROM freshness('scanner_heartbeats', 'seen_epoch', INTERVAL 1 HOUR)
+----
+freshness: timestamp_column 'seen_epoch' has type BIGINT; expected DATE, TIMESTAMP, TIMESTAMP WITH TIME ZONE or a VARCHAR holding timestamps
+
+statement error
+SELECT * FROM freshness('scanner_heartbeats', 'seen_epoch_s', INTERVAL 1 HOUR)
+----
+freshness: timestamp_column 'seen_epoch_s' has type DOUBLE; expected DATE
+
+statement error
+SELECT * FROM freshness('scanner_heartbeats', 'shift_start', INTERVAL 1 HOUR)
+----
+freshness: timestamp_column 'shift_start' has type TIME; expected DATE
+
+statement error
+SELECT * FROM freshness('scanner_heartbeats', 'state', INTERVAL 1 HOUR)
+----
+freshness: timestamp_column 'state' has type ENUM('online', 'offline'); expected DATE
+
+statement error
+SELECT * FROM freshness('scanner_heartbeats', 'is_online', INTERVAL 1 HOUR)
+----
+freshness: timestamp_column 'is_online' has type BOOLEAN; expected DATE
+
+# Text: the two values that are no timestamp are skipped and counted
+query TTT
+SELECT status, CAST(metric_value AS VARCHAR), message
+FROM freshness('scanner_heartbeats', 'seen_at_text', INTERVAL 2 HOUR, TIMESTAMP '2026-10-27 10:30:00')
+----
+pass	2026-10-27 09:00:00	Data is fresh. Latest update: 2026-10-27 09:00:00 (age: 5400s). 2 row(s) skipped (seen_at_text is not a timestamp)
+
+# Only garbage: no timestamp, and the message does not claim the column is NULL
+statement ok
+CREATE TABLE gateway_log AS
+SELECT * FROM (VALUES ('GW-1', 'n/a'), ('GW-2', 'unknown'), ('GW-3', NULL)) t(gateway_id, last_seen)
+
+query TT
+SELECT status, message FROM freshness('gateway_log', 'last_seen', INTERVAL 1 HOUR, TIMESTAMP '2026-10-27 10:30:00')
+----
+fail	No timestamp values found. 2 row(s) skipped (last_seen is not a timestamp)
+
+# ===--------------------------------------------------------------------===
+# Direct freshness: the reference time as an instant
+# ===--------------------------------------------------------------------===
+
+# now() is a TIMESTAMP WITH TIME ZONE
+statement ok
+CREATE TABLE live_heartbeats AS SELECT make_timestamp(epoch_us(now())) - INTERVAL 5 MINUTE AS seen_at
+
+query TT
+SELECT status, CAST(age_seconds BETWEEN 290 AND 3600 AS VARCHAR) FROM freshness('live_heartbeats', 'seen_at', INTERVAL 1 HOUR, now())
+----
+pass	true
+
+query T
+SELECT status FROM freshness('live_heartbeats', 'seen_at', INTERVAL 1 MINUTE, now())
+----
+fail
+
+# An instant is compared as its UTC time: 12:30 at +02:00 is 10:30 UTC
+query TTI
+SELECT status, CAST(threshold AS VARCHAR), age_seconds
+FROM freshness('scanner_heartbeats', 'seen_at', INTERVAL 1 HOUR, TIMESTAMPTZ '2026-10-27 12:30:00+02')
+----
+pass	2026-10-27 09:30:00	1200
+
+# The plain TIMESTAMP overload is unchanged
+query TTI
+SELECT status, CAST(threshold AS VARCHAR), age_seconds
+FROM freshness('scanner_heartbeats', 'seen_at', INTERVAL 1 HOUR, TIMESTAMP '2026-10-27 10:30:00')
+----
+pass	2026-10-27 09:30:00	1200
+
+statement error
+SELECT * FROM freshness('scanner_heartbeats', 'seen_at', INTERVAL 1 HOUR, CAST('infinity' AS TIMESTAMPTZ))
+----
+freshness: reference_time must be a finite timestamp
+
+# ===--------------------------------------------------------------------===
+# run_checks freshness
+# ===--------------------------------------------------------------------===
+
+statement ok
+CREATE TABLE scanner_checks (
+    check_name VARCHAR, check_type VARCHAR, table_name VARCHAR, column_name VARCHAR,
+    params VARCHAR, lower_threshold DOUBLE, upper_threshold DOUBLE, monitor_only BOOLEAN,
+    identifier_column VARCHAR, filter_expr VARCHAR)
+
+statement ok
+INSERT INTO scanner_checks VALUES
+    ('fresh_epoch', 'freshness', 'scanner_heartbeats', 'seen_epoch', '{"reference_time": "2026-10-27 10:30:00"}', NULL, 7200, false, NULL, NULL),
+    ('fresh_epoch_s', 'freshness', 'scanner_heartbeats', 'seen_epoch_s', '{"reference_time": "2026-10-27 10:30:00"}', NULL, 7200, false, NULL, NULL),
+    ('fresh_shift', 'freshness', 'scanner_heartbeats', 'shift_start', '{"reference_time": "2026-10-27 10:30:00"}', NULL, 7200, false, NULL, NULL),
+    ('fresh_state', 'freshness', 'scanner_heartbeats', 'state', '{"reference_time": "2026-10-27 10:30:00"}', NULL, 7200, false, NULL, NULL),
+    ('fresh_online', 'freshness', 'scanner_heartbeats', 'is_online', '{"reference_time": "2026-10-27 10:30:00"}', NULL, 7200, false, NULL, NULL),
+    ('fresh_text', 'freshness', 'scanner_heartbeats', 'seen_at_text', '{"reference_time": "2026-10-27 10:30:00"}', NULL, 7200, false, NULL, NULL),
+    ('fresh_text_strict', 'freshness', 'scanner_heartbeats', 'seen_at_text', '{"reference_time": "2026-10-27 10:30:00"}', NULL, 3600, false, NULL, NULL),
+    ('fresh_gateway', 'freshness', 'gateway_log', 'last_seen', '{"reference_time": "2026-10-27 10:30:00"}', NULL, 3600, false, NULL, NULL),
+    ('fresh_gateway_by_id', 'freshness', 'gateway_log', 'last_seen', '{"reference_time": "2026-10-27 10:30:00"}', NULL, 3600, false, 'gateway_id', NULL)
+
+query TTTT
+SELECT check_name, identifier, status, message FROM run_checks('scanner_checks')
+----
+fresh_epoch	NULL	error	check 'fresh_epoch' (freshness) cannot run: column_name 'seen_epoch' has type BIGINT; expected DATE, TIMESTAMP, TIMESTAMP WITH TIME ZONE or a VARCHAR holding timestamps
+fresh_epoch_s	NULL	error	check 'fresh_epoch_s' (freshness) cannot run: column_name 'seen_epoch_s' has type DOUBLE; expected DATE, TIMESTAMP, TIMESTAMP WITH TIME ZONE or a VARCHAR holding timestamps
+fresh_gateway	NULL	fail	No timestamp values found; 2 row(s) skipped (last_seen is not a timestamp)
+fresh_gateway_by_id	GW-1	fail	No timestamp values found; 1 row(s) skipped (last_seen is not a timestamp)
+fresh_gateway_by_id	GW-2	fail	No timestamp values found; 1 row(s) skipped (last_seen is not a timestamp)
+fresh_gateway_by_id	GW-3	fail	No timestamp values found (table is empty or column is all NULL)
+fresh_online	NULL	error	check 'fresh_online' (freshness) cannot run: column_name 'is_online' has type BOOLEAN; expected DATE, TIMESTAMP, TIMESTAMP WITH TIME ZONE or a VARCHAR holding timestamps
+fresh_shift	NULL	error	check 'fresh_shift' (freshness) cannot run: column_name 'shift_start' has type TIME; expected DATE, TIMESTAMP, TIMESTAMP WITH TIME ZONE or a VARCHAR holding timestamps
+fresh_state	NULL	error	check 'fresh_state' (freshness) cannot run: column_name 'state' has type ENUM('online', 'offline'); expected DATE, TIMESTAMP, TIMESTAMP WITH TIME ZONE or a VARCHAR holding timestamps
+fresh_text	NULL	pass	freshness value 5400.0 seconds is within thresholds; 2 row(s) skipped (seen_at_text is not a timestamp)
+fresh_text_strict	NULL	fail	freshness value 5400.0 seconds violates thresholds (5400.0 seconds > upper 3600.0 seconds); 2 row(s) skipped (seen_at_text is not a timestamp)
+
+# ===--------------------------------------------------------------------===
+# Direct time-aware checks: the date column
+# ===--------------------------------------------------------------------===
+
+statement error
+SELECT * FROM rel_count_change('scanner_heartbeats', 'seen_epoch')
+----
+rel_count_change: date_column 'seen_epoch' has type BIGINT; expected DATE, TIMESTAMP, TIMESTAMP WITH TIME ZONE or a VARCHAR holding dates
+
+statement error
+SELECT * FROM metric_anomaly_iqr_events('scanner_heartbeats', 'shift_start')
+----
+metric_anomaly_iqr_events: date_column 'shift_start' has type TIME; expected DATE
+
+statement error
+SELECT * FROM rolling_values_in_set('scanner_heartbeats', 'device_id', ['SCN-0101'], 'is_online')
+----
+rolling_values_in_set: date_column 'is_online' has type BOOLEAN; expected DATE
+
+# Text dates that do not parse are skipped and counted, as in run_checks
+query TT
+SELECT status, message FROM rel_count_change('scanner_heartbeats', 'seen_at_text')
+----
+pass	No baseline days before 2026-10-27; check passed trivially; 2 row(s) skipped (seen_at_text is not a date)
+
+query T
+SELECT message FROM metric_anomaly_iqr('scanner_heartbeats', 'seen_at_text')
+----
+No baseline window before 2026-10-27; check passed trivially; 2 row(s) skipped (seen_at_text is not a date)
+
+query T
+SELECT message FROM rolling_values_in_set('scanner_heartbeats', 'device_id', ['SCN-0101', 'SCN-0102'], 'seen_at_text')
+----
+In-set rate 1.0 (2/2) over the trailing 7 day(s) is acceptable; 2 row(s) skipped (seen_at_text is not a date)
+
+# ===--------------------------------------------------------------------===
+# Direct freshness: other reference_time spellings keep working
+# ===--------------------------------------------------------------------===
+
+# A string literal and a DATE are read as a TIMESTAMP (midnight for the DATE)
+query TT
+SELECT status, CAST(threshold AS VARCHAR)
+FROM freshness('scanner_heartbeats', 'seen_at', INTERVAL 1 HOUR, '2026-10-27 10:30:00')
+----
+pass	2026-10-27 09:30:00
+
+query TT
+SELECT status, CAST(threshold AS VARCHAR)
+FROM freshness('scanner_heartbeats', 'seen_at', INTERVAL 1 DAY, DATE '2026-10-28')
+----
+pass	2026-10-27 00:00:00
+
+# NULL is the current time
+query T
+SELECT status FROM freshness('live_heartbeats', 'seen_at', INTERVAL 1 HOUR, NULL)
+----
+pass
+
+statement error
+SELECT * FROM freshness('scanner_heartbeats', 'seen_at', INTERVAL 1 HOUR, 'yesterday-ish')
+----
+freshness: reference_time 'yesterday-ish' is not a valid timestamp
+
+statement error
+SELECT * FROM freshness('scanner_heartbeats', 'seen_at', INTERVAL 1 HOUR, 42)
+----
+freshness: reference_time must be a TIMESTAMP or TIMESTAMP WITH TIME ZONE, got INTEGER

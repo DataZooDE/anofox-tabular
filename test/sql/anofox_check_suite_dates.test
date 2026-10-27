@@ -78,12 +78,12 @@ SELECT status, message FROM run_checks('feed_checks') WHERE check_name = 'daily_
 ----
 fail	rel_count_change value -1.0 violates thresholds (-1.0 < lower -0.6); 1 row(s) skipped (shipped_on is not a date); filter matched 15/32 rows
 
-# The direct functions leave such rows out as well
+# The direct functions leave such rows out as well, and count them
 query TTRT
 SELECT status, reference_date, rel_change, message
 FROM rel_count_change('carrier_shipments', 'shipped_on', NULL, 7, -0.5, 0.5, DATE '2026-10-21')
 ----
-pass	2026-10-21	-0.5	Count 2 on 2026-10-21 is within -0.5 of baseline average 4.0
+pass	2026-10-21	-0.5	Count 2 on 2026-10-21 is within -0.5 of baseline average 4.0; 2 row(s) skipped (shipped_on is not a date)
 
 # ===--------------------------------------------------------------------===
 # reference_date / reference_time with date tokens: a nightly config that needs no daily

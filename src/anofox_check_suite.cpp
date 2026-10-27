@@ -1014,6 +1014,9 @@ struct CheckBranch {
 	// outcome as the standalone freshness check.
 	bool null_value_fails = false;
 	string null_value_message;
+	// When set, the message of a NULL value as a SQL expression over __c (instead of the
+	// literal null_value_message), e.g. to name the rows that were skipped
+	string null_value_message_sql;
 	// When set, the inner query also exposes nonfinite_count (the NaN/Inf inputs of the
 	// value), which the message of a NaN value reports.
 	string nonfinite_count_expr;
@@ -1109,19 +1112,9 @@ static SuiteDate SuiteDateSQL(ClientContext &context, const CheckSpec &spec, con
 	// Bound in the caller's context: tables of attached databases, views and files included
 	auto probe = BindProbe(context, "SELECT " + date_id + " FROM " + table_ref + " LIMIT 0");
 	auto &type = probe.types[0];
-	switch (type.id()) {
-	case LogicalTypeId::DATE:
-	case LogicalTypeId::TIMESTAMP:
-	case LogicalTypeId::TIMESTAMP_SEC:
-	case LogicalTypeId::TIMESTAMP_MS:
-	case LogicalTypeId::TIMESTAMP_NS:
-	case LogicalTypeId::TIMESTAMP_TZ:
-	case LogicalTypeId::VARCHAR:
-		break;
-	default:
+	if (!IsTimeColumnType(type)) {
 		throw BinderException("run_checks: check '" + spec.check_name + "': params.date_column '" + spec.date_column +
-		                      "' has type " + type.ToString() +
-		                      "; expected DATE, TIMESTAMP, TIMESTAMP WITH TIME ZONE or a VARCHAR holding dates");
+		                      "' " + TimeColumnTypeError(type, "dates"));
 	}
 	SuiteDate result;
 	const string parsed_sql = UtcDateSQL(date_id, type);
@@ -1273,6 +1266,10 @@ static CheckBranch BuildCheckBranch(ClientContext &context, const CheckSpec &spe
 		// zone. A TIMESTAMPTZ column goes through its epoch (UtcTimestampSQL); other columns are taken as UTC.
 		string ref_time = spec.reference_time_sql.empty() ? string(UTC_NOW_SQL) : spec.reference_time_sql;
 		auto probe = BindProbe(context, "SELECT " + col + " FROM " + table_ref + " LIMIT 0");
+		if (!IsTimeColumnType(probe.types[0])) {
+			throw BinderException("run_checks: check '" + spec.check_name + "': column_name '" + spec.column_name +
+			                      "' " + TimeColumnTypeError(probe.types[0], "timestamps"));
+		}
 		// try_parse: an unparseable text value must not abort the whole suite; text with a UTC
 		// offset is the instant it names
 		string ts_expr = UtcTimestampSQL(col, probe.types[0], true);
@@ -1286,6 +1283,18 @@ static CheckBranch BuildCheckBranch(ClientContext &context, const CheckSpec &spe
 		                                  "VARCHAR) || ' row(s) with an infinite timestamp ignored' ELSE '' END");
 		branch.null_value_fails = true;
 		branch.null_value_message = "No timestamp values found (table is empty or column is all NULL)";
+		if (probe.types[0].id() == LogicalTypeId::VARCHAR) {
+			// A text value that is no timestamp is skipped, and the message says how many were
+			branch.extra_columns.push_back("COUNT(*) FILTER (WHERE " + col + " IS NOT NULL AND (" + ts_expr +
+			                               ") IS NULL) AS __skipped_timestamps");
+			branch.message_suffixes.insert(branch.message_suffixes.begin(),
+			                               "CASE WHEN __c.__skipped_timestamps > 0 THEN '; ' || "
+			                               "CAST(__c.__skipped_timestamps AS VARCHAR) || ' row(s) skipped (" +
+			                                   EscapeSqlStringLiteral(spec.column_name) +
+			                                   " is not a timestamp)' ELSE '' END");
+			branch.null_value_message_sql = "CASE WHEN __c.__skipped_timestamps > 0 THEN 'No timestamp values found' "
+			                                "ELSE '" + EscapeSqlStringLiteral(branch.null_value_message) + "' END";
+		}
 	} else if (spec.check_type == "occurrence") {
 		RequireColumn(spec);
 		string mode = spec.mode.empty() ? "max" : spec.mode;
@@ -1525,6 +1534,8 @@ static string BuildBranchSQL(const CheckSpec &spec, const CheckBranch &branch, c
 	string null_status = branch.null_value_fails ? fail_status : "pass";
 	string null_message = branch.null_value_fails ? EscapeSqlStringLiteral(branch.null_value_message)
 	                                              : "No value to evaluate; check passed trivially";
+	string null_message_sql =
+	    branch.null_value_message_sql.empty() ? "'" + null_message + "'" : branch.null_value_message_sql;
 	// A NaN value (e.g. an average over a column holding NaN) cannot be shown to be within
 	// the thresholds: it fails instead of passing every comparison.
 	string type_lit = EscapeSqlStringLiteral(spec.check_type);
@@ -1551,7 +1562,7 @@ static string BuildBranchSQL(const CheckSpec &spec, const CheckBranch &branch, c
 	                    "     WHEN isnan(__c.value) THEN '" + fail_status + "' "
 	                    "     WHEN " + fail_cond + " THEN '" + fail_status + "' "
 	                    "     ELSE 'pass' END";
-	string message_sql = "(CASE WHEN __c.value IS NULL THEN '" + null_message + "' "
+	string message_sql = "(CASE WHEN __c.value IS NULL THEN " + null_message_sql + " "
 	                     "     WHEN isnan(__c.value) THEN " + nan_message + " "
 	                     "     WHEN " + below_lower + " THEN " + value_prefix + " || ' violates thresholds (' || " +
 	                     value_text + " || ' < lower ' || " + lower_text + " || ')'" +

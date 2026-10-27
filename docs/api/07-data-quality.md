@@ -263,16 +263,17 @@ Passes when the newest value of a timestamp column is not older than `max_age`, 
 `reference_time`.
 
 ```text
-freshness(table_name VARCHAR, timestamp_column VARCHAR, max_age INTERVAL [, reference_time TIMESTAMP])
+freshness(table_name VARCHAR, timestamp_column VARCHAR, max_age INTERVAL
+          [, reference_time TIMESTAMP | TIMESTAMP WITH TIME ZONE])
   -> TABLE(status VARCHAR, metric_value TIMESTAMP, threshold TIMESTAMP, age_seconds BIGINT, message VARCHAR)
 ```
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `table_name` | `VARCHAR` | required | Table or view |
-| `timestamp_column` | `VARCHAR` | required | Timestamp column |
+| `timestamp_column` | `VARCHAR` | required | A `DATE`, `TIMESTAMP` or `TIMESTAMP WITH TIME ZONE` column, or text holding timestamps |
 | `max_age` | `INTERVAL` | required | Largest allowed age of the newest row, for example `INTERVAL '1 day'` |
-| `reference_time` | `TIMESTAMP` | current time (also for `NULL`) | The time the age is measured from |
+| `reference_time` | `TIMESTAMP` or `TIMESTAMP WITH TIME ZONE` | current time (also for `NULL`) | The time the age is measured from. An instant such as `now()` is taken as its UTC time |
 
 | Column | Type | Description |
 |--------|------|-------------|
@@ -300,8 +301,20 @@ also when the ICU extension is loaded and the session `TimeZone` is set. A
 newest value in UTC, the same in every session time zone. A plain `TIMESTAMP` column and
 `reference_time` are taken as UTC as they are. A `DATE` column is compared as midnight of that
 day. A text column with a UTC offset (`'2026-10-29 04:00:00+02'`) is read as the instant it
-names, text without an offset as UTC; text that is no timestamp is a conversion error. The
-check does not need ICU.
+names, text without an offset as UTC. Text that is no timestamp (`'n/a'`) is skipped, and the
+message says how many rows were:
+`Data is fresh. Latest update: 2026-10-27 09:00:00 (age: 5400s). 2 row(s) skipped (seen_at_text is not a timestamp)`.
+When no value parses, the check fails with `No timestamp values found` and that note. The check
+does not need ICU.
+
+`reference_time` may also be an instant, for example `now()` or `current_timestamp`
+(`TIMESTAMP WITH TIME ZONE`): it is converted to its UTC time, so
+`freshness('orders', 'created_at', INTERVAL '1 day', now())` equals the default, and
+`TIMESTAMPTZ '2026-10-27 12:30:00+02'` measures from `2026-10-27 10:30:00` UTC.
+
+Any other column type (a `BIGINT` of epoch seconds, a `TIME`, a `BOOLEAN`) is a binder error:
+`freshness: timestamp_column 'seen_epoch' has type BIGINT; expected DATE, TIMESTAMP, TIMESTAMP WITH TIME ZONE or a VARCHAR holding timestamps`.
+Convert epoch seconds in a view first, for example with `to_timestamp(seen_epoch)`.
 
 A newest timestamp after `reference_time` (clock skew, or timestamps loaded in the wrong time
 zone) still passes, but `age_seconds` is negative and the message warns about it:
@@ -739,8 +752,11 @@ arguments before it at their defaults). Passing it both ways is an error.
 
 The date column may be a `DATE`, a `TIMESTAMP` or a `TIMESTAMP WITH TIME ZONE` (bucketed by
 its UTC date), or text holding dates (`'2026-10-21'`); a text value that is no date, such as
-`'n/a'`, counts as no date and its row is left out. A text timestamp with a UTC offset counts on
-its UTC date (`'2026-10-25 22:30:00-05'` on 2026-10-26); text without an offset is a UTC date.
+`'n/a'`, counts as no date and its row is left out, and the message ends with how many rows
+were (`; 2 row(s) skipped (shipped_on is not a date)`). A text timestamp with a UTC offset
+counts on its UTC date (`'2026-10-25 22:30:00-05'` on 2026-10-26); text without an offset is a
+UTC date. Another column type is a binder error:
+`rel_count_change: date_column 'event_day' has type BIGINT; expected DATE, TIMESTAMP, TIMESTAMP WITH TIME ZONE or a VARCHAR holding dates`.
 
 An `infinity` or `-infinity` date (the `valid_to` of the current version in a slowly changing
 dimension) is no day of data either: such rows are left out, so the default reference date is
@@ -1114,7 +1130,7 @@ The `value` column holds the measure of each type:
 | `agg` | the aggregate (`min`, `max`, `sum` of an integer or `DECIMAL` column and `median` of a `DECIMAL` column are compared exactly, as in [`agg_check`](#agg_check)) | `agg` (required): `avg`, `min`, `max`, `sum`, `median`, `stddev` | yes |
 | `duplicate_count` | duplicates | none (the key is `column_name`: a comma-separated list or a JSON array) | yes |
 | `compliance` | compliance rate | `expression` (required) | yes |
-| `freshness` | age in seconds (the thresholds are seconds too) | `reference_time` (default: the current UTC time, no ICU needed) | yes |
+| `freshness` | age in seconds (the thresholds are seconds too); `column_name` must be a date, timestamp or text column | `reference_time` (default: the current UTC time, no ICU needed) | yes |
 | `occurrence` | frequency of the extreme value | `mode`: `max` (default) or `min` | no |
 | `match_rate` | match rate over the rows with a non-NULL key | `right_table`, `right_keys` (required), `left_keys` (default `column_name`); the keys as a comma-separated string or a JSON array (`["customer_id", "region"]`) | no |
 | `rel_count_change` | relative change | `date_column` (required), `count_column` (counted with `COUNT(DISTINCT ...)` per day; default: rows), `window_days` (7), `reference_date`, `fill_missing_days` (`false`) | no |
@@ -1148,6 +1164,19 @@ A `reference_date` or `reference_time` of `infinity` is an `error` row
 (`params.reference_date must be a finite date`).
 A column of another type (a `BIGINT` such as `20261021`) is an `error` row:
 `params.date_column 'event_day' has type BIGINT; expected DATE, TIMESTAMP, TIMESTAMP WITH TIME ZONE or a VARCHAR holding dates`.
+The direct functions raise the same binder error
+(`rel_count_change: date_column 'event_day' has type BIGINT; ...`) and also count the skipped
+text values in their message
+(`No baseline days before 2026-10-27; check passed trivially; 2 row(s) skipped (seen_at_text is not a date)`).
+
+The `column_name` of a `freshness` check follows the same rules. Text that is no timestamp is
+skipped and counted
+(`freshness value 5400.0 seconds is within thresholds; 2 row(s) skipped (seen_at_text is not a timestamp)`);
+when no value parses the check fails with
+`No timestamp values found; 2 row(s) skipped (last_seen is not a timestamp)`. Another column
+type (epoch seconds as `BIGINT` or `DOUBLE`, a `TIME`, an `ENUM`, a `BOOLEAN`) is an `error`
+row:
+`check 'fresh_epoch' (freshness) cannot run: column_name 'seen_epoch' has type BIGINT; expected DATE, TIMESTAMP, TIMESTAMP WITH TIME ZONE or a VARCHAR holding timestamps`.
 
 Every type also accepts the `params` key `fail_on_empty` (`true` or `false`, default `false`):
 with `true` a check that has no rows to evaluate (an empty table, or a `filter_expr` that
@@ -1228,7 +1257,8 @@ are, for example:
   `check_name` that several checks share: each of them is an `error` row
   (`check_name 'orders_volume' is used by 2 checks; check names must be unique`), since their
   results could not be told apart
-- a `date_column` that is not a date, timestamp or text column (see above)
+- a `date_column`, or the `column_name` of a `freshness` check, that is not a date, timestamp or
+  text column (see above)
 - a `compliance` expression or `filter_expr` that does not parse or references an unknown column
   (`params.expression: failed to parse expression 'amount >': syntax error at or near ")"`)
 - a `regex_match` pattern that is not a valid regular expression

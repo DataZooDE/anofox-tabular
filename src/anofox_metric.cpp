@@ -331,6 +331,15 @@ static string GenerateFreshnessSQL(const string &table_ref, const string &timest
 	string infinite = InfiniteTimeSQL(col_id, column_type, "TIMESTAMP");
 	string infinite_note = "CASE WHEN infinite_count > 0 THEN '. ' || CAST(infinite_count AS VARCHAR) || "
 	                       "' row(s) with an infinite timestamp ignored' ELSE '' END";
+	// A text value that is no timestamp is skipped (not a conversion error), and the message
+	// says how many were
+	const bool is_text = column_type.id() == LogicalTypeId::VARCHAR;
+	string timestamp_sql = UtcTimestampSQL(col_id, column_type, is_text);
+	string skipped_count = is_text ? "COUNT(*) FILTER (WHERE " + col_id + " IS NOT NULL AND (" + timestamp_sql + ") IS NULL)"
+	                               : string("0");
+	string skipped_note = "CASE WHEN skipped_count > 0 THEN '. ' || CAST(skipped_count AS VARCHAR) || "
+	                      "' row(s) skipped (" + EscapeSqlStringLiteral(timestamp_column) +
+	                      " is not a timestamp)' ELSE '' END";
 
 	// Empty-input semantics: an empty table or all-NULL timestamp column yields one row with
 	// status 'fail', NULL metric_value/age_seconds and an explicit message (freshness cannot
@@ -345,16 +354,18 @@ static string GenerateFreshnessSQL(const string &table_ref, const string &timest
 		"threshold_timestamp AS threshold, "
 		+ age_sql + " AS age_seconds, "
 		"CASE "
+		"  WHEN latest_timestamp IS NULL AND skipped_count > 0 THEN 'No timestamp values found' "
 		"  WHEN latest_timestamp IS NULL THEN "
 		"    'No timestamp values found (table is empty or column is all NULL)' "
 		"  WHEN latest_timestamp >= threshold_timestamp THEN "
 		"    'Data is fresh. Latest update: ' || CAST(latest_timestamp AS VARCHAR) || ' (age: ' || CAST(" + age_sql + " AS VARCHAR) || 's)' || " + future_note + " "
 		"  ELSE "
 		"    'Data is stale. Latest update: ' || CAST(latest_timestamp AS VARCHAR) || ' (age: ' || CAST(" + age_sql + " AS VARCHAR) || 's, max allowed: ' || CAST(EXTRACT(EPOCH FROM " + max_age_interval + ")::BIGINT AS VARCHAR) || 's)' "
-		"END || " + infinite_note + " AS message "
+		"END || " + skipped_note + " || " + infinite_note + " AS message "
 		"FROM (SELECT "
-		"  MAX(" + UtcTimestampSQL(col_id, column_type) + ") FILTER (WHERE NOT " + infinite + ") AS latest_timestamp, "
+		"  MAX(" + timestamp_sql + ") FILTER (WHERE NOT " + infinite + ") AS latest_timestamp, "
 		"  COUNT(*) FILTER (WHERE " + infinite + ") AS infinite_count, "
+		"  " + skipped_count + " AS skipped_count, "
 		+ ref_time + " - " + max_age_interval + " AS threshold_timestamp "
 		"FROM " + table_ref + ")";
 }
@@ -480,6 +491,33 @@ static unique_ptr<TableRef> MetricSchemaBindReplace(ClientContext &context, Tabl
 	return ParseSubquery(sql, context, "Failed to parse schema metric query");
 }
 
+// The reference_time of freshness as a plain UTC TIMESTAMP (NULL stays NULL): an instant
+// (TIMESTAMP WITH TIME ZONE, e.g. now()) is taken as its UTC time whatever the session TimeZone;
+// a DATE is its midnight; a string is cast to TIMESTAMP. Any other type is a binder error.
+static Value NormalizeReferenceTime(const Value &reference_time) {
+	if (reference_time.IsNull()) {
+		return Value(LogicalType(LogicalTypeId::TIMESTAMP));
+	}
+	switch (reference_time.type().id()) {
+	case LogicalTypeId::TIMESTAMP_TZ:
+		return Value::TIMESTAMP(timestamp_t(reference_time.GetValueUnsafe<int64_t>()));
+	case LogicalTypeId::TIMESTAMP:
+	case LogicalTypeId::TIMESTAMP_SEC:
+	case LogicalTypeId::TIMESTAMP_MS:
+	case LogicalTypeId::TIMESTAMP_NS:
+	case LogicalTypeId::DATE:
+	case LogicalTypeId::VARCHAR:
+		try {
+			return reference_time.DefaultCastAs(LogicalType(LogicalTypeId::TIMESTAMP));
+		} catch (std::exception &) {
+			throw BinderException("freshness: reference_time '%s' is not a valid timestamp", reference_time.ToString());
+		}
+	default:
+		throw BinderException("freshness: reference_time must be a TIMESTAMP or TIMESTAMP WITH TIME ZONE, got %s",
+		                      reference_time.type().ToString());
+	}
+}
+
 static unique_ptr<TableRef> MetricFreshnessBindReplace(ClientContext &context, TableFunctionBindInput &input) {
 	PostHogTelemetry::Instance().RecordFunctionCall("metric_freshness");
 	if (input.inputs.size() < 3) {
@@ -492,13 +530,19 @@ static unique_ptr<TableRef> MetricFreshnessBindReplace(ClientContext &context, T
 	Value max_age = input.inputs[2];
 	// NULL reference_time = the current UTC time
 	Value reference_time = (input.inputs.size() > 3) ? input.inputs[3] : Value();
+	reference_time = NormalizeReferenceTime(reference_time);
 	if (!reference_time.IsNull() &&
 	    !Value::IsFinite(reference_time.DefaultCastAs(LogicalType(LogicalTypeId::TIMESTAMP)).GetValue<timestamp_t>())) {
 		throw BinderException("freshness: reference_time must be a finite timestamp");
 	}
 
 	string table_ref = BuildQueryTableRef(table_name);
-	auto column_type = RequireRelationColumns(context, "freshness", table_name, {timestamp_column})[0].type;
+	auto column = RequireRelationColumns(context, "freshness", table_name, {timestamp_column})[0];
+	if (!IsTimeColumnType(column.type)) {
+		throw BinderException("freshness: timestamp_column '%s' %s", column.name,
+		                      TimeColumnTypeError(column.type, "timestamps"));
+	}
+	auto &column_type = column.type;
 	string sql = GenerateFreshnessSQL(table_ref, timestamp_column, column_type, max_age, reference_time);
 	return ParseSubquery(sql, context, "Failed to parse freshness metric query");
 }
@@ -1724,10 +1768,12 @@ void RegisterMetricFunctions(ExtensionLoader &loader) {
 	freshness_func_basic.bind_replace = DATAZOO_GUARD(ANOFOX_TABULAR_BANNER, MetricFreshnessBindReplace);
 	freshness_set.AddFunction(freshness_func_basic);
 
-	// Full overload with 4 parameters (includes reference_time)
+	// Full overload with 4 parameters (includes reference_time). ANY: a TIMESTAMP, an instant
+	// (TIMESTAMP WITH TIME ZONE, e.g. now()), a DATE or a timestamp string; two overloads for
+	// TIMESTAMP and TIMESTAMPTZ would make a string literal ambiguous
 	TableFunction freshness_func_full("anofox_tab_freshness",
 	                                   {LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::VARCHAR),
-	                                    LogicalType(LogicalTypeId::INTERVAL), LogicalType(LogicalTypeId::TIMESTAMP)},
+	                                    LogicalType(LogicalTypeId::INTERVAL), LogicalType(LogicalTypeId::ANY)},
 	                                   nullptr, nullptr);
 	freshness_func_full.bind_replace = DATAZOO_GUARD(ANOFOX_TABULAR_BANNER, MetricFreshnessBindReplace);
 	freshness_set.AddFunction(freshness_func_full);

@@ -70,6 +70,14 @@ Value NormalizeBoundThreshold(const Value &threshold, const string &function_nam
 // or text read as a `text_cast_type` such as "DATE") is infinity or -infinity. FALSE for NULL.
 string InfiniteTimeSQL(const string &column_sql, const LogicalType &type, const string &text_cast_type);
 
+// Whether a column of `type` can hold the dates / timestamps of a time-aware check or a
+// freshness check: DATE, TIMESTAMP (any precision), TIMESTAMP WITH TIME ZONE, or VARCHAR (text
+// parsed per row; a value that does not parse is skipped and counted)
+bool IsTimeColumnType(const LogicalType &type);
+// "has type <TYPE>; expected DATE, TIMESTAMP, TIMESTAMP WITH TIME ZONE or a VARCHAR holding
+// <what>" for a column that is no time column (IsTimeColumnType)
+string TimeColumnTypeError(const LogicalType &type, const string &what);
+
 // The baseline columns of rel_count_change ("<avg> AS baseline_avg, <days> AS baseline_days")
 // over a CTE daily(d DATE, c) for the reference date ref_expr: the window_days days strictly
 // before it. By default the days with rows are averaged; with fill_missing_days the calendar

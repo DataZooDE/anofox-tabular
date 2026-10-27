@@ -173,5 +173,5 @@ INSERT INTO ship_checks VALUES
 query TRTT
 SELECT check_name, value, status, message FROM run_checks('ship_checks')
 ----
-ship_fresh	86400.0	pass	freshness value 86400.0 seconds is within thresholds; 1 row(s) with an infinite timestamp ignored
+ship_fresh	86400.0	pass	freshness value 86400.0 seconds is within thresholds; 1 row(s) skipped (shipped_on is not a timestamp); 1 row(s) with an infinite timestamp ignored
 ship_volume	0.0	pass	rel_count_change value 0.0 is within thresholds; 1 row(s) skipped (shipped_on is not a date); 1 row(s) with an infinite date ignored

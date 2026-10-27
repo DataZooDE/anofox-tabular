@@ -359,17 +359,46 @@ Value NormalizeBoundThreshold(const Value &threshold, const string &function_nam
 	return threshold;
 }
 
+bool IsTimeColumnType(const LogicalType &type) {
+	switch (type.id()) {
+	case LogicalTypeId::DATE:
+	case LogicalTypeId::TIMESTAMP:
+	case LogicalTypeId::TIMESTAMP_SEC:
+	case LogicalTypeId::TIMESTAMP_MS:
+	case LogicalTypeId::TIMESTAMP_NS:
+	case LogicalTypeId::TIMESTAMP_TZ:
+	case LogicalTypeId::VARCHAR:
+		return true;
+	default:
+		return false;
+	}
+}
+
+string TimeColumnTypeError(const LogicalType &type, const string &what) {
+	return "has type " + type.ToString() + "; expected DATE, TIMESTAMP, TIMESTAMP WITH TIME ZONE or a VARCHAR holding " +
+	       what;
+}
+
 string InfiniteTimeSQL(const string &column_sql, const LogicalType &type, const string &text_cast_type) {
 	string value =
 	    type.id() == LogicalTypeId::VARCHAR ? "TRY_CAST(" + column_sql + " AS " + text_cast_type + ")" : column_sql;
 	return "COALESCE(NOT isfinite(" + value + "), FALSE)";
 }
 
-// The message suffix "; <n> row(s) with an infinite date ignored" as a SQL VARCHAR expression,
-// '' when no row of table_ref has an infinite date
-static string InfiniteDatesSuffixSQL(const string &table_ref, const string &date_id, const LogicalType &date_type) {
+// The message suffixes of the rows a time-aware check leaves out, as a SQL VARCHAR expression:
+// "; <n> row(s) skipped (<date_column> is not a date)" for text that does not parse (a VARCHAR
+// date column) and "; <n> row(s) with an infinite date ignored"; '' when there are none
+static string InfiniteDatesSuffixSQL(const string &table_ref, const string &date_column, const LogicalType &date_type) {
+	const string date_id = QuoteSqlIdentifier(date_column);
+	string suffix;
+	if (date_type.id() == LogicalTypeId::VARCHAR) {
+		string skipped = "(SELECT COUNT(*) FROM " + table_ref + " WHERE " + date_id + " IS NOT NULL AND (" +
+		                 UtcDateSQL(date_id, date_type) + ") IS NULL)";
+		suffix = "CASE WHEN " + skipped + " > 0 THEN '; ' || CAST(" + skipped + " AS VARCHAR) || ' row(s) skipped (" +
+		         EscapeSqlStringLiteral(date_column) + " is not a date)' ELSE '' END || ";
+	}
 	string count = "(SELECT COUNT(*) FROM " + table_ref + " WHERE " + InfiniteTimeSQL(date_id, date_type, "DATE") + ")";
-	return "CASE WHEN " + count + " > 0 THEN '; ' || CAST(" + count +
+	return suffix + "CASE WHEN " + count + " > 0 THEN '; ' || CAST(" + count +
 	       " AS VARCHAR) || ' row(s) with an infinite date ignored' ELSE '' END";
 }
 
@@ -685,7 +714,7 @@ static string GenerateRelCountChangeSQL(const string &table_ref, const string &d
 	// An infinite date (an SCD2 valid_to of the current version) is no day of data: ignored, and
 	// the message says how many rows were
 	string infinite = InfiniteTimeSQL(date_id, date_type, "DATE");
-	string infinite_suffix = InfiniteDatesSuffixSQL(table_ref, date_id, date_type);
+	string infinite_suffix = InfiniteDatesSuffixSQL(table_ref, date_column, date_type);
 	string window_val = std::to_string(window_days);
 	string cnt_expr = count_column.empty() ? "COUNT(*)" : "COUNT(DISTINCT " + QuoteSqlIdentifier(count_column) + ")";
 
@@ -749,7 +778,7 @@ static string GenerateMetricAnomalyIQRSQL(const string &table_ref, const string 
 	// An infinite date (an SCD2 valid_to of the current version) is no day of data: ignored, and
 	// the message says how many rows were
 	string infinite = InfiniteTimeSQL(date_id, date_type, "DATE");
-	string infinite_suffix = InfiniteDatesSuffixSQL(table_ref, date_id, date_type);
+	string infinite_suffix = InfiniteDatesSuffixSQL(table_ref, date_column, date_type);
 	string window_val = std::to_string(window_days);
 	string metric_expr =
 	    metric_column.empty() ? "CAST(COUNT(*) AS DOUBLE)" : "AVG(CAST(" + QuoteSqlIdentifier(metric_column) + " AS DOUBLE))";
@@ -824,7 +853,7 @@ static string GenerateRollingValuesInSetSQL(const string &table_ref, const strin
 	// An infinite date (an SCD2 valid_to of the current version) is no day of data: ignored, and
 	// the message says how many rows were
 	string infinite = InfiniteTimeSQL(date_id, date_type, "DATE");
-	string infinite_suffix = InfiniteDatesSuffixSQL(table_ref, date_id, date_type);
+	string infinite_suffix = InfiniteDatesSuffixSQL(table_ref, date_column, date_type);
 	string window_val = std::to_string(window_days);
 
 	return "WITH dv AS ("
@@ -868,8 +897,13 @@ static string GenerateRollingValuesInSetSQL(const string &table_ref, const strin
 }
 
 // Helper: the type of the date column of a time-aware check, so a TIMESTAMP WITH TIME ZONE
-// column is bucketed by its UTC date (UtcDateSQL) whatever the session TimeZone
+// column is bucketed by its UTC date (UtcDateSQL) whatever the session TimeZone. A column that
+// cannot hold dates (a BIGINT, a TIME) is a binder error.
 static LogicalType TimeColumnType(const string &function_name, const ResolvedColumn &date_column) {
+	if (!IsTimeColumnType(date_column.type)) {
+		throw BinderException("%s: date_column '%s' %s", function_name, date_column.name,
+		                      TimeColumnTypeError(date_column.type, "dates"));
+	}
 	if (date_column.type.id() == LogicalTypeId::TIMESTAMP_TZ) {
 		AnofoxTrace(AnofoxLogLevel::Debug, function_name + ": '" + date_column.name +
 		                                       "' is TIMESTAMP WITH TIME ZONE; bucketing by its UTC date");
