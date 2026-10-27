@@ -47,7 +47,58 @@ string QuoteSqlIdentifier(const string &identifier) {
 	return "\"" + escaped + "\"";
 }
 
+namespace {
+// Splits a relation name into its dot-separated parts. A part in double quotes may contain
+// dots, and "" inside it is one quote. QualifiedName::Parse is not used: v1.5.6 drops the
+// escaped quote ("a ""b"" c" -> a b c) while 2.0 keeps it.
+bool SplitQualifiedName(const string &input, vector<string> &parts) {
+	string part;
+	bool quoted = false;
+	for (idx_t i = 0; i < input.size(); i++) {
+		char c = input[i];
+		if (quoted) {
+			if (c != '"') {
+				part += c;
+			} else if (i + 1 < input.size() && input[i + 1] == '"') {
+				part += '"';
+				i++;
+			} else {
+				quoted = false;
+			}
+		} else if (c == '"') {
+			quoted = true;
+		} else if (c == '.') {
+			parts.push_back(part);
+			part.clear();
+		} else {
+			part += c;
+		}
+	}
+	parts.push_back(part);
+	if (quoted || parts.size() > 3) {
+		return false;
+	}
+	for (auto &p : parts) {
+		if (p.empty()) {
+			return false;
+		}
+	}
+	return true;
+}
+} // namespace
+
 string BuildQueryTableRef(const string &table_name) {
+	// A name with a quoted part is a catalog relation: reference it as quoted identifiers.
+	// query_table() parses the name with QualifiedName::Parse, which on v1.5.6 drops an
+	// escaped quote inside a quoted part.
+	vector<string> parts;
+	if (table_name.find('"') != string::npos && SplitQualifiedName(table_name, parts)) {
+		string ref;
+		for (auto &part : parts) {
+			ref += (ref.empty() ? "" : ".") + QuoteSqlIdentifier(part);
+		}
+		return ref;
+	}
 	return "query_table('" + EscapeSqlStringLiteral(table_name) + "')";
 }
 
@@ -306,19 +357,16 @@ optional_ptr<CatalogEntry> TryGetRelationEntry(ClientContext &context, const str
 }
 } // namespace
 
+
 optional_ptr<CatalogEntry> LookupRelationEntry(ClientContext &context, const string &table_name) {
-	string catalog;
-	string schema;
-	string name;
-	try {
-		auto qname = QualifiedName::Parse(table_name);
-		catalog = duckdb_compat::QualifiedCatalog(qname);
-		schema = duckdb_compat::QualifiedSchema(qname);
-		name = duckdb_compat::QualifiedLocalName(qname);
-	} catch (const std::exception &ex) {
-		AnofoxTrace(AnofoxLogLevel::Debug, "cannot parse relation name '" + table_name + "': " + ex.what());
+	vector<string> parts;
+	if (!SplitQualifiedName(table_name, parts)) {
+		AnofoxTrace(AnofoxLogLevel::Debug, "cannot parse relation name '" + table_name + "'");
 		return nullptr;
 	}
+	string name = parts.back();
+	string schema = parts.size() >= 2 ? parts[parts.size() - 2] : string();
+	string catalog = parts.size() == 3 ? parts[0] : string();
 	auto entry = TryGetRelationEntry(context, catalog, schema, name, table_name);
 	if (entry || !catalog.empty() || schema.empty()) {
 		return entry;
