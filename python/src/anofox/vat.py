@@ -14,10 +14,10 @@ from __future__ import annotations
 from typing import Any, Callable, Optional, Union
 
 from ._sql import fetch_one, quote_ident
-from ._table import apply_scalar, check_row_input, is_missing
+from ._table import DataFrame, apply_scalar, check_row_input, is_missing
 
 
-def make_vat(conn: Any, vat_string: Union[str, Any], column: Optional[str] = None) -> Union[Optional[dict], Any]:
+def make_vat(conn: Any, vat_string: Union[str, Any], column: Optional[str] = None) -> Union[Optional[dict], DataFrame]:
     """
     Parse a VAT number into ``{"country": str, "digits": str}``, like SQL ``vat(vat_number)``.
 
@@ -28,7 +28,7 @@ def make_vat(conn: Any, vat_string: Union[str, Any], column: Optional[str] = Non
     return _vat_call(conn, vat_string, column, "anofox_tab_vat", "make_vat", _to_vat_dict)
 
 
-def vat_split(conn: Any, vat_string: Union[str, Any], column: Optional[str] = None) -> Union[Optional[dict], Any]:
+def vat_split(conn: Any, vat_string: Union[str, Any], column: Optional[str] = None) -> Union[Optional[dict], DataFrame]:
     """
     Split a VAT number into ``{"country": str, "digits": str}``.
 
@@ -38,7 +38,7 @@ def vat_split(conn: Any, vat_string: Union[str, Any], column: Optional[str] = No
     return _vat_call(conn, vat_string, column, "anofox_tab_vat_split", "vat_split", _to_vat_dict)
 
 
-def vat_is_valid(conn: Any, vat_string: Union[str, Any], column: Optional[str] = None) -> Union[bool, Any]:
+def vat_is_valid(conn: Any, vat_string: Union[str, Any], column: Optional[str] = None) -> Union[Optional[bool], DataFrame]:
     """
     Return True if *vat_string* is a valid VAT number: supported prefix,
     country syntax and, where the country has them, check digits.
@@ -48,7 +48,7 @@ def vat_is_valid(conn: Any, vat_string: Union[str, Any], column: Optional[str] =
     return _vat_call(conn, vat_string, column, "anofox_tab_vat_is_valid", "vat_is_valid", _to_bool)
 
 
-def vat_validate(conn: Any, vat_string: Union[str, Any], column: Optional[str] = None) -> Union[Optional[dict], Any]:
+def vat_validate(conn: Any, vat_string: Union[str, Any], column: Optional[str] = None) -> Union[Optional[dict], DataFrame]:
     """
     Check a VAT number and say why it fails, like SQL ``vat_validate(vat)``.
 
@@ -60,7 +60,7 @@ def vat_validate(conn: Any, vat_string: Union[str, Any], column: Optional[str] =
     return _vat_call(conn, vat_string, column, "anofox_tab_vat_validate", "vat_validate", _to_dict)
 
 
-def vat_is_valid_syntax(conn: Any, vat_string: Union[str, Any], column: Optional[str] = None) -> Union[bool, Any]:
+def vat_is_valid_syntax(conn: Any, vat_string: Union[str, Any], column: Optional[str] = None) -> Union[Optional[bool], DataFrame]:
     """
     Return True if *vat_string* passes the country-specific VAT syntax check
     (prefix and number pattern, no check digits).
@@ -71,7 +71,7 @@ def vat_is_valid_syntax(conn: Any, vat_string: Union[str, Any], column: Optional
     return _vat_call(conn, vat_string, column, "anofox_tab_vat_is_valid_syntax", "vat_is_valid_syntax", _to_bool)
 
 
-def vat_exists(conn: Any, vat_string: Union[str, Any], column: Optional[str] = None) -> Union[bool, Any]:
+def vat_exists(conn: Any, vat_string: Union[str, Any], column: Optional[str] = None) -> Union[Optional[bool], DataFrame]:
     """
     Return True if *vat_string* starts with a supported VAT prefix followed by
     a number, like SQL ``vat_exists(vat_number)``.
@@ -85,7 +85,7 @@ def vat_exists(conn: Any, vat_string: Union[str, Any], column: Optional[str] = N
     return _vat_call(conn, vat_string, column, "anofox_tab_vat_exists", "vat_exists", _to_bool)
 
 
-def vat_normalize(conn: Any, vat_string: Union[str, Any], column: Optional[str] = None) -> Union[Optional[str], Any]:
+def vat_normalize(conn: Any, vat_string: Union[str, Any], column: Optional[str] = None) -> Union[Optional[str], DataFrame]:
     """
     Normalize a VAT number: uppercase, separators removed (``"de 111-111-125"``
     becomes ``"DE111111125"``). Accepts a DataFrame with *column*.
@@ -95,7 +95,7 @@ def vat_normalize(conn: Any, vat_string: Union[str, Any], column: Optional[str] 
 
 def vat_format(
     conn: Any, vat: Union[str, Any], style: str = "plain", column: Optional[str] = None
-) -> Union[Optional[str], Any]:
+) -> Union[Optional[str], DataFrame]:
     """
     Format a VAT number, like SQL ``vat_format(vat_number, format_style)``.
 
@@ -123,17 +123,17 @@ def vat_format(
     return _vat_call(conn, vat, column, "anofox_tab_vat_format", "vat_format", _to_str, [style])
 
 
-def is_valid_vat_country(conn: Any, country_code: Union[str, Any], column: Optional[str] = None) -> Union[bool, Any]:
+def is_valid_vat_country(conn: Any, country_code: Union[str, Any], column: Optional[str] = None) -> Union[Optional[bool], DataFrame]:
     """Return True if *country_code* (e.g. ``"DE"``) is a supported VAT prefix. Accepts a DataFrame with *column*."""
     return _vat_call(conn, country_code, column, "anofox_tab_is_valid_vat_country", "is_valid_vat_country", _to_bool)
 
 
-def vat_is_eu_member(conn: Any, country_code: Union[str, Any], column: Optional[str] = None) -> Union[bool, Any]:
+def vat_is_eu_member(conn: Any, country_code: Union[str, Any], column: Optional[str] = None) -> Union[Optional[bool], DataFrame]:
     """Return True if *country_code* is an EU member state. Accepts a DataFrame with *column*."""
     return _vat_call(conn, country_code, column, "anofox_tab_vat_is_eu_member", "vat_is_eu_member", _to_bool)
 
 
-def vat_country_name(conn: Any, country_code: Union[str, Any], column: Optional[str] = None) -> Union[Optional[str], Any]:
+def vat_country_name(conn: Any, country_code: Union[str, Any], column: Optional[str] = None) -> Union[Optional[str], DataFrame]:
     """
     Return the country name of a VAT country code (``"DE"`` gives
     ``"Germany"``), or ``None`` for an unknown code. Accepts a DataFrame with

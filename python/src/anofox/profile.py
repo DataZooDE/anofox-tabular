@@ -11,7 +11,7 @@ from __future__ import annotations
 from typing import Any, Optional, Union
 
 from ._sql import fetch_frame
-from ._table import output_df_type, table_inputs
+from ._table import DataFrame, output_df_type, table_inputs
 
 
 def profile_table(
@@ -20,7 +20,7 @@ def profile_table(
     columns: Optional[list[str]] = None,
     sample_size: int = 1_000_000,
     exact: bool = False,
-) -> Any:
+) -> DataFrame:
     """
     Per-column statistics — one row per column.
 
@@ -62,7 +62,7 @@ def profile_table(
 def profile_summary(
     conn: Any,
     table_or_df: Union[str, Any],
-) -> Any:
+) -> DataFrame:
     """
     Single-row table overview.
 
@@ -86,7 +86,7 @@ def profile_correlations(
     conn: Any,
     table_or_df: Union[str, Any],
     columns: Optional[list[str]] = None,
-) -> Any:
+) -> DataFrame:
     """
     Pairwise Pearson and Spearman correlations for numeric columns.
 

@@ -16,7 +16,7 @@ from decimal import Decimal
 from typing import Any, Optional, Union
 
 from ._sql import fetch_one, fetch_row, quote_ident
-from ._table import apply_scalar, check_row_input, is_missing
+from ._table import DataFrame, apply_scalar, check_row_input, is_missing
 
 
 def make_money(
@@ -25,7 +25,7 @@ def make_money(
     currency: Optional[str] = None,
     column: Optional[str] = None,
     currency_column: Optional[str] = None,
-) -> Union[Optional[dict], Any]:
+) -> Union[Optional[dict], DataFrame]:
     """
     Create a money value from an amount and currency code, like SQL ``money(amount, currency)``.
 

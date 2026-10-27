@@ -10,6 +10,7 @@ from typing import Any, Iterator, Optional, Sequence, Union
 
 from ._sql import fetch_frame, fetch_one, id_column_arg, quote_ident, run
 from ._table import (
+    DataFrame,
     TableLike,
     apply_scalar,
     check_row_input,
@@ -24,7 +25,7 @@ def pii_detect(
     text_or_df: Union[str, Any],
     column: Optional[str] = None,
     types: Union[str, Sequence[str], None] = None,
-) -> Union[list[dict], Any]:
+) -> Union[Optional[list[dict]], DataFrame]:
     """
     Detect PII entities in text.
 
@@ -75,7 +76,7 @@ def pii_mask(
     column: Optional[str] = None,
     replace: bool = False,
     types: Union[str, Sequence[str], None] = None,
-) -> Union[str, Any]:
+) -> Union[Optional[str], DataFrame]:
     """
     Mask all detected PII in a text or in a DataFrame column.
 
@@ -136,7 +137,7 @@ def pii_mask_value(
     strategy: str = "redact",
     column: Optional[str] = None,
     replace: bool = False,
-) -> Union[str, None, Any]:
+) -> Union[Optional[str], DataFrame]:
     """
     Mask a whole value of a known PII type, without running detection.
 
@@ -223,7 +224,7 @@ def pii_scan_table(
     table_name: TableLike,
     columns: Union[str, Sequence[str], None] = None,
     types: Union[str, Sequence[str], None] = None,
-) -> Any:
+) -> DataFrame:
     """
     Scan all (or selected) string columns of a table for PII.
 
@@ -264,7 +265,7 @@ def pii_audit_table(
     columns: Union[str, Sequence[str], None] = None,
     id_column: Optional[str] = None,
     types: Union[str, Sequence[str], None] = None,
-) -> Any:
+) -> DataFrame:
     """
     Audit a table for PII, returning row-level detail.
 

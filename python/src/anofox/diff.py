@@ -7,7 +7,7 @@ from __future__ import annotations
 from typing import Any, Optional, Union
 
 from ._sql import fetch_frame
-from ._table import output_df_type, table_inputs
+from ._table import DataFrame, output_df_type, table_inputs
 
 
 def joindiff(
@@ -17,7 +17,7 @@ def joindiff(
     primary_keys: Union[str, list[str]],
     compare_columns: Optional[list[str]] = None,
     include_unchanged: bool = False,
-) -> Any:
+) -> DataFrame:
     """
     Compare two tables using a full-outer-join strategy.
 
@@ -69,7 +69,7 @@ def hashdiff(
     primary_keys: Union[str, list[str]],
     bisection_threshold: Optional[int] = None,
     bisection_factor: Optional[int] = None,
-) -> Any:
+) -> DataFrame:
     """
     Compare two tables using row hashes.
 
@@ -117,7 +117,7 @@ def diff_schema(
     conn: Any,
     source: Union[str, Any],
     target: Union[str, Any],
-) -> Any:
+) -> DataFrame:
     """
     Compare the columns of two tables.
 

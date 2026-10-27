@@ -17,7 +17,7 @@ import warnings
 from typing import Any, Optional, Sequence, Union
 
 from ._sql import fetch_frame, id_column_arg, quote_ident
-from ._table import output_df_type, table_inputs
+from ._table import DataFrame, output_df_type, table_inputs
 
 
 #: Fewest scored rows for which ``isolation_forest`` and ``isolation_forest_mv``
@@ -37,7 +37,7 @@ def isolation_forest(
     contamination: Optional[float] = None,
     id_column: Optional[str] = None,
     seed: Optional[int] = None,
-) -> Union[dict, Any]:
+) -> Union[dict, DataFrame]:
     """
     Run Isolation Forest on a single numeric column.
 
@@ -106,7 +106,7 @@ def isolation_forest_mv(
     id_column: Optional[str] = None,
     seed: Optional[int] = None,
     ndim: Optional[int] = None,
-) -> Union[dict, Any]:
+) -> Union[dict, DataFrame]:
     """
     Run multivariate Isolation Forest across multiple numeric columns.
 
@@ -170,7 +170,7 @@ def dbscan(
     epsilon: Optional[float] = None,
     min_points: Optional[int] = None,
     id_column: Optional[str] = None,
-) -> Union[dict, Any]:
+) -> Union[dict, DataFrame]:
     """
     Run DBSCAN clustering on a single numeric column.
 
@@ -185,7 +185,8 @@ def dbscan(
     output_mode:
         ``"summary"`` → dict; ``"scores"`` (or ``"clusters"``) → DataFrame
         with one row per analysed row; rows with a NULL feature are left out,
-        and ``row_id`` is the 1-based table row number.
+        and ``row_id`` is the 1-based table row number. The clustered column
+        is named ``value`` in it, as in SQL, whatever the input column is called.
     epsilon:
         Neighbourhood radius ε (``None``: the extension default, 0.5).
     min_points:
@@ -219,7 +220,7 @@ def dbscan_mv(
     epsilon: Optional[float] = None,
     min_points: Optional[int] = None,
     id_column: Optional[str] = None,
-) -> Union[dict, Any]:
+) -> Union[dict, DataFrame]:
     """
     Run multivariate DBSCAN across multiple numeric columns.
 
@@ -272,7 +273,7 @@ def outlier_tree(
     z_norm: Optional[float] = None,
     z_outlier: Optional[float] = None,
     id_column: Optional[str] = None,
-) -> Union[dict, Any]:
+) -> Union[dict, DataFrame]:
     """
     Run Outlier Tree on one or more columns (explainable anomaly detection).
 
@@ -523,7 +524,7 @@ def _check_id_column(function: str, output_mode: str, id_column: Optional[str]) 
 
 def _execute_anomaly(
     conn: Any, query: str, params: list, output_mode: str, table_or_df: Any
-) -> Union[dict, Any]:
+) -> Union[dict, DataFrame]:
     """
     Execute the query: a dict for 'summary', else a DataFrame with one row per
     analysed row (polars for a polars input, else pandas).

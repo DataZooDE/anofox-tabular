@@ -208,6 +208,14 @@ print(checks.checks["null_rate"]["null_rate"])
   out like a `NULL` by every detector, also in a polars DataFrame, so pandas and polars give
   the same result. A per-row output without rows has the same columns and dtypes as one with
   rows (`outlier_tree`'s `conditions` stays an `object` column, a `List` in polars).
+- The per-row output of `isolation_forest` and `dbscan` names the scored column `value`, as the
+  SQL functions do, whatever the input column is called; `id_column=` adds a key to join on.
+- `email_validate` with a DataFrame adds one `email_validate` column of dicts (`valid`,
+  `stage`, `reason`, `mx_hosts`, `smtp_debug`), a `Struct` column in polars. Expand it with
+  `pd.DataFrame(out["email_validate"].dropna().tolist(), index=...)` or polars
+  `out.unnest("email_validate")` (see [the Python guide](../docs/guides/06-python.md)).
+- The return annotations name the scalar result (`Optional[bool]`, `Optional[dict]`, ...) and,
+  for a DataFrame input, `pandas.DataFrame | polars.DataFrame`.
 - `isolation_forest` and `isolation_forest_mv` warn (`UserWarning`) when 1 to 9 rows were
   scored (`anomaly.MIN_ISOLATION_FOREST_ROWS` is 10): so few rows score alike, and usually
   none is flagged.

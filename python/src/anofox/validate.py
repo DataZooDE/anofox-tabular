@@ -12,7 +12,7 @@ import warnings
 from typing import Any, Optional, Union
 
 from ._sql import fetch_one, quote_ident
-from ._table import apply_scalar, check_row_input, is_missing
+from ._table import DataFrame, apply_scalar, check_row_input, is_missing
 
 
 # ---------------------------------------------------------------------------
@@ -50,7 +50,7 @@ def email_is_valid(
     email_or_df: Union[str, Any],
     mode: str = "regex",
     column: Optional[str] = None,
-) -> Union[Optional[bool], Any]:
+) -> Union[Optional[bool], DataFrame]:
     """
     Check whether an email address is valid.
 
@@ -99,7 +99,7 @@ def email_validate(
     email_or_df: Union[str, Any],
     mode: str = "regex",
     column: Optional[str] = None,
-) -> Union[dict, Any]:
+) -> Union[Optional[dict], DataFrame]:
     """
     Return detailed email validation results.
 
@@ -116,10 +116,20 @@ def email_validate(
 
     Returns
     -------
-    dict
-        When *email_or_df* is a string.
+    dict or None
+        When *email_or_df* is a string: ``valid``, ``stage``, ``reason``,
+        ``mx_hosts`` and ``smtp_debug``; ``None`` for a missing value.
     DataFrame
-        When *email_or_df* is a DataFrame.
+        When *email_or_df* is a DataFrame: a copy with an added
+        ``email_validate`` column holding one such dict per row (a missing
+        value for a missing email); in polars a ``Struct`` column. To get the
+        fields as columns::
+
+            checked = out["email_validate"].dropna()           # pandas
+            details = pd.DataFrame(checked.tolist(), index=checked.index)
+            out = out.join(details[["valid", "stage", "reason"]])
+
+            out = out.unnest("email_validate")                 # polars
     """
     if is_missing(email_or_df):
         return None
@@ -154,7 +164,7 @@ def phone_is_valid(
     region: Optional[str] = None,
     column: Optional[str] = None,
     region_column: Optional[str] = None,
-) -> Union[bool, Any]:
+) -> Union[Optional[bool], DataFrame]:
     """
     Return True if *phone_or_df* is a valid phone number for *region*.
 
@@ -195,7 +205,7 @@ def phone_parse(
     region: Optional[str] = None,
     column: Optional[str] = None,
     region_column: Optional[str] = None,
-) -> Union[dict, Any]:
+) -> Union[Optional[dict], DataFrame]:
     """
     Parse a phone number and return structured information.
 
@@ -246,7 +256,7 @@ def phone_format(
     region_column: Optional[str] = None,
     *,
     fmt: Optional[str] = None,
-) -> Union[Optional[str], Any]:
+) -> Union[Optional[str], DataFrame]:
     """
     Format a phone number, like SQL ``phonenumber_format(phone, region, format)``.
 
@@ -313,7 +323,7 @@ def phone_region(
     hint: Optional[str] = None,
     column: Optional[str] = None,
     region_column: Optional[str] = None,
-) -> Union[Optional[str], Any]:
+) -> Union[Optional[str], DataFrame]:
     """
     Detect the region of a phone number, like SQL ``phonenumber_region(phone, region)``.
 

@@ -90,6 +90,25 @@ customers = customers.drop(columns="email_ok")
   4      <NA>
 ```
 
+`email_validate` says why an address fails. For a DataFrame it adds one `email_validate` column
+holding a dict per row (`valid`, `stage`, `reason`, `mx_hosts`, `smtp_debug`; a `Struct` column
+in polars). To get the fields as columns, expand the dicts (in polars: `out.unnest("email_validate")`):
+
+```python
+out = validate.email_validate(conn, customers, column="email")
+checked = out["email_validate"].dropna()
+details = pd.DataFrame(checked.tolist(), index=checked.index)
+print(customers[["id", "email"]].join(details[["valid", "stage", "reason"]]).to_string(index=False))
+```
+
+```text
+ id              email valid stage         reason
+  1    ana@example.com  True regex            NaN
+  2 bob(at)example.com False regex invalid_format
+  3  carla@example.org  True regex            NaN
+  4                NaN   NaN   NaN            NaN
+```
+
 The phone helpers (`phone_is_valid`, `phone_parse`, `phone_format`, `phone_region`) take one
 region for all rows (`region="DE"`; `hint=` for `phone_region`), or a column with the region of
 each row (`region_column="country"`). Without either, the setting
@@ -377,6 +396,8 @@ print(scores[scores["is_anomaly"]][["sensor_id", "value"]].to_string(index=False
         20   95.0
 ```
 
+The per-row output of `isolation_forest` and `dbscan` names the scored column `value`, as the
+SQL functions do, whatever the input column is called (here it is `value` already).
 With `output_mode="summary"` the function returns a dict with the summary row instead. Pass a
 `seed` for scores that are the same on every run; without it the trees are random. The
 Python defaults are the SQL defaults: a parameter you leave out is passed as `NULL`, so the

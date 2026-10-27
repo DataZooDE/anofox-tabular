@@ -9,7 +9,7 @@ import inspect
 import re
 from decimal import Decimal
 from contextlib import contextmanager
-from typing import Any, Callable, Iterator, Optional, Sequence, TypeVar, Union
+from typing import TYPE_CHECKING, Any, Callable, Iterator, Optional, Sequence, TypeVar, Union
 
 from ._sql import fetch_frame, fetch_one, quote_ident
 from ._utils import (
@@ -19,8 +19,16 @@ from ._utils import (
     registered_view,
 )
 
+if TYPE_CHECKING:
+    import pandas
+    import polars
+
 
 F = TypeVar("F", bound=Callable[..., Any])
+
+#: A pandas or polars DataFrame: what a wrapper returns for a DataFrame input.
+#: Neither library is imported at run time; the names are for type checkers.
+DataFrame = Union["pandas.DataFrame", "polars.DataFrame"]
 
 #: A table name, or a pandas/polars DataFrame standing in for one.
 TableLike = Union[str, Any]
