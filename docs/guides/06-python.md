@@ -248,6 +248,34 @@ print(summary[["row_count", "column_count", "total_nulls"]].to_string(index=Fals
          4             3            1
 ```
 
+## Missing values: NaN and NULL
+
+pandas and polars mark a missing number differently, and the difference survives the copy into
+DuckDB:
+
+- **pandas**: `NaN` and `None` in any column (float, string or object) become SQL `NULL`.
+- **polars**: `None` (`null`) becomes `NULL`, but a float `NaN` stays a `DOUBLE` NaN, an ordinary
+  value. It is not counted by `null_rate` or `conn.profile` and is not left out like a `NULL` row
+  in the anomaly functions; the numeric checks report it (for example `zscore`: "1 NaN/Inf
+  value(s) ignored"), and `make_money` gives `None` for it.
+
+```python
+import polars as pl
+
+discounts = [0.1, float("nan"), None, 0.0]
+for orders in (pd.DataFrame({"discount": discounts}), pl.DataFrame({"discount": discounts})):
+    result = quality.null_rate(conn, orders, "discount", max_null_rate=1.0)
+    print(type(orders).__module__.split(".")[0], result["null_count"])
+```
+
+```text
+pandas 2
+polars 1
+```
+
+To treat a polars NaN as missing, convert it first: `df.fill_nan(None)` (`pl.from_pandas()`
+already turns NaN into `null`).
+
 ## Use polars
 
 Every wrapper also takes a polars DataFrame and then returns a polars DataFrame. A table name

@@ -117,6 +117,10 @@ print(result.failures)    # DataFrame: column, row_id, value, rule
   or a table name gives pandas. A value the extension cannot parse comes back as `None`
   (a missing value in a DataFrame), like SQL `NULL`. A Series is not a DataFrame and raises `TypeError`: pass
   `series.to_frame()` (with `column=series.name` for the row-wise helpers).
+- **NaN and NULL.** In a pandas DataFrame `NaN` and `None` both become SQL `NULL`. In a polars
+  DataFrame only `null` does; a float `NaN` stays a NaN value, so `null_rate` and `conn.profile`
+  do not count it as missing. Use `df.fill_nan(None)` to treat it as missing (see
+  [the Python guide](../docs/guides/06-python.md#missing-values-nan-and-null)).
 - **Row-wise results** (`email_is_valid`, `email_validate`, `phone_is_valid`, `phone_parse`,
   `phone_format`, `phone_region`, the `anofox.vat` functions, `make_money`, `pii_detect`,
   `pii_mask` with `column=`) are a copy of the input plus one column. They keep
