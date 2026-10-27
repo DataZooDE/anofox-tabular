@@ -18,7 +18,7 @@ view; a TEMP table is rejected with
 | Function | Canonical name | Kind | Returns |
 |----------|----------------|------|---------|
 | [`profile_table`](#profile_table) | `anofox_tab_profile_table` | table | one row per column, 29 columns |
-| [`profile_summary`](#profile_summary) | `anofox_tab_profile_summary` | table | one row, 11 columns |
+| [`profile_summary`](#profile_summary) | `anofox_tab_profile_summary` | table | one row, 12 columns |
 | [`profile_correlations`](#profile_correlations) | `anofox_tab_profile_correlations` | table | one row per pair of numeric columns |
 
 Setup for the examples on this page:
@@ -78,7 +78,7 @@ Output columns:
 | `p75` | `DOUBLE` | 75th percentile, numeric columns only; finite values only |
 | `skewness` | `DOUBLE` | Numeric columns only; finite values only |
 | `kurtosis` | `DOUBLE` | Numeric columns only; finite values only |
-| `top_values` | `STRUCT(value VARCHAR, count BIGINT)[]` | The 5 most frequent values, most frequent first; values with equal counts in ascending order (compared as text); finite values only for numeric columns |
+| `top_values` | `STRUCT(value VARCHAR, count BIGINT)[]` | The 5 most frequent values, most frequent first; values with equal counts in ascending order of the column's own type (`9` before `10`, `9.50` before `100.00`), shown as text; finite values only for numeric columns |
 | `avg_length` | `DOUBLE` | String length; element count for lists; cardinality for maps |
 | `min_length` | `BIGINT` | As `avg_length` |
 | `max_length` | `BIGINT` | As `avg_length` |
@@ -204,7 +204,7 @@ Canonical name: `anofox_tab_profile_summary`. Table function.
 Returns one row that describes the whole table.
 
 ```text
-profile_summary(table_name VARCHAR) -> TABLE(... 11 columns)
+profile_summary(table_name VARCHAR) -> TABLE(... 12 columns)
 ```
 
 | Parameter | Type | Default | Description |
@@ -218,10 +218,11 @@ Output columns:
 | `row_count` | `BIGINT` | Rows in the table |
 | `column_count` | `BIGINT` | Columns in the table |
 | `numeric_columns` | `BIGINT` | Numeric columns |
-| `string_columns` | `BIGINT` | String columns |
+| `string_columns` | `BIGINT` | String columns (`VARCHAR`, `BLOB`) |
 | `temporal_columns` | `BIGINT` | Date, time and `INTERVAL` columns |
 | `boolean_columns` | `BIGINT` | Boolean columns |
 | `complex_columns` | `BIGINT` | `LIST`, `MAP`, `STRUCT` and `UNION` columns |
+| `other_columns` | `BIGINT` | Columns of any other type, such as `UUID`, `BIT`, `ENUM` or `JSON`. The six type counts add up to `column_count` |
 | `total_nulls` | `BIGINT` | `NULL` cells over all columns |
 | `total_null_rate` | `DOUBLE` | `total_nulls / (row_count * column_count)` |
 | `duplicate_row_count` | `BIGINT` | Rows that duplicate another row |

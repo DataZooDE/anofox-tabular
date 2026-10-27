@@ -180,7 +180,8 @@ static int64_t ComputeTotalNulls(Connection &con, const string &table_name,
 static string GenerateSummarySQL(const string &table_name, int64_t total_nulls,
                                   int64_t complex_columns, int64_t column_count,
                                   int64_t numeric_columns, int64_t string_columns,
-                                  int64_t temporal_columns, int64_t boolean_columns) {
+                                  int64_t temporal_columns, int64_t boolean_columns,
+                                  int64_t other_columns) {
 	string tbl = EscapeStringLiteral(table_name);
 	string tn_lit = std::to_string(total_nulls);
 	string cc_lit = std::to_string(complex_columns);
@@ -189,6 +190,7 @@ static string GenerateSummarySQL(const string &table_name, int64_t total_nulls,
 	string str_count_lit = std::to_string(string_columns);
 	string tmp_count_lit = std::to_string(temporal_columns);
 	string bool_count_lit = std::to_string(boolean_columns);
+	string other_count_lit = std::to_string(other_columns);
 
 	// estimated_memory_bytes: rough approximation as row_count * column_count * 8.
 	// Assumes an average of 8 bytes per cell across all column types.
@@ -210,6 +212,7 @@ static string GenerateSummarySQL(const string &table_name, int64_t total_nulls,
 	       "  " + tmp_count_lit + "::BIGINT AS temporal_columns,"
 	       "  " + bool_count_lit + "::BIGINT AS boolean_columns,"
 	       "  " + cc_lit + "::BIGINT AS complex_columns,"
+	       "  " + other_count_lit + "::BIGINT AS other_columns,"
 	       "  " + tn_lit + "::BIGINT AS total_nulls,"
 	       "  CASE WHEN r.row_count = 0 OR " + col_count_lit + " = 0 THEN 0.0"
 	       "       ELSE CAST(" + tn_lit + " AS DOUBLE)"
@@ -242,6 +245,9 @@ static unique_ptr<TableRef> ProfileSummaryBindReplace(ClientContext &context,
 	int64_t temporal_columns = 0;
 	int64_t boolean_columns = 0;
 	int64_t complex_columns = 0;
+	// Every column lands in exactly one bucket, so the buckets add up to column_count:
+	// types outside the named buckets (UUID, BIT, ENUM, JSON, ...) count as other
+	int64_t other_columns = 0;
 	for (auto &[col_name, col_type] : columns) {
 		auto category = ClassifyColumn(col_type);
 		column_count++;
@@ -256,6 +262,8 @@ static unique_ptr<TableRef> ProfileSummaryBindReplace(ClientContext &context,
 		}
 		if (IsComplexCategory(category)) {
 			complex_columns++;
+		} else if (category == ColumnCategory::OTHER) {
+			other_columns++;
 		}
 	}
 	int64_t total_nulls = ComputeTotalNulls(con, table_name, columns);
@@ -266,7 +274,7 @@ static unique_ptr<TableRef> ProfileSummaryBindReplace(ClientContext &context,
 
 	string sql = GenerateSummarySQL(table_name, total_nulls, complex_columns, column_count,
 	                                numeric_columns, string_columns, temporal_columns,
-	                                boolean_columns);
+	                                boolean_columns, other_columns);
 	return ParseSubquery(sql, context, "Failed to parse profile_summary query");
 }
 
@@ -507,15 +515,16 @@ static string BuildColumnProfileSQL(const string &col_name, const string &col_ty
 	    "CAST(COALESCE(SUM(CASE WHEN TRY_CAST(" + ec + " AS DOUBLE) < 0 THEN 1 ELSE 0 END), 0)"
 	    " AS BIGINT)");
 
-	// top_values — cast column to VARCHAR to handle all types uniformly;
-	// ties in count are ordered by value so the result is deterministic. Numeric columns list
-	// finite values only (NaN/Inf are in nan_count / inf_count)
+	// top_values — values are grouped and ordered in the column's own type, then shown as
+	// VARCHAR; ties in count are ordered by value (9 before 10, not '10' before '9') so the
+	// result is deterministic. Numeric columns list finite values only (NaN/Inf are in
+	// nan_count / inf_count)
 	string top_val_filter = (cat == ColumnCategory::NUMERIC) ? "isfinite(" + dbl + ")" : ec + " IS NOT NULL";
 	string top_val_sql =
-	    "(SELECT LIST({'value': CAST(v AS VARCHAR), 'count': cnt})"
-	    " FROM (SELECT CAST(" + ec + " AS VARCHAR) AS v, COUNT(*) AS cnt FROM src"
+	    "(SELECT LIST({'value': CAST(v AS VARCHAR), 'count': cnt} ORDER BY cnt DESC, v)"
+	    " FROM (SELECT " + ec + " AS v, COUNT(*) AS cnt FROM src"
 	    "       WHERE " + top_val_filter +
-	    "       GROUP BY CAST(" + ec + " AS VARCHAR)"
+	    "       GROUP BY " + ec +
 	    "       ORDER BY cnt DESC, v LIMIT 5))";
 
 	return "SELECT"
