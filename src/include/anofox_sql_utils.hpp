@@ -144,6 +144,10 @@ string UtcTimestampSQL(const string &column_sql, const LogicalType &type, bool t
 // SQL expression for the UTC calendar date of `column_sql` (see UtcTimestampSQL). A VARCHAR
 // column is parsed with TRY semantics: a value that is not a date yields NULL.
 string UtcDateSQL(const string &column_sql, const LogicalType &type);
+// SQL expression for `column_sql` as text that does not depend on the session TimeZone: a
+// TIMESTAMP WITH TIME ZONE as its UTC instant with a '+00' suffix (what DuckDB prints under
+// TimeZone 'UTC'), other types CAST AS VARCHAR.
+string UtcTextSQL(const string &column_sql, const LogicalType &type);
 // The current time as a plain UTC TIMESTAMP, independent of ICU and the session TimeZone.
 string UtcNowSQL();
 

@@ -961,8 +961,11 @@ static CheckBranch BuildCheckBranch(ClientContext &context, const CheckSpec &spe
 		// The duplicated keys (GROUP BY puts the NULL keys in one group, like the count)
 		string dup_keys = "SELECT " + KeyTextSQL(key_exprs) + " AS k";
 		if (grouped) {
-			string id_col = "CAST(" + QuoteSqlIdentifier(spec.identifier_column) + " AS VARCHAR)";
+			const string &id_col = branch.identifier_sql;
 			dup_keys = "SELECT " + id_col + " AS identifier, " + KeyTextSQL(key_exprs) + " AS k FROM __base GROUP BY " +
+	// The identifier_column as text (UtcTextSQL: a TIMESTAMPTZ is rendered as its UTC instant,
+	// so the identifier and a stored history keyed by it do not depend on the session TimeZone)
+	string identifier_sql;
 			           id_col + ", " + key_group + " HAVING COUNT(*) > 1";
 			branch.inner_sql = "WITH __base AS (SELECT * FROM " + table_ref + where_clause + "), "
 			                   "__dup AS (" + dup_keys + "), "
@@ -1098,6 +1101,11 @@ static CheckBranch BuildCheckBranch(ClientContext &context, const CheckSpec &spe
 			throw BinderException("run_checks: check '" + spec.check_name + "': column_name '" + spec.column_name +
 			                      "' and params.metric_column '" + spec.metric_column +
 			                      "' name different columns; set only one");
+	if (grouped) {
+		const string id_ref = QuoteSqlIdentifier(spec.identifier_column);
+		auto probe = BindProbe(context, "SELECT " + id_ref + " FROM " + table_ref + " LIMIT 0");
+		branch.identifier_sql = UtcTextSQL(id_ref, probe.types[0]);
+	}
 		}
 		const string &metric_column = spec.metric_column.empty() ? spec.column_name : spec.metric_column;
 		string metric_expr = metric_column.empty() ? "CAST(COUNT(*) AS DOUBLE)"
@@ -1170,8 +1178,7 @@ static CheckBranch BuildCheckBranch(ClientContext &context, const CheckSpec &spe
 		select_list += ", " + branch.unevaluated_expr + " AS __unevaluated";
 	}
 	if (grouped) {
-		string id_col = QuoteSqlIdentifier(spec.identifier_column);
-		branch.inner_sql = "SELECT CAST(" + id_col + " AS VARCHAR) AS identifier, " + select_list + " FROM " +
+		branch.inner_sql = "SELECT " + branch.identifier_sql + " AS identifier, " + select_list + " FROM " +
 		                   source_sql + " GROUP BY 1";
 	} else {
 		branch.inner_sql = "SELECT " + select_list + " FROM " + source_sql;
@@ -1297,8 +1304,7 @@ static string BuildBranchSQL(const CheckSpec &spec, const CheckBranch &branch, c
 			conditions.push_back("(" + filter_sql + ")");
 		}
 		if (!identifier_ref.empty()) {
-			conditions.push_back("CAST(" + QuoteSqlIdentifier(spec.identifier_column) +
-			                     " AS VARCHAR) IS NOT DISTINCT FROM " + identifier_ref);
+			conditions.push_back(branch.identifier_sql + " IS NOT DISTINCT FROM " + identifier_ref);
 		}
 		return "(SELECT COUNT(*) FROM " + table_ref +
 		       (conditions.empty() ? "" : " WHERE " + StringUtil::Join(conditions, " AND ")) + ")";

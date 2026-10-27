@@ -350,10 +350,7 @@ static string SideColumnSQL(const string &side, const string &column, const Diff
 	if (entry->second.form == ComparisonForm::UTC_TIMESTAMP) {
 		return UtcTimestampSQL(ref, type);
 	}
-	if (type.id() == LogicalTypeId::TIMESTAMP_TZ) {
-		return "(CAST(" + UtcTimestampSQL(ref, type) + " AS VARCHAR) || '+00')";
-	}
-	return "CAST(" + ref + " AS VARCHAR)";
+	return UtcTextSQL(ref, type);
 }
 
 // The changed_columns output column: for a 'changed' row the compare columns that differ, in

@@ -463,6 +463,13 @@ string UtcDateSQL(const string &column_sql, const LogicalType &type) {
 	return "CAST(" + column_sql + " AS DATE)";
 }
 
+string UtcTextSQL(const string &column_sql, const LogicalType &type) {
+	if (type.id() == LogicalTypeId::TIMESTAMP_TZ) {
+		return "(CAST(" + UtcTimestampSQL(column_sql, type) + " AS VARCHAR) || '+00')";
+	}
+	return "CAST(" + column_sql + " AS VARCHAR)";
+}
+
 string UtcNowSQL() {
 	return "make_timestamp(epoch_us(now()))";
 }
