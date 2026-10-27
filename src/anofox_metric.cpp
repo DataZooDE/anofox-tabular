@@ -18,6 +18,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <limits>
 #include "anofox_tabular_banner.hpp"
 
 namespace duckdb {
@@ -474,11 +475,63 @@ struct IsolationForestGlobalState : public GlobalTableFunctionState {
 	std::vector<double> first_column_values;  // univariate numeric path only ("value" output column)
 	std::vector<Value> id_values;              // id_column value per scored row (empty without id_column)
 	std::vector<int64_t> source_row_ids;       // 1-based scan position of each scored row ("row_id")
+	std::vector<bool> anomaly_flags;           // is_anomaly per scored row
 	double threshold = 0.0;
 	int64_t total_count = 0;
 	int64_t outlier_count = 0;
 	double avg_value = 0.0;
+	bool avg_is_null = false;  // scored rows exist, but none has a finite value
 };
+
+// Classifies the numeric feature values of one row for the isolation forest:
+// a NaN in any feature skips the row like NULL; +-Inf in any feature makes the
+// row an anomaly that is scored 1.0 and kept out of the trees.
+enum class IsolationRowKind : uint8_t { FINITE, NON_FINITE_ANOMALY, SKIPPED_NAN };
+
+// Merges the model scores of the finite rows with the rows forced to score 1.0
+// (+-Inf), in scan order, and derives the anomaly flags and counts.
+static void FinishIsolationForestScores(IsolationForestGlobalState &state, const IsolationForest *forest,
+                                        const std::vector<double> &finite_scores,
+                                        const std::vector<bool> &non_finite_rows, double finite_sum,
+                                        bool univariate) {
+	const size_t n_rows = non_finite_rows.size();
+	state.total_count = static_cast<int64_t>(n_rows);
+	const size_t n_finite = finite_scores.size();
+	if (univariate) {
+		if (n_finite > 0) {
+			state.avg_value = finite_sum / static_cast<double>(n_finite);
+		} else {
+			state.avg_value = 0.0;
+			state.avg_is_null = n_rows > 0;
+		}
+	}
+	state.threshold = forest ? forest->ComputeThreshold(finite_scores) : std::numeric_limits<double>::infinity();
+
+	state.scores.clear();
+	state.scores.reserve(n_rows);
+	state.anomaly_flags.clear();
+	state.anomaly_flags.reserve(n_rows);
+	size_t next_finite = 0;
+	for (size_t r = 0; r < n_rows; ++r) {
+		if (non_finite_rows[r]) {
+			state.scores.push_back(1.0);
+			state.anomaly_flags.push_back(true);
+		} else {
+			double score = finite_scores[next_finite++];
+			state.scores.push_back(score);
+			state.anomaly_flags.push_back(IsolationForest::IsAnomaly(score, state.threshold));
+		}
+	}
+	state.outlier_count =
+	    static_cast<int64_t>(std::count(state.anomaly_flags.begin(), state.anomaly_flags.end(), true));
+	if (anofox::AnofoxTraceConfig::Get().ShouldLog(anofox::AnofoxLogLevel::Debug)) {
+		anofox::AnofoxTrace(anofox::AnofoxLogLevel::Debug,
+		                    "isolation_forest: " + std::to_string(n_rows) + " scored rows (" + std::to_string(n_finite) +
+		                        " finite, " + std::to_string(n_rows - n_finite) + " +-Inf), threshold " +
+		                        std::to_string(state.threshold) + ", " + std::to_string(state.outlier_count) +
+		                        " anomalies");
+	}
+}
 
 // Initialize global state
 static unique_ptr<GlobalTableFunctionState> IsolationForestInit(ClientContext &, TableFunctionInitInput &) {
@@ -863,6 +916,7 @@ static void IsolationForestExecute(ClientContext &context, TableFunctionInput &d
 
 			double sum_first_col = 0.0;
 			std::vector<double> sample_weights;  // Collected during data fetch if weight column provided
+			std::vector<bool> non_finite_rows;   // per scored row: +-Inf in a numeric feature
 
 			// Read data and build category mappings, reading chunks through
 			// UnifiedVectorFormat typed accessors. The weight column (if
@@ -889,10 +943,28 @@ static void IsolationForestExecute(ClientContext &context, TableFunctionInput &d
 					}
 					if (!valid_row) continue;
 
+					auto kind = IsolationRowKind::FINITE;
+					for (idx_t col = 0; col < bind_data.column_names.size() && kind != IsolationRowKind::SKIPPED_NAN;
+					     ++col) {
+						if (is_categorical[col]) {
+							continue;
+						}
+						double v = UnifiedVectorFormat::GetData<double>(formats[col])[formats[col].sel->get_index(row)];
+						if (std::isnan(v)) {
+							kind = IsolationRowKind::SKIPPED_NAN;
+						} else if (std::isinf(v)) {
+							kind = IsolationRowKind::NON_FINITE_ANOMALY;
+						}
+					}
+					if (kind == IsolationRowKind::SKIPPED_NAN) continue;
+
 					state.source_row_ids.push_back(source_row);
 					if (bind_data.id_column.Enabled()) {
 						state.id_values.push_back(chunk->data[id_col_idx].GetValue(row));
 					}
+					non_finite_rows.push_back(kind == IsolationRowKind::NON_FINITE_ANOMALY);
+					// +-Inf rows are anomalies by definition and stay out of the trees
+					if (kind == IsolationRowKind::NON_FINITE_ANOMALY) continue;
 
 					// Process feature columns (not including weight column)
 					for (idx_t col = 0; col < bind_data.column_names.size(); ++col) {
@@ -922,14 +994,10 @@ static void IsolationForestExecute(ClientContext &context, TableFunctionInput &d
 			}
 
 			size_t n_rows = data.empty() ? 0 : data[0].size();
-			state.total_count = static_cast<int64_t>(n_rows);
 
 			if (n_rows == 0) {
-				state.avg_value = 0.0;
-				state.outlier_count = 0;
+				FinishIsolationForestScores(state, nullptr, {}, non_finite_rows, 0.0, !bind_data.is_multivariate);
 			} else {
-				state.avg_value = sum_first_col / static_cast<double>(n_rows);
-
 				// Create and fit isolation forest with mixed-type data (Extended IF with ndim/coef_type, scoring_metric, SCiForest with ntry/prob_pick_avg_gain)
 				IsolationForest forest(bind_data.n_trees, bind_data.sample_size, bind_data.contamination,
 				                       actual_seed, bind_data.ndim, bind_data.coef_type, bind_data.scoring_metric,
@@ -940,15 +1008,15 @@ static void IsolationForestExecute(ClientContext &context, TableFunctionInput &d
 
 				// Score all points directly into the state; row ids and
 				// anomaly flags are derived during emission
-				state.scores = forest.ScoreBatchMixed(data);
-				state.threshold = forest.ComputeThreshold(state.scores);
-				state.outlier_count = static_cast<int64_t>(std::count_if(
-				    state.scores.begin(), state.scores.end(), [&](double s) { return s > state.threshold; }));
+				auto finite_scores = forest.ScoreBatchMixed(data);
+				FinishIsolationForestScores(state, &forest, finite_scores, non_finite_rows, sum_first_col,
+				                            !bind_data.is_multivariate);
 			}
 		} else {
 			// Numeric-only path: use original vector<vector<double>> format
 			std::vector<std::vector<double>> data;
 			double sum_first_col = 0.0;
+			std::vector<bool> non_finite_rows;  // per scored row: +-Inf in a feature
 
 			std::vector<UnifiedVectorFormat> formats;
 			while (true) {
@@ -972,20 +1040,35 @@ static void IsolationForestExecute(ClientContext &context, TableFunctionInput &d
 					}
 					if (!valid_row) continue;
 
+					// The numeric path has no weight column: every checked column is a feature
+					std::vector<double> point(n_checked_cols);
+					auto kind = IsolationRowKind::FINITE;
+					for (idx_t col = 0; col < n_checked_cols; ++col) {
+						point[col] = UnifiedVectorFormat::GetData<double>(formats[col])[formats[col].sel->get_index(row)];
+						if (std::isnan(point[col])) {
+							kind = IsolationRowKind::SKIPPED_NAN;
+							break;
+						}
+						if (std::isinf(point[col])) {
+							kind = IsolationRowKind::NON_FINITE_ANOMALY;
+						}
+					}
+					// NaN is skipped like NULL (the row keeps its row_id slot)
+					if (kind == IsolationRowKind::SKIPPED_NAN) continue;
+
 					state.source_row_ids.push_back(source_row);
 					if (bind_data.id_column.Enabled()) {
 						state.id_values.push_back(chunk->data[id_col_idx].GetValue(row));
 					}
-
-					// The numeric path has no weight column: every checked column is a feature
-					std::vector<double> point(n_checked_cols);
-					for (idx_t col = 0; col < n_checked_cols; ++col) {
-						point[col] = UnifiedVectorFormat::GetData<double>(formats[col])[formats[col].sel->get_index(row)];
-					}
 					if (!bind_data.is_multivariate) {
-						sum_first_col += point[0];
 						// Retain the raw input values for the "value" output column
 						state.first_column_values.push_back(point[0]);
+					}
+					non_finite_rows.push_back(kind == IsolationRowKind::NON_FINITE_ANOMALY);
+					// +-Inf rows are anomalies by definition and stay out of the trees
+					if (kind == IsolationRowKind::NON_FINITE_ANOMALY) continue;
+					if (!bind_data.is_multivariate) {
+						sum_first_col += point[0];
 					}
 					data.push_back(std::move(point));
 				}
@@ -994,14 +1077,9 @@ static void IsolationForestExecute(ClientContext &context, TableFunctionInput &d
 				throw InvalidInputException("Failed to query source table: %s", result->GetError());
 			}
 
-			state.total_count = static_cast<int64_t>(data.size());
-
 			if (data.empty()) {
-				state.avg_value = 0.0;
-				state.outlier_count = 0;
+				FinishIsolationForestScores(state, nullptr, {}, non_finite_rows, 0.0, !bind_data.is_multivariate);
 			} else {
-				state.avg_value = sum_first_col / static_cast<double>(data.size());
-
 				// Create and fit isolation forest (ndim/coef_type/scoring_metric/ntry/prob_pick_avg_gain passed but only used for multivariate)
 				IsolationForest forest(bind_data.n_trees, bind_data.sample_size, bind_data.contamination,
 				                       actual_seed, bind_data.ndim, bind_data.coef_type, bind_data.scoring_metric,
@@ -1010,10 +1088,9 @@ static void IsolationForestExecute(ClientContext &context, TableFunctionInput &d
 
 				// Score all points directly into the state; row ids and
 				// anomaly flags are derived during emission
-				state.scores = forest.ScoreBatch(data);
-				state.threshold = forest.ComputeThreshold(state.scores);
-				state.outlier_count = static_cast<int64_t>(std::count_if(
-				    state.scores.begin(), state.scores.end(), [&](double s) { return s > state.threshold; }));
+				auto finite_scores = forest.ScoreBatch(data);
+				FinishIsolationForestScores(state, &forest, finite_scores, non_finite_rows, sum_first_col,
+				                            !bind_data.is_multivariate);
 			}
 		}
 	}
@@ -1049,7 +1126,7 @@ static void IsolationForestExecute(ClientContext &context, TableFunctionInput &d
 				values[i] = r < state.first_column_values.size() ? state.first_column_values[r] : 0.0;
 			}
 			anomaly_scores[i] = state.scores[r];
-			is_anomaly[i] = state.scores[r] > state.threshold;
+			is_anomaly[i] = state.anomaly_flags[r];
 		}
 		state.current_row += count;
 	} else {
@@ -1072,7 +1149,7 @@ static void IsolationForestExecute(ClientContext &context, TableFunctionInput &d
 				output.SetValue(0, 0, Value(status));
 				output.SetValue(1, 0, Value::BIGINT(state.outlier_count));
 				output.SetValue(2, 0, Value::BIGINT(state.total_count));
-				output.SetValue(3, 0, Value::DOUBLE(state.avg_value));
+				output.SetValue(3, 0, state.avg_is_null ? Value(LogicalType::DOUBLE) : Value::DOUBLE(state.avg_value));
 				output.SetValue(4, 0, Value::DOUBLE(bind_data.contamination));
 				output.SetValue(5, 0, Value::INTEGER(static_cast<int32_t>(bind_data.n_trees)));
 				output.SetValue(6, 0, Value(message));

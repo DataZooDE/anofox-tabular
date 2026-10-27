@@ -44,7 +44,9 @@ view, not a TEMP table.
 
 `isolation_forest` scores every value of one column. Higher scores are more unusual.
 `contamination` is the share of rows you expect to be anomalous; `is_anomaly` flags that share
-of the highest scores. A fixed `seed` makes the scores reproducible.
+of the highest scores. Identical values get identical scores: when identical outliers share
+the top score, all of them are flagged, even beyond that share. `±Inf` values are always
+flagged and `NaN` values are skipped like `NULL`. A fixed `seed` makes the scores reproducible.
 
 ```sql
 SELECT order_id, value AS amount, round(anomaly_score, 3) AS score, is_anomaly

@@ -1,5 +1,7 @@
 #include "anofox_isolation_forest.hpp"
+#include <algorithm>
 #include <cmath>
+#include <limits>
 #include <numeric>
 #include <stdexcept>
 
@@ -1105,23 +1107,62 @@ std::vector<double> IsolationForest::ScoreBatch(
     return scores;
 }
 
+// Relative tolerance under which two anomaly scores count as tied. Identical
+// points get bit-identical scores; the tolerance only absorbs rounding noise.
+static constexpr double SCORE_TIE_TOLERANCE = 1e-9;
+
+static bool ScoresTie(double a, double b) {
+    return std::fabs(a - b) <= SCORE_TIE_TOLERANCE * std::max(1.0, std::max(std::fabs(a), std::fabs(b)));
+}
+
+bool IsolationForest::IsAnomaly(double score, double threshold) {
+    if (std::isinf(threshold)) {
+        return false;
+    }
+    return score >= threshold || ScoresTie(score, threshold);
+}
+
 double IsolationForest::ComputeThreshold(const std::vector<double>& scores) const {
+    const double no_anomalies = std::numeric_limits<double>::infinity();
     if (scores.empty()) {
-        return 0.5;
+        return no_anomalies;
     }
 
-    // Sort scores to find quantile
     auto sorted_scores = scores;
     std::sort(sorted_scores.begin(), sorted_scores.end());
+    const size_t n = sorted_scores.size();
 
-    // Find threshold at (1 - contamination) quantile
-    // Use standard quantile formula: p-quantile at position p*(n-1)
-    // Points with score > this threshold are anomalies
-    double position = (1.0 - contamination_) * static_cast<double>(sorted_scores.size() - 1);
-    size_t idx = static_cast<size_t>(std::floor(position));
-    idx = std::min(idx, sorted_scores.size() - 1);
+    // Constant / uniform data: every score is equal, there is nothing to single out
+    if (ScoresTie(sorted_scores.front(), sorted_scores.back())) {
+        return no_anomalies;
+    }
 
-    return sorted_scores[idx];
+    // The (1 - contamination) quantile sits at position p * (n - 1); the k rows
+    // above it are the ones the contamination selects.
+    double position = (1.0 - contamination_) * static_cast<double>(n - 1);
+    size_t idx = std::min(static_cast<size_t>(std::floor(position)), n - 1);
+    size_t k = (n - 1) - idx;
+    if (k == 0) {
+        return no_anomalies;
+    }
+
+    const double cut_score = sorted_scores[idx];
+    const double top_score = sorted_scores[n - 1];
+    if (ScoresTie(cut_score, top_score)) {
+        // The cut lies inside the tied group holding the highest score
+        // (identical outliers at the top): flag that whole group, even beyond
+        // contamination * n.
+        return top_score;
+    }
+    // Otherwise the strict rule: only scores above the cut score (and not tied
+    // with it) are anomalies, so a tie among ordinary values at the cut is not
+    // flagged. The threshold is the lowest such score.
+    for (size_t j = idx + 1; j < n; ++j) {
+        if (!ScoresTie(sorted_scores[j], cut_score)) {
+            return sorted_scores[j];
+        }
+    }
+    return no_anomalies;  // unreachable: the top score does not tie with the cut
 }
 
 // ============================================================================

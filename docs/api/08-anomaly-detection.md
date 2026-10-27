@@ -54,10 +54,35 @@ FROM range(1, 201) t(i);
 
 An Isolation Forest isolates each row with random splits. Rows that are isolated with few
 splits get a high `anomaly_score` (close to 1); typical rows score around 0.5 or lower.
-`is_anomaly` is `true` for the rows whose score lies above the `(1 - contamination)` quantile of
-all scores. `contamination` is therefore the share of rows you expect to be anomalous: with the
-default `0.1`, about 10% of the rows are flagged even when the data has fewer real outliers.
-Set it to your expected outlier rate.
+`contamination` is the share of rows you expect to be anomalous. The cut is the score at the
+`(1 - contamination)` quantile of the `n` scored rows, and the rows that score above it are
+flagged: `k = (n - 1) - floor((1 - contamination) * (n - 1))` rows when no scores are equal.
+With the default `0.1`, about 10% of the rows are flagged even when the data has fewer real
+outliers. Set it to your expected outlier rate.
+
+Rows with equal values get equal scores. Ties at the cut are handled like this:
+
+- When the cut lies inside the group of rows that share the **highest** score (identical
+  outliers at the top), the whole group is flagged, and `outlier_count` can be larger than
+  `contamination` times the rows. Thirty identical `1000.0` readings among 200 rows are all
+  flagged at `contamination` 0.01, not none of them.
+- Any other tie at the cut is not flagged. When the cut falls inside a group of equal ordinary
+  readings, only the rows above that group are flagged, so fewer than `k` rows can be flagged.
+- When all scores are equal, as for a constant column, no row is flagged and `status` is
+  `'pass'`.
+
+Scores that differ by at most a relative `1e-9` count as equal.
+
+### NaN and infinite values
+
+The trees are built from the finite values only:
+
+- A row with `+Inf` or `-Inf` (in any selected column for `isolation_forest_mv`) gets
+  `anomaly_score` 1.0 and `is_anomaly = true`. It counts in `outlier_count` and `total_count`,
+  but not in the contamination share, which applies to the finite rows.
+- A row with `NaN` (in any selected numeric column) is skipped like a `NULL`: it is not in the
+  `'scores'` output or in `total_count`, and it keeps its row number.
+- `avg_value` is the mean of the finite values, and `NULL` when no scored row has a finite value.
 
 Without a `seed` the trees are random and scores change between runs. Pass a `seed` for
 reproducible results.
@@ -68,7 +93,9 @@ reproducible results.
 
 Canonical name: `anofox_tab_isolation_forest`. Table function.
 
-Isolation Forest over a single numeric column. Rows where the column is `NULL` are skipped. A
+Isolation Forest over a single numeric column. Rows where the column is `NULL` or `NaN` are
+skipped; `±Inf` values are anomalies with score 1.0 (see
+[NaN and infinite values](#nan-and-infinite-values)). A
 column that is not numeric (`BOOLEAN` counts as 0/1) is a binder error, for example
 `isolation_forest: column 'segment' must be numeric, got VARCHAR`; score categorical columns with
 [`isolation_forest_mv`](#isolation_forest_mv).
@@ -99,8 +126,8 @@ A `NULL` for `n_trees`, `sample_size`, `contamination` or `output_mode` keeps th
 |--------|------|-------------|
 | `status` | `VARCHAR` | `'fail'` when at least one row is flagged, else `'pass'` |
 | `outlier_count` | `BIGINT` | Rows with `is_anomaly = true` |
-| `total_count` | `BIGINT` | Rows analyzed (non-NULL values) |
-| `avg_value` | `DOUBLE` | Mean of the column |
+| `total_count` | `BIGINT` | Rows analyzed (values that are not `NULL` or `NaN`) |
+| `avg_value` | `DOUBLE` | Mean of the finite values (`NULL` if there are none) |
 | `contamination` | `DOUBLE` | The contamination used |
 | `n_trees` | `INTEGER` | The number of trees used |
 | `message` | `VARCHAR` | For example `20 anomalies detected` |
@@ -109,11 +136,11 @@ A `NULL` for `n_trees`, `sample_size`, `contamination` or `output_mode` keeps th
 
 | Column | Type | Description |
 |--------|------|-------------|
-| `row_id` | `BIGINT` | 1-based row number in the table; skipped `NULL` rows keep their number. See [Row numbering](#row-numbering-row_id) |
+| `row_id` | `BIGINT` | 1-based row number in the table; skipped `NULL` and `NaN` rows keep their number. See [Row numbering](#row-numbering-row_id) |
 | `<id_column>` | the column's type | Only with `id_column` |
 | `value` | `DOUBLE` | The column value |
 | `anomaly_score` | `DOUBLE` | Higher is more anomalous |
-| `is_anomaly` | `BOOLEAN` | Score above the contamination threshold |
+| `is_anomaly` | `BOOLEAN` | Score at or above the contamination threshold, or a `±Inf` value. See [How the Isolation Forest flags rows](#how-the-isolation-forest-flags-rows) |
 
 With the default contamination of 0.1, 20 of the 200 rows are flagged (the seed `42` makes the
 example reproducible):
@@ -165,7 +192,9 @@ Canonical name: `anofox_tab_isolation_forest_mv`. Table function.
 Isolation Forest over one or more columns. Numeric columns are split on values. `VARCHAR`
 columns are treated as categorical and split on random subsets of their categories. Columns of
 other types (`DATE`, `TIMESTAMP`, ...) are a binder error. Rows with a
-`NULL` in any selected column are skipped.
+`NULL` in any selected column, or a `NaN` in any selected numeric column, are skipped. A row with
+`±Inf` in any selected column is an anomaly with score 1.0 (see
+[NaN and infinite values](#nan-and-infinite-values)).
 
 ```text
 isolation_forest_mv(table_name VARCHAR, column_names VARCHAR
@@ -612,7 +641,7 @@ The row-level outputs of every anomaly function identify a row by `row_id`:
 - `row_id` is the 1-based number of the row in the order the input is scanned, the number
   `SELECT row_number() OVER () AS row_id, * FROM <table_name>` gives the same row.
 - Every scanned row is counted, including rows that are skipped because a selected column (or
-  the `weight_column`) is `NULL`. A skipped row keeps its number; it is only absent from the
+  the `weight_column`) is `NULL`, or because an Isolation Forest feature is `NaN`. A skipped row keeps its number; it is only absent from the
   output. So the row ids of the output can have gaps.
 - All functions number the same way, so the same row has the same `row_id` in
   `isolation_forest`, `isolation_forest_mv`, `dbscan`, `dbscan_mv` and `outlier_tree`.
