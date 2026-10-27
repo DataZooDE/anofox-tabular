@@ -120,6 +120,8 @@ struct OutlierExplanation {
     double cluster_mean = 0.0;               // Mean for numeric targets
     double cluster_sd = 0.0;                 // Standard deviation
     double cluster_median = 0.0;             // Median value
+    double cluster_mad = 0.0;                // Robust spread the z-score is scaled by
+                                             // (NumericClusterStats::spread)
     size_t cluster_size = 0;                 // Number of points in cluster
     double z_score = 0.0;                    // Z-score of outlier vs cluster
 
@@ -190,32 +192,36 @@ struct NumericClusterStats {
     double median = 0.0;
     double mad = 0.0;              // Median Absolute Deviation
     double mad_scaled = 0.0;       // MAD * 1.4826 (comparable to SD for normal dist)
+    // Mean absolute deviation from the median * sqrt(pi/2) (comparable to SD for normal dist)
+    double mean_abs_dev_scaled = 0.0;
+    // The spread the robust z-score and the bounds use: mad_scaled, or when more than half
+    // of the values share one value (MAD = 0) mean_abs_dev_scaled, then sd. 0 only when
+    // every finite value equals the median.
+    double spread = 0.0;
     double q1 = 0.0;
     double q3 = 0.0;
     double min_val = 0.0;
     double max_val = 0.0;
     size_t n_samples = 0;
 
-    // Compute lower/upper bounds based on z_norm
+    // Normal range: median +- z_norm * spread, the same centre and scale as the robust z-score
     double GetLowerBound(double z_norm) const {
-        return mean - z_norm * sd;
+        return median - z_norm * spread;
     }
 
     double GetUpperBound(double z_norm) const {
-        return mean + z_norm * sd;
+        return median + z_norm * spread;
     }
 
-    // Compute z-score for a value (non-robust)
-    double GetZScore(double value) const {
-        if (sd < 1e-10) return 0.0;
-        return (value - mean) / sd;
-    }
-
-    // Compute robust z-score using median and MAD
-    // This is resistant to outliers in the data
+    // Robust z-score (value - median) / spread. With a zero spread (every finite value equals
+    // the median) a value at the median scores 0 and any other value +-inf.
     double GetRobustZScore(double value) const {
-        if (mad_scaled < 1e-10) return 0.0;
-        return (value - median) / mad_scaled;
+        if (spread < 1e-10) {
+            if (value == median) return 0.0;
+            return value > median ? std::numeric_limits<double>::infinity()
+                                  : -std::numeric_limits<double>::infinity();
+        }
+        return (value - median) / spread;
     }
 
     // Compute Chebyshev bound probability (lower is rarer)

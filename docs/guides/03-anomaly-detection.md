@@ -162,15 +162,15 @@ ORDER BY order_id;
 ```
 
 ```text
-┌──────────┬─────────────┬───────────────┬────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
-│ order_id │ column_name │ outlier_value │                                                      explanation                                                       │
-│  int64   │   varchar   │    varchar    │                                                        varchar                                                         │
-├──────────┼─────────────┼───────────────┼────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┤
-│     1041 │ amount      │ 850           │ Value 850 for column 'amount' is unusually high (mean: 78.58, SD: 354.71, z-score: 35.93) when segment IN ('retail')   │
-│     1054 │ amount      │ 898           │ Value 898 for column 'amount' is unusually high (mean: 287.55, SD: 419.22, z-score: 17.54)                             │
-│     1077 │ amount      │ 5000          │ Value 5000 for column 'amount' is unusually high (mean: 78.58, SD: 354.71, z-score: 222.54) when segment IN ('retail') │
-│     1108 │ amount      │ 896           │ Value 896 for column 'amount' is unusually high (mean: 287.55, SD: 419.22, z-score: 17.49)                             │
-└──────────┴─────────────┴───────────────┴────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+┌──────────┬─────────────┬───────────────┬──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│ order_id │ column_name │ outlier_value │                                                       explanation                                                        │
+│  int64   │   varchar   │    varchar    │                                                         varchar                                                          │
+├──────────┼─────────────┼───────────────┼──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+│     1041 │ amount      │ 850           │ Value 850 for column 'amount' is unusually high (median: 51.00, MAD: 22.24, z-score: 35.93) when segment IN ('retail')   │
+│     1054 │ amount      │ 898           │ Value 898 for column 'amount' is unusually high (median: 66.00, MAD: 47.44, z-score: 17.54)                              │
+│     1077 │ amount      │ 5000          │ Value 5000 for column 'amount' is unusually high (median: 51.00, MAD: 22.24, z-score: 222.54) when segment IN ('retail') │
+│     1108 │ amount      │ 896           │ Value 896 for column 'amount' is unusually high (median: 66.00, MAD: 47.44, z-score: 17.49)                              │
+└──────────┴─────────────┴───────────────┴──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
 Order 1041 is found now: 850 is normal overall, but not when `segment IN ('retail')`. The rows

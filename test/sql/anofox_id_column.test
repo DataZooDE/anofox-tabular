@@ -237,8 +237,9 @@ ORDER BY column_name
 
 # Every finding: the id belongs to the reported row (row_id is the source
 # position here, NULL rows included), and the value is that row's value
+# (two findings: the repeated value 510 is a regular value of group B, not an outlier)
 query II
-SELECT count(*) > 2, count(*) FILTER (WHERE t.pos <> s.row_id OR (s.column_name = 'val' AND s.outlier_value_num <> t.val))
+SELECT count(*) >= 2, count(*) FILTER (WHERE t.pos <> s.row_id OR (s.column_name = 'val' AND s.outlier_value_num <> t.val))
 FROM outlier_tree('idt_ot', 'grp,val', 'outliers', id_column := 'order_id') s
 JOIN idt_ot t USING (order_id)
 ----

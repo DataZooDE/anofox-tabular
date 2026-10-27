@@ -1,0 +1,135 @@
+# name: test/sql/anofox_outlier_tree_robust_spread.test
+# description: outlier_tree scores numeric values by median and a robust spread everywhere: the
+#              scaled MAD, or when more than half of a group shares one value (MAD = 0) the scaled
+#              mean absolute deviation from the median, then the SD. A group whose values all equal
+#              the median has no outliers. Bounds are median +- z_norm * spread and the output
+#              reports cluster_median / cluster_mad, so a flagged value always lies outside its
+#              reported normal range.
+# group: [anofox_tabular]
+
+require anofox_tabular
+
+statement ok
+LOAD anofox_tabular
+
+statement ok
+SET anofox_tab_trace_enabled = false
+
+# ===--------------------------------------------------------------------===
+# MAD = 0: one shop sells a 1.10 EUR item 99 times, one ticket was keyed as 999.99
+# ===--------------------------------------------------------------------===
+
+statement ok
+CREATE TABLE pos_receipts AS
+SELECT i AS receipt_id, 'shop' AS seg, CASE WHEN i = 50 THEN 999.99 ELSE 1.10 END AS amount
+FROM range(1, 101) t(i)
+
+query TII
+SELECT status, total_rows, outlier_count FROM outlier_tree('pos_receipts', 'seg, amount', 'summary')
+----
+fail	100	1
+
+query ITRRRRRR
+SELECT row_id, outlier_value, round(cluster_median, 2), round(cluster_mad, 4), round(z_score, 2),
+       round(lower_bound, 4), round(upper_bound, 4), round(cluster_mean, 4)
+FROM outlier_tree('pos_receipts', 'seg, amount', 'outliers')
+----
+50	999.99	1.1	12.5191	79.79	-32.3260	34.5260	11.0889
+
+query T
+SELECT explanation FROM outlier_tree('pos_receipts', 'seg, amount', 'outliers')
+----
+Value 999.99 for column 'amount' is unusually high (median: 1.10, MAD: 12.52, z-score: 79.79)
+
+# ===--------------------------------------------------------------------===
+# Order quantities: almost every order line is quantity 1, a few 2 or 3, one 250
+# ===--------------------------------------------------------------------===
+
+statement ok
+CREATE TABLE order_lines AS
+SELECT i AS line_id,
+       'SKU-' || lpad(CAST(i % 4 AS VARCHAR), 3, '0') AS sku,
+       CASE WHEN i = 137 THEN 250 WHEN i % 10 = 0 THEN 2 WHEN i % 25 = 0 THEN 3 ELSE 1 END AS quantity
+FROM range(1, 201) t(i)
+
+query ITRR
+SELECT row_id, outlier_value, round(cluster_median, 2), round(z_score, 2)
+FROM outlier_tree('order_lines', 'quantity', 'outliers')
+----
+137	250	1.0	143.45
+
+# The common quantities 2 and 3 stay inside the normal range
+query RR
+SELECT round(lower_bound, 4), round(upper_bound, 4) FROM outlier_tree('order_lines', 'quantity', 'outliers')
+----
+-3.6346	5.6346
+
+# ===--------------------------------------------------------------------===
+# Discounts: most invoices carry no discount, 6 % carry 5 %, one 90 % (typo for 9 %). The 5 %
+# discounts score z = 9 against the fallback spread, but a value repeated more often than the
+# group may have outliers (max_perc_outliers) is a regular value and is not flagged
+# ===--------------------------------------------------------------------===
+
+statement ok
+CREATE TABLE invoice_discounts AS
+SELECT 'INV-2026-' || lpad(CAST(i AS VARCHAR), 5, '0') AS invoice_no,
+       CASE WHEN i % 3 = 0 THEN 'wholesale' ELSE 'retail' END AS channel,
+       CASE WHEN i = 412 THEN 90.0 WHEN i % 17 = 0 THEN 5.0 ELSE 0.0 END AS discount_pct
+FROM range(1, 601) t(i)
+
+query IT
+SELECT row_id, outlier_value FROM outlier_tree('invoice_discounts', 'channel, discount_pct', 'outliers')
+----
+412	90
+
+# Every flagged numeric value lies outside its reported normal range, and z_score, bounds and
+# cluster_median / cluster_mad describe the same statistic
+query I
+SELECT count(*) FROM (
+    SELECT * FROM outlier_tree('invoice_discounts', 'channel, discount_pct', 'outliers')
+    UNION ALL SELECT * FROM outlier_tree('order_lines', 'quantity', 'outliers')
+    UNION ALL SELECT * FROM outlier_tree('pos_receipts', 'seg, amount', 'outliers')
+) WHERE outlier_value_num BETWEEN lower_bound AND upper_bound
+   OR abs(lower_bound - (cluster_median - 2.67 * cluster_mad)) > 1e-9
+   OR abs(upper_bound - (cluster_median + 2.67 * cluster_mad)) > 1e-9
+   OR abs(z_score - (outlier_value_num - cluster_median) / cluster_mad) > 1e-9
+----
+0
+
+# ===--------------------------------------------------------------------===
+# Constant groups: values that all equal the median are never outliers
+# ===--------------------------------------------------------------------===
+
+statement ok
+CREATE TABLE flat_fee AS
+SELECT i AS booking_id, 4.99 AS service_fee FROM range(1, 101) t(i)
+
+query TI
+SELECT status, outlier_count FROM outlier_tree('flat_fee', 'service_fee', 'summary')
+----
+pass	0
+
+# An infinite reading in an otherwise constant series is flagged (z_score NULL)
+statement ok
+CREATE TABLE meter_flat AS
+SELECT 'MTR-' || lpad(CAST(i AS VARCHAR), 4, '0') AS meter_id,
+       CASE WHEN i = 33 THEN 'inf'::DOUBLE ELSE 12.0 END AS kwh
+FROM range(1, 61) t(i)
+
+query ITTRR
+SELECT row_id, outlier_value, z_score IS NULL, cluster_median, cluster_mad
+FROM outlier_tree('meter_flat', 'kwh', 'outliers')
+----
+33	inf	true	12.0	0.0
+
+# Categorical outliers have no median / MAD
+statement ok
+CREATE TABLE ticket_channels AS
+SELECT i AS ticket_id, CASE WHEN i = 77 THEN 'fax' ELSE 'email' END AS channel
+FROM range(1, 201) t(i)
+
+query TTT
+SELECT outlier_value, cluster_median IS NULL, cluster_mad IS NULL
+FROM outlier_tree('ticket_channels', 'channel', 'outliers')
+----
+fax	true	true

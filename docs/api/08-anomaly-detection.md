@@ -508,6 +508,48 @@ Any other type (`DATE`, `TIMESTAMP`, `LIST`, ...) is a binder error, for example
 unknown column is a binder error too. To analyze a date, pass a numeric derivative such as
 `epoch(shipped_at)` through a view.
 
+### How a numeric value is scored
+
+Within its group, a numeric value is scored by the robust z-score
+`z = (value - median) / spread`, and flagged when `|z| >= z_outlier`. The spread is:
+
+1. the median absolute deviation (MAD) × 1.4826;
+2. when more than half of the group shares one value, the MAD is 0 (order quantities that are
+   mostly 1, discounts that are mostly 0). The spread is then the mean absolute deviation from
+   the median × 1.2533 (√(π/2));
+3. the standard deviation, if both are 0.
+
+Both factors make the spread comparable to a standard deviation for normally distributed
+values. A single deviating value in an otherwise constant group is therefore flagged. When
+every finite value of the group equals the median, the spread is 0 and nothing in the group is
+flagged, except an infinite value. The group's normal range is `median ± z_norm × spread`, so
+a flagged value is always outside its reported range.
+
+A value that occurs more often in a group than the group may have outliers
+(`max_perc_outliers` of its rows, at least 1) is a regular value of the group and is never
+flagged: with most invoices at discount 0 and 6 % at 5, the 5 % discounts stay unflagged.
+
+99 receipts of 1.10 and one of 999.99 (MAD = 0):
+
+```sql
+CREATE TABLE pos_receipts AS
+SELECT i AS receipt_id, 'shop' AS seg, CASE WHEN i = 50 THEN 999.99 ELSE 1.10 END AS amount
+FROM range(1, 101) t(i);
+
+SELECT row_id, outlier_value, cluster_median, round(cluster_mad, 2) AS cluster_mad,
+       round(z_score, 2) AS z, round(upper_bound, 2) AS upper_bound
+FROM outlier_tree('pos_receipts', 'seg, amount', 'outliers');
+```
+
+```text
+┌────────┬───────────────┬────────────────┬─────────────┬────────┬─────────────┐
+│ row_id │ outlier_value │ cluster_median │ cluster_mad │   z    │ upper_bound │
+│ int64  │    varchar    │     double     │   double    │ double │   double    │
+├────────┼───────────────┼────────────────┼─────────────┼────────┼─────────────┤
+│     50 │ 999.99        │            1.1 │       12.52 │  79.79 │       34.53 │
+└────────┴───────────────┴────────────────┴─────────────┴────────┴─────────────┘
+```
+
 There are two forms: 3 arguments, or all 9. Other argument counts are a binder error.
 
 ```text
@@ -564,12 +606,14 @@ statistics.
 | `column_name` | `VARCHAR` | Column with the outlier |
 | `outlier_value` | `VARCHAR` | The value as text |
 | `outlier_value_num` | `DOUBLE` | The value as a number for numeric columns, `NULL` for categorical ones |
-| `cluster_mean` | `DOUBLE` | Mean of the group's finite values |
-| `cluster_sd` | `DOUBLE` | Standard deviation of the group's finite values |
+| `cluster_mean` | `DOUBLE` | Mean of the group's finite values (descriptive; not used for scoring) |
+| `cluster_sd` | `DOUBLE` | Standard deviation of the group's finite values (descriptive; not used for scoring) |
+| `cluster_median` | `DOUBLE` | Median of the group's finite values; the centre of `z_score` and the bounds. `NULL` for categorical columns |
+| `cluster_mad` | `DOUBLE` | The spread `z_score` and the bounds are scaled by: MAD × 1.4826, or the fallback described in [How a numeric value is scored](#how-a-numeric-value-is-scored). `NULL` for categorical columns |
 | `cluster_size` | `BIGINT` | Rows in the group with a finite value |
-| `z_score` | `DOUBLE` | Distance from the group in robust standard deviations (median and MAD); `NULL` for an infinite value |
-| `lower_bound` | `DOUBLE` | Lower end of the group's normal range |
-| `upper_bound` | `DOUBLE` | Upper end of the group's normal range |
+| `z_score` | `DOUBLE` | `(value - cluster_median) / cluster_mad`; `NULL` for an infinite value |
+| `lower_bound` | `DOUBLE` | Lower end of the group's normal range, `cluster_median - z_norm × cluster_mad` |
+| `upper_bound` | `DOUBLE` | Upper end of the group's normal range, `cluster_median + z_norm × cluster_mad` |
 | `conditions` | `VARCHAR` | JSON array of the conditions that define the group |
 | `explanation` | `VARCHAR` | The outlier in one sentence |
 | `outlier_score` | `DOUBLE` | Rarity score; lower is more anomalous |
@@ -611,12 +655,12 @@ WHERE column_name = 'salary';
 ```
 
 ```text
-┌──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
-│                                                       explanation                                                        │
-│                                                         varchar                                                          │
-├──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┤
-│ Value 92000 for column 'salary' is unusually high (mean: 50655.00, SD: 4416.85, z-score: 18.66) when level IN ('junior') │
-└──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│                                                         explanation                                                         │
+│                                                           varchar                                                           │
+├─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+│ Value 92000 for column 'salary' is unusually high (median: 50500.00, MAD: 2223.90, z-score: 18.66) when level IN ('junior') │
+└─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
 `outlier_value_num` compares directly with the bounds, with no cast:
@@ -632,7 +676,7 @@ WHERE outlier_value_num IS NOT NULL;
 │ outlier_value_num │ lower_bound │ upper_bound │
 │      double       │   double    │   double    │
 ├───────────────────┼─────────────┼─────────────┤
-│           92000.0 │     38862.0 │     62448.0 │
+│           92000.0 │     44562.0 │     56438.0 │
 └───────────────────┴─────────────┴─────────────┘
 ```
 

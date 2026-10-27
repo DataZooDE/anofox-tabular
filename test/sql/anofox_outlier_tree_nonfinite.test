@@ -30,7 +30,7 @@ FROM outlier_tree('meter_daily', 'kwh', 'outliers')
 query T
 SELECT explanation FROM outlier_tree('meter_daily', 'kwh', 'outliers')
 ----
-Value inf for column 'kwh' is unusually high (mean: 102.00, SD: 1.44, z-score: n/a)
+Value inf for column 'kwh' is unusually high (median: 102.00, MAD: 1.48, z-score: n/a)
 
 # No inf or NaN anywhere in the numeric output
 query I

@@ -33,6 +33,8 @@ outlier_value	VARCHAR
 outlier_value_num	DOUBLE
 cluster_mean	DOUBLE
 cluster_sd	DOUBLE
+cluster_median	DOUBLE
+cluster_mad	DOUBLE
 cluster_size	BIGINT
 z_score	DOUBLE
 lower_bound	DOUBLE
