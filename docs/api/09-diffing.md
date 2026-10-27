@@ -53,7 +53,7 @@ diff_joindiff(
     primary_key     VARCHAR | VARCHAR[]
     [, compare_columns VARCHAR[]
     [, include_all     BOOLEAN ]]
-) -> TABLE(diff_type VARCHAR, <primary key columns>, <other target columns>)
+) -> TABLE(diff_type VARCHAR, <primary key columns>, <other target columns>, changed_columns VARCHAR[])
 ```
 
 | Parameter | Type | Default | Description |
@@ -71,6 +71,7 @@ Output columns:
 | `diff_type` | `VARCHAR` | `added`, `removed`, `changed`, or `unchanged` (only with `include_all`) |
 | key columns | the key's type | `COALESCE` of the source and target key value. When the key's type differs between the tables and is not numeric on both sides, `VARCHAR` |
 | other target columns | their type | The values of the target row. `NULL` for a `removed` row, which has no target row |
+| `changed_columns` | `VARCHAR[]` | The compare columns that differ, in compare order, for a `changed` row; `[]` for an `unchanged` row; `NULL` for an `added` or `removed` row, which has no counterpart to compare. Always the last column |
 
 Behavior:
 
@@ -100,15 +101,15 @@ SELECT * FROM diff_joindiff('customers_v1', 'customers_v2', 'id') ORDER BY id;
 ```
 
 ```text
-┌───────────┬───────┬─────────┬─────────┬───────┐
-│ diff_type │  id   │  name   │  city   │ score │
-│  varchar  │ int32 │ varchar │ varchar │ int32 │
-├───────────┼───────┼─────────┼─────────┼───────┤
-│ changed   │     2 │ Bob     │ Bremen  │    20 │
-│ changed   │     3 │ Cleo    │ Munich  │    35 │
-│ removed   │     4 │ NULL    │ NULL    │  NULL │
-│ added     │     5 │ Eve     │ Leipzig │    50 │
-└───────────┴───────┴─────────┴─────────┴───────┘
+┌───────────┬───────┬─────────┬─────────┬───────┬─────────────────┐
+│ diff_type │  id   │  name   │  city   │ score │ changed_columns │
+│  varchar  │ int32 │ varchar │ varchar │ int32 │    varchar[]    │
+├───────────┼───────┼─────────┼─────────┼───────┼─────────────────┤
+│ changed   │     2 │ Bob     │ Bremen  │    20 │ [city]          │
+│ changed   │     3 │ Cleo    │ Munich  │    35 │ [score]         │
+│ removed   │     4 │ NULL    │ NULL    │  NULL │ NULL            │
+│ added     │     5 │ Eve     │ Leipzig │    50 │ NULL            │
+└───────────┴───────┴─────────┴─────────┴───────┴─────────────────┘
 ```
 
 The removed row (`id` 4) has `NULL` in every target column. To show old and new values side by
@@ -132,6 +133,47 @@ ORDER BY d.id;
 │ removed   │     4 │ Cologne  │ NULL     │        40 │      NULL │
 │ added     │     5 │ NULL     │ Leipzig  │      NULL │        50 │
 └───────────┴───────┴──────────┴──────────┴───────────┴───────────┘
+```
+
+### Which columns changed
+
+`changed_columns` lists the compare columns that differ in a `changed` row. Unnest it to count the
+changes per column, for example in a migration report:
+
+```sql
+SELECT diff_type, id, changed_columns
+FROM diff_joindiff('customers_v1', 'customers_v2', 'id', include_all := true)
+ORDER BY id;
+```
+
+```text
+┌───────────┬───────┬─────────────────┐
+│ diff_type │  id   │ changed_columns │
+│  varchar  │ int32 │    varchar[]    │
+├───────────┼───────┼─────────────────┤
+│ unchanged │     1 │ []              │
+│ changed   │     2 │ [city]          │
+│ changed   │     3 │ [score]         │
+│ removed   │     4 │ NULL            │
+│ added     │     5 │ NULL            │
+└───────────┴───────┴─────────────────┘
+```
+
+```sql
+SELECT col, count(*) AS n
+FROM diff_joindiff('customers_v1', 'customers_v2', 'id'), unnest(changed_columns) AS u(col)
+GROUP BY col
+ORDER BY col;
+```
+
+```text
+┌─────────┬───────┐
+│   col   │   n   │
+│ varchar │ int64 │
+├─────────┼───────┤
+│ city    │     1 │
+│ score   │     1 │
+└─────────┴───────┘
 ```
 
 ### Columns whose type changed
@@ -292,14 +334,14 @@ ORDER BY store, sku;
 ```
 
 ```text
-┌───────────┬─────────┬─────────┬───────┐
-│ diff_type │  store  │   sku   │  qty  │
-│  varchar  │ varchar │ varchar │ int32 │
-├───────────┼─────────┼─────────┼───────┤
-│ changed   │ A       │ x2      │     8 │
-│ removed   │ B       │ x1      │  NULL │
-│ added     │ B       │ x3      │     4 │
-└───────────┴─────────┴─────────┴───────┘
+┌───────────┬─────────┬─────────┬───────┬─────────────────┐
+│ diff_type │  store  │   sku   │  qty  │ changed_columns │
+│  varchar  │ varchar │ varchar │ int32 │    varchar[]    │
+├───────────┼─────────┼─────────┼───────┼─────────────────┤
+│ changed   │ A       │ x2      │     8 │ [qty]           │
+│ removed   │ B       │ x1      │  NULL │ NULL            │
+│ added     │ B       │ x3      │     4 │ NULL            │
+└───────────┴─────────┴─────────┴───────┴─────────────────┘
 ```
 
 The row `(NULL, 'x9')` exists on both sides with the same `qty`, so it does not appear.
@@ -319,7 +361,7 @@ diff_hashdiff(
     source_table VARCHAR,
     target_table VARCHAR,
     primary_key  VARCHAR | VARCHAR[]
-) -> TABLE(diff_type VARCHAR, <primary key columns>, <other target columns>)
+) -> TABLE(diff_type VARCHAR, <primary key columns>, <other target columns>, changed_columns VARCHAR[])
 ```
 
 | Parameter | Type | Default | Description |
@@ -337,15 +379,15 @@ SELECT * FROM diff_hashdiff('customers_v1', 'customers_v2', 'id') ORDER BY id;
 ```
 
 ```text
-┌───────────┬───────┬─────────┬─────────┬───────┐
-│ diff_type │  id   │  name   │  city   │ score │
-│  varchar  │ int32 │ varchar │ varchar │ int32 │
-├───────────┼───────┼─────────┼─────────┼───────┤
-│ changed   │     2 │ Bob     │ Bremen  │    20 │
-│ changed   │     3 │ Cleo    │ Munich  │    35 │
-│ removed   │     4 │ NULL    │ NULL    │  NULL │
-│ added     │     5 │ Eve     │ Leipzig │    50 │
-└───────────┴───────┴─────────┴─────────┴───────┘
+┌───────────┬───────┬─────────┬─────────┬───────┬─────────────────┐
+│ diff_type │  id   │  name   │  city   │ score │ changed_columns │
+│  varchar  │ int32 │ varchar │ varchar │ int32 │    varchar[]    │
+├───────────┼───────┼─────────┼─────────┼───────┼─────────────────┤
+│ changed   │     2 │ Bob     │ Bremen  │    20 │ [city]          │
+│ changed   │     3 │ Cleo    │ Munich  │    35 │ [score]         │
+│ removed   │     4 │ NULL    │ NULL    │  NULL │ NULL            │
+│ added     │     5 │ Eve     │ Leipzig │    50 │ NULL            │
+└───────────┴───────┴─────────┴─────────┴───────┴─────────────────┘
 ```
 
 The parameters `bisection_threshold` and `bisection_factor` are declared but not implemented.

@@ -149,13 +149,13 @@ Expected output:
 │     25 │    32.0 │  0.557 │ false      │
 │     38 │    32.0 │  0.557 │ false      │
 └────────┴─────────┴────────┴────────────┘
-┌───────────┬───────┬─────────┬────────────────────┐
-│ diff_type │  id   │  name   │       email        │
-├───────────┼───────┼─────────┼────────────────────┤
-│ changed   │     2 │ Bob     │ robert@example.com │
-│ removed   │     3 │ NULL    │ NULL               │
-│ added     │     4 │ Dee     │ dee@example.com    │
-└───────────┴───────┴─────────┴────────────────────┘
+┌───────────┬───────┬─────────┬────────────────────┬─────────────────┐
+│ diff_type │  id   │  name   │       email        │ changed_columns │
+├───────────┼───────┼─────────┼────────────────────┼─────────────────┤
+│ changed   │     2 │ Bob     │ robert@example.com │ [email]         │
+│ removed   │     3 │ NULL    │ NULL               │ NULL            │
+│ added     │     4 │ Dee     │ dee@example.com    │ NULL            │
+└───────────┴───────┴─────────┴────────────────────┴─────────────────┘
 ```
 
 The first PII call downloads the NER model used for names, organizations and locations

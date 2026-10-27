@@ -42,7 +42,9 @@ def joindiff(
     Returns
     -------
     DataFrame (pandas, or polars when a polars DataFrame is passed)
-        Rows with ``diff_type`` column indicating change type.
+        Rows with ``diff_type`` column indicating change type and a last
+        ``changed_columns`` column listing the differing columns of each
+        changed row (``NULL`` for added and removed rows).
     """
     pk_sql, pk_value = _format_pk(primary_keys)
     labels = ["the source DataFrame", "the target DataFrame"]
@@ -91,7 +93,8 @@ def hashdiff(
     Returns
     -------
     DataFrame (pandas, or polars when a polars DataFrame is passed)
-        Rows where hashes differ, with ``diff_type`` column.
+        Rows where hashes differ, with ``diff_type`` column and a last
+        ``changed_columns`` column (as for :func:`joindiff`).
     """
     pk_sql, pk_value = _format_pk(primary_keys)
     labels = ["the source DataFrame", "the target DataFrame"]

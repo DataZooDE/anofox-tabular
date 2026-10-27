@@ -317,6 +317,25 @@ static string SideColumnSQL(const string &side, const string &column, const Diff
 	return ref;
 }
 
+// The changed_columns output column: for a 'changed' row the compare columns that differ, in
+// compare order; [] for an 'unchanged' row; NULL for an 'added' or 'removed' row, which has no
+// counterpart to compare.
+static string ChangedColumnsSQL(const DiffColumnPlan &plan) {
+	string list = "[]::VARCHAR[]";
+	if (!plan.compare_columns.empty()) {
+		list = "list_filter([";
+		for (size_t i = 0; i < plan.compare_columns.size(); i++) {
+			auto &column = plan.compare_columns[i];
+			list += (i > 0 ? ", " : "") + string("CASE WHEN ") + SideColumnSQL("s", column, plan) +
+			        " IS DISTINCT FROM " + SideColumnSQL("t", column, plan) + " THEN '" +
+			        EscapeSqlStringLiteral(column) + "' END";
+		}
+		list += "]::VARCHAR[], lambda x: x IS NOT NULL)";
+	}
+	return "CASE WHEN s." + string(SOURCE_PRESENT_MARKER) + " IS NULL OR t." + string(TARGET_PRESENT_MARKER) +
+	       " IS NULL THEN NULL::VARCHAR[] ELSE " + list + " END AS changed_columns";
+}
+
 static string GenerateJoinDiffSQL(const string &function_name, const string &source_table,
                                   const string &target_table, const vector<string> &primary_keys,
                                   const DiffColumnPlan &plan, bool include_all) {
@@ -372,7 +391,7 @@ static string GenerateJoinDiffSQL(const string &function_name, const string &sou
 	for (size_t i = 0; i < primary_keys.size(); i++) {
 		sql += ", " + QuoteSqlIdentifier(primary_keys[i]);
 	}
-	sql += ")";
+	sql += "), " + ChangedColumnsSQL(plan);
 
 	// Wrap each side with a constant presence marker; table references go
 	// through query_table() so hostile and schema-qualified names are handled

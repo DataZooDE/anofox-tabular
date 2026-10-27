@@ -106,6 +106,26 @@ ORDER BY d.order_id;
 └───────────┴──────────┴───────────────┴───────────────┴────────────┴────────────┘
 ```
 
+The last output column, `changed_columns`, names the columns that differ in each changed row
+(`NULL` for added and removed rows), so a per-column change count needs no join:
+
+```sql
+SELECT col, count(*) AS changed_rows
+FROM diff_joindiff('orders_old', 'orders_new', 'order_id'), unnest(changed_columns) AS u(col)
+GROUP BY col
+ORDER BY col;
+```
+
+```text
+┌─────────┬──────────────┐
+│   col   │ changed_rows │
+│ varchar │    int64     │
+├─────────┼──────────────┤
+│ amount  │            1 │
+│ status  │            1 │
+└─────────┴──────────────┘
+```
+
 ## 4. Compare only some columns
 
 Some differences are expected, for example a status that moved on in the new system. Pass the
@@ -145,12 +165,12 @@ SELECT * FROM diff_joindiff('prices_old', 'prices_new', ['region', 'sku']);
 ```
 
 ```text
-┌───────────┬─────────┬─────────┬───────────────┐
-│ diff_type │ region  │   sku   │     price     │
-│  varchar  │ varchar │ varchar │ decimal(10,2) │
-├───────────┼─────────┼─────────┼───────────────┤
-│ changed   │ EU      │ B2      │          4.75 │
-└───────────┴─────────┴─────────┴───────────────┘
+┌───────────┬─────────┬─────────┬───────────────┬─────────────────┐
+│ diff_type │ region  │   sku   │     price     │ changed_columns │
+│  varchar  │ varchar │ varchar │ decimal(10,2) │    varchar[]    │
+├───────────┼─────────┼─────────┼───────────────┼─────────────────┤
+│ changed   │ EU      │ B2      │          4.75 │ [price]         │
+└───────────┴─────────┴─────────┴───────────────┴─────────────────┘
 ```
 
 ## 6. Back the diff with a profile and checks
