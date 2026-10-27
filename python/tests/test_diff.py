@@ -126,3 +126,89 @@ class TestHashdiff:
                 conn, src, tgt, primary_keys="id",
                 bisection_threshold=1000, bisection_factor=5,
             )
+
+
+@pytest.fixture
+def invoice_tables(conn):
+    """A billing migration: renamed, dropped, added, retyped and re-cased columns."""
+    conn.execute(
+        "CREATE OR REPLACE TABLE _invoices_v1 (invoice_id INTEGER, customer_name VARCHAR, "
+        "Amount DECIMAL(12, 2), currency VARCHAR, cost_center INTEGER, fax VARCHAR, issued_on DATE)"
+    )
+    conn.execute(
+        "CREATE OR REPLACE TABLE _invoices_v2 (invoice_id INTEGER, customer_name VARCHAR, "
+        "amount DECIMAL(12, 2), ccy VARCHAR, cost_center VARCHAR, issued_on DATE, payment_terms VARCHAR)"
+    )
+    yield "_invoices_v1", "_invoices_v2"
+    conn.execute("DROP TABLE IF EXISTS _invoices_v1")
+    conn.execute("DROP TABLE IF EXISTS _invoices_v2")
+
+
+class TestDiffSchema:
+    def test_table_names(self, conn, invoice_tables):
+        import pandas as pd
+        from anofox import diff
+        result = diff.diff_schema(conn, *invoice_tables)
+        assert isinstance(result, pd.DataFrame)
+        assert list(result.columns) == ["column_name", "source_type", "target_type", "drift"]
+        rows = [
+            (r.column_name, r.source_type, r.target_type, r.drift)
+            for r in result.astype(object).where(result.notna(), None).itertuples()
+        ]
+        assert rows == [
+            ("invoice_id", "INTEGER", "INTEGER", "same"),
+            ("customer_name", "VARCHAR", "VARCHAR", "same"),
+            ("Amount", "DECIMAL(12,2)", "DECIMAL(12,2)", "same"),
+            ("currency", "VARCHAR", None, "removed"),
+            ("cost_center", "INTEGER", "VARCHAR", "retyped"),
+            ("fax", "VARCHAR", None, "removed"),
+            ("issued_on", "DATE", "DATE", "same"),
+            ("ccy", None, "VARCHAR", "added"),
+            ("payment_terms", None, "VARCHAR", "added"),
+        ]
+
+    def test_pandas_dataframes(self, conn):
+        import pandas as pd
+        from anofox import diff
+        old = pd.DataFrame({"order_id": [1001, 1002], "total": [19.99, 5.5], "fax": ["n/a", "n/a"]})
+        new = pd.DataFrame({"order_id": ["A-1001", "A-1002"], "total": [19.99, 5.5], "channel": ["web", "shop"]})
+        result = diff.diff_schema(conn, old, new)
+        assert isinstance(result, pd.DataFrame)
+        assert dict(zip(result["column_name"], result["drift"])) == {
+            "order_id": "retyped",
+            "total": "same",
+            "fax": "removed",
+            "channel": "added",
+        }
+
+    def test_mixed_table_and_dataframe(self, conn, invoice_tables):
+        import pandas as pd
+        from anofox import diff
+        new = pd.DataFrame({"invoice_id": [1], "customer_name": ["Müller GmbH"]})
+        result = diff.diff_schema(conn, invoice_tables[0], new)
+        drift = dict(zip(result["column_name"], result["drift"]))
+        assert drift["invoice_id"] == "retyped"  # INTEGER vs the DataFrame's BIGINT
+        assert drift["customer_name"] == "same"
+        assert drift["fax"] == "removed"
+
+    def test_polars_returns_polars(self, conn):
+        pl = pytest.importorskip("polars")
+        from anofox import diff
+        old = pl.DataFrame({"sku": ["X-1"], "qty": [3]})
+        new = pl.DataFrame({"sku": ["X-1"], "qty": [3.0]})
+        result = diff.diff_schema(conn, old, new)
+        assert isinstance(result, pl.DataFrame)
+        assert result["drift"].to_list() == ["same", "retyped"]
+
+    def test_unknown_table_raises(self, conn):
+        import duckdb
+        from anofox import diff
+        with pytest.raises(duckdb.Error):
+            diff.diff_schema(conn, "_no_such_table_v1", "_no_such_table_v2")
+
+    def test_registered_tables_are_dropped(self, conn):
+        import pandas as pd
+        from anofox import diff
+        before = conn.execute("SELECT count(*) FROM duckdb_tables()").fetchall()
+        diff.diff_schema(conn, pd.DataFrame({"a": [1]}), pd.DataFrame({"a": [1]}))
+        assert conn.execute("SELECT count(*) FROM duckdb_tables()").fetchall() == before

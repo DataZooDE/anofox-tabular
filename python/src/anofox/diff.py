@@ -1,5 +1,5 @@
 """
-Data diff wrappers (join-based and hash-based).
+Data diff wrappers (join-based and hash-based row diffs, schema diff).
 """
 
 from __future__ import annotations
@@ -107,6 +107,49 @@ def hashdiff(
         query += ")"
 
         result = fetch_frame(conn, query, params, output_df_type(src, tgt))
+    return result
+
+
+def diff_schema(
+    conn: Any,
+    source: Union[str, Any],
+    target: Union[str, Any],
+) -> Any:
+    """
+    Compare the columns of two tables.
+
+    Returns one row per column of either table with its type on each side and
+    the drift: ``same``, ``added`` (target only), ``removed`` (source only) or
+    ``retyped``.  Columns match case-insensitively; the rows come in source
+    column order, followed by the added columns in target column order.  Run
+    it before :func:`joindiff` / :func:`hashdiff` to see which columns those
+    compare.
+
+    Parameters
+    ----------
+    conn:
+        An :class:`~anofox.AnofoxConnection`.
+    source:
+        Old table name (tables, views, TEMP tables, ``schema.table``) or
+        DataFrame.
+    target:
+        New table name or DataFrame.
+
+    Returns
+    -------
+    DataFrame (pandas, or polars when a polars DataFrame is passed)
+        Columns ``column_name``, ``source_type``, ``target_type`` (missing,
+        i.e. ``NaN`` in pandas and ``null`` in polars, on the side that lacks
+        the column) and ``drift``.
+    """
+    labels = ["the source DataFrame", "the target DataFrame"]
+    with table_inputs(conn, source, target, labels=labels) as (src_name, tgt_name):
+        result = fetch_frame(
+            conn,
+            "SELECT * FROM anofox_tab_diff_schema(?, ?)",
+            [src_name, tgt_name],
+            output_df_type(source, target),
+        )
     return result
 
 

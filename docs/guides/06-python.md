@@ -276,6 +276,24 @@ diff_type  id  price
     added   4   40.0
 ```
 
+`diff.diff_schema` compares the columns instead of the rows: one row per column of either
+DataFrame (or table), with its type on each side and the drift (`same`, `added`, `removed` or
+`retyped`). A row diff compares only the columns both sides have.
+
+```python
+old = pd.DataFrame({"id": [1, 2], "price": [10.0, 20.0], "fax": ["030 1234", None]})
+new = pd.DataFrame({"id": ["A-1", "A-2"], "price": [10.0, 20.0], "channel": ["web", "shop"]})
+print(diff.diff_schema(conn, old, new).to_string(index=False))
+```
+
+```text
+column_name source_type target_type   drift
+         id      BIGINT     VARCHAR retyped
+      price      DOUBLE      DOUBLE    same
+        fax     VARCHAR         NaN removed
+    channel         NaN     VARCHAR   added
+```
+
 ## Profile a table
 
 ```python

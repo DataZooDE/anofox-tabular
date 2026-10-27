@@ -100,6 +100,9 @@ print(pii.pii_scan_table(conn, "orders"))
 # ── Diff ──────────────────────────────────────────────────────────────
 print(diff.joindiff(conn, "orders", "orders_v2", primary_keys="id"))
 # diff_type: 'added', 'removed', 'changed' (and 'unchanged' with include_unchanged=True)
+print(diff.diff_schema(conn, "orders", "orders_v2"))
+# one row per column: column_name, source_type, target_type, drift
+# drift: 'same', 'added', 'removed' or 'retyped'
 
 # ── Schema validation ─────────────────────────────────────────────────
 contacts = pd.DataFrame({"email": ["a@b.com", "bad-email"], "phone": ["+49 30 901820", "123"]})
@@ -138,7 +141,8 @@ print(result.failures)    # DataFrame: column, row_id, value, rule
   afterwards. On a connection to a database file (`anofox.connect("my.db")`) that copy is
   written to the file while the call runs. Any other object raises `TypeError`.
   Error messages and result messages name such a copy "the DataFrame" (`joindiff` /
-  `hashdiff`: "the source DataFrame", "the target DataFrame"), not its temporary table name.
+  `hashdiff` / `diff_schema`: "the source DataFrame", "the target DataFrame"), not its
+  temporary table name.
 - **`conn.profile(name)`** resolves a table name like a query does: with tables of the same
   name in several schemas it profiles the one the search path finds. Pass `"schema.table"`
   for another schema; an unknown table raises `duckdb.CatalogException`.
@@ -176,7 +180,7 @@ print(result.failures)    # DataFrame: column, row_id, value, rule
 | `anofox.quality` | `volume`, `null_rate`, `distinct_count`, `freshness`, `zscore`, `iqr`, `schema_check`, `regex_match`, `values_in_set`, `agg_check`, `duplicate_count`, `occurrence`, `match_rate`, `compliance`, `rel_count_change`, `metric_anomaly_iqr`, `rolling_values_in_set`, `define_checks`, `run_checks` |
 | `anofox.anomaly` | `isolation_forest`, `isolation_forest_mv`, `dbscan`, `dbscan_mv`, `outlier_tree` |
 | `anofox.pii` | `pii_detect`, `pii_mask`, `pii_mask_value`, `pii_contains`, `pii_scan_table`, `pii_audit_table` |
-| `anofox.diff` | `joindiff`, `hashdiff` |
+| `anofox.diff` | `joindiff`, `hashdiff`, `diff_schema` |
 | `anofox.profile` | `profile_table`, `profile_summary`, `profile_correlations` |
 | `anofox.money` | `make_money(conn, amount, currency)` (or a DataFrame with `column=` and `currency=` / `currency_column=`), `money_from_cents`, `is_valid_currency`, `currency_symbol`, `money_add`, etc. |
 | `anofox.vat` | `make_vat`, `vat_is_valid`, `vat_is_valid_syntax`, `vat_exists` (prefix check only), `vat_split`, `vat_normalize`, `vat_format(conn, vat, style="plain"\|"iso")`, `is_valid_vat_country`, `vat_is_eu_member`, `vat_country_name` |
