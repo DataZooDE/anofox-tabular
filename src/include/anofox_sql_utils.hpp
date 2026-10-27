@@ -139,7 +139,8 @@ LogicalType LookupColumnType(ClientContext &context, const string &table_name, c
 // extension and whatever the session TimeZone (a plain CAST converts to the session time
 // zone when ICU is loaded). Other types are CAST AS TIMESTAMP (read as UTC as they are).
 string UtcTimestampSQL(const string &column_sql, const LogicalType &type);
-// SQL expression for the UTC calendar date of `column_sql` (see UtcTimestampSQL).
+// SQL expression for the UTC calendar date of `column_sql` (see UtcTimestampSQL). A VARCHAR
+// column is TRY_CAST: a value that is not a date yields NULL.
 string UtcDateSQL(const string &column_sql, const LogicalType &type);
 // The current time as a plain UTC TIMESTAMP, independent of ICU and the session TimeZone.
 string UtcNowSQL();

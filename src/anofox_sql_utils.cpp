@@ -439,6 +439,10 @@ string UtcDateSQL(const string &column_sql, const LogicalType &type) {
 	if (type.id() == LogicalTypeId::TIMESTAMP_TZ) {
 		return "CAST(" + UtcTimestampSQL(column_sql, type) + " AS DATE)";
 	}
+	if (type.id() == LogicalTypeId::VARCHAR) {
+		// a text value that is no date ('n/a') is NULL instead of a conversion error
+		return "TRY_CAST(" + column_sql + " AS DATE)";
+	}
 	return "CAST(" + column_sql + " AS DATE)";
 }
 

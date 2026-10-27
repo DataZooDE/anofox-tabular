@@ -54,8 +54,8 @@ struct CheckSpec {
 	string metric_column;
 	string window_days;
 	string k;
-	// reference_date / reference_time as validated SQL literals (DATE '...' / TIMESTAMP '...'
-	// in UTC), empty when absent
+	// reference_date / reference_time as validated SQL (a DATE '...' / TIMESTAMP '...' literal in
+	// UTC, or the UTC date arithmetic of a ${today}-style token), empty when absent
 	string reference_date_sql;
 	string reference_time_sql;
 	// thresholds and behavior
@@ -161,6 +161,65 @@ static void ValidateParamsKeys(const CheckSpec &spec, const vector<string> &keys
 	throw BinderException("run_checks: check '" + spec.check_name + "': " + message);
 }
 
+// Substitute ${today}, ${yesterday}, ${today+N}, ${today-N}, ${yesterday+N}, ${yesterday-N}
+// tokens in `expr` with UTC date arithmetic. `location` names where the tokens come from in
+// error messages (e.g. "filter_expr of check 'x'", "params.reference_date").
+static string SubstituteDateTokens(const string &expr, const string &location) {
+	const string supported = " (supported: today, yesterday, today+N, today-N, yesterday-N)";
+	string out;
+	size_t pos = 0;
+	while (pos < expr.size()) {
+		size_t start = expr.find("${", pos);
+		if (start == string::npos) {
+			out += expr.substr(pos);
+			break;
+		}
+		size_t end = expr.find('}', start);
+		if (end == string::npos) {
+			throw BinderException("run_checks: unterminated ${...} token in " + location);
+		}
+		out += expr.substr(pos, start - pos);
+		string token = expr.substr(start + 2, end - start - 2);
+
+		int64_t base_offset = 0;
+		string rest;
+		if (token.rfind("today", 0) == 0) {
+			rest = token.substr(5);
+		} else if (token.rfind("yesterday", 0) == 0) {
+			base_offset = -1;
+			rest = token.substr(9);
+		} else {
+			throw BinderException("run_checks: unknown token '${" + token + "}' in " + location + supported);
+		}
+		int64_t day_offset = base_offset;
+		if (!rest.empty()) {
+			if ((rest[0] != '+' && rest[0] != '-') || rest.size() < 2 || rest.size() > 7 ||
+			    rest.find_first_not_of("0123456789", 1) != string::npos) {
+				throw BinderException("run_checks: unknown token '${" + token + "}' in " + location + supported);
+			}
+			int64_t n = std::stoll(rest.substr(1));
+			day_offset += (rest[0] == '+') ? n : -n;
+		}
+		// The UTC date. Not current_date/today(): with ICU loaded they follow the session
+		// time zone, without it they do not resolve.
+		const string today_expr = string("CAST(") + UTC_NOW_SQL + " AS DATE)";
+		if (day_offset == 0) {
+			out += today_expr;
+		} else if (day_offset > 0) {
+			out += "(" + today_expr + " + " + std::to_string(day_offset) + ")";
+		} else {
+			out += "(" + today_expr + " - " + std::to_string(-day_offset) + ")";
+		}
+		pos = end + 1;
+	}
+	return out;
+}
+
+// Whether a params value is exactly one date token such as ${yesterday} (nothing around it)
+static bool IsSingleDateToken(const string &text) {
+	return text.size() > 3 && StringUtil::StartsWith(text, "${") && text.find('}') == text.size() - 1;
+}
+
 // params.<key> as a DATE literal. Validated here, with DuckDB's own cast, so a malformed date
 // becomes an 'error' row of this check instead of a conversion error aborting the suite.
 // A cast that fails, throws (DuckDB v1.5 throws a conversion error for some strings, e.g.
@@ -263,12 +322,19 @@ static void ParseCheckParams(CheckSpec &spec, const string &params_json) {
 	spec.metric_column = get_scalar("metric_column");
 	spec.window_days = get_scalar("window_days");
 	spec.k = get_scalar("k");
+	// A date token (${yesterday}, ${today-N}, ...) is the UTC date of the run; reference_time
+	// then is midnight UTC of that date
 	auto reference_date = get_scalar("reference_date");
-	if (!reference_date.empty()) {
+	if (IsSingleDateToken(reference_date)) {
+		spec.reference_date_sql = SubstituteDateTokens(reference_date, "params.reference_date");
+	} else if (!reference_date.empty()) {
 		spec.reference_date_sql = DateParamLiteral(spec, "reference_date", reference_date);
 	}
 	auto reference_time = get_scalar("reference_time");
-	if (!reference_time.empty()) {
+	if (IsSingleDateToken(reference_time)) {
+		spec.reference_time_sql =
+		    "CAST(" + SubstituteDateTokens(reference_time, "params.reference_time") + " AS TIMESTAMP)";
+	} else if (!reference_time.empty()) {
 		spec.reference_time_sql = UtcTimestampParamLiteral(spec, "reference_time", reference_time);
 	}
 
@@ -586,60 +652,6 @@ static bool TargetTableExists(ClientContext &context, const string &name) {
 	return false;
 }
 
-// Substitute ${today}, ${yesterday}, ${today+N}, ${today-N}, ${yesterday+N}, ${yesterday-N}
-// tokens in a filter expression with current_date arithmetic.
-static string SubstituteDateTokens(const string &expr, const string &check_name) {
-	string out;
-	size_t pos = 0;
-	while (pos < expr.size()) {
-		size_t start = expr.find("${", pos);
-		if (start == string::npos) {
-			out += expr.substr(pos);
-			break;
-		}
-		size_t end = expr.find('}', start);
-		if (end == string::npos) {
-			throw BinderException("run_checks: unterminated ${...} token in filter_expr of check '" + check_name + "'");
-		}
-		out += expr.substr(pos, start - pos);
-		string token = expr.substr(start + 2, end - start - 2);
-
-		int64_t base_offset = 0;
-		string rest;
-		if (token.rfind("today", 0) == 0) {
-			rest = token.substr(5);
-		} else if (token.rfind("yesterday", 0) == 0) {
-			base_offset = -1;
-			rest = token.substr(9);
-		} else {
-			throw BinderException("run_checks: unknown token '${" + token + "}' in filter_expr of check '" +
-			                      check_name + "' (supported: today, yesterday, today+N, today-N, yesterday-N)");
-		}
-		int64_t day_offset = base_offset;
-		if (!rest.empty()) {
-			if ((rest[0] != '+' && rest[0] != '-') || rest.size() < 2 ||
-			    rest.find_first_not_of("0123456789", 1) != string::npos) {
-				throw BinderException("run_checks: unknown token '${" + token + "}' in filter_expr of check '" +
-				                      check_name + "' (supported: today, yesterday, today+N, today-N, yesterday-N)");
-			}
-			int64_t n = std::stoll(rest.substr(1));
-			day_offset += (rest[0] == '+') ? n : -n;
-		}
-		// The UTC date. Not current_date/today(): with ICU loaded they follow the session
-		// time zone, without it they do not resolve.
-		const string today_expr = string("CAST(") + UTC_NOW_SQL + " AS DATE)";
-		if (day_offset == 0) {
-			out += today_expr;
-		} else if (day_offset > 0) {
-			out += "(" + today_expr + " + " + std::to_string(day_offset) + ")";
-		} else {
-			out += "(" + today_expr + " - " + std::to_string(-day_offset) + ")";
-		}
-		pos = end + 1;
-	}
-	return out;
-}
-
 // Parse an integer parameter that arrived as a JSON string, with default
 static int64_t ParseWindowDays(const CheckSpec &spec, int64_t default_days) {
 	if (spec.window_days.empty()) {
@@ -735,6 +747,8 @@ struct CheckBranch {
 	// When set, the inner query also exposes __unevaluated (the rows on which the user's
 	// expression failed at runtime and counted as non-compliant), which the message reports
 	string unevaluated_expr;
+	// SQL expressions over __c appended to the message (e.g. "; 2 row(s) skipped ...")
+	vector<string> message_suffixes;
 };
 
 // How many offending values a failing values_in_set / duplicate_count / match_rate message shows
@@ -794,20 +808,60 @@ static string TolerantBooleanSQL(ClientContext &context, const CheckSpec &spec, 
 	return "COALESCE((" + expr + "), FALSE)";
 }
 
-// Build the inner derived table (value computation) for one check
-// The UTC calendar date of the check's date column, as the direct functions compute it
-// (UtcDateSQL): a TIMESTAMP WITH TIME ZONE column is bucketed by its UTC date without needing
-// ICU. A relation that is not a catalog table (e.g. a file) keeps the plain DATE cast.
-static string SuiteDateSQL(ClientContext &context, const CheckSpec &spec, const string &date_id) {
-	auto relation = LookupRelation(context, spec.table_name);
-	for (auto &column : relation.columns) {
-		if (StringUtil::CIEquals(column.name, spec.date_column)) {
-			return UtcDateSQL(date_id, column.type);
-		}
+// The UTC calendar date of a time-aware check's date column (UtcDateSQL, as the direct
+// functions compute it): a TIMESTAMP WITH TIME ZONE column is bucketed by its UTC date without
+// needing ICU, a VARCHAR column is parsed with TRY_CAST so a row holding 'n/a' is skipped
+// (counted in skipped_sql) instead of aborting the suite. Another column type cannot hold a
+// date: the check cannot run.
+struct SuiteDate {
+	string date_sql;
+	// SQL counting the rows whose non-NULL date value did not parse; empty when every value does
+	string skipped_sql;
+};
+
+static SuiteDate SuiteDateSQL(ClientContext &context, const CheckSpec &spec, const string &filter_sql) {
+	const string date_id = QuoteSqlIdentifier(spec.date_column);
+	const string table_ref = BuildQueryTableRef(spec.table_name);
+	// Bound in the caller's context: tables of attached databases, views and files included
+	auto probe = BindProbe(context, "SELECT " + date_id + " FROM " + table_ref + " LIMIT 0");
+	auto &type = probe.types[0];
+	switch (type.id()) {
+	case LogicalTypeId::DATE:
+	case LogicalTypeId::TIMESTAMP:
+	case LogicalTypeId::TIMESTAMP_SEC:
+	case LogicalTypeId::TIMESTAMP_MS:
+	case LogicalTypeId::TIMESTAMP_NS:
+	case LogicalTypeId::TIMESTAMP_TZ:
+	case LogicalTypeId::VARCHAR:
+		break;
+	default:
+		throw BinderException("run_checks: check '" + spec.check_name + "': params.date_column '" + spec.date_column +
+		                      "' has type " + type.ToString() +
+		                      "; expected DATE, TIMESTAMP, TIMESTAMP WITH TIME ZONE or a VARCHAR holding dates");
 	}
-	return "CAST(" + date_id + " AS DATE)";
+	SuiteDate result;
+	result.date_sql = UtcDateSQL(date_id, type);
+	if (type.id() == LogicalTypeId::VARCHAR) {
+		result.skipped_sql = "(SELECT COUNT(*) FROM " + table_ref + " WHERE " + date_id + " IS NOT NULL AND " +
+		                     result.date_sql + " IS NULL" + (filter_sql.empty() ? "" : " AND (" + filter_sql + ")") +
+		                     ")";
+	}
+	return result;
 }
 
+// Expose the count of rows a time-aware check skipped for an unparsable date (__skipped_dates)
+// next to the columns of its inner query, with the message suffix that reports it
+static void AddSkippedDates(CheckBranch &branch, const CheckSpec &spec, const SuiteDate &date) {
+	if (date.skipped_sql.empty()) {
+		return;
+	}
+	branch.inner_sql = "SELECT __d.*, " + date.skipped_sql + " AS __skipped_dates FROM (" + branch.inner_sql + ") __d";
+	branch.message_suffixes.push_back("CASE WHEN __c.__skipped_dates > 0 THEN '; ' || CAST(__c.__skipped_dates AS "
+	                                  "VARCHAR) || ' row(s) skipped (" +
+	                                  EscapeSqlStringLiteral(spec.date_column) + " is not a date)' ELSE '' END");
+}
+
+// Build the inner derived table (value computation) for one check
 static CheckBranch BuildCheckBranch(ClientContext &context, const CheckSpec &spec, const string &filter_sql) {
 	CheckBranch branch;
 	const string table_ref = BuildQueryTableRef(spec.table_name);
@@ -977,20 +1031,21 @@ static CheckBranch BuildCheckBranch(ClientContext &context, const CheckSpec &spe
 		                      : "COUNT(DISTINCT " + QuoteSqlIdentifier(spec.count_column) + ")";
 		string ref_lit = spec.reference_date_sql.empty() ? "NULL" : spec.reference_date_sql;
 		auto window_days = ParseWindowDays(spec, 7);
-		string date_sql = SuiteDateSQL(context, spec, date_id);
+		auto date = SuiteDateSQL(context, spec, filter_sql);
+		const string &date_sql = date.date_sql;
 		branch.inner_sql =
 		    "WITH daily AS (SELECT " + date_sql + " AS d, " + cnt_expr + " AS c FROM " + table_ref +
-		    " WHERE " + date_id + " IS NOT NULL" + (filter_sql.empty() ? "" : " AND (" + filter_sql + ")") +
+		    " WHERE " + date_sql + " IS NOT NULL" + (filter_sql.empty() ? "" : " AND (" + filter_sql + ")") +
 		    " GROUP BY 1), "
 		    "ref AS (SELECT COALESCE(" + ref_lit + ", MAX(d)) AS ref_d FROM daily), "
 		    "b AS (SELECT r.ref_d, (SELECT c FROM daily WHERE d = r.ref_d) AS ref_c, " +
 		    BuildRelCountBaselineSQL("r.ref_d", window_days, spec.fill_missing_days) + " FROM ref r) "
 		    "SELECT CAST(CASE WHEN baseline_avg IS NULL OR baseline_avg = 0 THEN NULL "
 		    "ELSE (COALESCE(ref_c, 0) - baseline_avg) / baseline_avg END AS DOUBLE) AS value FROM b";
+		AddSkippedDates(branch, spec, date);
 		return branch;
 	} else if (spec.check_type == "metric_anomaly_iqr") {
 		RequireParam(spec, spec.date_column, "date_column");
-		string date_id = QuoteSqlIdentifier(spec.date_column);
 		string metric_expr = spec.metric_column.empty()
 		                         ? "CAST(COUNT(*) AS DOUBLE)"
 		                         : "AVG(CAST(" + QuoteSqlIdentifier(spec.metric_column) + " AS DOUBLE))";
@@ -1008,10 +1063,11 @@ static CheckBranch BuildCheckBranch(ClientContext &context, const CheckSpec &spe
 				throw BinderException("run_checks: check '" + spec.check_name + "': params.k must be a finite number");
 			}
 		}
-		string date_sql = SuiteDateSQL(context, spec, date_id);
+		auto date = SuiteDateSQL(context, spec, filter_sql);
+		const string &date_sql = date.date_sql;
 		branch.inner_sql =
 		    "WITH daily AS (SELECT " + date_sql + " AS d, " + metric_expr + " AS m FROM " + table_ref +
-		    " WHERE " + date_id + " IS NOT NULL" + (filter_sql.empty() ? "" : " AND (" + filter_sql + ")") +
+		    " WHERE " + date_sql + " IS NOT NULL" + (filter_sql.empty() ? "" : " AND (" + filter_sql + ")") +
 		    " GROUP BY 1), "
 		    "ref AS (SELECT COALESCE(" + ref_lit + ", MAX(d)) AS ref_d FROM daily), "
 		    "w AS (SELECT m FROM daily, ref WHERE d < ref_d AND d >= ref_d - " + window_val + "), "
@@ -1021,6 +1077,7 @@ static CheckBranch BuildCheckBranch(ClientContext &context, const CheckSpec &spe
 		    "CAST(CASE WHEN s.n = 0 THEN NULL ELSE s.q3 + " + k_val + " * (s.q3 - s.q1) END AS DOUBLE) AS upper_threshold "
 		    "FROM s";
 		branch.computed_thresholds = true;
+		AddSkippedDates(branch, spec, date);
 		return branch;
 	} else if (spec.check_type == "rolling_values_in_set") {
 		RequireColumn(spec);
@@ -1030,7 +1087,8 @@ static CheckBranch BuildCheckBranch(ClientContext &context, const CheckSpec &spe
 		string arr = BuildAllowedArrayFromJson(spec);
 		string ref_lit = spec.reference_date_sql.empty() ? "NULL" : spec.reference_date_sql;
 		string window_val = std::to_string(ParseWindowDays(spec, 7));
-		string date_sql = SuiteDateSQL(context, spec, date_id);
+		auto date = SuiteDateSQL(context, spec, filter_sql);
+		const string &date_sql = date.date_sql;
 		branch.inner_sql =
 		    "WITH ref AS (SELECT COALESCE(" + ref_lit + ", MAX(" + date_sql + ")) AS ref_d FROM " +
 		    table_ref + "), "
@@ -1040,6 +1098,7 @@ static CheckBranch BuildCheckBranch(ClientContext &context, const CheckSpec &spe
 		    (filter_sql.empty() ? "" : " AND (" + filter_sql + ")") + ") "
 		    "SELECT CAST(SUM(CASE WHEN list_contains(" + arr +
 		    ", v) THEN 1 ELSE 0 END) AS DOUBLE) / NULLIF(COUNT(*), 0) AS value FROM win";
+		AddSkippedDates(branch, spec, date);
 		return branch;
 	} else {
 		RequireSupportedCheckType(spec);
@@ -1158,6 +1217,9 @@ static string BuildBranchSQL(const CheckSpec &spec, const CheckBranch &branch, c
 	if (!branch.unevaluated_expr.empty()) {
 		message_sql += " || CASE WHEN __c.__unevaluated > 0 THEN '; ' || CAST(__c.__unevaluated AS VARCHAR) || "
 		               "' row(s) could not be evaluated (counted as non-compliant)' ELSE '' END";
+	}
+	for (auto &suffix : branch.message_suffixes) {
+		message_sql += " || " + suffix;
 	}
 	string value_sql = "__c.value";
 	string from_sql = "(" + branch.inner_sql + ") __c";
@@ -1306,7 +1368,7 @@ static string BuildValidatedCheckSQL(ClientContext &context, const CheckSpec &sp
 
 	string filter_sql;
 	if (!spec.filter_expr.empty()) {
-		filter_sql = SubstituteDateTokens(spec.filter_expr, spec.check_name);
+		filter_sql = SubstituteDateTokens(spec.filter_expr, "filter_expr of check '" + spec.check_name + "'");
 		ValidateBooleanExpression(context, filter_sql, "filter_expr");
 		// A row on which the filter fails at runtime is filtered out instead of
 		// aborting the suite

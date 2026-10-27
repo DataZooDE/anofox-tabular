@@ -476,17 +476,22 @@ SELECT check_name, value, status, message FROM run_checks('nightly_checks');
 `orders_arrived` compares the 0 orders of 2026-03-15 with the average of the 7 days before
 (`value` -1.0). `orders_fresh` measures the age of the newest `order_date` (midnight of
 2026-03-14) at 06:00 on 2026-03-16: 54 hours, more than the allowed 36 hours (129600 seconds).
-In production, write the expected date into the checks table when the job starts (`json_object`
-needs the `json` extension). `run_checks` works in UTC (`run_ts`, `${today}`, the default
-`freshness` reference), so compute the date in UTC too; `make_timestamp(epoch_us(now()))` is
-the current UTC time with or without the ICU extension:
+In production, anchor the checks to the run date with a date token instead of a fixed date, so
+the checks table needs no daily `UPDATE`: `"reference_date": "${yesterday}"` evaluates the
+previous day on every run, and `"reference_time": "${today}"` is midnight of the run date.
+`run_checks` works in UTC (`run_ts`, the tokens, the default `freshness` reference), so the
+tokens are UTC dates whatever the session time zone:
 
 ```sql no-run
-UPDATE nightly_checks
-SET params = json_object('date_column', 'order_date',
-                         'reference_date', CAST(make_timestamp(epoch_us(now())) AS DATE) - 1)
-WHERE check_name = 'orders_arrived';
+INSERT INTO nightly_checks VALUES
+    ('orders_arrived_daily', 'rel_count_change', 'orders', NULL,
+     '{"date_column": "order_date", "reference_date": "${yesterday}"}', -0.5, 0.5, false, NULL, NULL),
+    ('orders_fresh_daily',   'freshness',        'orders', 'order_date',
+     '{"reference_time": "${today}"}', NULL, 129600, false, NULL, NULL);
 ```
+
+`${today-N}` and `${yesterday-N}` reach further back, for example for a load that arrives with
+a delay of two days.
 
 `rel_count_change` averages only the days that have rows. When the load also failed on
 some of the days before, those days drop out of the baseline instead of counting as 0: after
