@@ -94,8 +94,10 @@ def vat_format(
         VAT number in any common spelling, e.g. ``"de 111-111-125"``, or a
         DataFrame (with *column*).
     style:
-        ``"plain"`` (default): digits only, without prefix; ``"iso"``: VAT
-        prefix and digits, e.g. ``"DE111111125"`` (Greece as ``EL``).
+        ``"plain"`` (default): the national part without the country prefix,
+        letters included (``"U13585627"`` for ``"ATU13585627"``); ``"iso"``:
+        VAT prefix and national part, e.g. ``"DE111111125"`` (Greece as
+        ``EL``). Neither style validates the number.
         Case-insensitive; an unknown style raises a DuckDB error.
     column:
         Column name when a DataFrame is passed.

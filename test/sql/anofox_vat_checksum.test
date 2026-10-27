@@ -7,11 +7,20 @@ require anofox_tabular
 # anofox_tab_vat_format
 # ============================================================================
 
-# plain style: digits only, input normalized first
+# plain style: the national part without the prefix, input normalized first
 query T
 SELECT anofox_tab_vat_format('de 123-456-789', 'plain')
 ----
 123456789
+
+# plain keeps the letters of the national part (AT 'U', NL 'B01', ES and FR letters) and,
+# like iso, does not validate: a malformed number is formatted as written
+query TTTTTT
+SELECT vat_format('ATU13585627', 'plain'), vat_format('nl 8048.36.951 b01', 'plain'),
+       vat_format('ESX1234567X', 'plain'), vat_format('FR 40 303 265 045', 'plain'),
+       vat_format('DEabc123', 'plain'), vat_format('DEabc123', 'iso')
+----
+U13585627	804836951B01	X1234567X	40303265045	ABC123	DEABC123
 
 # iso style: country prefix + digits
 query T

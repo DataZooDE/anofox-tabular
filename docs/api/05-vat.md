@@ -163,7 +163,9 @@ Canonical name: `anofox_tab_vat`. Scalar function.
 
 Canonical name: `anofox_tab_vat_split`. Scalar function.
 
-Both split a VAT number into its country code and its digits. They return the same result.
+Both split a VAT number into its country code and its national part, the field `digits`. They
+return the same result. Despite its name, `digits` keeps the letters of countries whose numbers
+contain them (`U13585627` for `ATU13585627`).
 The country is the ISO code for Greece: `EL` becomes `GR`. `GB` and `XI` (Northern Ireland) are
 kept as written, so the two stay distinguishable. The result is `NULL` when the prefix is not
 supported.
@@ -215,27 +217,31 @@ vat_format(vat_number VARCHAR, format_style VARCHAR) -> VARCHAR
 
 | Style | Result |
 |-------|--------|
-| `iso` | VAT prefix and digits, e.g. `DE111111125`; Greece as `EL` (also for `GR` input); `GB` and `XI` keep their own prefix |
-| `plain` | digits only, without prefix |
+| `iso` | VAT prefix and national part, e.g. `DE111111125`; Greece as `EL` (also for `GR` input); `GB` and `XI` keep their own prefix |
+| `plain` | the national part without the prefix, e.g. `111111125`. It is the `digits` field of `vat_split` and keeps the letters some countries use: `U13585627` for `ATU13585627`, `804836951B01` for `NL804836951B01` |
 
-The style is case-insensitive. A number that cannot be parsed returns `NULL`. An unknown style
-raises an error.
+Both styles first normalize the input like `vat_normalize` (no spaces or punctuation, upper
+case). The style is case-insensitive. `vat_format` does not validate: a number with a supported
+prefix is formatted even when its national part is malformed (`vat_format('DEabc123', 'plain')`
+is `ABC123`), so check it with `vat_is_valid` first. A number without a supported prefix returns
+`NULL`. An unknown style raises an error.
 
 ```sql
 SELECT vat_normalize('de 111-111-125') AS normalized,
        vat_format('de 111-111-125', 'iso') AS iso,
        vat_format('GR123456783', 'iso') AS greece_iso,
        vat_format('GR123456783', 'plain') AS plain,
+       vat_format('ATU13585627', 'plain') AS austria_plain,
        vat_format('not a vat', 'iso') AS unparseable;
 ```
 
 ```text
-┌─────────────┬─────────────┬─────────────┬───────────┬─────────────┐
-│ normalized  │     iso     │ greece_iso  │   plain   │ unparseable │
-│   varchar   │   varchar   │   varchar   │  varchar  │   varchar   │
-├─────────────┼─────────────┼─────────────┼───────────┼─────────────┤
-│ DE111111125 │ DE111111125 │ EL123456783 │ 123456783 │ NULL        │
-└─────────────┴─────────────┴─────────────┴───────────┴─────────────┘
+┌─────────────┬─────────────┬─────────────┬───────────┬───────────────┬─────────────┐
+│ normalized  │     iso     │ greece_iso  │   plain   │ austria_plain │ unparseable │
+│   varchar   │   varchar   │   varchar   │  varchar  │    varchar    │   varchar   │
+├─────────────┼─────────────┼─────────────┼───────────┼───────────────┼─────────────┤
+│ DE111111125 │ DE111111125 │ EL123456783 │ 123456783 │ U13585627     │ NULL        │
+└─────────────┴─────────────┴─────────────┴───────────┴───────────────┴─────────────┘
 ```
 
 ```sql

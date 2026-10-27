@@ -134,7 +134,9 @@ static void VATCountryNameFunc(DataChunk& args, ExpressionState& state,
 }
 
 // anofox_vat_format(vat, style) -> VARCHAR
-// Style: 'plain' = digits only, 'iso' = VAT country prefix (EL for Greece) + digits
+// Style: 'plain' = the national part after the country prefix (normalized; it keeps the
+// letters some countries use, e.g. ATU..., NL...B01), 'iso' = VAT country prefix (EL for
+// Greece) + national part. Neither style validates the number.
 static void VATFormatFunc(DataChunk& args, ExpressionState& state,
                          Vector& result) {
   auto& registry = VATRegistry::Instance();
@@ -330,7 +332,7 @@ void RegisterVATFunctions(ExtensionLoader& loader) {
   }
   {
     FunctionDescription desc;
-    desc.description = "Formats a VAT number using the specified style: 'plain' (digits only) or 'iso' (VAT country prefix + digits).";
+    desc.description = "Formats a VAT number using the specified style: 'plain' (the national part without the country prefix, letters included, e.g. U13585627 for ATU13585627) or 'iso' (VAT country prefix + national part). Does not validate.";
     desc.parameter_names = {"vat_number", "format_style"};
     desc.parameter_types = {LogicalType::VARCHAR, LogicalType::VARCHAR};
     desc.examples = {"SELECT vat_format('DE123456789', 'iso');"};
