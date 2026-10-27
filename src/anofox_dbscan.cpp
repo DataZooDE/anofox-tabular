@@ -53,6 +53,9 @@ void DBSCAN::RegionQuery(
 	std::vector<size_t>& neighbors
 ) const {
 	neighbors.clear();
+	if (interrupt_check_) {
+		interrupt_check_();
+	}
 
 	if (point_idx >= data.size()) {
 		return;

@@ -238,6 +238,7 @@ static unique_ptr<TableRef> ProfileSummaryBindReplace(ClientContext &context,
 
 	// Open a sibling connection to introspect columns and compute null counts at bind time.
 	Connection con(*context.db);
+	SiblingInterruptForwarder forward_interrupt(context, con);
 	auto columns = IntrospectColumns(con, "profile_summary", table_name, {});
 
 	int64_t column_count = 0;
@@ -268,6 +269,7 @@ static unique_ptr<TableRef> ProfileSummaryBindReplace(ClientContext &context,
 		}
 	}
 	int64_t total_nulls = ComputeTotalNulls(con, table_name, columns);
+	ThrowIfInterrupted(context);
 
 	AnofoxTrace(AnofoxLogLevel::Debug,
 	            "profile: total_nulls=" + std::to_string(total_nulls) +
@@ -379,6 +381,7 @@ static unique_ptr<FunctionData> ProfileTableBind(ClientContext &context,
 	// Resolve the table and the requested columns now: an unknown table or column is a bind
 	// error, raised before the result (and its header) is produced
 	Connection con(*context.db);
+	SiblingInterruptForwarder forward_interrupt(context, con);
 	auto resolved_columns = IntrospectColumns(con, "profile_table", table_name, columns);
 
 	return make_uniq<ProfileTableBindData>(table_name, std::move(resolved_columns), sample_size, exact);
@@ -606,6 +609,7 @@ static void ProfileTableExecute(ClientContext &context, TableFunctionInput &data
 		                ", exact=" + (bind_data.exact ? "true" : "false") + ")");
 
 		Connection con(*context.db);
+		SiblingInterruptForwarder forward_interrupt(context, con);
 
 		// Determine actual row count to decide if sampling is needed
 		int64_t actual_row_count = 0;
@@ -641,6 +645,7 @@ static void ProfileTableExecute(ClientContext &context, TableFunctionInput &data
 
 		auto profile_res = con.Query(profile_sql);
 		if (profile_res->HasError()) {
+			ThrowIfInterrupted(context);
 			throw InvalidInputException("profile_table query failed: %s",
 			                           profile_res->GetError());
 		}
@@ -730,6 +735,7 @@ static unique_ptr<FunctionData> ProfileCorrelationsBind(ClientContext &context,
 
 	// Resolve the table and the requested columns at bind time (see profile_table)
 	Connection con(*context.db);
+	SiblingInterruptForwarder forward_interrupt(context, con);
 	auto resolved_columns = IntrospectColumns(con, "profile_correlations", table_name, columns);
 
 	return make_uniq<ProfileCorrelationsBindData>(table_name, std::move(resolved_columns));
@@ -752,6 +758,7 @@ static void ProfileCorrelationsExecute(ClientContext &context, TableFunctionInpu
 		            "profile_correlations: scanning '" + bind_data.table_name + "'");
 
 		Connection con(*context.db);
+		SiblingInterruptForwarder forward_interrupt(context, con);
 
 		// The numeric columns among the resolved ones, with the SQL of their values as DOUBLE:
 		// integer and DECIMAL columns as the exact difference to a reference value
@@ -824,6 +831,7 @@ static void ProfileCorrelationsExecute(ClientContext &context, TableFunctionInpu
 
 		auto corr_res = con.Query(sql);
 		if (corr_res->HasError()) {
+			ThrowIfInterrupted(context);
 			throw InvalidInputException("profile_correlations query failed: %s",
 			                           corr_res->GetError());
 		}

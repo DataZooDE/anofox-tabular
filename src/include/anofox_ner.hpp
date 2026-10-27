@@ -28,7 +28,32 @@ class SentencePieceProcessor;
 #endif
 
 namespace duckdb {
+class ClientContext;
 namespace anofox {
+
+/**
+ * Cancellation of NER inference. Inference takes tens of milliseconds per text, so a scan
+ * of a few thousand values runs for minutes inside a single DuckDB callback (one scalar
+ * vector, one pii_scan_table chunk) where DuckDB itself never checks for an interrupt.
+ * While a scope is alive, every inference on this thread first checks the scope's client
+ * context and throws InterruptException once the query is interrupted (Ctrl-C,
+ * Connection::Interrupt). Scopes nest; the innermost one wins. A scope without a context
+ * (nullptr: an expression evaluated without a client context) checks nothing.
+ */
+class NERInterruptScope {
+public:
+    explicit NERInterruptScope(ClientContext *context);
+    ~NERInterruptScope();
+    NERInterruptScope(const NERInterruptScope &) = delete;
+    NERInterruptScope &operator=(const NERInterruptScope &) = delete;
+
+    //! Throw InterruptException when the context of the innermost scope of this thread is
+    //! interrupted; a no-op without a scope
+    static void Check();
+
+private:
+    ClientContext *previous_;
+};
 
 // ============================================================================
 // LRU Cache for NER Results

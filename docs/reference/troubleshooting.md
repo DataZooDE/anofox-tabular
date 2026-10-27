@@ -86,6 +86,14 @@ On DuckDB 2.0 any error aborts the open transaction, this one too: `ROLLBACK`, r
 again and call the function after `COMMIT`. A transaction that has only read data, or has
 written only TEMP tables, runs these functions on the committed data.
 
+## Stopping a long call
+
+Ctrl-C in the DuckDB CLI and `Connection.interrupt()` in Python stop the long-running table
+functions within a moment: the anomaly functions while they fit or score, `pii_scan_table` and
+`pii_audit_table` between input chunks and before each NER inference, the profiling functions
+during their queries, and the NER-based scalar functions (`pii_mask`, `pii_detect`, ...) before
+each NER inference. The call fails with `INTERRUPT Error: Interrupted!`.
+
 ## "Invalid named parameter"
 
 Most parameters are positional. Only a few accept `name := value`; the list is in

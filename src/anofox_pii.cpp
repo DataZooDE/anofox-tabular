@@ -3277,6 +3277,12 @@ std::string PIIEngine::Mask(
 
 namespace {
 
+// The client context whose interrupt stops NER inference in a scalar function (see
+// NERInterruptScope); nullptr when the expression is evaluated without one
+static ClientContext *InterruptContext(ExpressionState &state) {
+    return state.HasContext() ? &state.GetContext() : nullptr;
+}
+
 // Shared implementation for all detect-style scalars: runs Detect() with the
 // given type filter and writes the matches directly into the LIST(STRUCT)
 // result vector. The input is normalized once per chunk and match rows are
@@ -3355,6 +3361,7 @@ void ExecutePIIDetectToList(DataChunk &args, Vector &result, const std::vector<P
 // Returns idiomatic DuckDB types that can be queried with unnest, dot notation, etc.
 struct PIIDetectFunction {
     static void Execute(DataChunk &args, ExpressionState &state, Vector &result) {
+        NERInterruptScope interrupt_scope(InterruptContext(state));
         ExecutePIIDetectToList(args, result, {});
     }
 
@@ -3367,6 +3374,7 @@ struct PIIDetectFunction {
 // anofox_tab_pii_mask(text, strategy) -> masked text (alias: pii_mask)
 struct PIIMaskFunction {
     static void Execute(DataChunk &args, ExpressionState &state, Vector &result) {
+        NERInterruptScope interrupt_scope(InterruptContext(state));
         auto &engine = PIIEngine::Instance();
         const auto config = PIIConfig::Get().Snapshot();
 
@@ -3391,6 +3399,7 @@ struct PIIMaskFunction {
 // anofox_tab_pii_mask with default strategy (redact)
 struct PIIMaskDefaultFunction {
     static void Execute(DataChunk &args, ExpressionState &state, Vector &result) {
+        NERInterruptScope interrupt_scope(InterruptContext(state));
         auto &engine = PIIEngine::Instance();
         const auto config = PIIConfig::Get().Snapshot();
 
@@ -3413,6 +3422,7 @@ struct PIIMaskDefaultFunction {
 // anofox_tab_pii_contains(text) -> boolean (true if any PII found) (alias: pii_contains)
 struct PIIContainsFunction {
     static void Execute(DataChunk &args, ExpressionState &state, Vector &result) {
+        NERInterruptScope interrupt_scope(InterruptContext(state));
         auto &engine = PIIEngine::Instance();
         const auto config = PIIConfig::Get().Snapshot();
 
@@ -3435,6 +3445,7 @@ struct PIIContainsFunction {
 // anofox_tab_pii_count(text) -> integer (count of PII matches) (alias: pii_count)
 struct PIICountFunction {
     static void Execute(DataChunk &args, ExpressionState &state, Vector &result) {
+        NERInterruptScope interrupt_scope(InterruptContext(state));
         auto &engine = PIIEngine::Instance();
         const auto config = PIIConfig::Get().Snapshot();
 
@@ -3616,6 +3627,7 @@ struct PIIDetectSSNsFunction {
 // pii_detect_names(text) -> LIST(STRUCT(...))
 struct PIIDetectNamesFunction {
     static void Execute(DataChunk &args, ExpressionState &state, Vector &result) {
+        NERInterruptScope interrupt_scope(InterruptContext(state));
         ExecutePIIDetectToList(args, result, {PIIType::NAME});
     }
 
@@ -3645,6 +3657,7 @@ struct PIIDetectIBANsFunction {
 // Returns an array of results, one for each input text
 struct PIIDetectBatchFunction {
     static void Execute(DataChunk &args, ExpressionState &state, Vector &result) {
+        NERInterruptScope interrupt_scope(InterruptContext(state));
         auto &engine = PIIEngine::Instance();
         const auto config = PIIConfig::Get().Snapshot();
 
@@ -3711,6 +3724,7 @@ struct PIIDetectBatchFunction {
 // Useful for UPDATE statements where you know the column contains a specific PII type
 struct PIIMaskColumnFunction {
     static void Execute(DataChunk &args, ExpressionState &state, Vector &result) {
+        NERInterruptScope interrupt_scope(InterruptContext(state));
         auto &engine = PIIEngine::Instance();
         const auto config = PIIConfig::Get().Snapshot();
 
@@ -3769,6 +3783,7 @@ struct PIIMaskValueFunction {
 // Shorthand for masking without specifying type - masks all PII types
 struct PIIRedactColumnFunction {
     static void Execute(DataChunk &args, ExpressionState &state, Vector &result) {
+        NERInterruptScope interrupt_scope(InterruptContext(state));
         auto &engine = PIIEngine::Instance();
         const auto config = PIIConfig::Get().Snapshot();
 
@@ -3792,6 +3807,7 @@ struct PIIRedactColumnFunction {
 // pii_redact_column(value) -> VARCHAR (overload with default strategy)
 struct PIIRedactColumnDefaultFunction {
     static void Execute(DataChunk &args, ExpressionState &state, Vector &result) {
+        NERInterruptScope interrupt_scope(InterruptContext(state));
         auto &engine = PIIEngine::Instance();
         const auto config = PIIConfig::Get().Snapshot();
         auto strategy = config.default_mask_strategy;
@@ -4306,6 +4322,7 @@ void PIIAuditTableFunction(ClientContext &context, TableFunctionInput &input, Da
     auto &state = input.global_state->Cast<PIIAuditTableState>();
     auto &bind_data = input.bind_data->Cast<PIIAuditTableBindData>();
     auto &engine = PIIEngine::Instance();
+    NERInterruptScope interrupt_scope(&context);
 
     try {
         if (!state.initialized) {
@@ -4350,6 +4367,9 @@ void PIIAuditTableFunction(ClientContext &context, TableFunctionInput &input, Da
                 state.source_row = 0;
             }
 
+            // One input chunk is audited per iteration; DuckDB does not check for an interrupt
+            // until this callback returns
+            ThrowIfInterrupted(context);
             auto chunk = state.column_result->Fetch();
             if (!chunk || chunk->size() == 0) {
                 if (state.column_result->HasError()) {
@@ -4632,6 +4652,7 @@ void PIIScanTableFunction(ClientContext &context, TableFunctionInput &input, Dat
     auto &state = input.global_state->Cast<PIIScanTableState>();
     auto &bind_data = input.bind_data->Cast<PIIScanTableBindData>();
     auto &engine = PIIEngine::Instance();
+    NERInterruptScope interrupt_scope(&context);
 
     try {
         if (!state.initialized) {
@@ -4682,6 +4703,9 @@ void PIIScanTableFunction(ClientContext &context, TableFunctionInput &input, Dat
             int64_t values_scanned = 0;
 
             while (true) {
+                // A whole column is scanned in this callback, so DuckDB never checks for an
+                // interrupt in between: check per input chunk (and per NER inference)
+                ThrowIfInterrupted(context);
                 auto chunk = result->Fetch();
                 if (!chunk || chunk->size() == 0) break;
 

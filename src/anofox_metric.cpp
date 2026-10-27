@@ -992,6 +992,7 @@ static void IsolationForestExecute(ClientContext &context, TableFunctionInput &d
 			// present) is the last column in the result.
 			std::vector<UnifiedVectorFormat> formats;
 			while (true) {
+				ThrowIfInterrupted(context);
 				auto chunk = result->Fetch();
 				if (!chunk || chunk->size() == 0) break;
 
@@ -1071,6 +1072,7 @@ static void IsolationForestExecute(ClientContext &context, TableFunctionInput &d
 				IsolationForest forest(bind_data.n_trees, bind_data.sample_size, bind_data.contamination,
 				                       actual_seed, bind_data.ndim, bind_data.coef_type, bind_data.scoring_metric,
 				                       bind_data.ntry, bind_data.prob_pick_avg_gain);
+				forest.SetInterruptCheck([&context]() { ThrowIfInterrupted(context); });
 
 				// sample_weights was already collected during data fetch (guarantees correct row alignment)
 				forest.FitMixed(data, column_info, sample_weights);
@@ -1089,6 +1091,7 @@ static void IsolationForestExecute(ClientContext &context, TableFunctionInput &d
 
 			std::vector<UnifiedVectorFormat> formats;
 			while (true) {
+				ThrowIfInterrupted(context);
 				auto chunk = result->Fetch();
 				if (!chunk || chunk->size() == 0) break;
 
@@ -1153,6 +1156,7 @@ static void IsolationForestExecute(ClientContext &context, TableFunctionInput &d
 				IsolationForest forest(bind_data.n_trees, bind_data.sample_size, bind_data.contamination,
 				                       actual_seed, bind_data.ndim, bind_data.coef_type, bind_data.scoring_metric,
 				                       bind_data.ntry, bind_data.prob_pick_avg_gain);
+				forest.SetInterruptCheck([&context]() { ThrowIfInterrupted(context); });
 				forest.Fit(data);
 
 				// Score all points directly into the state; row ids and
@@ -1449,6 +1453,7 @@ static void DBSCANExecute(ClientContext &context, TableFunctionInput &data_p, Da
 		std::vector<std::vector<double>> data;
 		std::vector<UnifiedVectorFormat> formats;
 		while (true) {
+			ThrowIfInterrupted(context);
 			auto chunk = result->Fetch();
 			if (!chunk || chunk->size() == 0) {
 				break;
@@ -1495,6 +1500,7 @@ static void DBSCANExecute(ClientContext &context, TableFunctionInput &data_p, Da
 
 		if (!data.empty()) {
 			DBSCAN dbscan(bind_data.eps, static_cast<size_t>(bind_data.min_pts));
+			dbscan.SetInterruptCheck([&context]() { ThrowIfInterrupted(context); });
 			dbscan.Fit(data);
 
 			state.points = dbscan.GetResults();

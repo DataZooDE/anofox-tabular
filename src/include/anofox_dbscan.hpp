@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <unordered_set>
 #include <queue>
+#include <functional>
 
 namespace duckdb {
 namespace anofox {
@@ -52,6 +53,7 @@ private:
 	size_t n_features_;                       // Number of dimensions
 	std::vector<DBSCANPoint> results_;        // Clustering results
 	DistanceMetric metric_;                   // Distance metric to use
+	std::function<void()> interrupt_check_;   // Called before each region query; may throw
 
 	// Univariate fast path: with one feature and only finite values the points are
 	// sorted once, and a region query walks outward from the point's sorted position
@@ -130,6 +132,13 @@ public:
 		  min_pts_(min_pts),
 		  n_features_(0),
 		  metric_(metric) {}
+
+	/**
+	 * Install a callback that Fit calls before each region query (a pass over all
+	 * points); it stops the clustering by throwing (the SQL functions throw
+	 * InterruptException when the query is interrupted).
+	 */
+	void SetInterruptCheck(std::function<void()> interrupt_check) { interrupt_check_ = std::move(interrupt_check); }
 
 	/**
 	 * Fit DBSCAN to data

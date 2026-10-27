@@ -1125,6 +1125,7 @@ static void OutlierTreeExecute(ClientContext &context, TableFunctionInput &data_
         int64_t source_row = 0;
         std::vector<UnifiedVectorFormat> formats(n_cols);
         while (true) {
+            ThrowIfInterrupted(context);
             auto chunk = result->Fetch();
             if (!chunk || chunk->size() == 0) break;
 

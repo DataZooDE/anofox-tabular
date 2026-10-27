@@ -1046,6 +1046,26 @@ std::string NERModelManager::ProbeInference() {
     return "";
 }
 
+namespace {
+// The client context of the innermost NERInterruptScope of this thread (nullptr: none)
+thread_local ClientContext *ner_interrupt_context = nullptr;
+} // namespace
+
+NERInterruptScope::NERInterruptScope(ClientContext *context) : previous_(ner_interrupt_context) {
+    ner_interrupt_context = context;
+}
+
+NERInterruptScope::~NERInterruptScope() {
+    ner_interrupt_context = previous_;
+}
+
+void NERInterruptScope::Check() {
+    if (ner_interrupt_context && ner_interrupt_context->IsInterrupted()) {
+        AnofoxTrace(AnofoxLogLevel::Debug, "ner: query interrupted, stopping inference");
+        throw InterruptException();
+    }
+}
+
 std::vector<NEREntity> NERModelManager::RunSingleInference(const std::string &text) {
 #if HAVE_OPENVINO
     // Check cache first. Get/Put are fully synchronized internally and Put is
@@ -1058,6 +1078,9 @@ std::vector<NEREntity> NERModelManager::RunSingleInference(const std::string &te
             return *cached;
         }
     }
+
+    // Before the (slow) inference, outside the try below, which turns errors into "no entities"
+    NERInterruptScope::Check();
 
     try {
         // tokenizer_ and compiled_model_ are immutable once status_ is

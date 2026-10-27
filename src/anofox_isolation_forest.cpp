@@ -1048,6 +1048,9 @@ void IsolationForest::Fit(const std::vector<std::vector<double>>& data) {
     size_t max_depth = static_cast<size_t>(std::ceil(std::log2(actual_sample_size_))) + 1;
 
     for (size_t t = 0; t < n_trees_; t++) {
+        if (interrupt_check_) {
+            interrupt_check_();
+        }
         // Create random subsample of indices
         std::vector<size_t> sample_indices(data.size());
         std::iota(sample_indices.begin(), sample_indices.end(), 0);
@@ -1101,6 +1104,9 @@ std::vector<double> IsolationForest::ScoreBatch(
     scores.reserve(data.size());
 
     for (const auto& point : data) {
+        if (interrupt_check_ && scores.size() % INTERRUPT_CHECK_ROWS == 0) {
+            interrupt_check_();
+        }
         scores.push_back(Score(point));
     }
 
@@ -1344,6 +1350,9 @@ void IsolationForest::FitMixed(
 
     // Build all trees
     for (size_t t = 0; t < n_trees_; t++) {
+        if (interrupt_check_) {
+            interrupt_check_();
+        }
         std::vector<size_t> sample_indices;
 
         if (sample_weights_.empty()) {
@@ -1456,6 +1465,9 @@ std::vector<double> IsolationForest::ScoreBatchMixed(
     std::vector<int> category_indices(n_features);
 
     for (size_t row = 0; row < n_rows; row++) {
+        if (interrupt_check_ && row % INTERRUPT_CHECK_ROWS == 0) {
+            interrupt_check_();
+        }
         // Extract values for this row
         for (size_t col = 0; col < n_features; col++) {
             if (data[col].type == FeatureType::NUMERIC) {

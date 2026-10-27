@@ -10,6 +10,7 @@
 #include <unordered_map>
 #include <string>
 #include <variant>
+#include <functional>
 
 namespace duckdb {
 namespace anofox {
@@ -370,6 +371,7 @@ private:
     std::vector<double> sample_weights_;  // Sample weights for weighted sampling (empty = uniform)
     double total_volume_;  // Total feature space volume (for density scoring)
     size_t ntry_;          // SCiForest: number of split candidates to evaluate (1=random IF)
+    std::function<void()> interrupt_check_;  // Called per tree and per scored block; may throw
     double prob_pick_avg_gain_;  // SCiForest: probability of selecting best-gain split
 
     /**
@@ -431,6 +433,14 @@ public:
           total_volume_(0.0),
           ntry_(ntry > 0 ? ntry : 1),
           prob_pick_avg_gain_(prob_pick_avg_gain) {}
+
+    /**
+     * Install a callback that fitting calls before each tree and scoring every
+     * INTERRUPT_CHECK_ROWS rows; it stops the computation by throwing (the SQL
+     * functions throw InterruptException when the query is interrupted).
+     */
+    void SetInterruptCheck(std::function<void()> interrupt_check) { interrupt_check_ = std::move(interrupt_check); }
+    static constexpr size_t INTERRUPT_CHECK_ROWS = 1024;
 
     /**
      * Fit forest to numeric-only data (legacy)

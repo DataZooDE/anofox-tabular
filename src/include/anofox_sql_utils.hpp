@@ -6,6 +6,10 @@
 #include "duckdb/parser/parser.hpp"
 #include "duckdb/parser/tableref/subqueryref.hpp"
 
+#include <condition_variable>
+#include <mutex>
+#include <thread>
+
 namespace duckdb {
 namespace anofox {
 
@@ -120,6 +124,33 @@ void RejectTempTable(ClientContext &context, const string &function_name, const 
 // data, but this transaction has uncommitted changes; ..."). Autocommit statements and
 // read-only transactions pass.
 void RejectUncommittedChanges(ClientContext &context, const string &function_name);
+
+// Throw InterruptException when the query of `context` was interrupted (Ctrl-C,
+// Connection::Interrupt). For long loops inside a single table function callback, where
+// DuckDB itself does not check for an interrupt until the callback returns.
+void ThrowIfInterrupted(ClientContext &context);
+
+// While alive, interrupts the query running on `sibling` (a Connection(*context.db) opened by
+// a table function) whenever the query of `context` is interrupted: DuckDB interrupts only the
+// caller's query, and a long aggregate on the sibling connection would otherwise run to the
+// end. A watcher thread polls the caller's interrupt flag. Declare it after the connection, so
+// it is destroyed first; after an interrupted sibling query, ThrowIfInterrupted(context)
+// reports the interrupt instead of the sibling's error.
+class SiblingInterruptForwarder {
+public:
+	SiblingInterruptForwarder(ClientContext &context, Connection &sibling);
+	~SiblingInterruptForwarder();
+	SiblingInterruptForwarder(const SiblingInterruptForwarder &) = delete;
+	SiblingInterruptForwarder &operator=(const SiblingInterruptForwarder &) = delete;
+
+private:
+	ClientContext &context_;
+	Connection &sibling_;
+	std::mutex mutex_;
+	std::condition_variable stop_signal_;
+	bool stop_ = false;
+	std::thread watcher_;
+};
 
 // Bind-time check of a statistical check's input column: the column must exist in
 // `table_name` (else the MatchColumnNames error) and be numeric or BOOLEAN (else

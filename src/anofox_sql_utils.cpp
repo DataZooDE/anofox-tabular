@@ -14,6 +14,7 @@
 #include "duckdb_compat.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <type_traits>
 
@@ -534,6 +535,37 @@ void RejectUncommittedChanges(ClientContext &context, const string &function_nam
 	throw BinderException("%s reads the last committed data, but this transaction has uncommitted changes; "
 	                      "call it after COMMIT, or outside a transaction",
 	                      function_name);
+}
+
+void ThrowIfInterrupted(ClientContext &context) {
+	if (context.IsInterrupted()) {
+		AnofoxTrace(AnofoxLogLevel::Debug, "query interrupted, stopping");
+		throw InterruptException();
+	}
+}
+
+SiblingInterruptForwarder::SiblingInterruptForwarder(ClientContext &context, Connection &sibling)
+    : context_(context), sibling_(sibling) {
+	watcher_ = std::thread([this]() {
+		static constexpr auto POLL_INTERVAL = std::chrono::milliseconds(20);
+		std::unique_lock<std::mutex> lock(mutex_);
+		while (!stop_signal_.wait_for(lock, POLL_INTERVAL, [this]() { return stop_; })) {
+			// Repeated while the caller stays interrupted: a later query on the sibling
+			// connection is interrupted as well
+			if (context_.IsInterrupted()) {
+				sibling_.Interrupt();
+			}
+		}
+	});
+}
+
+SiblingInterruptForwarder::~SiblingInterruptForwarder() {
+	{
+		std::lock_guard<std::mutex> lock(mutex_);
+		stop_ = true;
+	}
+	stop_signal_.notify_one();
+	watcher_.join();
 }
 
 } // namespace anofox
