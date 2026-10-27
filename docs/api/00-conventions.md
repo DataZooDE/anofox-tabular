@@ -95,6 +95,7 @@ A few parameters also accept the named form `name := value`:
 |-----------|------------------|
 | [`diff_joindiff`](09-diffing.md#diff_joindiff) | every parameter: `source_table`, `target_table`, `primary_key`, `primary_keys`, `compare_columns`, `include_all` |
 | [`diff_hashdiff`](09-diffing.md#diff_hashdiff) | `source_table`, `target_table`, `primary_key`, `primary_keys`; `bisection_threshold` and `bisection_factor` are declared but raise a "not implemented" error |
+| [`diff_schema`](09-diffing.md#diff_schema) | `source_table`, `target_table` |
 | [`rel_count_change`](07-data-quality.md#rel_count_change), [`metric_anomaly_iqr`](07-data-quality.md#metric_anomaly_iqr), [`rolling_values_in_set`](07-data-quality.md#rolling_values_in_set) and their `_events` companions | `start_date`, `end_date` (only by name) |
 | [`isolation_forest`](08-anomaly-detection.md#isolation_forest), [`isolation_forest_mv`](08-anomaly-detection.md#isolation_forest_mv), [`dbscan`](08-anomaly-detection.md#dbscan), [`dbscan_mv`](08-anomaly-detection.md#dbscan_mv), [`outlier_tree`](08-anomaly-detection.md#outlier_tree), [`pii_audit_table`](06-pii.md#pii_audit_table) | `id_column` (only by name) |
 

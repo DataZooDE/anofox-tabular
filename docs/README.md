@@ -33,7 +33,7 @@ One page per module. Each function has its signature, parameters, output columns
 | [06 PII](api/06-pii.md) | PII detection, validation, masking, table scans, NER |
 | [07 Data quality](api/07-data-quality.md) | 17 checks, `_events` companions, `run_checks` |
 | [08 Anomaly detection](api/08-anomaly-detection.md) | Isolation Forest, DBSCAN, OutlierTree, `id_column` |
-| [09 Diffing](api/09-diffing.md) | `diff_joindiff`, `diff_hashdiff` |
+| [09 Diffing](api/09-diffing.md) | `diff_joindiff`, `diff_hashdiff`, `diff_schema` |
 | [10 Profiling](api/10-profiling.md) | `profile_table`, `profile_summary`, `profile_correlations` |
 | [11 Integration contract](api/11-integration-contract.md) | Output schemas shared with other anofox extensions |
 

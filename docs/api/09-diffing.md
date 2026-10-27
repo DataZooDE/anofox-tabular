@@ -6,10 +6,11 @@
 - Find the rows that differ between two versions of a table
 - Use a single or a compound primary key
 - Compare only some columns, or also list the unchanged rows
+- List the schema drift (added, removed and retyped columns) between two tables
 - Pass the diff parameters by position or by name
 
-Both functions are rewritten into one `FULL OUTER JOIN` query that DuckDB runs natively. The
-tables can be tables, views or TEMP tables.
+The row diffs are rewritten into one `FULL OUTER JOIN` query that DuckDB runs natively.
+`diff_schema` compares the two column lists. The tables can be tables, views or TEMP tables.
 
 ## Functions
 
@@ -17,6 +18,7 @@ tables can be tables, views or TEMP tables.
 |----------|----------------|------|---------|
 | [`diff_joindiff`](#diff_joindiff) | `anofox_tab_diff_joindiff` | table | one row per added, removed or changed row |
 | [`diff_hashdiff`](#diff_hashdiff) | `anofox_tab_diff_hashdiff` | table | the same result as `diff_joindiff` without its options |
+| [`diff_schema`](#diff_schema) | `anofox_tab_diff_schema` | table | one row per column of either table, with its drift |
 
 Setup for the examples on this page:
 
@@ -77,8 +79,8 @@ Behavior:
 - A row is `changed` when any compare column `IS DISTINCT FROM` its counterpart, so a change from
   or to `NULL` counts.
 - Columns that exist in only one of the two tables (added, dropped or renamed columns) are not
-  compared by default; the trace log names them as a warning. See
-  [Guide: schema drift and type changes](../guides/05-diffing-and-migration.md#7-schema-drift-and-type-changes) for how to list them.
+  compared by default; the trace log names them as a warning. [`diff_schema`](#diff_schema)
+  lists them.
 - A key or compare column whose type differs between the tables is compared on its text form
   (`CAST(... AS VARCHAR)`), unless both types are numeric: `7` and `'007'` differ, `8001` and
   `'n/a'` differ instead of aborting the diff with a conversion error. Numeric type changes
@@ -327,7 +329,8 @@ diff_hashdiff(
 | `primary_key` | `VARCHAR` or `VARCHAR[]` | required | One key column, or a list. By name: `primary_key :=` or `primary_keys :=` |
 
 The output columns are the same as for [`diff_joindiff`](#diff_joindiff). The primary key must be
-unique in both tables, as for `diff_joindiff`.
+unique in both tables, as for `diff_joindiff`. Columns on one side only are not compared; list
+them with [`diff_schema`](#diff_schema).
 
 ```sql
 SELECT * FROM diff_hashdiff('customers_v1', 'customers_v2', 'id') ORDER BY id;
@@ -371,6 +374,98 @@ Binder Error: Invalid named parameter "include_all" for function diff_hashdiff
 
 LINE 1: ...hdiff('customers_v1', 'customers_v2', 'id', include_all := true);
                                                                       ^^^^
+```
+
+---
+
+## `diff_schema`
+
+Canonical name: `anofox_tab_diff_schema`. Table function.
+
+Compares the columns of two tables and returns one row per column of either table: the type on
+each side and the drift. Run it before a row diff to see which columns the diff compares.
+
+```text
+diff_schema(
+    source_table VARCHAR,
+    target_table VARCHAR
+) -> TABLE(column_name VARCHAR, source_type VARCHAR, target_type VARCHAR, drift VARCHAR)
+```
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `source_table` | `VARCHAR` | required | The old table or view |
+| `target_table` | `VARCHAR` | required | The new table or view |
+
+Output columns:
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `column_name` | `VARCHAR` | The column name, as spelled in the source table (in the target table for an `added` column) |
+| `source_type` | `VARCHAR` | The type in the source table, as `DESCRIBE` shows it. `NULL` for an `added` column |
+| `target_type` | `VARCHAR` | The type in the target table. `NULL` for a `removed` column |
+| `drift` | `VARCHAR` | `same`, `added` (target only), `removed` (source only) or `retyped` (both, different types) |
+
+Behavior:
+
+- Columns match case-insensitively, like DuckDB identifiers and the row diffs: `Amount` and
+  `amount` are the `same` column.
+- A renamed column has no match, so it is one `removed` and one `added` row.
+- Two types are the same when their `DESCRIBE` text is equal: `DECIMAL(10,4)` to
+  `DECIMAL(18,6)` is `retyped`.
+- The rows come in source column order, followed by the `added` columns in target column order.
+- The tables can be tables, views, TEMP tables or schema-qualified names (`billing.invoices`).
+  An unknown table or view is a binder error; a `NULL` argument is an error naming it.
+- Both parameters can be passed by name (`source_table :=`, `target_table :=`).
+
+A billing migration renamed `currency` to `ccy`, dropped `fax`, added `payment_terms`, turned
+the integer `cost_center` into a `VARCHAR` code and only changed the case of `Amount`:
+
+```sql
+CREATE TABLE invoices_v1 (invoice_id INTEGER, customer_name VARCHAR, Amount DECIMAL(12, 2),
+                          currency VARCHAR, cost_center INTEGER, fax VARCHAR, issued_on DATE);
+CREATE TABLE invoices_v2 (invoice_id INTEGER, customer_name VARCHAR, amount DECIMAL(12, 2),
+                          ccy VARCHAR, cost_center VARCHAR, issued_on DATE, payment_terms VARCHAR);
+
+SELECT * FROM diff_schema('invoices_v1', 'invoices_v2');
+```
+
+```text
+┌───────────────┬───────────────┬───────────────┬─────────┐
+│  column_name  │  source_type  │  target_type  │  drift  │
+│    varchar    │    varchar    │    varchar    │ varchar │
+├───────────────┼───────────────┼───────────────┼─────────┤
+│ invoice_id    │ INTEGER       │ INTEGER       │ same    │
+│ customer_name │ VARCHAR       │ VARCHAR       │ same    │
+│ Amount        │ DECIMAL(12,2) │ DECIMAL(12,2) │ same    │
+│ currency      │ VARCHAR       │ NULL          │ removed │
+│ cost_center   │ INTEGER       │ VARCHAR       │ retyped │
+│ fax           │ VARCHAR       │ NULL          │ removed │
+│ issued_on     │ DATE          │ DATE          │ same    │
+│ ccy           │ NULL          │ VARCHAR       │ added   │
+│ payment_terms │ NULL          │ VARCHAR       │ added   │
+└───────────────┴───────────────┴───────────────┴─────────┘
+```
+
+Only the drift:
+
+```sql
+SELECT column_name, source_type, target_type, drift
+FROM diff_schema('invoices_v1', 'invoices_v2')
+WHERE drift <> 'same';
+```
+
+```text
+┌───────────────┬─────────────┬─────────────┬─────────┐
+│  column_name  │ source_type │ target_type │  drift  │
+│    varchar    │   varchar   │   varchar   │ varchar │
+├───────────────┼─────────────┼─────────────┼─────────┤
+│ currency      │ VARCHAR     │ NULL        │ removed │
+│ cost_center   │ INTEGER     │ VARCHAR     │ retyped │
+│ fax           │ VARCHAR     │ NULL        │ removed │
+│ ccy           │ NULL        │ VARCHAR     │ added   │
+│ payment_terms │ NULL        │ VARCHAR     │ added   │
+└───────────────┴─────────────┴─────────────┴─────────┘
 ```
 
 ## See also

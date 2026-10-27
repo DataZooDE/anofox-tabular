@@ -459,6 +459,83 @@ static unique_ptr<TableRef> HashDiffBindReplace(ClientContext &context, TableFun
 	return std::move(subquery_ref);
 }
 
+//===--------------------------------------------------------------------===//
+// diff_schema - column-level schema drift between two tables
+//===--------------------------------------------------------------------===//
+
+// One output row of diff_schema; an empty type means the column is absent on that side.
+struct SchemaDriftRow {
+	string column_name;
+	string source_type;
+	string target_type;
+	const char *drift;
+};
+
+// Compare the columns of both relations (case-insensitively, like the row diffs): the source
+// columns in source order, then the target-only columns in target order.
+static vector<SchemaDriftRow> ComputeSchemaDrift(const vector<ResolvedColumn> &source_columns,
+                                                 const vector<ResolvedColumn> &target_columns) {
+	vector<SchemaDriftRow> rows;
+	for (auto &source : source_columns) {
+		auto source_type = source.type.ToString();
+		const ResolvedColumn *target = nullptr;
+		for (auto &candidate : target_columns) {
+			if (StringUtil::CIEquals(candidate.name, source.name)) {
+				target = &candidate;
+				break;
+			}
+		}
+		if (!target) {
+			rows.push_back({source.name, source_type, "", "removed"});
+			continue;
+		}
+		auto target_type = target->type.ToString();
+		rows.push_back({source.name, source_type, target_type, source_type == target_type ? "same" : "retyped"});
+	}
+	auto source_set = MakeColumnSet(ColumnNames(source_columns));
+	for (auto &target : target_columns) {
+		if (source_set.find(StringUtil::Lower(target.name)) == source_set.end()) {
+			rows.push_back({target.name, "", target.type.ToString(), "added"});
+		}
+	}
+	return rows;
+}
+
+static string SqlStringOrNull(const string &value) {
+	return value.empty() ? "NULL" : "'" + EscapeSqlStringLiteral(value) + "'";
+}
+
+static unique_ptr<TableRef> SchemaDiffBindReplace(ClientContext &context, TableFunctionBindInput &input) {
+	PostHogTelemetry::Instance().RecordFunctionCall("diff_schema");
+	const string function_name = "diff_schema";
+	auto source_table = RequireNonNullArgument(ResolveArgument(input, 0, "source_table"), function_name, "source_table");
+	auto target_table = RequireNonNullArgument(ResolveArgument(input, 1, "target_table"), function_name, "target_table");
+
+	// The catalog lookup runs through the caller's context, so TEMP tables and views resolve
+	auto source_columns = GetRelationColumns(context, function_name, source_table);
+	auto target_columns = GetRelationColumns(context, function_name, target_table);
+	auto rows = ComputeSchemaDrift(source_columns, target_columns);
+
+	idx_t drift_count = 0;
+	string values;
+	for (auto &row : rows) {
+		values += values.empty() ? "" : ", ";
+		values += "(" + SqlStringOrNull(row.column_name) + ", " + SqlStringOrNull(row.source_type) + ", " +
+		          SqlStringOrNull(row.target_type) + ", '" + row.drift + "')";
+		drift_count += string(row.drift) != "same";
+	}
+	AnofoxTrace(AnofoxLogLevel::Debug, function_name + ": '" + source_table + "' -> '" + target_table + "': " +
+	                                       std::to_string(rows.size()) + " columns, " + std::to_string(drift_count) +
+	                                       " with drift");
+
+	// Every relation has at least one column, so VALUES is never empty; the casts fix the
+	// column types when one side is NULL in every row
+	string sql = "SELECT CAST(column_name AS VARCHAR) AS column_name, CAST(source_type AS VARCHAR) AS source_type, "
+	             "CAST(target_type AS VARCHAR) AS target_type, CAST(drift AS VARCHAR) AS drift FROM (VALUES " +
+	             values + ") AS drift_rows(column_name, source_type, target_type, drift)";
+	return ParseSubquery(sql, context, "Failed to parse generated diff_schema query");
+}
+
 // Named parameters shared by both diff functions. Every overload declares all
 // of them, so any parameter can be passed by name next to positional ones.
 static void AddCommonDiffNamedParameters(TableFunction &fn) {
@@ -564,6 +641,28 @@ void RegisterDiffFunctions(ExtensionLoader &loader) {
 		desc.categories = {"diff", "data-quality"};
 
 		RegisterTableFunctionSetWithAlias(loader, hashdiff_set, "diff_hashdiff", {std::move(desc)});
+	}
+
+	// Register anofox_tab_diff_schema (alias: diff_schema). The overloads with fewer than two
+	// positional arguments exist for calls that pass the tables by name.
+	TableFunctionSet schema_set("anofox_tab_diff_schema");
+	AddDiffOverloads(schema_set, "anofox_tab_diff_schema", DATAZOO_GUARD(ANOFOX_TABULAR_BANNER, SchemaDiffBindReplace),
+	                 {{}, {varchar_type}, {varchar_type, varchar_type}}, [](TableFunction &fn) {
+		                 duckdb_compat::AddNamedParameter(fn, "source_table", LogicalType(LogicalTypeId::VARCHAR));
+		                 duckdb_compat::AddNamedParameter(fn, "target_table", LogicalType(LogicalTypeId::VARCHAR));
+	                 });
+
+	{
+		FunctionDescription desc;
+		desc.description = "Lists the schema drift between two tables: one row per column of either table with its "
+		                   "source and target type and the drift (same, added, removed, retyped). Columns match "
+		                   "case-insensitively.";
+		desc.parameter_names = {"source_table", "target_table"};
+		desc.examples = {"SELECT * FROM diff_schema('orders_v1', 'orders_v2');",
+		                 "SELECT * FROM diff_schema('orders_v1', 'orders_v2') WHERE drift <> 'same';"};
+		desc.categories = {"diff", "data-quality"};
+
+		RegisterTableFunctionSetWithAlias(loader, schema_set, "diff_schema", {std::move(desc)});
 	}
 }
 

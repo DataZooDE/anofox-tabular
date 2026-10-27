@@ -1,0 +1,177 @@
+# name: test/sql/anofox_diff_schema.test
+# description: diff_schema lists the schema drift between two tables: one row per column of
+#              either table with its source and target type and the drift (same, added,
+#              removed, retyped). Columns match case-insensitively like the row diffs; views
+#              and TEMP tables are read through the caller's connection.
+# group: [anofox_tabular]
+
+require anofox_tabular
+
+statement ok
+LOAD anofox_tabular
+
+statement ok
+SET anofox_tab_trace_enabled = false
+
+# An invoice table before and after a billing migration: currency was renamed to ccy, the
+# fax column was dropped, a payment_terms column was added, the integer cost_center became a
+# VARCHAR code, and the Amount column only changed its case (still the same column)
+statement ok
+CREATE TABLE invoices_v1 (
+    invoice_id INTEGER,
+    customer_name VARCHAR,
+    Amount DECIMAL(12, 2),
+    currency VARCHAR,
+    cost_center INTEGER,
+    fax VARCHAR,
+    issued_on DATE
+)
+
+statement ok
+INSERT INTO invoices_v1 VALUES
+    (90001, 'Brauhaus Mueller GmbH', 1250.00, 'EUR', 4100, '+49 89 123456', DATE '2026-09-30'),
+    (90002, 'Nordsee Fisch KG',       780.50, 'EUR', 4200, NULL,            DATE '2026-10-01')
+
+statement ok
+CREATE TABLE invoices_v2 (
+    invoice_id INTEGER,
+    customer_name VARCHAR,
+    amount DECIMAL(12, 2),
+    ccy VARCHAR,
+    cost_center VARCHAR,
+    issued_on DATE,
+    payment_terms VARCHAR
+)
+
+statement ok
+INSERT INTO invoices_v2 VALUES
+    (90001, 'Brauhaus Mueller GmbH', 1250.00, 'EUR', 'CC-4100', DATE '2026-09-30', 'net 30'),
+    (90002, 'Nordsee Fisch KG',       780.50, 'EUR', 'CC-4200', DATE '2026-10-01', 'net 14')
+
+# Source column order first, then the added columns in target order
+query TTTT
+SELECT column_name, source_type, target_type, drift FROM diff_schema('invoices_v1', 'invoices_v2')
+----
+invoice_id	INTEGER	INTEGER	same
+customer_name	VARCHAR	VARCHAR	same
+Amount	DECIMAL(12,2)	DECIMAL(12,2)	same
+currency	VARCHAR	NULL	removed
+cost_center	INTEGER	VARCHAR	retyped
+fax	VARCHAR	NULL	removed
+issued_on	DATE	DATE	same
+ccy	NULL	VARCHAR	added
+payment_terms	NULL	VARCHAR	added
+
+# The output schema
+query TT
+SELECT column_name, column_type FROM (DESCRIBE SELECT * FROM diff_schema('invoices_v1', 'invoices_v2'))
+----
+column_name	VARCHAR
+source_type	VARCHAR
+target_type	VARCHAR
+drift	VARCHAR
+
+# A sign-off query: only the drift, canonical name
+query TT
+SELECT drift, string_agg(column_name, ', ' ORDER BY column_name)
+FROM anofox_tab_diff_schema('invoices_v1', 'invoices_v2')
+WHERE drift <> 'same'
+GROUP BY drift
+ORDER BY drift
+----
+added	ccy, payment_terms
+removed	currency, fax
+retyped	cost_center
+
+# Identical schemas: every column is the same
+query TT
+SELECT column_name, drift FROM diff_schema('invoices_v2', 'invoices_v2')
+----
+invoice_id	same
+customer_name	same
+amount	same
+ccy	same
+cost_center	same
+issued_on	same
+payment_terms	same
+
+# A DECIMAL precision change is a retype
+statement ok
+CREATE TABLE rates_v1 (code VARCHAR, rate DECIMAL(10, 4))
+
+statement ok
+CREATE TABLE rates_v2 (code VARCHAR, rate DECIMAL(18, 6))
+
+query TTTT
+SELECT * FROM diff_schema('rates_v1', 'rates_v2')
+----
+code	VARCHAR	VARCHAR	same
+rate	DECIMAL(10,4)	DECIMAL(18,6)	retyped
+
+# Views and TEMP tables: the staging copy of a migration lives in a TEMP table and the
+# reporting layer is a view that renames ccy back to currency
+statement ok
+CREATE TEMP TABLE invoices_staging AS SELECT * FROM invoices_v2
+
+statement ok
+CREATE VIEW invoices_report AS
+SELECT invoice_id, customer_name, amount, ccy AS currency, cost_center, issued_on FROM invoices_staging
+
+query TTTT
+SELECT column_name, source_type, target_type, drift FROM diff_schema('invoices_v1', 'invoices_report')
+----
+invoice_id	INTEGER	INTEGER	same
+customer_name	VARCHAR	VARCHAR	same
+Amount	DECIMAL(12,2)	DECIMAL(12,2)	same
+currency	VARCHAR	VARCHAR	same
+cost_center	INTEGER	VARCHAR	retyped
+fax	VARCHAR	NULL	removed
+issued_on	DATE	DATE	same
+
+query TT
+SELECT column_name, drift FROM diff_schema('invoices_staging', 'invoices_v1') WHERE drift <> 'same'
+----
+ccy	removed
+cost_center	retyped
+payment_terms	removed
+currency	added
+fax	added
+
+# Schema-qualified names and named parameters
+statement ok
+CREATE SCHEMA billing
+
+statement ok
+CREATE TABLE billing.invoices AS SELECT * FROM invoices_v2
+
+query TT
+SELECT column_name, drift
+FROM diff_schema(source_table := 'invoices_v1', target_table := 'billing.invoices')
+WHERE drift <> 'same'
+----
+currency	removed
+cost_center	retyped
+fax	removed
+ccy	added
+payment_terms	added
+
+# Errors: NULL arguments, unknown tables
+statement error
+SELECT * FROM diff_schema(NULL, 'invoices_v2')
+----
+diff_schema: source_table must not be NULL
+
+statement error
+SELECT * FROM diff_schema('invoices_v1', NULL)
+----
+diff_schema: target_table must not be NULL
+
+statement error
+SELECT * FROM diff_schema('invoices_v1', 'invoices_v3')
+----
+diff_schema: table or view 'invoices_v3' does not exist
+
+statement error
+SELECT * FROM diff_schema('invoice_v1', 'invoices_v2')
+----
+diff_schema: table or view 'invoice_v1' does not exist

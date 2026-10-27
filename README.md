@@ -25,7 +25,7 @@ columns. Everything runs inside DuckDB, on your tables, with SQL.
 | PII | Detect and mask emails, card numbers, IBANs, SSNs, dates of birth, German SV and ID card numbers, names and more; scan whole tables | [api/06-pii](docs/api/06-pii.md) |
 | Data quality | 17 checks, a table-driven suite runner and event outputs | [api/07-data-quality](docs/api/07-data-quality.md) |
 | Anomaly detection | Isolation Forest, DBSCAN and OutlierTree with explanations | [api/08-anomaly-detection](docs/api/08-anomaly-detection.md) |
-| Diffing | Row-level diff of two tables on a primary key | [api/09-diffing](docs/api/09-diffing.md) |
+| Diffing | Row-level diff of two tables on a primary key, column-level schema drift | [api/09-diffing](docs/api/09-diffing.md) |
 | Profiling | Per-column statistics, table overview, correlations | [api/10-profiling](docs/api/10-profiling.md) |
 
 ## Table of Contents

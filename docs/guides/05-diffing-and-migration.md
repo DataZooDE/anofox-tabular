@@ -210,7 +210,7 @@ its unknown customer 999. A volume check alone would have missed the problem.
 
 The diff compares rows, not schemas. A column that exists in only one of the two tables (added,
 dropped or renamed) is not compared, and the trace log names it as a warning. List the schema
-drift explicitly by comparing the `DESCRIBE` output of both tables. Here a CRM migration
+drift explicitly with [`diff_schema`](../api/09-diffing.md#diff_schema). Here a CRM migration
 dropped `fax`, added `segment`, renamed `city` to `town` and changed the types of `zip`,
 `credit_limit` and the key:
 
@@ -229,34 +229,25 @@ INSERT INTO crm_new VALUES
     (1003, 'Nordsee Fisch KG',      'Kiel',   '007',   2500.0, 'smb'),
     (1004, 'Alpine Outdoor AG',     'Zurich', 'n/a',   1200.0, 'enterprise');
 
-WITH old_cols AS (SELECT column_name, column_type FROM (DESCRIBE crm_old)),
-     new_cols AS (SELECT column_name, column_type FROM (DESCRIBE crm_new))
-SELECT coalesce(o.column_name, n.column_name) AS column_name,
-       o.column_type AS old_type, n.column_type AS new_type,
-       CASE WHEN o.column_name IS NULL THEN 'added'
-            WHEN n.column_name IS NULL THEN 'dropped'
-            ELSE 'type changed' END AS drift
-FROM old_cols o FULL OUTER JOIN new_cols n ON lower(o.column_name) = lower(n.column_name)
-WHERE o.column_type IS DISTINCT FROM n.column_type
-ORDER BY drift, column_name;
+SELECT * FROM diff_schema('crm_old', 'crm_new') WHERE drift <> 'same';
 ```
 
 ```text
-┌──────────────┬───────────────┬──────────┬──────────────┐
-│ column_name  │   old_type    │ new_type │    drift     │
-│   varchar    │    varchar    │ varchar  │   varchar    │
-├──────────────┼───────────────┼──────────┼──────────────┤
-│ segment      │ NULL          │ VARCHAR  │ added        │
-│ town         │ NULL          │ VARCHAR  │ added        │
-│ city         │ VARCHAR       │ NULL     │ dropped      │
-│ fax          │ VARCHAR       │ NULL     │ dropped      │
-│ credit_limit │ DECIMAL(12,2) │ DOUBLE   │ type changed │
-│ customer_id  │ INTEGER       │ BIGINT   │ type changed │
-│ zip          │ INTEGER       │ VARCHAR  │ type changed │
-└──────────────┴───────────────┴──────────┴──────────────┘
+┌──────────────┬───────────────┬─────────────┬─────────┐
+│ column_name  │  source_type  │ target_type │  drift  │
+│   varchar    │    varchar    │   varchar   │ varchar │
+├──────────────┼───────────────┼─────────────┼─────────┤
+│ customer_id  │ INTEGER       │ BIGINT      │ retyped │
+│ city         │ VARCHAR       │ NULL        │ removed │
+│ zip          │ INTEGER       │ VARCHAR     │ retyped │
+│ credit_limit │ DECIMAL(12,2) │ DOUBLE      │ retyped │
+│ fax          │ VARCHAR       │ NULL        │ removed │
+│ town         │ NULL          │ VARCHAR     │ added   │
+│ segment      │ NULL          │ VARCHAR     │ added   │
+└──────────────┴───────────────┴─────────────┴─────────┘
 ```
 
-A renamed column shows up as one dropped and one added column (`city` and `town`). To compare
+A renamed column shows up as one removed and one added column (`city` and `town`). To compare
 it anyway, diff a view that renames it back.
 
 Columns whose type changed are still compared. When the old and the new type are not both
