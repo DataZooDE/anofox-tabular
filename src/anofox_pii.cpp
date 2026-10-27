@@ -75,33 +75,95 @@ bool NERUnavailable() {
 // warning that the scan will take long
 constexpr int64_t NER_LARGE_SCAN_VALUES = 100000;
 
-// A byte that belongs to a word: ASCII letters and digits, any byte of a
-// multi-byte UTF-8 character, and the joiners '-' and '\'' ("Klaus-Peter").
-bool IsWordByte(unsigned char c) {
-    return std::isalnum(c) || c >= 0x80 || c == '-' || c == '\'';
+// A character that belongs to a word: letters and digits (ASCII and
+// Unicode), and the joiners '-' and '\'' ("Klaus-Peter", "O'Connor").
+// Unicode punctuation and spaces ("„Sabine Weiß“", "«Jürgen»", no-break
+// space) end a word, as in the NER tokenizer (ClassifyNERCodePoint).
+bool IsWordCodePoint(uint32_t cp) {
+    return cp == '-' || cp == '\'' || ClassifyNERCodePoint(cp) == NERCharClass::WORD ||
+           ClassifyNERCodePoint(cp) == NERCharClass::IDEOGRAPH;
+}
+
+// Byte length of the word character starting at `pos`, 0 when the character
+// there is no word character
+size_t WordCharLengthAt(const std::string &text, size_t pos) {
+    uint32_t cp = 0;
+    const size_t length = DecodeUTF8CodePoint(text, pos, cp);
+    return IsWordCodePoint(cp) ? length : 0;
+}
+
+// Byte length of the word character ending right before `pos`, 0 when the
+// character there is no word character
+size_t WordCharLengthBefore(const std::string &text, size_t pos) {
+    size_t lead = pos - 1;
+    while (lead > 0 && pos - lead < 4 && (static_cast<unsigned char>(text[lead]) & 0xC0) == 0x80) {
+        lead--;
+    }
+    uint32_t cp = 0;
+    if (DecodeUTF8CodePoint(text, lead, cp) != pos - lead) {
+        // Not a complete UTF-8 character: a stray byte counts as a word byte
+        return 1;
+    }
+    return IsWordCodePoint(cp) ? pos - lead : 0;
+}
+
+// Quotes, brackets and other punctuation around a name are not part of it;
+// "." and "&" are ("Acme Inc.", "Schulze & Partner")
+bool IsTrimmablePunctuation(uint32_t cp) {
+    return cp != '.' && cp != '&' && ClassifyNERCodePoint(cp) == NERCharClass::PUNCT;
 }
 
 // NER spans come from subword tokens and can stop inside a word ("w[NAME]",
 // "[LOCATION]ße"). Widen the span to whole words so masking never leaves part
-// of a word in clear text.
-void WidenToWords(const std::string &text, PIIMatch &match) {
+// of a word in clear text; drop quotes and brackets the model tagged along at
+// either end ("“David O'Connor”"). Returns false when nothing is left.
+bool WidenToWords(const std::string &text, PIIMatch &match) {
     size_t start = match.start_pos;
     size_t end = match.end_pos;
-    while (start > 0 && IsWordByte(static_cast<unsigned char>(text[start - 1]))) {
-        start--;
+    while (start > 0) {
+        const size_t length = WordCharLengthBefore(text, start);
+        if (length == 0) {
+            break;
+        }
+        start -= length;
     }
-    while (end < text.size() && IsWordByte(static_cast<unsigned char>(text[end]))) {
-        end++;
+    while (end < text.size()) {
+        const size_t length = WordCharLengthAt(text, end);
+        if (length == 0) {
+            break;
+        }
+        end += length;
     }
-    // Do not swallow a trailing joiner ("Wagner-" at the end of a span)
-    while (end > start && (text[end - 1] == '-' || text[end - 1] == '\'')) {
-        end--;
+    while (start < end) {
+        uint32_t cp = 0;
+        const size_t length = DecodeUTF8CodePoint(text, start, cp);
+        if (!IsTrimmablePunctuation(cp)) {
+            break;
+        }
+        start += length;
+    }
+    while (end > start) {
+        size_t lead = end - 1;
+        while (lead > start && end - lead < 4 && (static_cast<unsigned char>(text[lead]) & 0xC0) == 0x80) {
+            lead--;
+        }
+        uint32_t cp = 0;
+        DecodeUTF8CodePoint(text, lead, cp);
+        // A trailing joiner is no part of the name either ("Wagner-" at the end of a span)
+        if (!IsTrimmablePunctuation(cp)) {
+            break;
+        }
+        end = lead;
+    }
+    if (start >= end) {
+        return false;
     }
     if (start != match.start_pos || end != match.end_pos) {
         match.start_pos = start;
         match.end_pos = end;
         match.matched_text = text.substr(start, end - start);
     }
+    return true;
 }
 
 // Words that label a PII field ("IBAN DE89...", "SSN: 123-...") rather than
@@ -2817,8 +2879,8 @@ std::vector<PIIMatch> PIIEngine::Detect(
                 continue;
             }
             if (IsNERType(match.type)) {
-                WidenToWords(text, match);
-                if (IsFieldLabel(match.matched_text) || IsCountryOrCurrencyCode(match.matched_text)) {
+                if (!WidenToWords(text, match) || IsFieldLabel(match.matched_text) ||
+                    IsCountryOrCurrencyCode(match.matched_text)) {
                     continue;
                 }
             }

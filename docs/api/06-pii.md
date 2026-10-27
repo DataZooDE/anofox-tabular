@@ -1024,8 +1024,11 @@ On a build with OpenVINO, after the model has been loaded, it reports `true`, `L
   least two letters between spaces or ASCII punctuation, with no digit in it (non-ASCII letters
   such as `ü` count as letters). Hex digests, UUIDs, numbers, amounts and codes such as `A-12`
   are therefore not sent through the model; `Li`, `Müller` and `J. Smith` are.
-- **Limits.** The tokenizer is ASCII-focused: non-ASCII punctuation is not a word boundary.
-  All-caps text can give fragmented or no results.
+- **Words and punctuation.** The tokenizer splits words like the reference BERT tokenizer: at
+  spaces (also no-break spaces), at ASCII and Unicode punctuation (`„“`, `«»`, `–`, `…`, `¿`)
+  and around CJK characters. Quotes and brackets around a name are not part of the match:
+  `„Sabine Weiß“` is masked as `„[NAME]“`.
+- **Limits.** All-caps text can give fragmented or no results.
 - **Name dictionary.** Without the model, and for a text in which the model finds no person,
   `NAME` uses a dictionary of common given names (English and Western European, and several
   hundred German, Austrian and Swiss names). A capitalised given name from the dictionary, plus up

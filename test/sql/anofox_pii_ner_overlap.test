@@ -38,3 +38,17 @@ SELECT id, regexp_matches(pii_mask(txt), '(\p{L}|-)\[|\](\p{L}|-)') FROM texts O
 4	false
 5	false
 
+
+# Widening a NER span to whole words stops at Unicode punctuation, and quotes
+# the model tags along with a name are dropped: quotes and guillemets around a
+# name stay in clear text, the apostrophe inside "O'Connor" is part of it
+query IT
+SELECT id, pii_mask(txt) FROM (VALUES
+  (1, 'The witness «Jürgen Schäfer» confirmed the course of the accident.'),
+  (2, 'Our client „Sabine Weiß“ reported the damage on Monday.'),
+  (3, 'Please forward the claim to “David O''Connor” before Friday.')
+) t(id, txt) ORDER BY id;
+----
+1	The witness «[NAME]» confirmed the course of the accident.
+2	Our client „[NAME]“ reported the damage on Monday.
+3	Please forward the claim to “[NAME]” before Friday.
