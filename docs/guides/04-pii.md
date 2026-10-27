@@ -100,10 +100,12 @@ FROM pii_scan_table('customers');
 This is the record to keep for an audit: every column of the table is listed. Name a skipped
 column in the `columns` argument to scan it as text.
 
-A count below `values_scanned`, or `no_match`, means that detection found nothing in the other
-values, not that they are free of personal data. `first_name` holds four names, but the NER
-model does not take `Li` on its own for a name, and `phone` holds `01511234567`, a number without a separator
-that the phone pattern does not match. Columns like these are masked by what you know about them,
+`match_count` counts matches, not rows: a note with two phone numbers counts twice, so a count
+can even exceed `values_scanned`. Fewer matches than values, or `no_match`, means that detection
+found nothing in the other values, not that they are free of personal data. `first_name` holds
+four names, but the NER model does not take `Li` on its own for a name, and `phone` holds
+`01511234567`, a number without a separator or a phone keyword (`Tel`, `Mobil`, ...) before it,
+which the phone pattern does not match. Columns like these are masked by what you know about them,
 not by detection (step 4).
 
 ## 3. Inspect the findings row by row
@@ -311,6 +313,12 @@ Reisepass numbers) are detected by default, as are compact phone numbers after a
 and order numbers without such a keyword or check digit are left alone. If mistyped IBANs and card numbers must be masked as well,
 `SET anofox_pii_require_checksum = false` reports them at confidence 0.6 (see
 [Settings](../api/06-pii.md#settings)).
+
+Special categories of personal data (GDPR Art. 9: health, religion or beliefs, racial or ethnic
+origin, political opinions, trade-union membership, sex life or sexual orientation, genetic and
+biometric data) are not detected. A claims note that says `Diagnose: Diabetes Typ 2` is not
+flagged for its diagnosis; free-text columns that can hold such data need their own review and
+are best masked as a whole with `pii_mask_value`.
 
 ## 6. Run without network access
 

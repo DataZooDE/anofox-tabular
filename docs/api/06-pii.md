@@ -74,6 +74,13 @@ NER types need the NER model.
 | `LOCATION` | Places | NER only |
 | `MISC` | Other named entities | NER only |
 
+Special categories of personal data (GDPR Art. 9) are not detected: there is no type for health
+data (diagnoses, treatments, medication), religious or philosophical beliefs, racial or ethnic
+origin, political opinions, trade-union membership, sex life or sexual orientation, genetic or
+biometric data. A note such as `Diagnose: Diabetes Typ 2, katholisch, Gewerkschaftsmitglied` is
+not flagged as special-category data. Review free-text columns that can hold such data by other
+means.
+
 Detection skips a bare 9-digit number such as `123456789`. It is neither a `US_SSN` nor a
 `US_PASSPORT`, because contract, order and claim numbers have the same shape.
 
