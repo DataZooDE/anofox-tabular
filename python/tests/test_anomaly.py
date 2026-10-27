@@ -342,3 +342,39 @@ class TestColumnNamesWithCommas:
         df = self._readings().rename(columns={"reading, c": "temperature"})
         result = anomaly.isolation_forest_mv(conn, df, "temperature, humidity", seed=7)
         assert isinstance(result, dict)
+
+
+class TestNanHandling:
+    """A polars NaN is a value, not a NULL; each detector treats it its own way (guide 06)."""
+
+    @pytest.fixture
+    def amounts(self):
+        pl = pytest.importorskip("polars")
+        values = [49.9, 50.1, 50.0, 49.8, 50.2, 50.3, 50.0, 49.95,
+                  float("nan"), None, float("inf")]
+        return pl.DataFrame({"order_id": list(range(101, 112)), "amount": values})
+
+    def test_isolation_forest_skips_nan_like_null_and_flags_inf(self, conn, amounts):
+        from anofox import anomaly
+        scores = anomaly.isolation_forest(
+            conn, amounts, "amount", output_mode="scores", seed=7, id_column="order_id"
+        )
+        assert sorted(scores["order_id"].to_list()) == list(range(101, 109)) + [111]
+        inf_row = scores.filter(scores["order_id"] == 111)
+        assert inf_row["is_anomaly"].to_list() == [True]
+
+    def test_dbscan_keeps_nan_as_noise(self, conn, amounts):
+        from anofox import anomaly
+        clusters = anomaly.dbscan(
+            conn, amounts, "amount", output_mode="clusters",
+            epsilon=0.5, min_points=3, id_column="order_id",
+        )
+        noise = clusters.filter(clusters["point_type"] == "NOISE")
+        assert sorted(noise["order_id"].to_list()) == [109, 111]
+
+    def test_fill_nan_gives_the_same_rows_to_both(self, conn, amounts):
+        from anofox import anomaly
+        clean = amounts.fill_nan(None)
+        forest = anomaly.isolation_forest(conn, clean, "amount", seed=7)
+        clusters = anomaly.dbscan(conn, clean, "amount", epsilon=0.5, min_points=3)
+        assert forest["total_count"] == clusters["total_count"] == 9

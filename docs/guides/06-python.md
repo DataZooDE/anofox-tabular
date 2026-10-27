@@ -255,9 +255,8 @@ DuckDB:
 
 - **pandas**: `NaN` and `None` in any column (float, string or object) become SQL `NULL`.
 - **polars**: `None` (`null`) becomes `NULL`, but a float `NaN` stays a `DOUBLE` NaN, an ordinary
-  value. It is not counted by `null_rate` or `conn.profile` and is not left out like a `NULL` row
-  in the anomaly functions; the numeric checks report it (for example `zscore`: "1 NaN/Inf
-  value(s) ignored"), and `make_money` gives `None` for it.
+  value. It is not counted by `null_rate` or `conn.profile`; the numeric checks report it (for
+  example `zscore`: "1 NaN/Inf value(s) ignored"), and `make_money` gives `None` for it.
 
 ```python
 import polars as pl
@@ -275,6 +274,38 @@ polars 1
 
 To treat a polars NaN as missing, convert it first: `df.fill_nan(None)` (`pl.from_pandas()`
 already turns NaN into `null`).
+
+The anomaly detectors treat a NaN and an infinite value differently from each other. A `NULL` row
+is left out by all of them.
+
+| Detector | `NaN` | `inf` / `-inf` |
+|---|---|---|
+| `isolation_forest`, `isolation_forest_mv` | Left out like a `NULL` (not in `total_count`, no score row) | Scored; usually flagged as anomalies |
+| `dbscan`, `dbscan_mv` | Kept, and always `NOISE` (`is_anomaly = True`) | Kept, and `NOISE` |
+| `outlier_tree` | Kept in `total_rows`, but never flagged | Can be flagged |
+
+So the same polars column can give different counts in the two detectors:
+
+```python
+amounts = [49.9, 50.1, 50.0, 49.8, 50.2, 50.3, float("nan"), None]
+orders = pl.DataFrame({"amount": amounts})
+forest = anomaly.isolation_forest(conn, orders, "amount", seed=7)
+clusters = anomaly.dbscan(conn, orders, "amount", epsilon=0.5, min_points=3)
+print(forest["total_count"], clusters["total_count"], clusters["noise_count"])
+
+clean = orders.fill_nan(None)
+clusters = anomaly.dbscan(conn, clean, "amount", epsilon=0.5, min_points=3)
+print(clusters["total_count"], clusters["noise_count"])
+```
+
+```text
+6 7 1
+6 0
+```
+
+For the same treatment in every detector, call `df.fill_nan(None)` before you run them. Then a
+NaN is a `NULL` and every detector leaves it out. Filter infinite values yourself if they are
+errors rather than extreme values.
 
 ## Use polars
 
