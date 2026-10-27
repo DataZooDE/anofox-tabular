@@ -52,7 +52,7 @@ NER types need the NER model.
 | Type | Detects | Method |
 |------|---------|--------|
 | `EMAIL` | Email addresses, also with non-ASCII letters (`jörg.k@müller-gmbh.de`); a local part of at most 64 characters and domain labels of at most 63. The local part ends at `/`, `?`, `#`, `&`, `=` and `:`, so an address in a URL query or path or after `mailto:` is matched as the bare address (`max@web.de` in `https://shop.example.com/unsubscribe?email=max@web.de&id=7`) | pattern |
-| `PHONE` | International numbers with a `+` or `00` prefix (`+49 (0) 221 4711-0`, `0049 171 1234567`), national numbers with an area code and a space, dash or slash (`0171 1234567`, `089/12345678`, `(089) 123 456 78`) and US `(555) 123-4567`; 7 to 15 digits. A compact national number without separators (`01701234567`) is matched only right after a phone keyword (`Tel`, `Tel.`, `Telefon`, `Telefonnummer`, `Mobil`, `Handy`, `Fon`, `Fax`, `phone`, `mobile`, `cell`, optionally followed by `:` or `-Nr.`), because order and claim numbers have the same shape. A number starts and ends at the text boundary or at any character that is no letter, digit or `+`, so numbers in JSON values (`"phone":"+49 171 2345678"`), CSV fields, HTML cells (`<td>+49 30 1234567</td>`), `tel=+49...` and `Tel.+49...` are found. A number joined by a dash to letters or digits (`INC-0221-4711`, the groups of a UUID), or following a digit and a space, `/` or `.` (the groups of an IBAN), is part of a longer token and not matched | pattern |
+| `PHONE` | International numbers with a `+` or `00` prefix (`+49 (0) 221 4711-0`, `0049 171 1234567`, `0049(0)171-2345678`), national numbers with an area code and a space, dash or slash, also with spaces around the slash (`0171 1234567`, `089/12345678`, `0171 / 2345678`, `(089) 123 456 78`) and US `(555) 123-4567`; 7 to 15 digits. A compact `00` number (`00491712345678`) is matched only when the [phone module](03-phone.md) accepts it as a valid `+` number of that country, so order and account numbers that start with `00` stay unmatched. A compact national number without separators (`01701234567`) is matched only right after a phone keyword (`Tel`, `Tel.`, `Telefon`, `Telefonnummer`, `Mobil`, `Handy`, `Fon`, `Fax`, `phone`, `mobile`, `cell`, optionally followed by `:` or `-Nr.`), because order and claim numbers have the same shape. A number starts and ends at the text boundary or at any character that is no letter, digit or `+`, so numbers in JSON values (`"phone":"+49 171 2345678"`), CSV fields, HTML cells (`<td>+49 30 1234567</td>`), `tel=+49...` and `Tel.+49...` are found. A number joined by a dash to letters or digits (`INC-0221-4711`, the groups of a UUID), or following a digit and a space, `/` or `.` (the groups of an IBAN), is part of a longer token and not matched | pattern |
 | `CREDIT_CARD` | Card numbers of Visa, Mastercard (51-55, 2221-2720), American Express, Discover, Maestro, JCB, Diners Club and UnionPay: 13 to 19 digits, compact or in groups joined by one space, dash or dot (`4111 1111 1111 1111`, `3782-822463-10005`, `4111.1111.1111.1111`). The digits must carry a brand prefix with a length the brand issues; digits that continue a longer token (`DE89 3704 ...`, `SN4111...`, `4111...-01`) are not matched | pattern + Luhn checksum + brand prefix |
 | `US_SSN` | US Social Security Numbers `XXX-XX-XXXX` or `XXX XX XXXX`; bare 9-digit numbers are not matched | pattern + area validation |
 | `IBAN` | International Bank Account Numbers, compact or in groups of four separated by single spaces or dashes (`DE89 3704 0044 0532 0130 00`). Irregular grouping (`DE89 37040044 0532013000`, `DE 89 370 400 440 532 013 000`, mixed spaces and dashes) is matched when the IBAN ends after exactly the country's length and its MOD-97 checksum holds. The country code must be in the SWIFT IBAN registry and the IBAN must have that country's length (`DE` 22, `NL` 18, ...), so a hex id such as `ce78d1da254c0843eb23951ae077ff5f` whose MOD-97 checksum holds by chance is no IBAN | pattern + registered country and length + MOD-97 checksum |
@@ -230,7 +230,8 @@ so hashed columns can still be joined and counted:
 
 | Type | Normalisation before hashing |
 |------|------------------------------|
-| `PHONE`, `CREDIT_CARD`, `US_SSN`, `DE_TAX_ID` | Spaces, `-`, `.`, `/`, `(` and `)` removed (a leading `+` is kept) |
+| `PHONE` | The E.164 form from the [phone module](03-phone.md) (`+49301234567`): a number with `+` or `00` and a country code for that country, a national number (`030 1234567`) for `anofox_tab_phonenumber_default_region`. A number the phone module does not accept as valid is hashed like a credit card number: separators removed, a leading `+` kept |
+| `CREDIT_CARD`, `US_SSN`, `DE_TAX_ID` | Spaces, `-`, `.`, `/`, `(` and `)` removed (a leading `+` is kept) |
 | `IBAN`, `UK_NINO`, `DE_SVNR`, `DE_KVNR`, `DE_ID_CARD` | Same separators removed, upper-cased |
 | `EMAIL` | Lower-cased |
 | all other types | None: the matched text is hashed as it is |
@@ -251,10 +252,42 @@ FROM (VALUES ('4111 1111 1111 1111'), ('4111-1111-1111-1111')) t(card);
 └──────────────────┴────────────────┘
 ```
 
+With `SET anofox_tab_phonenumber_default_region = 'DE'`, the national, `+49`, `0049` and
+`+49 (0)` forms of one Berlin number share one hash, the hash of `+49301234567`:
+
+```sql
+SET anofox_tab_phonenumber_default_region = 'DE';
+SELECT phone, pii_mask_value(phone, 'PHONE', 'hash') AS hashed,
+       pii_mask_value(phone, 'PHONE', 'hash') = left(sha256('+49301234567'), 16) AS same_as_e164
+FROM (VALUES ('030 1234567'), ('+49 30 1234567'), ('0049 30 1234567'), ('+49 (0)30 1234567')) t(phone);
+```
+
+```text
+┌───────────────────┬──────────────────┬──────────────┐
+│       phone       │      hashed      │ same_as_e164 │
+│      varchar      │     varchar      │   boolean    │
+├───────────────────┼──────────────────┼──────────────┤
+│ 030 1234567       │ 74bd805bcc47f860 │ true         │
+│ +49 30 1234567    │ 74bd805bcc47f860 │ true         │
+│ 0049 30 1234567   │ 74bd805bcc47f860 │ true         │
+│ +49 (0)30 1234567 │ 74bd805bcc47f860 │ true         │
+└───────────────────┴──────────────────┴──────────────┘
+```
+
+```sql
+RESET anofox_tab_phonenumber_default_region;
+```
+
+The default region changes the hash of a national number: `030 1234567` hashes as
+`+49301234567` with `DE` and falls back to `0301234567` with the default `US`. Set the region
+before hashing national numbers, and keep it fixed while hashed values are joined.
+
 The hash has no key or salt. That makes it a pseudonym, not anonymisation: anyone with the
-hash can test candidate values, and small value spaces such as phone numbers, SSNs or card
-numbers of a known issuer can be enumerated and so reversed by brute force. Treat hashed data
-as personal data; use `redact` when the values must not be recoverable.
+hash can test candidate values, and small value spaces can be enumerated and so reversed by
+brute force: phone numbers, SSNs, card numbers of a known issuer, dates of birth (about 46,000
+days since 1900), postal codes (about 8,200 German codes) and health insurance numbers
+(`DE_KVNR`: 26 letters and 8 digits, under 3 billion candidates). Treat hashed data as personal
+data; use `redact` when the values must not be recoverable.
 
 ## Match structure
 

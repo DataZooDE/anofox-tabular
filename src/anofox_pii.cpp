@@ -356,12 +356,41 @@ std::string MaskWordKeepingPrefix(const std::string &word, size_t keep) {
     return Utf8Prefix(word, keep) + std::string(length - keep, '*');
 }
 
+// E.164 form of a phone number ("+49301234567") as the phone module parses it:
+// a number with +CC or the default region's international prefix (0049...) for
+// that country, a national number (030 ...) for
+// anofox_tab_phonenumber_default_region. Empty when the module does not accept
+// the number as valid.
+std::string PhoneToE164(const std::string &text) {
+    try {
+        const auto parts = phonenumber::PhoneNumberManager::Instance().Parse(text, "");
+        if (parts.valid && parts.matches_valid_pattern && parts.country_code > 0 &&
+            !parts.national_number.empty()) {
+            return "+" + std::to_string(parts.country_code) + parts.national_number;
+        }
+        AnofoxTrace(AnofoxLogLevel::Trace, "pii: phone hash falls back to the digits, not a valid number: " + text +
+                                               " (" + parts.reason + ")");
+    } catch (const std::exception &e) {
+        AnofoxTrace(AnofoxLogLevel::Debug, "pii: phone hash falls back to the digits: " + std::string(e.what()));
+    }
+    return std::string();
+}
+
 // Canonical form of a matched value for the HASH strategy, so differently
 // formatted copies of one value (4111 1111 1111 1111 / 4111-1111-1111-1111)
-// hash alike: separators (space, dash, dot, slash, parentheses) are removed
-// from numeric identifiers, IBAN and UK NINO are upper-cased, e-mail
-// addresses are lower-cased. Other types are hashed as matched.
+// hash alike: phone numbers are hashed in their E.164 form (030 1234567,
+// +49 (0)30 1234567 and 0049 30 1234567 alike with the default region DE),
+// separators (space, dash, dot, slash, parentheses) are removed from other
+// numeric identifiers and from phone numbers the phone module cannot parse,
+// IBAN and UK NINO are upper-cased, e-mail addresses are lower-cased. Other
+// types are hashed as matched.
 std::string NormalizeForHash(PIIType type, const std::string &text) {
+    if (type == PIIType::PHONE) {
+        auto e164 = PhoneToE164(text);
+        if (!e164.empty()) {
+            return e164;
+        }
+    }
     switch (type) {
     case PIIType::PHONE:
     case PIIType::CREDIT_CARD:
@@ -1927,12 +1956,14 @@ PhoneRecognizer::PhoneRecognizer()
         // '=', ',', '>', '|', '/', ...; ECMAScript has no lookbehind, so that
         // character is consumed and FindMatches reports group 1 only). This
         // covers JSON values, CSV fields, HTML cells and "tel=+49...":
-        // - international: +CC or 00CC (00 form needs a separator after the
-        //   country code), then up to six digit groups or a parenthesised
-        //   group such as "(0)", "(415)": +49 (0) 221 4711-0, +491711234567
+        // - international: +CC or 00CC followed by a separator or "(", then
+        //   up to six digit groups or a parenthesised group such as "(0)",
+        //   "(415)": +49 (0) 221 4711-0, +491711234567, 0049(0)171-2345678
+        // - compact 00CC...: 00491712345678 (Validate() requires the phone
+        //   module to accept it, so order numbers stay unmatched)
         // - national: an area code 0XX..0XXXXX, compact numbers are not
         //   matched; "(089) 123 456 78", "0171 1234567", "089/12345678",
-        //   "089-123456-78"
+        //   "089 / 12345678", "089-123456-78"
         // The number must end at the end of text or at a character that is no
         // letter, digit or '+' ("</td>", '"', '&', ...).
         // Group 2: US style (555) 123-4567.
@@ -1940,8 +1971,9 @@ PhoneRecognizer::PhoneRecognizer()
         // amounts and version strings stay unmatched; Validate() checks the
         // digit count.
         R"((?:^|[^A-Za-z0-9+]))"
-        R"(((?:\+\d{1,3}|00[1-9]\d{0,2}(?=[ \-./]))(?:[ \-./]?\(\d{1,4}\)|[ \-./]?\d{1,5}){1,6})"
-        R"(|(?:\(0[1-9]\d{1,4}\) ?|0[1-9]\d{1,4}[ \-/])\d{2,8}(?:[ \-/]\d{1,8}){0,3}))"
+        R"(((?:\+\d{1,3}|00[1-9]\d{0,2}(?=[ \-./(]))(?:[ \-./]?\(\d{1,4}\)|[ \-./]?\d{1,5}){1,6})"
+        R"(|00[1-9]\d{6,13})"
+        R"(|(?:\(0[1-9]\d{1,4}\) ?|0[1-9]\d{1,4}(?: ?/ ?|[ \-]))\d{2,8}(?:[ \-/]\d{1,8}){0,3}))"
         R"((?=$|[^A-Za-z0-9+]))"
         R"(|(\(\d{3}\)[\s\-\.]?\d{3}[\s\-\.]?\d{4}))"
     ) {}
@@ -2034,6 +2066,22 @@ bool PhoneRecognizer::Validate(const std::string &text) const {
     // without this, SSN-like "001-45-6789" would pass as a phone number.
     if (text.compare(0, 2, "00") == 0 && digit_count - 2 < 8) {
         return false;
+    }
+    // A compact 00CC... number ("00491712345678") has the shape of an order or
+    // account number, so it is a phone number only when the phone module
+    // accepts it as +CC... (a valid length and number range for that country)
+    if (text.compare(0, 2, "00") == 0 && digit_count == text.size()) {
+        try {
+            const auto parts = phonenumber::PhoneNumberManager::Instance().Parse("+" + text.substr(2), "");
+            if (!parts.valid) {
+                AnofoxTrace(AnofoxLogLevel::Trace, "pii: compact 00 number is no valid phone number: " + text +
+                                                       " (" + parts.reason + ")");
+                return false;
+            }
+        } catch (const std::exception &e) {
+            AnofoxTrace(AnofoxLogLevel::Debug, "pii: compact 00 number not judged, dropped: " + std::string(e.what()));
+            return false;
+        }
     }
 
     // Without deep validation, the pattern and the digit count are enough

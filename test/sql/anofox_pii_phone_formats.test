@@ -1,0 +1,105 @@
+# name: test/sql/anofox_pii_phone_formats.test
+# description: Phone numbers written with " / " after the area code and the 00 country
+#              prefix without separators (00491712345678, 0049(0)171-...) are detected
+#              (F5); order numbers, dates and IBAN fragments stay unmatched. A PHONE match
+#              is hashed in its E.164 form, so national, +CC, 00CC and +CC (0) forms of one
+#              number share one hash (F10).
+# group: [sql]
+
+require anofox_tabular
+
+statement ok
+LOAD anofox_tabular;
+
+statement ok
+SET anofox_pii_enabled_types = 'PHONE';
+
+# Formats that were missed, as they appear in CRM notes and ticket texts
+query TT
+SELECT note, list_transform(pii_detect(note), lambda m: m.text)
+FROM (VALUES
+    ('Rückruf bitte unter 0171 / 2345678'),
+    ('Büro München: 089 / 12345678, Mo-Fr'),
+    ('Tel.: 0171 / 234 56 78'),
+    ('Mobil 00491712345678 (abends)'),
+    ('Kontakt: 0049(0)171-2345678'),
+    ('Zentrale 0049 (0)30 1234567'),
+    ('Hotline +49(0)171-2345678')
+) t(note);
+----
+Rückruf bitte unter 0171 / 2345678	[0171 / 2345678]
+Büro München: 089 / 12345678, Mo-Fr	[089 / 12345678]
+Tel.: 0171 / 234 56 78	[0171 / 234 56 78]
+Mobil 00491712345678 (abends)	[00491712345678]
+Kontakt: 0049(0)171-2345678	['0049(0)171-2345678']
+Zentrale 0049 (0)30 1234567	['0049 (0)30 1234567']
+Hotline +49(0)171-2345678	['+49(0)171-2345678']
+
+# Not phone numbers: order and account numbers with a 00 prefix, dates, an IBAN written in
+# groups or compact, a quantity with a slash, a version string
+query TI
+SELECT note, len(pii_detect(note))
+FROM (VALUES
+    ('Bestellnummer 0012345678 vom 03.10.2026'),
+    ('Auftrag 00100200300 storniert'),
+    ('Kundennummer 0099887766'),
+    ('Lieferung am 2026-10-27 / 14:30 Uhr'),
+    ('IBAN DE89 3704 0044 0532 0130 00'),
+    ('IBAN DE89370400440532013000'),
+    ('Konto 0044053201300 bei der Sparkasse'),
+    ('Menge 12 / 24 Stück, Version 1.0.2026')
+) t(note);
+----
+Bestellnummer 0012345678 vom 03.10.2026	0
+Auftrag 00100200300 storniert	0
+Kundennummer 0099887766	0
+Lieferung am 2026-10-27 / 14:30 Uhr	0
+IBAN DE89 3704 0044 0532 0130 00	0
+IBAN DE89370400440532013000	0
+Konto 0044053201300 bei der Sparkasse	0
+Menge 12 / 24 Stück, Version 1.0.2026	0
+
+# Masking works on the new formats like on any other
+query T
+SELECT pii_mask('Tel.: 0171 / 234 56 78, alternativ 00491712345678');
+----
+Tel.: [PHONE], alternativ [PHONE]
+
+statement ok
+SET anofox_tab_phonenumber_default_region = 'DE';
+
+# E.164 hashing: the four forms of one Berlin number share one hash, the documented
+# definition left(sha256('+49301234567'), 16)
+query TTI
+SELECT f, pii_mask_value(f, 'PHONE', 'hash'),
+       pii_mask_value(f, 'PHONE', 'hash') = left(sha256('+49301234567'), 16)
+FROM (VALUES ('030 1234567'), ('+49 30 1234567'), ('0049 30 1234567'), ('+49 (0)30 1234567')) t(f);
+----
+030 1234567	74bd805bcc47f860	true
++49 30 1234567	74bd805bcc47f860	true
+0049 30 1234567	74bd805bcc47f860	true
++49 (0)30 1234567	74bd805bcc47f860	true
+
+# pii_mask hashes a detected PHONE match the same way
+query I
+SELECT count(DISTINCT pii_mask(note, 'hash'))
+FROM (VALUES ('030 1234567'), ('+49 30 1234567'), ('0049 30 1234567'), ('+49 (0)30 1234567')) t(note);
+----
+1
+
+query I
+SELECT pii_mask('Tel.: 0171 / 234 56 78', 'hash') = 'Tel.: ' || left(sha256('+491712345678'), 16);
+----
+true
+
+# A number the phone module cannot parse falls back to its digits (leading + kept)
+query I
+SELECT pii_mask_value('+999 1234 5678', 'PHONE', 'hash') = left(sha256('+99912345678'), 16);
+----
+true
+
+statement ok
+RESET anofox_tab_phonenumber_default_region;
+
+statement ok
+RESET anofox_pii_enabled_types;

@@ -116,7 +116,7 @@ SELECT key, value FROM email_config() WHERE key LIKE 'dns%';
 
 | Setting | Effect |
 |---------|--------|
-| `anofox_tab_phonenumber_default_region` | Region used by the [phone functions](../api/03-phone.md) when the `region` argument is `NULL`. Must be one of the 21 supported region codes, else `SET` raises an error (a per-call `region` argument with an unsupported code instead makes only that row invalid, reason `unsupported_region`); case-insensitive, surrounding spaces are ignored and `UK` is stored as `GB`. Read when a query is bound. |
+| `anofox_tab_phonenumber_default_region` | Region used by the [phone functions](../api/03-phone.md) when the `region` argument is `NULL`. Must be one of the 21 supported region codes, else `SET` raises an error (a per-call `region` argument with an unsupported code instead makes only that row invalid, reason `unsupported_region`); case-insensitive, surrounding spaces are ignored and `UK` is stored as `GB`. Read when a query is bound. The PII `hash` strategy also uses it: a detected national phone number is hashed in its E.164 form for this region (see [Hashing](../api/06-pii.md#hashing)). |
 
 ## Postal
 
