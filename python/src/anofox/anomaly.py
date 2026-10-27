@@ -341,21 +341,36 @@ def _check_has_values(conn: Any, table_or_df: Any, table_name: str, columns: Seq
     """
     Raise ValueError for a DataFrame column that holds no value at all.
 
-    A pandas/polars column of only ``None`` has no type, so DuckDB copies it
-    as type ``NULL`` and the extension reports "must be numeric, got NULL",
-    which hides the actual problem. Table names are passed through unchanged.
+    A pandas/polars column of only ``None`` has no type: DuckDB copies it as
+    type ``NULL`` (2.0) or as an arbitrary type (1.5), and the extension then
+    reports a type error that hides the actual problem. The DataFrame itself is
+    inspected, so the check is the same on every DuckDB version. A typed float
+    column of only NaN is not affected: it is analysed like SQL does (an empty
+    summary). Table names are passed through unchanged.
     """
     if isinstance(table_or_df, str):
         return
-    wanted = {name.strip() for name in columns}
-    native = getattr(conn, "native", conn)
-    rows = native.execute(f"DESCRIBE {quote_ident(table_name)}").fetchall()
-    for name, column_type, *_ in rows:
-        if name in wanted and column_type.strip('"') == "NULL":
+    for name in (c.strip() for c in columns):
+        if name not in table_or_df.columns:
+            continue
+        series = table_or_df[name]
+        if _is_untyped_all_missing(series):
             raise ValueError(
                 f"column {name!r} has no non-null values; the anomaly detectors need "
                 "at least one number in it"
             )
+
+
+def _is_untyped_all_missing(series: Any) -> bool:
+    """True for a pandas/polars column without a numeric type that holds only missing values."""
+    if len(series) == 0:
+        return False
+    module = type(series).__module__
+    if module.startswith("polars"):
+        import polars as pl
+        return series.dtype == pl.Null or (not series.dtype.is_numeric() and series.null_count() == len(series))
+    # pandas: an object column of only None/NaN (a float column of only NaN keeps its type)
+    return series.dtype == object and bool(series.isna().all())
 
 
 _OUTPUT_MODES = {
