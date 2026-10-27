@@ -1,0 +1,54 @@
+# name: test/sql/anofox_email_trim.test
+# description: email_is_valid and email_validate ignore whitespace around the address (spaces,
+#              tabs, line breaks from a pasted or exported column), like vat_is_valid; whitespace
+#              inside the address still makes it invalid. Network-free.
+# group: [anofox_tabular]
+
+require anofox_tabular
+
+statement ok
+LOAD anofox_tabular;
+
+statement ok
+SET anofox_tab_trace_level='warn';
+
+# Addresses as they arrive from a web form and a spreadsheet export
+statement ok
+CREATE TABLE signups AS SELECT * FROM (VALUES
+    (1, 'anna.schmidt@example.com'),
+    (2, ' Anna.Schmidt@Example.com '),
+    (3, chr(9) || 'tom@example.co.uk'),
+    (4, 'claire@exemple.fr' || chr(13) || chr(10)),
+    (5, '   luca@example.ch' || chr(10)),
+    (6, ' max muster@web.de '),
+    (7, '   '),
+    (8, ''),
+    (9, ' not-an-email ')
+) t(id, email);
+
+query ITTT
+SELECT id, email_is_valid(email), (email_validate(email)).valid, (email_validate(email)).reason
+FROM signups ORDER BY id;
+----
+1	true	true	NULL
+2	true	true	NULL
+3	true	true	NULL
+4	true	true	NULL
+5	true	true	NULL
+6	false	false	invalid_format
+7	false	false	invalid_format
+8	false	false	invalid_format
+9	false	false	invalid_format
+
+# The dns stage sees the trimmed domain: a reserved domain is still recognised (no lookup)
+query TTT
+SELECT (r).valid, (r).stage, (r).reason
+FROM (SELECT email_validate(' max@localhost ', 'dns') AS r);
+----
+false	dns	dns_reserved_domain
+
+# The length limit applies to the trimmed address: 64 characters in the local part plus spaces
+query T
+SELECT email_is_valid('  ' || repeat('a', 64) || '@web.de  ');
+----
+true

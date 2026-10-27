@@ -303,11 +303,26 @@ EmailValidationResult ValidateRegex(std::string_view email, const std::regex &re
 	return result;
 }
 
+//! Removes the whitespace (spaces, tabs, line breaks) that pasted or exported
+//! addresses often carry around them; whitespace inside the address is kept, so
+//! it still fails the syntax check.
+std::string_view TrimEmailWhitespace(std::string_view email) {
+	constexpr std::string_view WHITESPACE = " \t\r\n\v\f";
+	const auto first = email.find_first_not_of(WHITESPACE);
+	if (first == std::string_view::npos) {
+		return std::string_view();
+	}
+	const auto last = email.find_last_not_of(WHITESPACE);
+	return email.substr(first, last - first + 1);
+}
+
 //! Validates one email address. `normalized_mode` must already be normalized via
 //! NormalizeValidationMode and `regex` is the compiled pattern; both are hoisted
 //! out of the per-chunk row loops so the hot regex path does no per-row setup.
-EmailValidationResult ValidateEmailAddress(std::string_view email, const std::string &normalized_mode,
+EmailValidationResult ValidateEmailAddress(std::string_view raw_email, const std::string &normalized_mode,
                                            const std::regex &regex) {
+	// Every stage (regex, DNS, SMTP) sees the address without surrounding whitespace
+	const auto email = TrimEmailWhitespace(raw_email);
 	// Trace message construction is guarded so disabled tracing costs nothing per row.
 	if (AnofoxTraceConfig::Get().ShouldLog(AnofoxLogLevel::Debug)) {
 		EmailTrace(AnofoxLogLevel::Debug,

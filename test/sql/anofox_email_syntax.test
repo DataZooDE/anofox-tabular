@@ -36,7 +36,7 @@ CREATE TABLE customers AS SELECT * FROM (VALUES
     (12, 'max@web.123'),
     (13, 'max@web..de'),
     (14, 'max@web.de.'),
-    (15, ' max@web.de'),
+    (15, ' max@web.de'),                -- surrounding whitespace is ignored
     (16, 'max @web.de'),
     (17, 'max@web,de'),
     (18, 'max@@web.de'),
@@ -72,7 +72,7 @@ FROM customers ORDER BY id;
 12	11	false	invalid_format
 13	11	false	invalid_format
 14	11	false	invalid_format
-15	11	false	invalid_format
+15	11	true	NULL
 16	11	false	invalid_format
 17	10	false	invalid_format
 18	11	false	invalid_format

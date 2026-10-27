@@ -46,12 +46,15 @@ The default pattern accepts what mail systems accept in practice:
   address fails with reason `invalid_length`. The length check runs before the pattern, also
   for a custom `anofox_tab_email_regex_pattern`.
 
-The check does not trim: `' max@web.de'` is invalid. Clean the column first, e.g.
-`email_is_valid(lower(trim(email)))`.
+Whitespace around the address (spaces, tabs, line breaks) is ignored in every mode, as
+`vat_is_valid` ignores it around a VAT number: `' max@web.de '` is valid, and the `dns` and
+`smtp` stages use the trimmed address. Whitespace inside the address (`'max muster@web.de'`)
+still makes it invalid. The functions return no cleaned address; store `trim(email)` (and
+`lower(...)` if you want one spelling) yourself.
 
 ```sql
 SELECT address, email_is_valid(address) AS valid, (email_validate(address)).reason AS reason
-FROM (VALUES ('max.mustermann@web.de'), ('max+news@web.de'), ('max..muster@web.de'),
+FROM (VALUES ('max.mustermann@web.de'), (' Max.Mustermann@Web.de '), ('max+news@web.de'), ('max..muster@web.de'),
              ('max@-web.de'), ('max@web.123'), ('"max muster"@web.de'),
              (repeat('a', 65) || '@web.de')) t(address);
 ```
@@ -62,6 +65,7 @@ FROM (VALUES ('max.mustermann@web.de'), ('max+news@web.de'), ('max..muster@web.d
 │                                 varchar                                  │ boolean │    varchar     │
 ├──────────────────────────────────────────────────────────────────────────┼─────────┼────────────────┤
 │ max.mustermann@web.de                                                    │ true    │ NULL           │
+│  Max.Mustermann@Web.de                                                   │ true    │ NULL           │
 │ max+news@web.de                                                          │ true    │ NULL           │
 │ max..muster@web.de                                                       │ false   │ invalid_format │
 │ max@-web.de                                                              │ false   │ invalid_format │
