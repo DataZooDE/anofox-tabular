@@ -4,6 +4,7 @@ Tests for _loader.py — no extension binary required.
 
 import gzip
 import hashlib
+import os
 import sys
 from pathlib import Path
 from unittest.mock import patch
@@ -331,3 +332,173 @@ class TestIntegrityHelpers:
     def test_verify_sha256_rejects_mismatch(self):
         with pytest.raises(RuntimeError, match="SHA256 mismatch"):
             _verify_sha256(b"payload", "0" * 64)
+
+
+# ---------------------------------------------------------------------------
+# load_into: DuckDB's own community install first, then the S3 download
+# ---------------------------------------------------------------------------
+
+class _FakeResult:
+    def __init__(self, rows):
+        self._rows = rows
+
+    def fetchone(self):
+        return self._rows[0] if self._rows else None
+
+    def fetchall(self):
+        return list(self._rows)
+
+
+class _FakeConnection:
+    """Records the SQL a loader runs; statements matching a key in *fail* raise."""
+
+    def __init__(self, unsigned=False, fail=(), install_path="/duckdb/ext/anofox_tabular.duckdb_extension"):
+        self.statements: list[str] = []
+        self.closed = False
+        self._unsigned = unsigned
+        self._fail = fail
+        self._install_path = install_path
+
+    def execute(self, query, parameters=None):
+        self.statements.append(query)
+        for fragment in self._fail:
+            if fragment in query:
+                raise RuntimeError(f"fake failure: {query}")
+        if "current_setting('allow_unsigned_extensions')" in query:
+            return _FakeResult([(self._unsigned,)])
+        if "install_path" in query:
+            return _FakeResult([(self._install_path,)])
+        return _FakeResult([])
+
+    def close(self):
+        self.closed = True
+
+
+def _loader(tmp_path, **kwargs):
+    kwargs.setdefault("duckdb_version", "2.0.0")
+    loader = AnofoxLoader(**kwargs)
+    loader._arch = "linux_amd64"
+    return loader
+
+
+class TestLoadInto:
+    def test_local_path_wins_and_skips_every_repository(self, tmp_path):
+        ext_file = tmp_path / "it's.duckdb_extension"
+        ext_file.write_bytes(b"fake")
+        conn = _FakeConnection()
+        loader = _loader(tmp_path)
+        with patch.object(AnofoxLoader, "_download_extension", side_effect=AssertionError("no download")):
+            source = loader.load_into(conn, local_path=str(ext_file))
+        assert source == "local"
+        assert conn.statements == [f"LOAD '{str(ext_file.resolve()).replace(chr(39), chr(39) * 2)}'"]
+
+    def test_community_install_is_tried_first(self, tmp_path):
+        conn = _FakeConnection(unsigned=False)
+        loader = _loader(tmp_path)
+        with patch.object(AnofoxLoader, "_download_extension", side_effect=AssertionError("no download")):
+            source = loader.load_into(conn)
+        assert source == "community"
+        assert "INSTALL anofox_tabular FROM community" in conn.statements
+        assert conn.statements[-1] == "LOAD anofox_tabular"
+
+    def test_unsigned_connection_verifies_the_signature_on_a_separate_database(self, tmp_path):
+        """allow_unsigned_extensions would skip DuckDB's signature check, so a default-config
+        database installs and loads it first; the user connection then loads that file."""
+        conn = _FakeConnection(unsigned=True)
+        verifier = _FakeConnection(install_path="/home/u/.duckdb/extensions/v2.0.0/linux_amd64/anofox_tabular.duckdb_extension")
+        loader = _loader(tmp_path)
+        with patch("anofox._loader._open_verifier_connection", return_value=verifier), \
+             patch.object(AnofoxLoader, "_download_extension", side_effect=AssertionError("no download")):
+            source = loader.load_into(conn)
+        assert source == "community"
+        assert "INSTALL anofox_tabular FROM community" in verifier.statements
+        assert "LOAD anofox_tabular" in verifier.statements
+        assert verifier.closed
+        assert not any("INSTALL" in s for s in conn.statements)
+        assert conn.statements[-1] == (
+            "LOAD '/home/u/.duckdb/extensions/v2.0.0/linux_amd64/anofox_tabular.duckdb_extension'"
+        )
+
+    def test_failed_signature_check_falls_back_to_the_download(self, tmp_path):
+        conn = _FakeConnection(unsigned=True)
+        verifier = _FakeConnection(fail=("LOAD anofox_tabular",))
+        downloaded = tmp_path / "dl.duckdb_extension"
+        loader = _loader(tmp_path)
+        with patch("anofox._loader._open_verifier_connection", return_value=verifier), \
+             patch.object(AnofoxLoader, "_download_extension", return_value=(str(downloaded), [])):
+            source = loader.load_into(conn)
+        assert source == "download"
+        assert verifier.closed
+        assert conn.statements[-1] == f"LOAD '{downloaded}'"
+
+    @pytest.mark.parametrize("failing", ["INSTALL anofox_tabular", "LOAD anofox_tabular"])
+    def test_community_failure_falls_back_to_the_verified_download(self, tmp_path, failing):
+        """Offline, no build for this platform/version, or a load error: use get.erpl.io."""
+        conn = _FakeConnection(fail=(failing,))
+        downloaded = tmp_path / "dl.duckdb_extension"
+        loader = _loader(tmp_path)
+        with patch.object(AnofoxLoader, "_download_extension", return_value=(str(downloaded), [])) as dl:
+            source = loader.load_into(conn)
+        dl.assert_called_once()
+        assert source == "download"
+        assert conn.statements[-1] == f"LOAD '{downloaded}'"
+
+    def test_all_sources_failing_raises_one_clear_error(self, tmp_path):
+        conn = _FakeConnection(fail=("INSTALL anofox_tabular",))
+        loader = _loader(tmp_path)
+        with patch.object(
+            AnofoxLoader,
+            "_download_extension",
+            return_value=(None, ["https://get.erpl.io/v2.0.0/x.gz: HTTP Error 404"]),
+        ):
+            with pytest.raises(RuntimeError) as excinfo:
+                loader.load_into(conn)
+        message = str(excinfo.value)
+        assert "Could not find or download extension 'anofox_tabular'" in message
+        assert "ANOFOX_EXT_PATH" in message
+        assert "INSTALL anofox_tabular FROM community" in message
+        assert "HTTP Error 404" in message
+
+    def test_explicit_s3_base_url_is_tried_before_the_community_repository(self, tmp_path):
+        conn = _FakeConnection()
+        downloaded = tmp_path / "dl.duckdb_extension"
+        loader = _loader(tmp_path, s3_base_url="https://mirror.example.com")
+        with patch.object(AnofoxLoader, "_download_extension", return_value=(str(downloaded), [])):
+            source = loader.load_into(conn)
+        assert source == "download"
+        assert not any("INSTALL" in s for s in conn.statements)
+
+    def test_explicit_s3_base_url_still_falls_back_to_the_community_repository(self, tmp_path):
+        conn = _FakeConnection()
+        loader = _loader(tmp_path, s3_base_url="https://mirror.example.com")
+        with patch.object(AnofoxLoader, "_download_extension", return_value=(None, ["mirror: 404"])):
+            source = loader.load_into(conn)
+        assert source == "community"
+
+    @pytest.mark.parametrize("version", ["2.0.0rc1", "1.5.7.dev42"])
+    def test_prerelease_raises_before_any_install(self, tmp_path, version):
+        conn = _FakeConnection()
+        loader = _loader(tmp_path, duckdb_version=version)
+        with pytest.raises(UnsupportedDuckDBVersionError):
+            loader.load_into(conn)
+        assert conn.statements == []
+
+
+@pytest.mark.skipif(
+    os.environ.get("ANOFOX_TEST_NETWORK") != "1",
+    reason="network test; set ANOFOX_TEST_NETWORK=1 to run",
+)
+@pytest.mark.parametrize("allow_unsigned", [True, False])
+def test_connect_without_a_local_build_loads_from_the_network(tmp_path, monkeypatch, allow_unsigned):
+    """A fresh machine (empty HOME, no ANOFOX_EXT_PATH) gets a working extension."""
+    import anofox
+
+    monkeypatch.delenv("ANOFOX_EXT_PATH", raising=False)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    with patch("pathlib.Path.home", return_value=tmp_path):
+        conn = anofox.connect(allow_unsigned=allow_unsigned)
+    try:
+        assert conn._extension_source in {"community", "download"}
+        assert conn.execute("SELECT anofox_tab_vat_is_valid('DE111111125')").fetchall() == [(True,)]
+    finally:
+        conn.close()

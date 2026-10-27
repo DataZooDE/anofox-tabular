@@ -23,7 +23,9 @@ The package is named `anofox-tabular`. You import it as `anofox`.
 ## Connect
 
 `anofox.connect()` opens a DuckDB connection with the extension loaded. On first use it
-downloads the extension binary for your DuckDB version and platform, and caches it in
+installs the extension from the DuckDB community repository (`INSTALL anofox_tabular FROM
+community`), which DuckDB caches in `~/.duckdb/extensions/`. If that fails, it downloads the
+binary for your DuckDB version and platform from `https://get.erpl.io` and caches it in
 `~/.anofox/extensions/`. To use a binary you built yourself, pass `extension_path=` or set the
 environment variable `ANOFOX_EXT_PATH`.
 

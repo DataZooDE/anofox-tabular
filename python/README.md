@@ -215,15 +215,27 @@ The `anofox_conn` session-scoped fixture is provided automatically. Tests skip i
 
 ## Extension resolution
 
-The package resolves the extension binary in this order:
+The package resolves the extension in this order:
 
 1. `extension_path` argument to `connect()` (path to a local binary)
 2. `ANOFOX_EXT_PATH` environment variable
-3. Cached binary in `~/.anofox/extensions/<duckdb version>/<platform>/`
-4. Download from the DuckDB community registry, then the S3 mirror
+3. DuckDB's own install: `INSTALL anofox_tabular FROM community` and
+   `LOAD anofox_tabular`. DuckDB picks the build for its version and platform,
+   caches it in `~/.duckdb/extensions/` and checks its signature. With
+   `allow_unsigned=True` (the default) DuckDB would skip that check, so the
+   install and a signature-checked load run first on a separate in-memory
+   database, and the connection then loads the checked file.
+4. Cached binary in `~/.anofox/extensions/<duckdb version>/<platform>/`
+5. Download from the DuckDB community registry, then the S3 mirror
    (`https://get.erpl.io`), both laid out as
    `<base>/v<duckdb version>/<platform>/anofox_tabular.duckdb_extension.gz`
    (`duckdb` 1.5.6 downloads from `v1.5.6/`, `duckdb` 2.0.0 from `v2.0.0/`)
+
+Step 3 fails when there is no network, no community build for this DuckDB
+version and platform, or the build does not load; then steps 4 and 5 run. A
+non-default `s3_base_url` is an explicit choice of repository: steps 4 and 5
+then run before step 3. If no source works, `connect()` raises a
+`RuntimeError` that lists the error of each source.
 
 Downloads exist only for DuckDB releases. With a pre-release, development or
 post-release `duckdb` package (`2.0.0rc1`, `1.5.7.dev42`, `1.5.6.post1`)
@@ -233,10 +245,11 @@ before any download is attempted; install a released `duckdb`, or set
 The package declares `duckdb>=1.0.0` without an upper bound: the extension is
 published for each supported DuckDB release line (currently 1.5.x and 2.0).
 
-Downloads are verified against a `.sha256` sidecar published next to the
-archive. The S3 mirror publishes sidecars for every build; the community
-registry does not, so by default downloads come from the mirror. Set
-`ANOFOX_ALLOW_INSECURE_DOWNLOAD=1` to accept archives without a sidecar.
+Downloads in step 5 are verified against a `.sha256` sidecar published next
+to the archive. The S3 mirror publishes sidecars for every build; the
+community registry does not, so by default these downloads come from the
+mirror (step 3 needs no sidecar). Set `ANOFOX_ALLOW_INSECURE_DOWNLOAD=1` to
+accept archives without a sidecar.
 
 ## Development
 

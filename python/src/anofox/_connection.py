@@ -68,9 +68,12 @@ class AnofoxConnection:
             s3_base_url=s3_base_url,
             duckdb_version=duckdb_version,
         )
-        resolved_path = loader.ensure_extension(local_path=extension_path)
-        escaped_path = str(resolved_path).replace("'", "''")
-        self._conn.execute(f"LOAD '{escaped_path}'")
+        try:
+            # "local", "community" or "download": where the extension came from.
+            self._extension_source = loader.load_into(self._conn, local_path=extension_path)
+        except BaseException:
+            self._conn.close()
+            raise
 
     # ------------------------------------------------------------------
     # Context manager

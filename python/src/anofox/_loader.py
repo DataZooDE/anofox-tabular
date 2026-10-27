@@ -16,7 +16,7 @@ import re
 import shutil
 import urllib.request
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 
 _COMMUNITY_REGISTRY_BASE = "https://community-extensions.duckdb.org"
@@ -69,6 +69,59 @@ class AnofoxLoader:
     # Public API
     # ------------------------------------------------------------------
 
+    def load_into(self, conn: Any, local_path: Optional[str] = None) -> str:
+        """
+        Load the extension into the DuckDB connection *conn*.
+
+        Resolution order:
+        1. *local_path* (``ANOFOX_EXT_PATH`` / ``extension_path``), if the file exists
+        2. ``INSTALL <name> FROM community`` + ``LOAD``: DuckDB downloads the
+           build for its own version and platform and checks its signature
+        3. :meth:`ensure_extension` without *local_path*: the ``~/.anofox``
+           cache, else a download verified against its ``.sha256`` sidecar
+
+        A non-default *s3_base_url* is an explicit choice of repository, so
+        step 3 then runs before step 2.  A pre-, dev- or post-release
+        ``duckdb`` raises :class:`UnsupportedDuckDBVersionError` before any
+        install or download.
+
+        Returns the source that worked: ``"local"``, ``"community"`` or
+        ``"download"``.  Raises :class:`RuntimeError` listing every failed
+        source when none works.
+        """
+        if local_path and Path(local_path).is_file():
+            _load_file(conn, str(Path(local_path).resolve()))
+            return "local"
+
+        # Rejects DuckDB versions without published builds before any network use.
+        _duckdb_tag(self._duckdb_version)
+
+        errors: list[str] = []
+
+        def from_community() -> bool:
+            try:
+                self._install_from_community(conn)
+                return True
+            except Exception as exc:
+                errors.append(f"INSTALL {self._extension_name} FROM community: {exc}")
+                return False
+
+        def from_download() -> bool:
+            path, download_errors = self._download_extension()
+            errors.extend(download_errors)
+            if path is None:
+                return False
+            _load_file(conn, path)
+            return True
+
+        sources = [("community", from_community), ("download", from_download)]
+        if self._s3_base_url != _DEFAULT_S3_BASE:
+            sources.reverse()
+        for name, attempt in sources:
+            if attempt():
+                return name
+        raise RuntimeError(self._not_found_message(errors))
+
     def ensure_extension(self, local_path: Optional[str] = None) -> str:
         """
         Return an absolute path to the extension binary, downloading if needed.
@@ -84,20 +137,49 @@ class AnofoxLoader:
         3. Community registry download
         4. S3 direct download (``self._s3_base_url``)
 
+        Downloads need a ``.sha256`` sidecar unless insecure downloads are
+        allowed; the community registry publishes none.  :meth:`load_into`
+        installs community builds through DuckDB instead.
+
         Returns the resolved path as a string.
         Raises :class:`RuntimeError` if the extension cannot be found.
         """
         if local_path and Path(local_path).is_file():
             return str(Path(local_path).resolve())
+        path, errors = self._download_extension()
+        if path is None:
+            raise RuntimeError(self._not_found_message(errors))
+        return path
 
+    @property
+    def extension_name(self) -> str:
+        return self._extension_name
+
+    @property
+    def duckdb_version(self) -> str:
+        return self._duckdb_version
+
+    @property
+    def arch(self) -> str:
+        return self._arch
+
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+
+    def _download_extension(self) -> tuple[Optional[str], list[str]]:
+        """
+        Return ``(path, errors)``: the cached or freshly downloaded binary, or
+        ``None`` and one message per failed download.
+        """
         cached = self._cached_path()
         if cached.is_file():
             if self._allow_insecure_download:
-                return str(cached)
+                return str(cached), []
             checksum_path = self._cached_checksum_path()
             if checksum_path.is_file():
                 _verify_sha256(cached.read_bytes(), checksum_path.read_text().strip())
-                return str(cached)
+                return str(cached), []
             # Existing cache without a checksum is treated as untrusted.
             cached.unlink(missing_ok=True)
 
@@ -105,7 +187,6 @@ class AnofoxLoader:
         # fails here with an actionable error, before any network request.
         urls = self._candidate_urls()
 
-        # Try to download
         cached.parent.mkdir(parents=True, exist_ok=True)
         errors: list[str] = []
         for url in urls:
@@ -129,30 +210,50 @@ class AnofoxLoader:
             if expected_sha:
                 # Cache hits are verified against the *decompressed* binary.
                 self._cached_checksum_path().write_text(payload_sha)
-            return str(cached)
+            return str(cached), errors
+        return None, errors
 
-        raise RuntimeError(
+    def _install_from_community(self, conn: Any) -> None:
+        """
+        ``INSTALL <name> FROM community`` and ``LOAD`` it into *conn*.
+
+        DuckDB fetches community extensions over plain HTTP and relies on
+        their signature, which ``LOAD`` checks only while
+        ``allow_unsigned_extensions`` is off.  When *conn* allows unsigned
+        extensions, the install and a signature-checked ``LOAD`` run on a
+        separate default-config database first, and *conn* then loads the
+        verified file.
+        """
+        name = self._extension_name
+        unsigned = conn.execute(
+            "SELECT current_setting('allow_unsigned_extensions')"
+        ).fetchone()[0]
+        if not _is_truthy_env(str(unsigned)):
+            conn.execute(f"INSTALL {name} FROM community")
+            conn.execute(f"LOAD {name}")
+            return
+
+        verifier = _open_verifier_connection()
+        try:
+            verifier.execute(f"INSTALL {name} FROM community")
+            verifier.execute(f"LOAD {name}")
+            row = verifier.execute(
+                "SELECT install_path FROM duckdb_extensions() WHERE extension_name = ?",
+                [name],
+            ).fetchone()
+        finally:
+            verifier.close()
+        if not row or not row[0]:
+            raise RuntimeError(f"DuckDB reported no install path for {name}")
+        _load_file(conn, row[0])
+
+    def _not_found_message(self, errors: list[str]) -> str:
+        return (
             f"Could not find or download extension '{self._extension_name}'. "
             "Set ANOFOX_EXT_PATH to a local build path, or ensure network access. "
             "To bypass checksum enforcement, set ANOFOX_ALLOW_INSECURE_DOWNLOAD=1. "
-            f"Download errors: {'; '.join(errors)}"
+            f"Errors: {'; '.join(errors)}"
         )
-
-    @property
-    def extension_name(self) -> str:
-        return self._extension_name
-
-    @property
-    def duckdb_version(self) -> str:
-        return self._duckdb_version
-
-    @property
-    def arch(self) -> str:
-        return self._arch
-
-    # ------------------------------------------------------------------
-    # Internal helpers
-    # ------------------------------------------------------------------
 
     def _cached_path(self) -> Path:
         base = Path.home() / ".anofox" / "extensions"
@@ -189,6 +290,19 @@ class AnofoxLoader:
 # ---------------------------------------------------------------------------
 # Module-level helpers
 # ---------------------------------------------------------------------------
+
+def _load_file(conn: Any, path: str) -> None:
+    """``LOAD`` the extension binary at *path* into *conn*."""
+    escaped = path.replace("'", "''")
+    conn.execute(f"LOAD '{escaped}'")
+
+
+def _open_verifier_connection() -> Any:
+    """An in-memory database with DuckDB's default (signature-checking) config."""
+    import duckdb
+
+    return duckdb.connect(":memory:")
+
 
 def _duckdb_tag(version: str) -> str:
     """

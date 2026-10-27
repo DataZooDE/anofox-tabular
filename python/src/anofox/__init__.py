@@ -51,9 +51,15 @@ def connect(
         ``ANOFOX_EXT_PATH`` is also checked as a fallback.
     allow_unsigned:
         Pass ``allow_unsigned_extensions = true`` to DuckDB (required for
-        locally-built or community extensions).  Default: ``True``.
+        locally-built extensions).  Default: ``True``.  Community builds
+        are signature-checked either way.
     s3_base_url:
-        Override the S3 mirror base URL used for downloading.
+        Override the S3 mirror base URL used for downloading.  A
+        non-default URL is tried before the community repository.
+
+    Without a local binary the extension comes from
+    ``INSTALL anofox_tabular FROM community``, else from a checksum-verified
+    download (``~/.anofox`` cache, then ``s3_base_url``).
 
     Returns
     -------
