@@ -102,3 +102,9 @@ SELECT count(*) FROM object_log WHERE len(pii_detect(line)) > 0 OR pii_mask(line
 
 statement ok
 SET anofox_pii_enabled_types = '';
+
+# pii_status describes the full IBAN rule: registered country, its length and the checksum
+query T
+SELECT pattern_info FROM pii_status() WHERE pii_type = 'IBAN';
+----
+ISO 13616: registered country, its length and MOD-97 checksum

@@ -3558,7 +3558,7 @@ void PIIStatusFunction(ClientContext &, TableFunctionInput &input, DataChunk &ou
         {PIIType::CREDIT_CARD, "Card brand prefixes (IIN) with Luhn validation"},
         {PIIType::US_SSN, "XXX-XX-XXXX format with area validation"},
         {PIIType::IP_ADDRESS, "IPv4 and IPv6 formats"},
-        {PIIType::IBAN, "ISO 13616 with MOD-97 checksum"},
+        {PIIType::IBAN, "ISO 13616: registered country, its length and MOD-97 checksum"},
         {PIIType::DE_TAX_ID, "11-digit Steueridentifikationsnummer"},
         {PIIType::URL, "HTTP/HTTPS URLs"},
 #if HAVE_OPENVINO

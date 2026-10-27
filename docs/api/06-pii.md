@@ -892,7 +892,7 @@ SELECT pii_type, recognizer_name, pattern_info FROM pii_status() ORDER BY pii_ty
 │ DE_SVNR        │ German Social Insurance Number │ Rentenversicherungsnummer with check digit                                                │
 │ DE_TAX_ID      │ German Tax ID                  │ 11-digit Steueridentifikationsnummer                                                      │
 │ EMAIL          │ Email                          │ RFC 5322 email pattern                                                                    │
-│ IBAN           │ IBAN                           │ ISO 13616 with MOD-97 checksum                                                            │
+│ IBAN           │ IBAN                           │ ISO 13616: registered country, its length and MOD-97 checksum                             │
 │ IP_ADDRESS     │ IP Address                     │ IPv4 and IPv6 formats                                                                     │
 │ LOCATION       │ Location                       │ OpenVINO DistilBERT NER, LOC entities (cities, countries, regions)                        │
 │ MAC_ADDRESS    │ MAC Address                    │ Colon/hyphen/dot formats; bare hex needs letter+digit                                     │
