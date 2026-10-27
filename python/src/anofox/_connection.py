@@ -198,7 +198,7 @@ class AnofoxConnection:
                 output_df_type(df_or_table),
             )
 
-    def validate(self, df: Any, schema: dict) -> "ValidationResult":
+    def validate(self, df: Any, schema: dict, include_nulls: bool = False) -> "ValidationResult":
         """
         Validate a DataFrame against a schema of rules.
 
@@ -215,6 +215,12 @@ class AnofoxConnection:
             such as ``"email"``) raises :class:`TypeError`. A key (or a
             ``region_column``) that is not a column of *df* raises
             :class:`ValueError`.
+        include_nulls:
+            ``False`` (default): a missing value (``None``, ``NaN``, ``null``)
+            is skipped, as in SQL (the check functions return NULL for it)
+            and the row-wise helpers in :mod:`anofox.validate`. ``True``:
+            report each missing value as a failure, with the rule name
+            followed by ``" missing"`` (e.g. ``"email(regex) missing"``).
 
         Returns
         -------
@@ -268,13 +274,22 @@ class AnofoxConnection:
                     params,
                 ).fetchall()
                 for position, value, valid in results:
-                    if not valid:
-                        failure_rows.append({
-                            "column": col,
-                            "row_id": labels[position] if labels is not None else position,
-                            "value": value,
-                            "rule": rule_name,
-                        })
+                    if value is None:
+                        # The check returns NULL for a missing value: not a failure
+                        # unless asked for.
+                        if not include_nulls:
+                            continue
+                        rule = f"{rule_name} missing"
+                    elif valid:
+                        continue
+                    else:
+                        rule = rule_name
+                    failure_rows.append({
+                        "column": col,
+                        "row_id": labels[position] if labels is not None else position,
+                        "value": value,
+                        "rule": rule,
+                    })
 
         failures_df = _rows_to_frame(failure_rows, ["column", "row_id", "value", "rule"], df_type)
         return ValidationResult(passed=len(failure_rows) == 0, failures=failures_df)

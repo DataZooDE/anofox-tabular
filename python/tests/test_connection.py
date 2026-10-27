@@ -299,6 +299,65 @@ class TestProfileSchemas:
             conn.profile("staging.orders")
 
 
+class TestValidateNulls:
+    """conn.validate() skips missing values like SQL and the row-wise helpers;
+    include_nulls=True reports them as failures."""
+
+    @staticmethod
+    def _signups():
+        import pandas as pd
+        return pd.DataFrame({
+            "customer_id": [3001, 3002, 3003, 3004],
+            "email": ["lena.fischer@example.de", None, "not-an-email", "tom.berg@example.com"],
+            "phone": ["+49 89 12345678", "+49 40 87654321", None, "+49 30 901820"],
+        }, index=[100, 101, 102, 103])
+
+    def test_nulls_are_skipped_by_default(self, conn):
+        from anofox.validate import EmailRule, PhoneRule
+        result = conn.validate(self._signups(), {"email": EmailRule(), "phone": PhoneRule(region="DE")})
+        assert result.passed is False
+        assert result.failures.to_dict("records") == [
+            {"column": "email", "row_id": 102, "value": "not-an-email", "rule": "email(regex)"},
+        ]
+
+    def test_all_valid_with_nulls_passes(self, conn):
+        from anofox.validate import EmailRule
+        df = self._signups().drop(index=102)
+        result = conn.validate(df, {"email": EmailRule()})
+        assert result.passed is True
+        assert len(result.failures) == 0
+
+    def test_include_nulls_reports_missing_values(self, conn):
+        from anofox.validate import EmailRule, PhoneRule
+        result = conn.validate(self._signups(), {"email": EmailRule(), "phone": PhoneRule(region="DE")},
+                               include_nulls=True)
+        records = result.failures.to_dict("records")
+        assert [(r["column"], r["row_id"], r["rule"]) for r in records] == [
+            ("email", 101, "email(regex) missing"),
+            ("email", 102, "email(regex)"),
+            ("phone", 102, "phone(DE) missing"),
+        ]
+        assert records[0]["value"] is None or records[0]["value"] != records[0]["value"]
+
+    def test_include_nulls_counts_nan(self, conn):
+        import numpy as np
+        import pandas as pd
+        from anofox.validate import PhoneRule
+        df = pd.DataFrame({"phone": ["+49 89 12345678", np.nan]})
+        assert conn.validate(df, {"phone": PhoneRule(region="DE")}).passed is True
+        result = conn.validate(df, {"phone": PhoneRule(region="DE")}, include_nulls=True)
+        assert result.failures["row_id"].tolist() == [1]
+        assert result.failures["rule"].tolist() == ["phone(DE) missing"]
+
+    def test_polars_nulls(self, conn):
+        pl = pytest.importorskip("polars")
+        from anofox.validate import EmailRule
+        df = pl.from_pandas(self._signups().reset_index(drop=True))
+        assert conn.validate(df, {"email": EmailRule()}).failures["row_id"].to_list() == [2]
+        result = conn.validate(df, {"email": EmailRule()}, include_nulls=True)
+        assert result.failures["row_id"].to_list() == [1, 2]
+
+
 class TestValidateUnknownColumn:
     """A schema key or region_column that is not a column of the DataFrame raises
     the same ValueError as the row-wise validators, before anything runs."""

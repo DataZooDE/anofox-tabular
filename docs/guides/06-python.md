@@ -128,6 +128,27 @@ column  row_id value                         rule
  phone       2    12 phone(region_column=country)
 ```
 
+A missing value (`None`, `NaN`) is not a failure, as in SQL and in the row-wise helpers above.
+Pass `include_nulls=True` to report it too; its rule ends in `missing`. A schema key or
+`region_column` that is not a column of the DataFrame raises `ValueError` and lists the columns.
+
+```python
+from anofox.validate import EmailRule
+
+result = conn.validate(customers, {"email": EmailRule()})
+print(result.failures.to_string(index=False))
+result = conn.validate(customers, {"email": EmailRule()}, include_nulls=True)
+print(result.failures.to_string(index=False))
+```
+
+```text
+column  row_id              value         rule
+ email       1 bob(at)example.com email(regex)
+column  row_id              value                 rule
+ email       1 bob(at)example.com         email(regex)
+ email       3                NaN email(regex) missing
+```
+
 A pandas `object` column must hold one type of value. A column that mixes, for example, `str`
 and `int` raises `TypeError` with the column name and its types. Convert it first with
 `df["phone"] = df["phone"].astype("string")`.

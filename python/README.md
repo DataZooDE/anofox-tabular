@@ -146,14 +146,17 @@ print(result.failures)    # DataFrame: column, row_id, value, rule
 - **`conn.profile(name)`** resolves a table name like a query does: with tables of the same
   name in several schemas it profiles the one the search path finds. Pass `"schema.table"`
   for another schema; an unknown table raises `duckdb.CatalogException`.
-- **`conn.validate(df, schema)`** returns `ValidationResult(passed, failures)`. `failures` has
+- **`conn.validate(df, schema, include_nulls=False)`** returns `ValidationResult(passed, failures)`. `failures` has
   one row per failing value with the columns `column`, `row_id`, `value` and `rule`. `row_id`
   is the index label of the failing row for a pandas DataFrame and its 0-based row position
   for a polars DataFrame. Each rule is an `EmailRule(mode=...)` or a `PhoneRule` from
   `anofox.validate`; any other rule, such as the string `"email"`, raises `TypeError`.
   `PhoneRule(region="DE")` uses one region for all rows, `PhoneRule(region_column="country")`
   the region code in each row's `country` column (passing both raises `ValueError`), and
-  `PhoneRule()` the setting `anofox_tab_phonenumber_default_region`.
+  `PhoneRule()` the setting `anofox_tab_phonenumber_default_region`. A missing value (`None`,
+  `NaN`) is skipped, as in SQL; `include_nulls=True` reports it as a failure whose rule ends in
+  ` missing` (`"email(regex) missing"`). A schema key or `region_column` that is not a column
+  of the DataFrame raises `ValueError` listing the columns.
 - **`conn.quality_check(df, rules)`** supports the rules `volume`, `null_rate` and
   `distinct_count`; any other rule name raises `ValueError`.
 
