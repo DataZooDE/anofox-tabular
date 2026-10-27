@@ -1234,19 +1234,22 @@ static void OutlierTreeExecute(ClientContext &context, TableFunctionInput &data_
                     FlatVector::SetNull(output.data[base + column], i, true);
                 }
             };
-            set_finite_or_null(3, cluster_means, outlier.cluster_mean);
-            set_finite_or_null(4, cluster_sds, outlier.cluster_sd);
+            // A categorical outlier has no numeric group statistics: mean, sd,
+            // median, mad and bounds are NULL; z_score keeps its rarity score
             if (std::holds_alternative<double>(outlier.outlier_value)) {
+                set_finite_or_null(3, cluster_means, outlier.cluster_mean);
+                set_finite_or_null(4, cluster_sds, outlier.cluster_sd);
                 set_finite_or_null(5, cluster_medians, outlier.cluster_median);
                 set_finite_or_null(6, cluster_mads, outlier.cluster_mad);
+                set_finite_or_null(9, lower_bounds, outlier.lower_bound);
+                set_finite_or_null(10, upper_bounds, outlier.upper_bound);
             } else {
-                FlatVector::SetNull(output.data[base + 5], i, true);
-                FlatVector::SetNull(output.data[base + 6], i, true);
+                for (idx_t column : {3, 4, 5, 6, 9, 10}) {
+                    FlatVector::SetNull(output.data[base + column], i, true);
+                }
             }
             cluster_sizes[i] = static_cast<int64_t>(outlier.cluster_size);
             set_finite_or_null(8, z_scores, outlier.z_score);
-            set_finite_or_null(9, lower_bounds, outlier.lower_bound);
-            set_finite_or_null(10, upper_bounds, outlier.upper_bound);
             conditions[i] = StringVector::AddString(conditions_vec, outlier.GetConditionsJSON());
             explanations[i] = StringVector::AddString(explanation_vec, outlier.explanation);
             outlier_scores[i] = outlier.outlier_score;

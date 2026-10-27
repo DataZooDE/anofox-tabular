@@ -190,7 +190,9 @@ class TestPhoneRegionColumn:
     def test_phone_parse_per_row_region(self, conn):
         from anofox.validate import phone_parse
         out = phone_parse(conn, self._df(), column="phone", region_column="country")
-        assert [r["region"] for r in out["phone_parse"]] == ["US", "FR", None]
+        # region is the region the number was read in, also when it is invalid there
+        assert [r["region"] for r in out["phone_parse"]] == ["US", "FR", "FR"]
+        assert [r["valid"] for r in out["phone_parse"]] == [True, True, False]
 
     def test_polars_per_row_region(self, conn):
         pl = pytest.importorskip("polars")

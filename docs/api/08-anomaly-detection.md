@@ -606,14 +606,14 @@ statistics.
 | `column_name` | `VARCHAR` | Column with the outlier |
 | `outlier_value` | `VARCHAR` | The value as text |
 | `outlier_value_num` | `DOUBLE` | The value as a number for numeric columns, `NULL` for categorical ones |
-| `cluster_mean` | `DOUBLE` | Mean of the group's finite values (descriptive; not used for scoring) |
-| `cluster_sd` | `DOUBLE` | Standard deviation of the group's finite values (descriptive; not used for scoring) |
+| `cluster_mean` | `DOUBLE` | Mean of the group's finite values (descriptive; not used for scoring). `NULL` for categorical columns |
+| `cluster_sd` | `DOUBLE` | Standard deviation of the group's finite values (descriptive; not used for scoring). `NULL` for categorical columns |
 | `cluster_median` | `DOUBLE` | Median of the group's finite values; the centre of `z_score` and the bounds. `NULL` for categorical columns |
 | `cluster_mad` | `DOUBLE` | The spread `z_score` and the bounds are scaled by: MAD × 1.4826, or the fallback described in [How a numeric value is scored](#how-a-numeric-value-is-scored). `NULL` for categorical columns |
 | `cluster_size` | `BIGINT` | Rows in the group with a finite value |
 | `z_score` | `DOUBLE` | `(value - cluster_median) / cluster_mad`; `NULL` for an infinite value |
-| `lower_bound` | `DOUBLE` | Lower end of the group's normal range, `cluster_median - z_norm × cluster_mad` |
-| `upper_bound` | `DOUBLE` | Upper end of the group's normal range, `cluster_median + z_norm × cluster_mad` |
+| `lower_bound` | `DOUBLE` | Lower end of the group's normal range, `cluster_median - z_norm × cluster_mad`. `NULL` for categorical columns |
+| `upper_bound` | `DOUBLE` | Upper end of the group's normal range, `cluster_median + z_norm × cluster_mad`. `NULL` for categorical columns |
 | `conditions` | `VARCHAR` | JSON array of the conditions that define the group |
 | `explanation` | `VARCHAR` | The outlier in one sentence |
 | `outlier_score` | `DOUBLE` | Rarity score; lower is more anomalous |

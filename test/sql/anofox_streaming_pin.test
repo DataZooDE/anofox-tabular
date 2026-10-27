@@ -158,7 +158,7 @@ SELECT row_id, column_name, outlier_value, ROUND(cluster_mean, 4), ROUND(cluster
 FROM anofox_tab_outlier_tree('pin_ot', 'grp,val', 'outliers')
 ORDER BY row_id, column_name;
 ----
-1500	grp	A	0.0	0.0	1365	36.9459	0.0	0.0	[{"column":"val","type":"numeric","operator":">","value":500}]	Value A for column 'grp' is unusually rare (cluster size: 1365) when val > 500	0.0007
+1500	grp	A	NULL	NULL	1365	36.9459	NULL	NULL	[{"column":"val","type":"numeric","operator":">","value":500}]	Value A for column 'grp' is unusually rare (cluster size: 1365) when val > 500	0.0007
 1500	val	100000	169.5987	2579.3302	1500	33689.8017	95.0829	110.9171	[{"column":"grp","type":"categorical","operator":"not_in","values":["B"]}]	Value 100000 for column 'val' is unusually high (median: 103.00, MAD: 2.97, z-score: 33689.80) when grp NOT IN ('B')	0.0
 
 # ===--------------------------------------------------------------------===
