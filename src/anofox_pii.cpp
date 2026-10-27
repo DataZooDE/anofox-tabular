@@ -4685,16 +4685,16 @@ void PIIConfigFunction(ClientContext &, TableFunctionInput &input, DataChunk &ou
     std::vector<ConfigOption> options = {
         {"anofox_pii_min_confidence",
          std::to_string(config.min_confidence),
-         "Minimum confidence threshold for NER-based detection (0.0 - 1.0)"},
+         "Minimum confidence of a PII match (0.0 - 1.0); applies to every match: pattern matches have 1.0, " "checksum failures 0.6, dictionary names 0.5, NER matches the model score"},
         {"anofox_pii_default_mask_strategy",
          MaskStrategyToString(config.default_mask_strategy),
          "Default masking strategy (REDACT, HASH, PARTIAL, ASTERISK; NONE is rejected)"},
         {"anofox_pii_enabled_types",
          enabled_types_str.empty() ? "(all types except POSTAL_CODE)" : enabled_types_str,
-         "Comma-separated list of PII types to detect (empty = all types except POSTAL_CODE)"},
+         "Comma-separated list of PII types to detect (empty = all types except POSTAL_CODE; DEFAULT stands " "for that set)"},
         {"anofox_pii_deep_validation",
          config.deep_validation ? "true" : "false",
-         "Enable deep validation using libphonenumber for phone numbers"},
+         "Validate detected phone numbers with the built-in phone module and drop those whose length is " "impossible for their country"},
         {"anofox_pii_require_checksum",
          config.require_checksum ? "true" : "false",
          "Drop IBAN and credit card matches that fail their checksum (false: report them at confidence 0.6)"}
@@ -4733,7 +4733,7 @@ void RegisterPIIOptions(ExtensionLoader &loader) {
     auto &config = DBConfig::GetConfig(loader.GetDatabaseInstance());
 
     config.AddExtensionOption("anofox_pii_min_confidence",
-                              "Minimum confidence threshold for NER-based PII detection (0.0 - 1.0)",
+                              "Minimum confidence of a PII match (0.0 - 1.0); applies to every match: pattern matches have 1.0, " "checksum failures 0.6, dictionary names 0.5, NER matches the model score",
                               LogicalTypeId::DOUBLE,
                               Value::DOUBLE(PIIConfig::DEFAULT_MIN_CONFIDENCE),
                               SetPIIMinConfidenceOption);
@@ -4745,13 +4745,13 @@ void RegisterPIIOptions(ExtensionLoader &loader) {
                               SetPIIDefaultMaskStrategyOption);
 
     config.AddExtensionOption("anofox_pii_enabled_types",
-                              "Comma-separated list of PII types to detect (empty = all types except POSTAL_CODE)",
+                              "Comma-separated list of PII types to detect (empty = all types except POSTAL_CODE; DEFAULT stands " "for that set)",
                               LogicalTypeId::VARCHAR,
                               Value(""),
                               SetPIIEnabledTypesOption);
 
     config.AddExtensionOption("anofox_pii_deep_validation",
-                              "Enable deep validation using libphonenumber for phone numbers (default: false)",
+                              "Validate detected phone numbers with the built-in phone module and drop those whose length is " "impossible for their country (default: false)",
                               LogicalTypeId::BOOLEAN,
                               Value::BOOLEAN(false),
                               SetPIIDeepValidationOption);

@@ -1385,7 +1385,8 @@ void RegisterNEROptions(ExtensionLoader &loader) {
 
     config.AddExtensionOption("anofox_ner_auto_download",
                               "Download the NER model (~66 MB) from Hugging Face on first use when it is not "
-                              "on disk; false skips NER-based detection instead (offline use)",
+                              "on disk; false skips NER-based detection instead (offline use: NAME falls back to "
+                              "a name dictionary, ORGANIZATION, LOCATION and MISC are not detected)",
                               LogicalTypeId::BOOLEAN,
                               Value::BOOLEAN(true),
                               SetNERAutoDownloadOption);
