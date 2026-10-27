@@ -1001,13 +1001,12 @@ static CheckBranch BuildCheckBranch(ClientContext &context, const CheckSpec &spe
 		string col = QuoteSqlIdentifier(spec.column_name);
 		// Everything in UTC TIMESTAMPs: subtracting a TIMESTAMP from a TIMESTAMP WITH TIME ZONE
 		// needs ICU, and with ICU loaded a TIMESTAMPTZ->TIMESTAMP cast follows the session time
-		// zone. A TIMESTAMPTZ column goes through its epoch; other columns are taken as UTC.
+		// zone. A TIMESTAMPTZ column goes through its epoch (UtcTimestampSQL); other columns are taken as UTC.
 		string ref_time = spec.reference_time_sql.empty() ? string(UTC_NOW_SQL) : spec.reference_time_sql;
 		auto probe = BindProbe(context, "SELECT " + col + " FROM " + table_ref + " LIMIT 0");
-		string ts_expr = probe.types[0].id() == LogicalTypeId::TIMESTAMP_TZ
-		                     ? "make_timestamp(epoch_us(" + col + "))"
-		                     // TRY_CAST: an unparseable text value must not abort the whole suite
-		                     : "TRY_CAST(" + col + " AS TIMESTAMP)";
+		// try_parse: an unparseable text value must not abort the whole suite; text with a UTC
+		// offset is the instant it names
+		string ts_expr = UtcTimestampSQL(col, probe.types[0], true);
 		value_expr = "CAST(EXTRACT(EPOCH FROM (" + ref_time + " - MAX(" + ts_expr + "))) AS DOUBLE)";
 		branch.null_value_fails = true;
 		branch.null_value_message = "No timestamp values found (table is empty or column is all NULL)";

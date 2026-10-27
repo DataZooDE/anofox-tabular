@@ -137,10 +137,12 @@ LogicalType LookupColumnType(ClientContext &context, const string &table_name, c
 // SQL expression for `column_sql` as a plain TIMESTAMP in UTC. A TIMESTAMP WITH TIME ZONE
 // column is converted through its epoch, so the result is the same with and without the ICU
 // extension and whatever the session TimeZone (a plain CAST converts to the session time
-// zone when ICU is loaded). Other types are CAST AS TIMESTAMP (read as UTC as they are).
-string UtcTimestampSQL(const string &column_sql, const LogicalType &type);
+// zone when ICU is loaded). A VARCHAR value with a UTC offset ('2026-10-29 04:00:00+02') is
+// the instant it names; text without an offset, and the other types, are read as UTC as they
+// are. `try_parse`: text that does not parse is NULL instead of a conversion error.
+string UtcTimestampSQL(const string &column_sql, const LogicalType &type, bool try_parse = false);
 // SQL expression for the UTC calendar date of `column_sql` (see UtcTimestampSQL). A VARCHAR
-// column is TRY_CAST: a value that is not a date yields NULL.
+// column is parsed with TRY semantics: a value that is not a date yields NULL.
 string UtcDateSQL(const string &column_sql, const LogicalType &type);
 // The current time as a plain UTC TIMESTAMP, independent of ICU and the session TimeZone.
 string UtcNowSQL();

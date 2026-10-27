@@ -58,7 +58,8 @@ NaN or `±Inf` values, with the message
 Timestamps are compared in UTC. A `TIMESTAMP WITH TIME ZONE` column is read as its UTC instant
 (in `freshness`) and bucketed by its UTC date (in the time-aware checks), whatever the session
 `TimeZone` and with or without the ICU extension. A plain `TIMESTAMP` column is taken as UTC as
-it is.
+it is. Text with a UTC offset (`'2026-10-29 04:00:00+02'`, `'2026-10-29T02:00:00Z'`) is the
+instant it names; text without an offset is taken as UTC.
 
 ## Functions
 
@@ -290,7 +291,9 @@ also when the ICU extension is loaded and the session `TimeZone` is set. A
 `TIMESTAMP WITH TIME ZONE` column is compared as its UTC instant, and `metric_value` is then the
 newest value in UTC, the same in every session time zone. A plain `TIMESTAMP` column and
 `reference_time` are taken as UTC as they are. A `DATE` column is compared as midnight of that
-day. The check does not need ICU.
+day. A text column with a UTC offset (`'2026-10-29 04:00:00+02'`) is read as the instant it
+names, text without an offset as UTC; text that is no timestamp is a conversion error. The
+check does not need ICU.
 
 A newest timestamp after `reference_time` (clock skew, or timestamps loaded in the wrong time
 zone) still passes, but `age_seconds` is negative and the message warns about it:
@@ -708,7 +711,8 @@ arguments before it at their defaults). Passing it both ways is an error.
 
 The date column may be a `DATE`, a `TIMESTAMP` or a `TIMESTAMP WITH TIME ZONE` (bucketed by
 its UTC date), or text holding dates (`'2026-10-21'`); a text value that is no date, such as
-`'n/a'`, counts as no date and its row is left out.
+`'n/a'`, counts as no date and its row is left out. A text timestamp with a UTC offset counts on
+its UTC date (`'2026-10-25 22:30:00-05'` on 2026-10-26); text without an offset is a UTC date.
 
 All three also accept the named parameters `start_date := DATE` and `end_date := DATE`. With
 them, the check evaluates every day of the inclusive range and returns one row per date,

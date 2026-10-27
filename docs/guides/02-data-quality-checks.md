@@ -386,6 +386,8 @@ FROM rel_count_change('orders', 'order_date');
 
 The days are calendar days in UTC. A `TIMESTAMP WITH TIME ZONE` column is bucketed by its UTC
 date, whatever the session `TimeZone`; a plain `TIMESTAMP` or `DATE` column is used as it is.
+Text with a UTC offset (`'2026-03-14 23:30:00-05'`) counts on its UTC date (2026-03-15); text
+without an offset is a UTC date.
 
 The named parameters `start_date` and `end_date` check every day of a range and return one
 row per day:

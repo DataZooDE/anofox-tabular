@@ -427,12 +427,27 @@ LogicalType LookupColumnType(ClientContext &context, const string &table_name, c
 	return column ? column->type : LogicalType(LogicalTypeId::INVALID);
 }
 
-string UtcTimestampSQL(const string &column_sql, const LogicalType &type) {
+// Whether the text `column_sql` ends in a UTC offset ('Z', '+02', '+02:00', '-0530') or a
+// time zone name after a time of day. A bare date ('2026-10-26') ends in digits after '-' too,
+// hence the time of day in front.
+static string TextHasZoneSQL(const string &column_sql) {
+	return "regexp_matches(" + column_sql +
+	       ", '\\d:\\d{2}(:\\d{2}(\\.\\d*)?)?\\s*([Zz]|[+-]\\d{1,2}(:?\\d{2})?|[A-Za-z][A-Za-z0-9_/+-]*)\\s*$')";
+}
+
+string UtcTimestampSQL(const string &column_sql, const LogicalType &type, bool try_parse) {
 	if (type.id() == LogicalTypeId::TIMESTAMP_TZ) {
 		// epoch_us of the instant is time zone independent; make_timestamp(BIGINT) reads it as UTC
 		return "make_timestamp(epoch_us(" + column_sql + "))";
 	}
-	return "CAST(" + column_sql + " AS TIMESTAMP)";
+	const string cast = try_parse ? "TRY_CAST(" : "CAST(";
+	if (type.id() == LogicalTypeId::VARCHAR) {
+		// Text with an offset is the instant it names (a CAST AS TIMESTAMP drops the offset);
+		// text without one is UTC (a cast AS TIMESTAMPTZ would read it in the session time zone)
+		return "CASE WHEN " + TextHasZoneSQL(column_sql) + " THEN make_timestamp(epoch_us(" + cast + column_sql +
+		       " AS TIMESTAMPTZ))) ELSE " + cast + column_sql + " AS TIMESTAMP) END";
+	}
+	return cast + column_sql + " AS TIMESTAMP)";
 }
 
 string UtcDateSQL(const string &column_sql, const LogicalType &type) {
@@ -440,8 +455,10 @@ string UtcDateSQL(const string &column_sql, const LogicalType &type) {
 		return "CAST(" + UtcTimestampSQL(column_sql, type) + " AS DATE)";
 	}
 	if (type.id() == LogicalTypeId::VARCHAR) {
-		// a text value that is no date ('n/a') is NULL instead of a conversion error
-		return "TRY_CAST(" + column_sql + " AS DATE)";
+		// a text value that is no date ('n/a') is NULL instead of a conversion error; a
+		// timestamp with an offset counts on its UTC date
+		return "CASE WHEN " + TextHasZoneSQL(column_sql) + " THEN CAST(" + UtcTimestampSQL(column_sql, type, true) +
+		       " AS DATE) ELSE TRY_CAST(" + column_sql + " AS DATE) END";
 	}
 	return "CAST(" + column_sql + " AS DATE)";
 }
