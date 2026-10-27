@@ -6,6 +6,9 @@
 #              not VARCHAR (cast to VARCHAR).
 # group: [anofox_tabular]
 
+# Scan statuses are compared without the ' (NER unavailable)' suffix, which builds without
+# the NER model (e.g. macOS ARM, no OpenVINO) append; these tests do not depend on NER.
+
 require anofox_tabular
 
 require json
@@ -88,7 +91,7 @@ INSERT INTO cr_crm VALUES
 
 # Default (no filter): columns that hold text: VARCHAR, JSON and nested types with a VARCHAR inside
 query TTI
-SELECT column_name, pii_type, match_count FROM pii_scan_table('cr_crm') WHERE status = 'scanned' ORDER BY column_name
+SELECT column_name, pii_type, match_count FROM pii_scan_table('cr_crm') WHERE regexp_replace(status, ' \(NER unavailable\)$', '') = 'scanned' ORDER BY column_name
 ----
 Email	EMAIL	1
 doc	EMAIL	1

@@ -2,6 +2,9 @@
 # description: Extensive PII detection and masking tests - hundreds of test cases
 # group: [anofox_tabular]
 
+# Scan statuses are compared without the ' (NER unavailable)' suffix, which builds without
+# the NER model (e.g. macOS ARM, no OpenVINO) append; these tests do not depend on NER.
+
 require anofox_tabular
 
 statement ok
@@ -1601,7 +1604,7 @@ SELECT match_count FROM pii_scan_table('extensive_pii_test') WHERE column_name =
 
 # Clean text column - no PII: one no_match row, no PII type
 query TTIIT
-SELECT column_name, pii_type, match_count, values_scanned, status FROM pii_scan_table('extensive_pii_test') WHERE column_name = 'clean_text';
+SELECT column_name, pii_type, match_count, values_scanned, regexp_replace(status, ' \(NER unavailable\)$', '') AS status FROM pii_scan_table('extensive_pii_test') WHERE column_name = 'clean_text';
 ----
 clean_text	NULL	0	5	no_match
 

@@ -2,6 +2,9 @@
 # description: pii_scan_table and pii_audit_table report table errors as plain messages: no nested JSON, no internal query_table SQL, and a clear message for TEMP tables
 # group: [anofox_tabular]
 
+# Scan statuses are compared without the ' (NER unavailable)' suffix, which builds without
+# the NER model (e.g. macOS ARM, no OpenVINO) append; these tests do not depend on NER.
+
 require anofox_tabular
 
 statement ok
@@ -44,7 +47,7 @@ statement ok
 CREATE TABLE crm_contacts AS SELECT * FROM crm_contacts_staging;
 
 query TTIT
-SELECT column_name, pii_type, match_count, status FROM pii_scan_table('crm_contacts', 'email');
+SELECT column_name, pii_type, match_count, regexp_replace(status, ' \(NER unavailable\)$', '') AS status FROM pii_scan_table('crm_contacts', 'email');
 ----
 email	EMAIL	2	scanned
 

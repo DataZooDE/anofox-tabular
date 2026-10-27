@@ -3,6 +3,9 @@
 #              an unknown mask strategy is an error instead of returning the text unmasked
 # group: [sql]
 
+# Scan statuses are compared without the ' (NER unavailable)' suffix, which builds without
+# the NER model (e.g. macOS ARM, no OpenVINO) append; these tests do not depend on NER.
+
 require anofox_tabular
 
 statement ok
@@ -19,7 +22,7 @@ CREATE VIEW pv AS SELECT id, note, n FROM pv_src;
 # --- views ---
 
 query TTIT
-SELECT column_name, pii_type, match_count, status FROM pii_scan_table('pv');
+SELECT column_name, pii_type, match_count, regexp_replace(status, ' \(NER unavailable\)$', '') AS status FROM pii_scan_table('pv');
 ----
 id	NULL	0	skipped (BIGINT)
 note	EMAIL	3	scanned

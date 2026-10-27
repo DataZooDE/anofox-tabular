@@ -4,6 +4,9 @@
 #              returns the matched text (F19)
 # group: [sql]
 
+# Scan statuses are compared without the ' (NER unavailable)' suffix, which builds without
+# the NER model (e.g. macOS ARM, no OpenVINO) append; these tests do not depend on NER.
+
 require anofox_tabular
 
 statement ok
@@ -65,7 +68,7 @@ SELECT count(DISTINCT column_name) FROM pii_scan_table('crm_contacts');
 # With a column list, exactly the named columns are reported; a named non-VARCHAR column is
 # cast and scanned
 query TTIT
-SELECT column_name, pii_type, values_scanned, status FROM pii_scan_table('crm_contacts', 'first_name, signup_date, email');
+SELECT column_name, pii_type, values_scanned, regexp_replace(status, ' \(NER unavailable\)$', '') AS status FROM pii_scan_table('crm_contacts', 'first_name, signup_date, email');
 ----
 first_name	NULL	3	no_match
 email	EMAIL	2	scanned

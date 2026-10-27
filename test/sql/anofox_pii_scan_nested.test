@@ -4,6 +4,9 @@
 #              columns without any text inside (numbers, dates, BLOB) stay skipped (F7)
 # group: [anofox_tabular]
 
+# Scan statuses are compared without the ' (NER unavailable)' suffix, which builds without
+# the NER model (e.g. macOS ARM, no OpenVINO) append; these tests do not depend on NER.
+
 require anofox_tabular
 
 statement ok
@@ -89,7 +92,7 @@ CREATE TABLE support_tickets AS SELECT
     [[1, 2], [3]] AS scores;
 
 query TTIT
-SELECT column_name, pii_type, match_count, status FROM pii_scan_table('support_tickets');
+SELECT column_name, pii_type, match_count, regexp_replace(status, ' \(NER unavailable\)$', '') AS status FROM pii_scan_table('support_tickets');
 ----
 ticket_id	NULL	0	skipped (INTEGER)
 participants	EMAIL	1	scanned
