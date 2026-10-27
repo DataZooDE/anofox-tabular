@@ -544,3 +544,47 @@ class TestFreshness:
         assert result["age_seconds"] == 79200
         assert result["metric_value"] == datetime.datetime(2026, 1, 30, 10, 0)
         assert result["threshold"] == datetime.datetime(2026, 1, 30, 8, 0)
+
+
+class TestDefineChecksDates:
+    """define_checks serialises date/datetime/Decimal params so run_checks can use them."""
+
+    @pytest.fixture(autouse=True)
+    def orders(self, conn):
+        conn.execute(
+            "CREATE OR REPLACE TABLE _dated_orders AS "
+            "SELECT DATE '2026-03-01' + (i % 10)::INTEGER AS order_date, i AS order_id "
+            "FROM range(1, 101) t(i)"
+        )
+        # A spike on the latest day: only a check pinned to an earlier date passes.
+        conn.execute(
+            "INSERT INTO _dated_orders SELECT DATE '2026-03-10', i FROM range(101, 151) t(i)"
+        )
+        yield
+        conn.execute("DROP TABLE IF EXISTS _dated_orders")
+        conn.execute("DROP TABLE IF EXISTS _dated_checks")
+
+    def test_date_param_runs_end_to_end(self, conn):
+        import datetime
+        from decimal import Decimal
+        from anofox import quality
+        quality.define_checks(conn, [{
+            "check_name": "orders_week", "check_type": "rel_count_change",
+            "table_name": "_dated_orders",
+            "params": {"date_column": "order_date", "window_days": 3,
+                       "reference_date": datetime.date(2026, 3, 8)},
+            "lower_threshold": float(Decimal("-0.5")), "upper_threshold": 0.5,
+        }, {
+            "check_name": "fresh", "check_type": "freshness", "table_name": "_dated_orders",
+            "column_name": "order_date",
+            "params": {"reference_time": datetime.datetime(2026, 3, 10, 6, 0)},
+            "upper_threshold": float(Decimal("86400")),
+        }], "_dated_checks")
+        stored = conn.execute("SELECT params FROM _dated_checks ORDER BY check_name").fetchall()
+        assert '"reference_time": "2026-03-10T06:00:00"' in stored[0][0]
+        assert '"reference_date": "2026-03-08"' in stored[1][0]
+        results = {r["check_name"]: r for r in quality.run_checks(conn, "_dated_checks")}
+        assert results["orders_week"]["status"] == "pass", results["orders_week"]["message"]
+        assert results["fresh"]["status"] == "pass", results["fresh"]["message"]
+        assert results["fresh"]["value"] == 21600.0
+

@@ -15,6 +15,7 @@ and ``message`` (DECIMAL values as float). ``_raw`` keeps the raw result row.
 
 from __future__ import annotations
 
+import datetime
 import json
 from decimal import Decimal
 from typing import Any, Optional, Union
@@ -795,7 +796,9 @@ def define_checks(conn: Any, checks: list[dict], checks_table: str = "dq_checks"
     Create (or replace) a checks table for :func:`run_checks` from a list of dicts.
 
     Each dict supports the keys ``check_name``, ``check_type``, ``table_name`` (required)
-    plus ``column_name``, ``params`` (a dict, stored as JSON), ``lower_threshold``,
+    plus ``column_name``, ``params`` (a dict, stored as JSON; ``datetime.date`` and
+    ``datetime.datetime`` values are stored as ISO 8601 strings, ``Decimal`` as a number),
+    ``lower_threshold``,
     ``upper_threshold``, ``monitor_only``, ``identifier_column`` and ``filter_expr``.
 
     .. note::
@@ -826,7 +829,7 @@ def define_checks(conn: Any, checks: list[dict], checks_table: str = "dq_checks"
                 check["check_type"],
                 check["table_name"],
                 check.get("column_name"),
-                json.dumps(params) if params is not None else None,
+                json.dumps(params, default=_json_param) if params is not None else None,
                 check.get("lower_threshold"),
                 check.get("upper_threshold"),
                 bool(check.get("monitor_only", False)),
@@ -835,6 +838,17 @@ def define_checks(conn: Any, checks: list[dict], checks_table: str = "dq_checks"
             ],
         )
     return checks_table
+
+
+def _json_param(value: Any) -> Any:
+    """JSON form of a check parameter json.dumps cannot encode itself."""
+    if isinstance(value, (datetime.date, datetime.time)):
+        return value.isoformat()  # date: 2026-03-08, datetime: 2026-03-11T06:00:00
+    if isinstance(value, Decimal):
+        return float(value)
+    raise TypeError(
+        f"check parameter {value!r} of type {type(value).__qualname__} cannot be stored as JSON"
+    )
 
 
 def run_checks(
