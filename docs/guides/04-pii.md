@@ -291,7 +291,8 @@ or other non-English free text (see [NER model](../api/06-pii.md#ner-model)).
 `hash` is the first 16 hex characters of the SHA-256 of the card number with spaces and dashes
 removed, so `4111 1111 1111 1111` and `4111-1111-1111-1111` give the same value; a no-break
 space or another Unicode space separator (common in values pasted from PDFs and spreadsheets)
-counts as a space, in detection as in the hash. It has no key:
+counts as a space, in detection as in the hash, and so does a single line break in a card number
+or IBAN that a mail client wrapped over two lines. It has no key:
 it is a pseudonym, not anonymisation. Card numbers, phone numbers and SSNs can be enumerated, so
 a determined reader can recover them from their hashes. See
 [Hashing](../api/06-pii.md#hashing).

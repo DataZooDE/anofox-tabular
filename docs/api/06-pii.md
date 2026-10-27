@@ -96,6 +96,34 @@ SELECT pii_mask('Rückruf: +49' || chr(160) || '30' || chr(160) || '12345678, Er
 └─────────────────────────────────────────┘
 ```
 
+Mail clients and ticket forms wrap long lines, so an IBAN or a card number in a support ticket or
+an exported e-mail can sit on two lines. `IBAN` and `CREDIT_CARD` allow one line break (LF, CRLF
+or CR), with spaces or tabs around it, where a group separator goes: `DE89 3704` + line break +
+`0044 0532 0130 00` and `4111 1111` + line break + `1111 1111` are each one match. The match
+(`text`, `start_pos`, `end_pos`) includes the line break, so masking replaces it with the value;
+hashes and partial masks read it as a space and equal those of the single-line form, and
+`pii_is_valid_iban` / `pii_is_valid_credit_card` accept the wrapped value. The checksum (MOD-97,
+Luhn) must hold across the line break and a match never spans two line breaks or a blank line,
+so numbers on adjacent lines rarely join into a false match; a number found on one line keeps
+its single-line match. Phone numbers and the other types are not joined across lines: without
+a checksum, a phone number would join the figures of the next line.
+
+```sql
+SELECT replace(pii_mask('IBAN DE89 3704' || chr(10) || '0044 0532 0130 00, Karte 4111 1111' || chr(13) || chr(10)
+                        || '1111 1111'), chr(10), '<LF>') AS masked,
+       pii_mask_value('DE89 3704' || chr(10) || '0044 0532 0130 00', 'IBAN', 'hash')
+           = pii_mask_value('DE89 3704 0044 0532 0130 00', 'IBAN', 'hash') AS same_hash;
+```
+
+```text
+┌──────────────────────────────────┬───────────┐
+│              masked              │ same_hash │
+│             varchar              │  boolean  │
+├──────────────────────────────────┼───────────┤
+│ IBAN [IBAN], Karte [CREDIT_CARD] │ true      │
+└──────────────────────────────────┴───────────┘
+```
+
 Special categories of personal data (GDPR Art. 9) are not detected: there is no type for health
 data (diagnoses, treatments, medication), religious or philosophical beliefs, racial or ethnic
 origin, political opinions, trade-union membership, sex life or sexual orientation, genetic or
@@ -225,8 +253,8 @@ completely. Each type has its own rule:
 | `DE_ID_CARD` | The first character (part of the authority code) | `T220001293` → `T*********` |
 | Any other type | The first and last character from 5 characters on, the first and last 2 from 8 characters on; up to 4 characters are masked completely | |
 
-A partial mask reads Unicode space separators in a match as spaces; where a rule keeps
-separators, it writes ASCII spaces.
+A partial mask reads Unicode space separators in a match as spaces, and so the line break in an
+IBAN or card number wrapped over two lines; where a rule keeps separators, it writes ASCII spaces.
 
 The half rule is checked for every match: a type-specific mask that would reveal more than half of
 the letters and digits of the value (possible for unusual values passed to
@@ -272,7 +300,8 @@ so hashed columns can still be joined and counted:
 | all other types | None: the matched text is hashed as it is |
 
 Unicode space separators (no-break space and the like) count as spaces before the normalisation,
-so `DE89` + no-break space + `3704 …` hashes like `DE89 3704 …`.
+so `DE89` + no-break space + `3704 …` hashes like `DE89 3704 …`; the line break of an IBAN or card
+number wrapped over two lines is removed like a space.
 
 ```sql
 SELECT pii_mask_column(card, 'CREDIT_CARD', 'hash') AS hashed,

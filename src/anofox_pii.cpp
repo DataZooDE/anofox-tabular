@@ -457,30 +457,69 @@ size_t UnicodeSpaceLengthAt(const std::string &text, size_t pos) {
     return space ? 3 : 0;
 }
 
+bool IsLineBreakAt(const std::string &text, size_t pos) {
+    return pos < text.size() && (text[pos] == '\n' || text[pos] == '\r');
+}
+
+bool IsBlankAt(const std::string &text, size_t pos) {
+    return pos < text.size() && (text[pos] == ' ' || text[pos] == '\t');
+}
+
 // The text with every Unicode space separator replaced by one ASCII space,
 // so the pattern recognizers (whose patterns and scanners know ' ' only) find
 // "DE89<NBSP>3704<NBSP>..." like "DE89 3704 ...". Match offsets in the folded
 // text are mapped back to byte offsets of the original text, and the matched
 // text is taken from the original, so detection reports and masking replaces
 // exactly the bytes of the input.
+//
+// With fold_line_breaks, a single line break (LF, CRLF or CR) together with
+// the spaces and tabs around it also becomes one ASCII space: a mail client or
+// ticket form that wraps "IBAN DE89 3704 0044 0532 0130 00" after "3704" puts
+// the line break where the group separator was. A blank line (two line
+// breaks with only spaces between them) is a paragraph break and stays.
+// Callers count the folded line breaks inside a match (LineBreaksIn) to keep
+// matches that span more than one of them out.
 class SpaceFoldedText {
 public:
-    explicit SpaceFoldedText(const std::string &original) : original_(original) {
+    explicit SpaceFoldedText(const std::string &original, bool fold_line_breaks = false) : original_(original) {
         size_t copied = 0;  // original bytes before this are in folded_
         for (size_t pos = 0; pos < original.size(); ++pos) {
-            const size_t length = UnicodeSpaceLengthAt(original, pos);
-            if (length == 0) {
-                continue;
+            size_t begin = pos;  // original bytes [begin, after) become one ' '
+            size_t after = pos;
+            bool line_break = false;
+            if (fold_line_breaks && IsLineBreakAt(original, pos)) {
+                after = pos + (original.compare(pos, 2, "\r\n") == 0 ? 2 : 1);
+                while (begin > copied && IsBlankAt(original, begin - 1)) {
+                    begin--;
+                }
+                while (IsBlankAt(original, after)) {
+                    after++;
+                }
+                // A second line break before or after: a blank line, not a wrapped value
+                if (IsLineBreakAt(original, after) || (begin > 0 && IsLineBreakAt(original, begin - 1))) {
+                    pos = after - 1;
+                    continue;
+                }
+                line_break = true;
+            } else {
+                const size_t length = UnicodeSpaceLengthAt(original, pos);
+                if (length == 0) {
+                    continue;
+                }
+                after = pos + length;
             }
             if (offsets_.empty()) {
                 folded_.reserve(original.size());
                 offsets_.reserve(original.size() + 1);
             }
-            CopyRange(copied, pos);
+            CopyRange(copied, begin);
+            if (line_break) {
+                line_breaks_.push_back(folded_.size());
+            }
             folded_ += ' ';
-            offsets_.push_back(pos);
-            pos += length - 1;
-            copied = pos + 1;
+            offsets_.push_back(begin);
+            pos = after - 1;
+            copied = after;
         }
         if (!offsets_.empty()) {
             CopyRange(copied, original.size());
@@ -491,6 +530,16 @@ public:
     // The text the pattern recognizers scan
     const std::string &Text() const {
         return offsets_.empty() ? original_ : folded_;
+    }
+
+    // Number of line breaks folded into spaces in [start, end) of Text()
+    size_t LineBreaksIn(size_t start, size_t end) const {
+        return static_cast<size_t>(std::lower_bound(line_breaks_.begin(), line_breaks_.end(), end) -
+                                   std::lower_bound(line_breaks_.begin(), line_breaks_.end(), start));
+    }
+
+    bool HasLineBreaks() const {
+        return !line_breaks_.empty();
     }
 
     // Map a match found in Text() onto the original text
@@ -514,13 +563,35 @@ private:
     const std::string &original_;
     std::string folded_;
     // Byte offset in original_ of each byte of folded_, plus the end; empty
-    // when the text has no Unicode space separator (folded_ is unused then)
+    // when nothing was folded (folded_ is unused then)
     std::vector<size_t> offsets_;
+    // Positions in folded_ of the spaces that replaced a line break, ascending
+    std::vector<size_t> line_breaks_;
 };
 
 // text with every Unicode space separator replaced by one ASCII space
 std::string FoldUnicodeSpaces(const std::string &text) {
     return SpaceFoldedText(text).Text();
+}
+
+// Types whose values are found also when wrapped over two lines: their
+// checksums (MOD-97, Luhn) keep numbers on adjacent lines from joining into a
+// false match. Phone numbers have no checksum and are not joined.
+bool JoinsWrappedLines(PIIType type) {
+    return type == PIIType::IBAN || type == PIIType::CREDIT_CARD;
+}
+
+// A value of `type` as its partial mask, hash and validation read it: Unicode
+// spaces as ASCII spaces, and for the types that join wrapped lines a single
+// line break too ("DE89 3704\n0044 ..." reads as "DE89 3704 0044 ...")
+std::string FoldSeparators(PIIType type, const std::string &text) {
+    if (JoinsWrappedLines(type) && text.find_first_of("\r\n") != std::string::npos) {
+        const SpaceFoldedText folded(text, true);
+        if (folded.LineBreaksIn(0, folded.Text().size()) <= 1) {
+            return folded.Text();
+        }
+    }
+    return FoldUnicodeSpaces(text);
 }
 
 // Whether text has a letter outside the (sorted, non-overlapping) spans of
@@ -3117,8 +3188,9 @@ bool PIIEngine::ValidateType(const std::string &text, PIIType type) const {
         return false;
     }
 
-    // Unicode space separators count as spaces, as in detection
-    const std::string folded = FoldUnicodeSpaces(text);
+    // Unicode space separators count as spaces, as in detection, and so does
+    // a single line break in a wrapped IBAN or card number
+    const std::string folded = FoldSeparators(type, text);
 
     // First check if text matches the pattern
     auto matches = recognizer->FindMatches(folded);
@@ -3190,11 +3262,44 @@ std::vector<PIIMatch> RecognizerMatches(const PIIRecognizer &recognizer, const s
     return matches;
 }
 
+// Adds to `matches` (the matches of `recognizer` in the text without folded
+// line breaks, mapped to the original) the values wrapped over two lines: the
+// recognizer's validated matches in the line-folded text that span exactly one
+// folded line break and overlap no match found on a single line. Checksum
+// failures are not looked for across lines: without a valid checksum, two
+// unrelated numbers on adjacent lines could join into a false match.
+void AddWrappedMatches(const PIIRecognizer &recognizer, const SpaceFoldedText &wrapped,
+                       const PIIConfigSnapshot &config, std::vector<PIIMatch> &matches) {
+    const size_t single_line_count = matches.size();
+    for (auto &match : recognizer.FindMatches(wrapped.Text())) {
+        if (match.confidence < config.min_confidence || wrapped.LineBreaksIn(match.start_pos, match.end_pos) != 1) {
+            continue;
+        }
+        wrapped.MapToOriginal(match);
+        const bool overlaps = std::any_of(matches.begin(), matches.begin() + single_line_count,
+                                          [&match](const PIIMatch &known) {
+                                              return match.start_pos < known.end_pos && known.start_pos < match.end_pos;
+                                          });
+        if (overlaps) {
+            continue;
+        }
+        AnofoxTrace(AnofoxLogLevel::Trace, "pii: " + PIITypeToString(match.type) + " wrapped over two lines at byte " +
+                                               std::to_string(match.start_pos));
+        matches.push_back(std::move(match));
+    }
+}
+
 } // namespace
 
 std::vector<PIIMatch> PIIEngine::DetectPatterns(const std::string &text, const std::vector<PIIType> &effective_types,
                                                 const PIIConfigSnapshot &config, bool &run_ner) const {
     const SpaceFoldedText folded(text);
+    // The same text with single line breaks folded too, for the types that
+    // find values wrapped over two lines (built only when a line break is there)
+    std::optional<SpaceFoldedText> wrapped;
+    if (text.find_first_of("\r\n") != std::string::npos) {
+        wrapped.emplace(text, true);
+    }
     bool wants_ner = false;
     std::vector<PIIMatch> all_matches;
     for (const auto &recognizer : recognizers_) {
@@ -3209,8 +3314,11 @@ std::vector<PIIMatch> PIIEngine::DetectPatterns(const std::string &text, const s
         auto matches = RecognizerMatches(*recognizer, folded.Text(), config);
         for (auto &match : matches) {
             folded.MapToOriginal(match);
-            all_matches.push_back(std::move(match));
         }
+        if (JoinsWrappedLines(type) && wrapped && wrapped->HasLineBreaks()) {
+            AddWrappedMatches(*recognizer, *wrapped, config, matches);
+        }
+        std::move(matches.begin(), matches.end(), std::back_inserter(all_matches));
     }
     auto resolved = ResolveOverlaps(std::move(all_matches));
     // A value made of pattern matches only ("max.mustermann@example.com",
@@ -3404,8 +3512,8 @@ std::string PIIEngine::ApplyMask(const PIIMatch &match, MaskStrategy strategy) c
             // formats. Not anonymisation: small value spaces (phone numbers,
             // card numbers) can be brute-forced back to the value.
             // Unicode space separators count as spaces: "DE89<NBSP>3704 ..."
-            // hashes like "DE89 3704 ..."
-            const std::string normalized = NormalizeForHash(match.type, FoldUnicodeSpaces(match.matched_text));
+            // hashes like "DE89 3704 ...", and so does "DE89 3704\n0044 ..."
+            const std::string normalized = NormalizeForHash(match.type, FoldSeparators(match.type, match.matched_text));
             unsigned char hash[SHA256_DIGEST_LENGTH];
             SHA256(reinterpret_cast<const unsigned char*>(normalized.data()), normalized.size(), hash);
             std::ostringstream oss;
@@ -3426,8 +3534,8 @@ std::string PIIEngine::ApplyMask(const PIIMatch &match, MaskStrategy strategy) c
                 return Utf8Stars(match.matched_text);
             }
             // The type's partial mask reads separators as ASCII spaces (and
-            // writes them so)
-            std::string masked = recognizer->GetPartialMask(FoldUnicodeSpaces(match.matched_text));
+            // writes them so); a wrapped IBAN or card number reads as one line
+            std::string masked = recognizer->GetPartialMask(FoldSeparators(match.type, match.matched_text));
             if (!IsValidUtf8(masked) ||
                 CountLettersAndDigits(masked) > CountLettersAndDigits(match.matched_text) / 2) {
                 AnofoxTrace(AnofoxLogLevel::Debug, "pii: partial mask of a " + PIITypeToString(match.type) +
