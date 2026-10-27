@@ -213,6 +213,82 @@ profiling, PII table scans) need a regular table: pass a DataFrame, or a table y
 not a view you registered with `conn.register()`. Such a view passed by name raises
 `ValueError` with the hint to pass the DataFrame itself.
 
+## Nightly suite from Python
+
+For a scheduled job, keep the checks in a table and run them all at once:
+`quality.define_checks` writes the checks table, and `quality.run_checks` runs every check in
+it (the SQL function `run_checks`; see [Data quality checks](02-data-quality-checks.md) for
+the check types and their parameters). Both table names may be schema-qualified. The checks
+name their target by table name, so the targets must be tables or views in the database, not
+DataFrames:
+
+```python
+conn.execute("CREATE SCHEMA IF NOT EXISTS sales")
+conn.execute("CREATE SCHEMA IF NOT EXISTS dq")
+conn.execute("""
+    CREATE OR REPLACE TABLE sales.orders AS SELECT * FROM (VALUES
+        ('SO-1001', 'C-17', 'shipped', 129.90),
+        ('SO-1002', 'C-18', 'pending', 45.00),
+        ('SO-1003', NULL, 'shipped', 310.00),
+        ('SO-1004', 'C-20', 'returned', -45.00)
+    ) t(order_id, customer_id, status, amount)
+""")
+
+quality.define_checks(conn, [
+    {"check_name": "orders_loaded", "check_type": "volume",
+     "table_name": "sales.orders", "lower_threshold": 1},
+    {"check_name": "customer_set", "check_type": "null_rate", "table_name": "sales.orders",
+     "column_name": "customer_id", "upper_threshold": 0.0},
+    {"check_name": "known_status", "check_type": "values_in_set", "table_name": "sales.orders",
+     "column_name": "status", "params": {"allowed_values": ["shipped", "pending", "returned"]},
+     "lower_threshold": 1.0},
+    {"check_name": "amount_positive", "check_type": "compliance", "table_name": "sales.orders",
+     "params": {"expression": "amount > 0"}, "lower_threshold": 1.0, "monitor_only": True},
+], checks_table="dq.checks")
+
+results = quality.run_checks(conn, "dq.checks", result_table="dq.check_results")
+for r in results:
+    print(f"{r['check_name']:<16} {r['status']:<5} {r['message']}")
+```
+
+```text
+amount_positive  warn  compliance value 0.75 violates thresholds (0.75 < lower 1.0)
+customer_set     fail  null_rate value 0.25 violates thresholds (0.25 > upper 0.0)
+known_status     pass  values_in_set value 1.0 is within thresholds
+orders_loaded    pass  volume value 4.0 is within thresholds
+```
+
+`run_checks` returns one dict per result row, ordered by `check_name`. With `result_table`
+each run is also appended to that table (created on the first run), so the history builds up
+for trend checks such as `metric_anomaly_iqr`; the returned rows are those of this run. A
+check with `monitor_only` reports `warn` instead of `fail`. To fail the pipeline, exit with a
+non-zero code when a check failed (`fail`) or could not run (`error`):
+
+```python
+def gate(results):
+    """Raise SystemExit (exit code 1) when a check failed or could not run."""
+    bad = [r for r in results if r["status"] in ("fail", "error")]
+    for r in bad:
+        print(f"{r['status'].upper()}: {r['check_name']} on {r['table_name']}: {r['message']}")
+    if bad:
+        raise SystemExit(1)
+
+try:
+    gate(results)
+except SystemExit as stop:
+    print("exit code", stop.code)
+```
+
+```text
+FAIL: customer_set on sales.orders: null_rate value 0.25 violates thresholds (0.25 > upper 0.0)
+exit code 1
+```
+
+In the scheduled script, call `gate(results)` as the last step: the scheduler (cron, Airflow,
+a CI job) sees exit code 1 and marks the run as failed, while `warn` rows are only reported.
+Open the connection on the database file (`anofox.connect("warehouse.duckdb")`) so the checks
+table and the result history persist between runs.
+
 ## Mask PII
 
 ```python
