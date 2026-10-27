@@ -280,8 +280,8 @@ static string GenerateSchemaSQL(const string &table_name, const vector<string> &
 static string GenerateFreshnessSQL(const string &table_ref, const string &timestamp_column,
                                    const LogicalType &column_type, const Value &max_age,
                                    const Value &reference_time) {
-	string max_age_interval =
-	    max_age.IsNull() ? "INTERVAL '1 day'" : "'" + EscapeSqlStringLiteral(max_age.ToString()) + "'::INTERVAL";
+	// max_age is never NULL here (rejected at bind time)
+	string max_age_interval = "'" + EscapeSqlStringLiteral(max_age.ToString()) + "'::INTERVAL";
 	string ref_time =
 	    reference_time.IsNull() ? UtcNowSQL() : "'" + EscapeSqlStringLiteral(reference_time.ToString()) + "'::TIMESTAMP";
 	string col_id = QuoteSqlIdentifier(timestamp_column);
@@ -330,7 +330,8 @@ static unique_ptr<TableRef> MetricVolumeBindReplace(ClientContext &context, Tabl
 		throw BinderException("anofox_metric_volume requires 3 arguments: table_name, min_rows, max_rows");
 	}
 
-	string table_name = RequireNonNullArgument(input, 0, "volume", "table_name");
+	string table_name = RequireNameArgument(input, 0, "volume", "table_name");
+	RequireRelationColumns(context, "volume", table_name);
 	ValidateNonNegative(input.inputs[1], "volume", "min_rows");
 	ValidateNonNegative(input.inputs[2], "volume", "max_rows");
 	ValidateThresholdOrder(input.inputs[1], input.inputs[2], "volume", "min_rows", "max_rows");
@@ -345,9 +346,11 @@ static unique_ptr<TableRef> MetricNullRateBindReplace(ClientContext &context, Ta
 		throw BinderException("anofox_metric_null_rate requires 3 arguments: table_name, column_name, max_null_rate");
 	}
 
-	string table_name = RequireNonNullArgument(input, 0, "null_rate", "table_name");
-	string column_name = RequireNonNullArgument(input, 1, "null_rate", "column_name");
+	string table_name = RequireNameArgument(input, 0, "null_rate", "table_name");
+	string column_name = RequireNameArgument(input, 1, "null_rate", "column_name");
+	RequireNonNullArgument(input, 2, "null_rate", "max_null_rate");
 	ValidateRate(input.inputs[2], "null_rate", "max_null_rate");
+	RequireRelationColumns(context, "null_rate", table_name, {column_name});
 	string table_ref = BuildQueryTableRef(table_name);
 	string sql = GenerateNullRateSQL(table_ref, column_name, input.inputs[2]);
 	return ParseSubquery(sql, context, "Failed to parse null rate metric query");
@@ -359,11 +362,12 @@ static unique_ptr<TableRef> MetricDistinctCountBindReplace(ClientContext &contex
 		throw BinderException("anofox_metric_distinct_count requires 4 arguments: table_name, column_name, min_distinct, max_distinct");
 	}
 
-	string table_name = RequireNonNullArgument(input, 0, "distinct_count", "table_name");
-	string column_name = RequireNonNullArgument(input, 1, "distinct_count", "column_name");
+	string table_name = RequireNameArgument(input, 0, "distinct_count", "table_name");
+	string column_name = RequireNameArgument(input, 1, "distinct_count", "column_name");
 	ValidateNonNegative(input.inputs[2], "distinct_count", "min_distinct");
 	ValidateNonNegative(input.inputs[3], "distinct_count", "max_distinct");
 	ValidateThresholdOrder(input.inputs[2], input.inputs[3], "distinct_count", "min_distinct", "max_distinct");
+	RequireRelationColumns(context, "distinct_count", table_name, {column_name});
 	string table_ref = BuildQueryTableRef(table_name);
 	string sql = GenerateDistinctCountSQL(table_ref, column_name, input.inputs[2], input.inputs[3]);
 	return ParseSubquery(sql, context, "Failed to parse distinct count metric query");
@@ -375,12 +379,14 @@ static unique_ptr<TableRef> MetricZscoreBindReplace(ClientContext &context, Tabl
 		throw BinderException("anofox_metric_zscore requires 3 arguments: table_name, column_name, threshold");
 	}
 
-	string table_name = RequireNonNullArgument(input, 0, "zscore", "table_name");
-	string column_name = RequireNonNullArgument(input, 1, "zscore", "column_name");
+	string table_name = RequireNameArgument(input, 0, "zscore", "table_name");
+	string column_name = RequireNameArgument(input, 1, "zscore", "column_name");
+	RequireNonNullArgument(input, 2, "zscore", "threshold");
 	ValidateFiniteDouble(input.inputs[2], "zscore", "threshold");
 	if (!input.inputs[2].IsNull() && input.inputs[2].GetValue<double>() <= 0) {
 		throw BinderException("zscore: threshold must be positive (got %s)", input.inputs[2].ToString());
 	}
+	RequireRelationColumns(context, "zscore", table_name, {column_name});
 	RequireNumericColumn(context, "zscore", table_name, column_name);
 	string table_ref = BuildQueryTableRef(table_name);
 	string sql = GenerateZscoreSQL(table_ref, column_name, input.inputs[2]);
@@ -393,10 +399,12 @@ static unique_ptr<TableRef> MetricIQRBindReplace(ClientContext &context, TableFu
 		throw BinderException("anofox_metric_iqr requires 3 arguments: table_name, column_name, iqr_multiplier");
 	}
 
-	string table_name = RequireNonNullArgument(input, 0, "iqr", "table_name");
-	string column_name = RequireNonNullArgument(input, 1, "iqr", "column_name");
+	string table_name = RequireNameArgument(input, 0, "iqr", "table_name");
+	string column_name = RequireNameArgument(input, 1, "iqr", "column_name");
+	RequireNonNullArgument(input, 2, "iqr", "iqr_multiplier");
 	ValidateFiniteDouble(input.inputs[2], "iqr", "iqr_multiplier");
 	ValidateNonNegative(input.inputs[2], "iqr", "iqr_multiplier");
+	RequireRelationColumns(context, "iqr", table_name, {column_name});
 	RequireNumericColumn(context, "iqr", table_name, column_name);
 	string table_ref = BuildQueryTableRef(table_name);
 	string sql = GenerateIQRSQL(table_ref, column_name, input.inputs[2]);
@@ -409,9 +417,12 @@ static unique_ptr<TableRef> MetricSchemaBindReplace(ClientContext &context, Tabl
 		throw BinderException("anofox_metric_schema requires 2 arguments: table_name, required_columns");
 	}
 
-	string table_name = RequireNonNullArgument(input, 0, "schema_check", "table_name");
+	string table_name = RequireNameArgument(input, 0, "schema_check", "table_name");
+	RequireNonNullArgument(input, 1, "schema_check", "required_columns");
+	// The required columns are what the check asserts: a missing one is a 'fail' row, not an error
+	RequireRelationColumns(context, "schema_check", table_name);
 	vector<string> required_columns;
-	if (!input.inputs[1].IsNull() && input.inputs[1].type().id() == LogicalTypeId::LIST) {
+	if (input.inputs[1].type().id() == LogicalTypeId::LIST) {
 		auto &list_children = ListValue::GetChildren(input.inputs[1]);
 		for (auto &child : list_children) {
 			if (!child.IsNull()) {
@@ -432,13 +443,15 @@ static unique_ptr<TableRef> MetricFreshnessBindReplace(ClientContext &context, T
 		throw BinderException("anofox_metric_freshness requires at least 3 arguments: table_name, timestamp_column, max_age");
 	}
 
-	string table_name = RequireNonNullArgument(input, 0, "freshness", "table_name");
-	string timestamp_column = RequireNonNullArgument(input, 1, "freshness", "timestamp_column");
+	string table_name = RequireNameArgument(input, 0, "freshness", "table_name");
+	string timestamp_column = RequireNameArgument(input, 1, "freshness", "timestamp_column");
+	RequireNonNullArgument(input, 2, "freshness", "max_age");
 	Value max_age = input.inputs[2];
+	// NULL reference_time = the current UTC time
 	Value reference_time = (input.inputs.size() > 3) ? input.inputs[3] : Value();
 
 	string table_ref = BuildQueryTableRef(table_name);
-	auto column_type = LookupColumnType(context, table_name, timestamp_column);
+	auto column_type = RequireRelationColumns(context, "freshness", table_name, {timestamp_column})[0].type;
 	string sql = GenerateFreshnessSQL(table_ref, timestamp_column, column_type, max_age, reference_time);
 	return ParseSubquery(sql, context, "Failed to parse freshness metric query");
 }

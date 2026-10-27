@@ -620,14 +620,12 @@ static string GenerateRollingValuesInSetSQL(const string &table_ref, const strin
 
 // Helper: the type of the date column of a time-aware check, so a TIMESTAMP WITH TIME ZONE
 // column is bucketed by its UTC date (UtcDateSQL) whatever the session TimeZone
-static LogicalType TimeColumnType(ClientContext &context, const string &function_name, const string &table_name,
-                                  const string &date_column) {
-	auto type = LookupColumnType(context, table_name, date_column);
-	if (type.id() == LogicalTypeId::TIMESTAMP_TZ) {
-		AnofoxTrace(AnofoxLogLevel::Debug, function_name + ": '" + date_column +
+static LogicalType TimeColumnType(const string &function_name, const ResolvedColumn &date_column) {
+	if (date_column.type.id() == LogicalTypeId::TIMESTAMP_TZ) {
+		AnofoxTrace(AnofoxLogLevel::Debug, function_name + ": '" + date_column.name +
 		                                       "' is TIMESTAMP WITH TIME ZONE; bucketing by its UTC date");
 	}
-	return type;
+	return date_column.type;
 }
 
 // Helper: read an optional positive window_days argument with a default
@@ -722,13 +720,14 @@ static unique_ptr<TableRef> CheckRegexMatchBindReplace(ClientContext &context, T
 		    "anofox_tab_regex_match requires at least 4 arguments: table_name, column_name, pattern, min_match_rate");
 	}
 
-	string table_name = RequireNonNullArgument(input, 0, "regex_match", "table_name");
-	string column_name = RequireNonNullArgument(input, 1, "regex_match", "column_name");
+	string table_name = RequireNameArgument(input, 0, "regex_match", "table_name");
+	string column_name = RequireNameArgument(input, 1, "regex_match", "column_name");
 	string pattern = RequireNonNullArgument(input, 2, "regex_match", "pattern");
 	ValidateRate(input.inputs[3], "regex_match", "min_match_rate");
 	Value max_rate = (input.inputs.size() > 4) ? input.inputs[4] : Value();
 	ValidateRate(max_rate, "regex_match", "max_match_rate");
 	ValidateThresholdOrder(input.inputs[3], max_rate, "regex_match", "min_match_rate", "max_match_rate");
+	RequireRelationColumns(context, "regex_match", table_name, {column_name});
 
 	string table_ref = BuildQueryTableRef(table_name);
 	string sql = GenerateRegexMatchSQL(table_ref, column_name, pattern, input.inputs[3], max_rate);
@@ -742,12 +741,13 @@ static unique_ptr<TableRef> CheckValuesInSetBindReplace(ClientContext &context, 
 		    "anofox_tab_values_in_set requires at least 3 arguments: table_name, column_name, allowed_values");
 	}
 
-	string table_name = RequireNonNullArgument(input, 0, "values_in_set", "table_name");
-	string column_name = RequireNonNullArgument(input, 1, "values_in_set", "column_name");
+	string table_name = RequireNameArgument(input, 0, "values_in_set", "table_name");
+	string column_name = RequireNameArgument(input, 1, "values_in_set", "column_name");
 	RequireNonNullArgument(input, 2, "values_in_set", "allowed_values");
 	string allowed_array = BuildVarcharArrayLiteral(input.inputs[2]);
 	Value min_rate = (input.inputs.size() > 3) ? input.inputs[3] : Value();
 	ValidateRate(min_rate, "values_in_set", "min_rate");
+	RequireRelationColumns(context, "values_in_set", table_name, {column_name});
 
 	string table_ref = BuildQueryTableRef(table_name);
 	string sql = GenerateValuesInSetSQL(table_ref, column_name, allowed_array, min_rate);
@@ -761,9 +761,9 @@ static unique_ptr<TableRef> CheckAggBindReplace(ClientContext &context, TableFun
 		    "anofox_tab_agg_check requires 5 arguments: table_name, column_name, agg, lower_threshold, upper_threshold");
 	}
 
-	string table_name = RequireNonNullArgument(input, 0, "agg_check", "table_name");
-	string column_name = RequireNonNullArgument(input, 1, "agg_check", "column_name");
-	string agg = input.inputs[2].IsNull() ? "" : input.inputs[2].ToString();
+	string table_name = RequireNameArgument(input, 0, "agg_check", "table_name");
+	string column_name = RequireNameArgument(input, 1, "agg_check", "column_name");
+	string agg = RequireNonNullArgument(input, 2, "agg_check", "agg");
 	std::transform(agg.begin(), agg.end(), agg.begin(), ::tolower);
 	// Whitelist: the aggregate keyword is spliced into SQL, so it must never come from raw user input
 	static const vector<string> ALLOWED_AGGS = {"avg", "min", "max", "sum", "median", "stddev"};
@@ -773,6 +773,7 @@ static unique_ptr<TableRef> CheckAggBindReplace(ClientContext &context, TableFun
 	ValidateFiniteDouble(input.inputs[3], "agg_check", "lower_threshold");
 	ValidateFiniteDouble(input.inputs[4], "agg_check", "upper_threshold");
 	ValidateThresholdOrder(input.inputs[3], input.inputs[4], "agg_check", "lower_threshold", "upper_threshold");
+	RequireRelationColumns(context, "agg_check", table_name, {column_name});
 	RequireNumericColumn(context, "agg_check", table_name, column_name);
 
 	string table_ref = BuildQueryTableRef(table_name);
@@ -787,7 +788,7 @@ static unique_ptr<TableRef> CheckDuplicateCountBindReplace(ClientContext &contex
 		    "anofox_tab_duplicate_count requires at least 2 arguments: table_name, column_names");
 	}
 
-	string table_name = RequireNonNullArgument(input, 0, "duplicate_count", "table_name");
+	string table_name = RequireNameArgument(input, 0, "duplicate_count", "table_name");
 	RequireNonNullArgument(input, 1, "duplicate_count", "column_names");
 	// column_names: a comma-separated string or a VARCHAR[] (like diff and schema_check)
 	vector<string> column_names;
@@ -807,6 +808,7 @@ static unique_ptr<TableRef> CheckDuplicateCountBindReplace(ClientContext &contex
 	if (!max_duplicates.IsNull() && max_duplicates.GetValue<int64_t>() < 0) {
 		throw BinderException("duplicate_count: max_duplicates must be >= 0");
 	}
+	RequireRelationColumns(context, "duplicate_count", table_name, column_names);
 
 	string table_ref = BuildQueryTableRef(table_name);
 	string sql = GenerateDuplicateCountSQL(table_ref, column_names, max_duplicates);
@@ -820,9 +822,9 @@ static unique_ptr<TableRef> CheckOccurrenceBindReplace(ClientContext &context, T
 		    "anofox_tab_occurrence requires 5 arguments: table_name, column_name, mode, lower_threshold, upper_threshold");
 	}
 
-	string table_name = RequireNonNullArgument(input, 0, "occurrence", "table_name");
-	string column_name = RequireNonNullArgument(input, 1, "occurrence", "column_name");
-	string mode = input.inputs[2].IsNull() ? "" : input.inputs[2].ToString();
+	string table_name = RequireNameArgument(input, 0, "occurrence", "table_name");
+	string column_name = RequireNameArgument(input, 1, "occurrence", "column_name");
+	string mode = RequireNonNullArgument(input, 2, "occurrence", "mode");
 	std::transform(mode.begin(), mode.end(), mode.begin(), ::tolower);
 	if (mode != "max" && mode != "min") {
 		throw BinderException("occurrence: mode must be 'max' or 'min'");
@@ -830,6 +832,7 @@ static unique_ptr<TableRef> CheckOccurrenceBindReplace(ClientContext &context, T
 	ValidateNonNegative(input.inputs[3], "occurrence", "lower_threshold");
 	ValidateNonNegative(input.inputs[4], "occurrence", "upper_threshold");
 	ValidateThresholdOrder(input.inputs[3], input.inputs[4], "occurrence", "lower_threshold", "upper_threshold");
+	RequireRelationColumns(context, "occurrence", table_name, {column_name});
 
 	string table_ref = BuildQueryTableRef(table_name);
 	string sql = GenerateOccurrenceSQL(table_ref, column_name, mode, input.inputs[3], input.inputs[4]);
@@ -843,8 +846,8 @@ static unique_ptr<TableRef> CheckMatchRateBindReplace(ClientContext &context, Ta
 		    "anofox_tab_match_rate requires at least 4 arguments: left_table, right_table, left_keys, right_keys");
 	}
 
-	string left_table = RequireNonNullArgument(input, 0, "match_rate", "left_table");
-	string right_table = RequireNonNullArgument(input, 1, "match_rate", "right_table");
+	string left_table = RequireNameArgument(input, 0, "match_rate", "left_table");
+	string right_table = RequireNameArgument(input, 1, "match_rate", "right_table");
 	auto left_keys = ParseCommaSeparatedColumns(RequireNonNullArgument(input, 2, "match_rate", "left_keys"));
 	auto right_keys = ParseCommaSeparatedColumns(RequireNonNullArgument(input, 3, "match_rate", "right_keys"));
 	if (left_keys.empty()) {
@@ -856,6 +859,8 @@ static unique_ptr<TableRef> CheckMatchRateBindReplace(ClientContext &context, Ta
 	}
 	Value min_rate = (input.inputs.size() > 4) ? input.inputs[4] : Value();
 	ValidateRate(min_rate, "match_rate", "min_rate");
+	RequireRelationColumns(context, "match_rate", left_table, left_keys);
+	RequireRelationColumns(context, "match_rate", right_table, right_keys);
 
 	AnofoxTrace(AnofoxLogLevel::Debug, "check: match_rate left='" + left_table + "', right='" + right_table +
 	                                       "', keys=" + std::to_string(left_keys.size()));
@@ -871,11 +876,12 @@ static unique_ptr<TableRef> CheckComplianceBindReplace(ClientContext &context, T
 		    "anofox_tab_compliance requires at least 2 arguments: table_name, expression");
 	}
 
-	string table_name = RequireNonNullArgument(input, 0, "compliance", "table_name");
+	string table_name = RequireNameArgument(input, 0, "compliance", "table_name");
 	string expression = RequireNonNullArgument(input, 1, "compliance", "expression");
 	ValidateBooleanExpression(context, expression, "compliance");
 	Value min_rate = (input.inputs.size() > 2) ? input.inputs[2] : Value();
 	ValidateRate(min_rate, "compliance", "min_rate");
+	RequireRelationColumns(context, "compliance", table_name);
 
 	AnofoxTrace(AnofoxLogLevel::Debug, "check: compliance table='" + table_name + "', expression='" + expression + "'");
 	string table_ref = BuildQueryTableRef(table_name);
@@ -891,8 +897,8 @@ static string BuildRelCountChangeSQL(ClientContext &context, TableFunctionBindIn
 	}
 
 	const string function_name = events ? "rel_count_change_events" : "rel_count_change";
-	string table_name = RequireNonNullArgument(input, 0, function_name, "table_name");
-	string date_column = RequireNonNullArgument(input, 1, function_name, "date_column");
+	string table_name = RequireNameArgument(input, 0, function_name, "table_name");
+	string date_column = RequireNameArgument(input, 1, function_name, "date_column");
 	string count_column;
 	if (input.inputs.size() > 2 && !input.inputs[2].IsNull()) {
 		count_column = input.inputs[2].ToString();
@@ -915,7 +921,11 @@ static string BuildRelCountChangeSQL(ClientContext &context, TableFunctionBindIn
 		    "ELSE upper_threshold END";
 	}
 	string table_ref = BuildQueryTableRef(table_name);
-	auto date_type = TimeColumnType(context, function_name, table_name, date_column);
+	vector<string> columns = {date_column};
+	if (!count_column.empty()) {
+		columns.push_back(count_column);
+	}
+	auto date_type = TimeColumnType(function_name, RequireRelationColumns(context, function_name, table_name, columns)[0]);
 	return GenerateRelCountChangeSQL(table_ref, date_column, date_type, count_column, window_days, lower, upper,
 	                                 dates);
 }
@@ -942,8 +952,8 @@ static string BuildMetricAnomalyIQRSQL(ClientContext &context, TableFunctionBind
 	}
 
 	const string function_name = events ? "metric_anomaly_iqr_events" : "metric_anomaly_iqr";
-	string table_name = RequireNonNullArgument(input, 0, function_name, "table_name");
-	string date_column = RequireNonNullArgument(input, 1, function_name, "date_column");
+	string table_name = RequireNameArgument(input, 0, function_name, "table_name");
+	string date_column = RequireNameArgument(input, 1, function_name, "date_column");
 	string metric_column;
 	if (input.inputs.size() > 2 && !input.inputs[2].IsNull()) {
 		metric_column = input.inputs[2].ToString();
@@ -969,10 +979,14 @@ static string BuildMetricAnomalyIQRSQL(ClientContext &context, TableFunctionBind
 		events->threshold_expr = "CASE WHEN metric_value < lower_bound THEN lower_bound ELSE upper_bound END";
 	}
 	string table_ref = BuildQueryTableRef(table_name);
+	vector<string> columns = {date_column};
+	if (!metric_column.empty()) {
+		columns.push_back(metric_column);
+	}
+	auto date_type = TimeColumnType(function_name, RequireRelationColumns(context, function_name, table_name, columns)[0]);
 	if (!metric_column.empty()) {
 		RequireNumericColumn(context, function_name, table_name, metric_column);
 	}
-	auto date_type = TimeColumnType(context, function_name, table_name, date_column);
 	return GenerateMetricAnomalyIQRSQL(table_ref, date_column, date_type, metric_column, window_days, k, mode,
 	                                   dates);
 }
@@ -999,11 +1013,11 @@ static string BuildRollingValuesInSetSQL(ClientContext &context, TableFunctionBi
 	}
 
 	const string function_name = events ? "rolling_values_in_set_events" : "rolling_values_in_set";
-	string table_name = RequireNonNullArgument(input, 0, function_name, "table_name");
-	string column_name = RequireNonNullArgument(input, 1, function_name, "column_name");
+	string table_name = RequireNameArgument(input, 0, function_name, "table_name");
+	string column_name = RequireNameArgument(input, 1, function_name, "column_name");
 	RequireNonNullArgument(input, 2, function_name, "allowed_values");
 	string allowed_array = BuildVarcharArrayLiteral(input.inputs[2]);
-	string date_column = RequireNonNullArgument(input, 3, function_name, "date_column");
+	string date_column = RequireNameArgument(input, 3, function_name, "date_column");
 	int64_t window_days = ReadWindowDays(input, 4, 7, "rolling_values_in_set");
 	Value min_rate = (input.inputs.size() > 5) ? input.inputs[5] : Value();
 	ValidateRate(min_rate, "rolling_values_in_set", "min_rate");
@@ -1016,7 +1030,8 @@ static string BuildRollingValuesInSetSQL(ClientContext &context, TableFunctionBi
 		events->threshold_expr = "threshold";
 	}
 	string table_ref = BuildQueryTableRef(table_name);
-	auto date_type = TimeColumnType(context, function_name, table_name, date_column);
+	auto date_type =
+	    TimeColumnType(function_name, RequireRelationColumns(context, function_name, table_name, {date_column, column_name})[0]);
 	return GenerateRollingValuesInSetSQL(table_ref, column_name, allowed_array, date_column, date_type, window_days,
 	                                     min_rate, dates);
 }

@@ -38,6 +38,11 @@ string RequireNonNullArgument(const TableFunctionBindInput &input, idx_t index, 
                               const string &argument_name);
 string RequireNonNullArgument(const Value *value, const string &function_name, const string &argument_name);
 
+// A required name argument (a table or column name): RequireNonNullArgument, and
+// BinderException "<function_name>: <argument_name> must not be empty" for an empty or blank name.
+string RequireNameArgument(const TableFunctionBindInput &input, idx_t index, const string &function_name,
+                           const string &argument_name);
+
 // Threshold validation shared by the check functions. NULL values are left alone (a NULL
 // threshold means "no bound" or the documented default).
 // "<fn>: <lower_name> (<lower>) must not be greater than <upper_name> (<upper>)"
@@ -109,6 +114,16 @@ void RejectTempTable(ClientContext &context, const string &function_name, const 
 // not know (replacement scans) are not checked here.
 void RequireNumericColumn(ClientContext &context, const string &function_name, const string &table_name,
                           const string &column_name);
+
+// Bind-time validation of the input relation of a direct check (a bind_replace function that
+// reads `table_name` through query_table in the caller's context). The relation is bound in the
+// calling context (TEMP tables, views, files and replacement scans included; no rows are read):
+// - an unknown table: BinderException "<fn>: table '<t>' does not exist"
+// - any other bind failure: BinderException "<fn>: cannot read table '<t>': <cause>"
+// - each of `columns` must exist (case-insensitively; else the MatchColumnNames error)
+// Returns the requested columns (the table's spelling and type), in request order.
+vector<ResolvedColumn> RequireRelationColumns(ClientContext &context, const string &function_name,
+                                              const string &table_name, const vector<string> &columns = {});
 
 // The type of `column_name` in `table_name` as the caller's context sees it, or
 // LogicalTypeId::INVALID when it cannot be determined at bind time.

@@ -132,13 +132,17 @@ Column lists come in two forms. Check the signature of each function:
 Column names match case-insensitively, like DuckDB identifiers: `'EMAIL'` finds a column
 `Email`. In `profile_table`, `profile_correlations`, `pii_scan_table`, `pii_audit_table`,
 `isolation_forest`, `isolation_forest_mv`, `dbscan`, `dbscan_mv`, `zscore`, `iqr`, `agg_check`
-and `metric_anomaly_iqr` (its `metric_column`) an unknown column name is an error naming the
-column and the table; `run_checks` reports it in an `error` row of that check;
-`schema_check` reports it as missing.
+and every direct data quality check (`volume`, `null_rate`, ... `rolling_values_in_set`) an
+unknown column name is an error naming the column and the table; `run_checks` reports it in an
+`error` row of that check; `schema_check` reports a missing required column as `fail`. An
+unknown table is an error such as `null_rate: table 'ordrs' does not exist` in the data quality
+checks, and an empty name is `<function>: table_name must not be empty`.
 
 The table, column and key arguments of a table function are required: a `NULL` there is a
 binder error `<function>: <argument> must not be NULL`, also when it comes from a `NULL`
-parameter of a prepared statement. A `NULL` `id_column` means "no id column", like leaving it
+parameter of a prepared statement. The same holds for a required threshold or list of a data
+quality check that has no `NULL` meaning, such as `null_rate`'s `max_null_rate`; a threshold
+documented as `NULL` = unbounded or with a default accepts `NULL`. A `NULL` `id_column` means "no id column", like leaving it
 out.
 
 ```sql

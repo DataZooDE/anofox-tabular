@@ -22,9 +22,19 @@ results of several checks combine with `UNION ALL`.
 
 The arguments are checked when the query is bound:
 
-- A `NULL` table, column or key argument is an error such as
-  `null_rate: table_name must not be NULL`, also for a prepared statement executed with a
-  `NULL` parameter.
+- A `NULL` required argument is an error such as `null_rate: max_null_rate must not be NULL`,
+  also for a prepared statement executed with a `NULL` parameter. Required are the table,
+  column and key names, the lists (`allowed_values`, `required_columns`, `column_names`), the
+  `pattern`, `expression`, `agg` and `mode` and the thresholds without a `NULL` meaning
+  (`max_null_rate`, the `zscore` `threshold`, `iqr_multiplier`, `max_age`). Where a parameter
+  table below gives `NULL` a meaning (`NULL` = unbounded, or a default such as `min_rate` `1.0`),
+  `NULL` is accepted.
+- The table and every named column must exist, else the error names them:
+  `null_rate: table 'ordrs' does not exist`, or
+  `null_rate: column 'emial' not found in table 'orders' (available columns: ...)`. Column names
+  match case-insensitively, like DuckDB identifiers. An empty or blank name is an error such as
+  `null_rate: table_name must not be empty`. The table may be a TEMP table, a view or a file
+  (`'orders.csv'`); a file that cannot be read is `<function>: cannot read table '<name>': <cause>`.
 - A lower bound greater than the upper bound is an error, for example
   `volume: min_rows (100) must not be greater than max_rows (10)`.
 - Count bounds (`min_rows`, `max_distinct`, `iqr_multiplier`, ...) must not be negative, and a
@@ -33,8 +43,7 @@ The arguments are checked when the query is bound:
   example `null_rate: max_null_rate must be between 0 and 1 (got 1.5)`.
 - The statistical checks `zscore`, `iqr`, `agg_check` and the `metric_column` of
   `metric_anomaly_iqr` need a numeric (or `BOOLEAN`) column, for example
-  `zscore: column 'supplier' must be numeric, got VARCHAR`. An unknown column is an error that
-  lists the table's columns.
+  `zscore: column 'supplier' must be numeric, got VARCHAR`.
 
 Rates in the messages are rounded to three decimals (`Null rate 0.333 (2/6) ...`); the rate
 columns keep the full precision.
@@ -254,7 +263,7 @@ freshness(table_name VARCHAR, timestamp_column VARCHAR, max_age INTERVAL [, refe
 | `table_name` | `VARCHAR` | required | Table or view |
 | `timestamp_column` | `VARCHAR` | required | Timestamp column |
 | `max_age` | `INTERVAL` | required | Largest allowed age of the newest row |
-| `reference_time` | `TIMESTAMP` | current time | The time the age is measured from |
+| `reference_time` | `TIMESTAMP` | current time (also for `NULL`) | The time the age is measured from |
 
 | Column | Type | Description |
 |--------|------|-------------|
@@ -433,7 +442,7 @@ values_in_set(table_name VARCHAR, column_name VARCHAR, allowed_values VARCHAR[] 
 | `table_name` | `VARCHAR` | required | Table or view |
 | `column_name` | `VARCHAR` | required | Column to check |
 | `allowed_values` | `VARCHAR[]` | required | The allowed values |
-| `min_rate` | `DOUBLE` | `1.0` | Lowest allowed share of values in the set |
+| `min_rate` | `DOUBLE` | `1.0` (also for `NULL`) | Lowest allowed share of values in the set |
 
 `sample_violations` holds up to 5 distinct values outside the set, sorted.
 
@@ -515,7 +524,7 @@ duplicate_count(table_name VARCHAR, column_names VARCHAR | VARCHAR[] [, max_dupl
 |-----------|------|---------|-------------|
 | `table_name` | `VARCHAR` | required | Table or view |
 | `column_names` | `VARCHAR` or `VARCHAR[]` | required | One column, or a compound key as a comma-separated string (`'customer_id, status'`) or a list (`['customer_id', 'status']`) |
-| `max_duplicates` | `BIGINT` | `0` | Highest allowed number of duplicates |
+| `max_duplicates` | `BIGINT` | `0` (also for `NULL`) | Highest allowed number of duplicates |
 
 ```sql
 SELECT 'order_id' AS key, status, duplicate_count FROM duplicate_count('orders', 'order_id')
@@ -596,7 +605,7 @@ match_rate(left_table VARCHAR, right_table VARCHAR, left_keys VARCHAR, right_key
 | `right_table` | `VARCHAR` | required | The referenced table |
 | `left_keys` | `VARCHAR` | required | Comma-separated key columns of `left_table` |
 | `right_keys` | `VARCHAR` | required | Comma-separated key columns of `right_table`, same number as `left_keys` |
-| `min_rate` | `DOUBLE` | `1.0` | Lowest allowed match rate |
+| `min_rate` | `DOUBLE` | `1.0` (also for `NULL`) | Lowest allowed match rate |
 
 An empty left table passes with `total_count = 0`.
 
@@ -633,7 +642,7 @@ compliance(table_name VARCHAR, expression VARCHAR [, min_rate DOUBLE])
 |-----------|------|---------|-------------|
 | `table_name` | `VARCHAR` | required | Table or view |
 | `expression` | `VARCHAR` | required | A SQL boolean expression over the table's columns |
-| `min_rate` | `DOUBLE` | `1.0` | Lowest allowed share of compliant rows |
+| `min_rate` | `DOUBLE` | `1.0` (also for `NULL`) | Lowest allowed share of compliant rows |
 
 > **Security note:** the expression runs as SQL with your privileges. At bind time it must parse
 > as a single boolean expression, so a second statement is rejected. Scalar subqueries are still
@@ -859,7 +868,7 @@ rolling_values_in_set(table_name VARCHAR, column_name VARCHAR, allowed_values VA
 | `allowed_values` | `VARCHAR[]` | required | The allowed values |
 | `date_column` | `VARCHAR` | required | Date or timestamp column; cast to `DATE` (a `TIMESTAMP WITH TIME ZONE` by its UTC date) |
 | `window_days` | `BIGINT` | `7` | Window length, ending on the reference date |
-| `min_rate` | `DOUBLE` | `1.0` | Lowest allowed share of values in the set |
+| `min_rate` | `DOUBLE` | `1.0` (also for `NULL`) | Lowest allowed share of values in the set |
 | `reference_date` | `DATE` | `NULL` = latest date in the data | The last day of the window |
 | `start_date`, `end_date` | `DATE`, named | none | Evaluate every day of this range |
 

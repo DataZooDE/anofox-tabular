@@ -5,9 +5,11 @@
 #include "duckdb/catalog/catalog_entry/table_catalog_entry.hpp"
 #include "duckdb/catalog/catalog_entry/view_catalog_entry.hpp"
 #include "duckdb/catalog/entry_lookup_info.hpp"
+#include "duckdb/common/error_data.hpp"
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/parser/qualified_name.hpp"
+#include "duckdb/planner/binder.hpp"
 #include "duckdb_compat.hpp"
 
 #include <algorithm>
@@ -112,6 +114,15 @@ string RequireNonNullArgument(const TableFunctionBindInput &input, idx_t index, 
                               const string &argument_name) {
 	return RequireNonNullArgument(index < input.inputs.size() ? &input.inputs[index] : nullptr, function_name,
 	                              argument_name);
+}
+
+string RequireNameArgument(const TableFunctionBindInput &input, idx_t index, const string &function_name,
+                           const string &argument_name) {
+	auto name = RequireNonNullArgument(input, index, function_name, argument_name);
+	if (name.find_first_not_of(" \t\n\r") == string::npos) {
+		throw BinderException("%s: %s must not be empty", function_name, argument_name);
+	}
+	return name;
 }
 
 void ValidateThresholdOrder(const Value &lower, const Value &upper, const string &function_name,
@@ -325,6 +336,49 @@ void RequireNumericColumn(ClientContext &context, const string &function_name, c
 		throw BinderException("%s: column '%s' must be numeric, got %s", function_name, column.name,
 		                      column.type.ToString());
 	}
+}
+
+vector<ResolvedColumn> RequireRelationColumns(ClientContext &context, const string &function_name,
+                                              const string &table_name, const vector<string> &columns) {
+	if (table_name.find_first_not_of(" \t\n\r") == string::npos) {
+		throw BinderException("%s: table_name must not be empty", function_name);
+	}
+	vector<string> names;
+	vector<LogicalType> types;
+	try {
+		auto statements =
+		    ParseWithContextSettings(context, "SELECT * FROM " + BuildQueryTableRef(table_name) + " LIMIT 0");
+		if (statements.size() != 1) {
+			throw BinderException("not a single relation");
+		}
+		auto binder = Binder::CreateBinder(context);
+		auto bound = binder->Bind(*statements[0]);
+		names = duckdb_compat::Strs(bound.names);
+		types = bound.types;
+	} catch (const std::exception &ex) {
+		ErrorData error(ex);
+		if (error.Type() == ExceptionType::INTERRUPT || error.Type() == ExceptionType::FATAL ||
+		    error.Type() == ExceptionType::INTERNAL) {
+			throw;
+		}
+		auto cause = error.RawMessage();
+		AnofoxTrace(AnofoxLogLevel::Debug, function_name + ": cannot bind '" + table_name + "': " + cause);
+		// A catalog error for a relation the catalog does not know is a missing table; a view
+		// that exists but no longer binds (e.g. its base table was dropped) is reported as is
+		if (error.Type() == ExceptionType::CATALOG && !LookupRelation(context, table_name).found) {
+			throw BinderException("%s: table '%s' does not exist", function_name, table_name);
+		}
+		auto newline = cause.find('\n');
+		if (newline != string::npos) {
+			cause = cause.substr(0, newline);
+		}
+		throw BinderException("%s: cannot read table '%s': %s", function_name, table_name, cause);
+	}
+	vector<ResolvedColumn> result;
+	for (auto idx : MatchColumnNames(function_name, table_name, names, columns)) {
+		result.push_back({names[idx], types[idx]});
+	}
+	return result;
 }
 
 LogicalType LookupColumnType(ClientContext &context, const string &table_name, const string &column_name) {
