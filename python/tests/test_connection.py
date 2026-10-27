@@ -297,3 +297,37 @@ class TestProfileSchemas:
         import duckdb
         with pytest.raises(duckdb.CatalogException):
             conn.profile("staging.orders")
+
+
+class TestValidateUnknownColumn:
+    """A schema key or region_column that is not a column of the DataFrame raises
+    the same ValueError as the row-wise validators, before anything runs."""
+
+    @staticmethod
+    def _orders():
+        import pandas as pd
+        return pd.DataFrame({
+            "order_id": ["SO-1001", "SO-1002"],
+            "contact_email": ["buyer@example.com", "ops@example.org"],
+            "country": ["DE", "US"],
+        })
+
+    def test_unknown_schema_key(self, conn):
+        from anofox.validate import EmailRule
+        with pytest.raises(ValueError) as info:
+            conn.validate(self._orders(), {"email": EmailRule()})
+        message = str(info.value)
+        assert message == ("column 'email' not found in the DataFrame; its columns are "
+                           "'order_id', 'contact_email', 'country'")
+        assert "__anofox_pos_" not in message
+
+    def test_unknown_region_column(self, conn):
+        from anofox.validate import PhoneRule
+        with pytest.raises(ValueError, match=r"column 'country_code' not found in the DataFrame"):
+            conn.validate(self._orders(), {"contact_email": PhoneRule(region_column="country_code")})
+
+    def test_polars_unknown_schema_key(self, conn):
+        pl = pytest.importorskip("polars")
+        from anofox.validate import EmailRule
+        with pytest.raises(ValueError, match=r"column 'email' not found.*'contact_email'"):
+            conn.validate(pl.from_pandas(self._orders()), {"email": EmailRule()})

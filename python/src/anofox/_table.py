@@ -135,13 +135,19 @@ def check_row_input(value: Any, column: Optional[str]) -> str:
         ) from None
     if column is None:
         raise ValueError("'column' is required when passing a DataFrame.")
-    columns = [str(c) for c in value.columns]
-    if column not in columns:
-        raise ValueError(
-            f"column {column!r} not found in the DataFrame; its columns are "
-            f"{', '.join(map(repr, columns))}"
-        )
+    check_columns(value, [column])
     return df_type
+
+
+def check_columns(df: Any, names: Any) -> None:
+    """Raise ValueError naming the first of *names* that is not a column of DataFrame *df*."""
+    columns = [str(c) for c in df.columns]
+    for name in names:
+        if name not in columns:
+            raise ValueError(
+                f"column {name!r} not found in the DataFrame; its columns are "
+                f"{', '.join(map(repr, columns))}"
+            )
 
 
 def accepts_dataframes(*param_names: str) -> Callable[[F], F]:

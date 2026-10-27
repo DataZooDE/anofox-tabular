@@ -212,7 +212,9 @@ class AnofoxConnection:
             :class:`~anofox.validate.PhoneRule`
             (``PhoneRule(region_column="country")`` reads each row's region
             from a column of *df*). Any other rule (including a plain string
-            such as ``"email"``) raises :class:`TypeError`.
+            such as ``"email"``) raises :class:`TypeError`. A key (or a
+            ``region_column``) that is not a column of *df* raises
+            :class:`ValueError`.
 
         Returns
         -------
@@ -222,8 +224,10 @@ class AnofoxConnection:
             columns ``column``, ``row_id``, ``value`` and ``rule``. ``row_id``
             identifies the failing row of *df*: its index label for a pandas
             DataFrame, its 0-based row position for a polars DataFrame.
+            Failures are ordered by schema key, then row.
         """
         from .validate import EmailRule, PhoneRule
+        from ._table import check_columns
         from ._utils import detect_df_type, registered_view
 
         df_type = detect_df_type(df)
@@ -247,6 +251,10 @@ class AnofoxConnection:
                     "use one of EmailRule, PhoneRule (from anofox.validate), "
                     "e.g. EmailRule(mode='regex') or PhoneRule(region='DE')"
                 )
+
+        # A missing column would surface as a BinderException naming the
+        # internal view; report it like the row-wise validators instead.
+        check_columns(df, [name for check in checks for name in (check[0], check[4]) if name])
 
         failure_rows = []
         with registered_view(self._conn, df) as (view, position_column):
