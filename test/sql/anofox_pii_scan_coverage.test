@@ -24,7 +24,8 @@ SELECT * FROM (VALUES
     (103, 'Jonas', NULL,                DATE '2025-05-30', 'No contact preference',                 NULL, 'B2C')
 ) t(contact_id, first_name, email, signup_date, notes, fax, segment);
 
-# Schema: the five original columns keep their meaning; values_scanned and status are new
+# Schema: the five original columns keep their meaning; values_scanned, status,
+# checked_types and ner_model are new
 query TT
 SELECT column_name, column_type FROM (DESCRIBE SELECT * FROM pii_scan_table('crm_contacts'));
 ----
@@ -35,6 +36,8 @@ sample_values	VARCHAR[]
 confidence	DOUBLE
 values_scanned	BIGINT
 status	VARCHAR
+checked_types	VARCHAR[]
+ner_model	VARCHAR
 
 # Every column appears, in table order: matches per type, no_match for scanned columns
 # without a match (also an all-NULL column), skipped (TYPE) for columns that are not VARCHAR

@@ -1,0 +1,116 @@
+# name: test/sql/anofox_pii_scan_record.test
+# description: pii_scan_table records per column which PII types it applied (checked_types)
+#              and which NER model ran (ner_model), so a "no_match" under a restricted
+#              anofox_pii_enabled_types is not read as "no PII" (F2). pii_scan_table and
+#              pii_audit_table take the column filter by name, columns := '...' (F17c).
+# group: [sql]
+
+# Scan statuses are compared without the ' (NER unavailable)' suffix, which builds without
+# the NER model append; these tests do not depend on NER (only pattern types are enabled).
+
+require anofox_tabular
+
+statement ok
+LOAD anofox_tabular;
+
+statement ok
+CREATE TABLE support_tickets AS
+SELECT * FROM (VALUES
+    (5001, 'Rückruf erbeten unter 0171 / 2345678', 'markus.weber@posteo.de', DATE '2026-09-14'),
+    (5002, 'Lieferung beschädigt, Foto anbei',      'j.krause@gmx.net',       DATE '2026-09-15'),
+    (5003, 'Bitte IBAN DE89370400440532013000 nutzen', NULL,                  DATE '2026-09-17')
+) t(ticket_id, message, contact_email, opened_on);
+
+# Schema: checked_types and ner_model follow the existing columns
+query TT
+SELECT column_name, column_type FROM (DESCRIBE SELECT * FROM pii_scan_table('support_tickets'));
+----
+column_name	VARCHAR
+pii_type	VARCHAR
+match_count	BIGINT
+sample_values	VARCHAR[]
+confidence	DOUBLE
+values_scanned	BIGINT
+status	VARCHAR
+checked_types	VARCHAR[]
+ner_model	VARCHAR
+
+# Only EMAIL is checked: the message column reports no_match, and the record says that
+# EMAIL was the only type applied, so the phone number and IBAN in it are not "no PII"
+statement ok
+SET anofox_pii_enabled_types = 'EMAIL';
+
+query TTITTT
+SELECT column_name, pii_type, match_count, replace(status, ' (NER unavailable)', ''), checked_types, ner_model
+FROM pii_scan_table('support_tickets');
+----
+ticket_id	NULL	0	skipped (INTEGER)	[]	NULL
+message	NULL	0	no_match	[EMAIL]	NULL
+contact_email	EMAIL	2	scanned	[EMAIL]	NULL
+opened_on	NULL	0	skipped (DATE)	[]	NULL
+
+# Several types: the list is sorted by name, whatever the order of the setting
+statement ok
+SET anofox_pii_enabled_types = 'PHONE,IBAN,EMAIL';
+
+query TTIT
+SELECT column_name, pii_type, match_count, checked_types
+FROM pii_scan_table('support_tickets', 'message, contact_email');
+----
+message	IBAN	1	[EMAIL, IBAN, PHONE]
+message	PHONE	1	[EMAIL, IBAN, PHONE]
+contact_email	EMAIL	2	[EMAIL, IBAN, PHONE]
+
+# The default set applies every type but the opt-in POSTAL_CODE
+statement ok
+RESET anofox_pii_enabled_types;
+
+query II
+SELECT list_contains(checked_types, 'EMAIL') AND list_contains(checked_types, 'DE_SVNR')
+       AND NOT list_contains(checked_types, 'POSTAL_CODE'),
+       checked_types = list_sort(checked_types)
+FROM pii_scan_table('support_tickets', 'contact_email');
+----
+true	true
+
+statement ok
+SET anofox_pii_enabled_types = 'EMAIL,PHONE,IBAN';
+
+# columns := ... by name, for pii_scan_table and pii_audit_table (F17c)
+query TTI
+SELECT column_name, pii_type, match_count FROM pii_scan_table('support_tickets', columns := 'message');
+----
+message	IBAN	1
+message	PHONE	1
+
+query ITTT
+SELECT row_id, column_name, pii_type, matched_text
+FROM pii_audit_table('support_tickets', columns := 'message')
+ORDER BY row_id, start_pos;
+----
+1	message	PHONE	0171 / 2345678
+3	message	IBAN	DE89370400440532013000
+
+# By name together with id_column
+query ITT
+SELECT ticket_id, pii_type, matched_text
+FROM pii_audit_table('support_tickets', columns := 'contact_email', id_column := 'ticket_id')
+ORDER BY ticket_id;
+----
+5001	EMAIL	markus.weber@posteo.de
+5002	EMAIL	j.krause@gmx.net
+
+# An unknown column given by name is the same bind error as a positional one
+statement error
+SELECT * FROM pii_scan_table('support_tickets', columns := 'phone_number');
+----
+phone_number
+
+# NULL by name means every text column
+query I
+SELECT count(*) FROM pii_scan_table('support_tickets', columns := NULL);
+----
+5
+
+statement ok
+RESET anofox_pii_enabled_types;

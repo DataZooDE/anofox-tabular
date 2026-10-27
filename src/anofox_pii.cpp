@@ -4162,6 +4162,43 @@ static std::vector<std::string> ResolvePIIScanColumns(ClientContext &context, co
     return columns;
 }
 
+// The column filter of pii_audit_table / pii_scan_table: a comma-separated list of
+// column names, given as the second argument or by name (columns := 'a, b'). NULL
+// or an empty list means every column that holds text.
+static const char *PII_COLUMNS_PARAMETER = "columns";
+
+static std::vector<std::string> ParsePIIColumnFilter(TableFunctionBindInput &input, const std::string &function_name) {
+    const Value *columns = nullptr;
+    if (input.inputs.size() > 1) {
+        columns = &input.inputs[1];
+    }
+    const auto *named = duckdb_compat::FindNamedParameter(input.named_parameters, PII_COLUMNS_PARAMETER);
+    if (named) {
+        if (columns) {
+            throw BinderException("%s: give the column filter either as the second argument or as columns := ..., "
+                                  "not both",
+                                  function_name);
+        }
+        columns = named;
+    }
+    std::vector<std::string> column_filter;
+    if (!columns || columns->IsNull()) {
+        return column_filter;
+    }
+    std::stringstream ss(columns->GetValue<std::string>());
+    std::string col;
+    while (std::getline(ss, col, ',')) {
+        col.erase(0, col.find_first_not_of(" \t"));
+        col.erase(col.find_last_not_of(" \t") + 1);
+        if (!col.empty()) {
+            column_filter.push_back(col);
+        }
+    }
+    AnofoxTrace(AnofoxLogLevel::Debug,
+                function_name + ": column filter of " + std::to_string(column_filter.size()) + " column(s)");
+    return column_filter;
+}
+
 struct PIIAuditTableResult {
     int64_t row_id;
     std::string column_name;
@@ -4213,22 +4250,8 @@ unique_ptr<FunctionData> PIIAuditTableBind(ClientContext &context, TableFunction
     }
     auto table_name = RequireNonNullArgument(input, 0, "pii_audit_table", "table_name");
 
-    // Get optional column filter
-    std::vector<std::string> column_filter;
-    if (input.inputs.size() > 1 && !input.inputs[1].IsNull()) {
-        auto cols_str = input.inputs[1].GetValue<std::string>();
-        // Parse comma-separated column names
-        std::stringstream ss(cols_str);
-        std::string col;
-        while (std::getline(ss, col, ',')) {
-            // Trim whitespace
-            col.erase(0, col.find_first_not_of(" \t"));
-            col.erase(col.find_last_not_of(" \t") + 1);
-            if (!col.empty()) {
-                column_filter.push_back(col);
-            }
-        }
-    }
+    // Get optional column filter (second argument or columns := ...)
+    auto column_filter = ParsePIIColumnFilter(input, "pii_audit_table");
     // Resolve the filter now so an unknown column is a bind error; the scan uses the
     // table's own spelling of each name
     if (!column_filter.empty()) {
@@ -4434,6 +4457,7 @@ TableFunctionSet CreatePIIAuditTableFunctionSet() {
                         {LogicalType::VARCHAR},
                         DATAZOO_GUARD(ANOFOX_TABULAR_BANNER, PIIAuditTableFunction), DATAZOO_GUARD(ANOFOX_TABULAR_BANNER, PIIAuditTableBind), PIIAuditTableInit);
     AddIdColumnParameter(func1);
+    duckdb_compat::AddNamedParameter(func1, PII_COLUMNS_PARAMETER, LogicalType(LogicalTypeId::VARCHAR));
     set.AddFunction(func1);
 
     // Version 2: table_name + column filter
@@ -4470,6 +4494,8 @@ struct PIIScanTableResult {
     double confidence_sum;   // running sum of match confidences
     int64_t values_scanned;  // non-NULL values of the column that were scanned
     std::string status;
+    std::vector<std::string> checked_types;  // PII types applied to the column (sorted)
+    std::string ner_model;                   // NER model that ran on the column ("" = none)
 
     PIIScanTableResult()
         : pii_type(PIIType::UNKNOWN), match_count(0), confidence(1.0), confidence_sum(0.0), values_scanned(0),
@@ -4503,7 +4529,41 @@ struct PIIScanTableState : public GlobalTableFunctionState {
     bool wants_ner = false;
     int64_t total_values = 0;
     bool large_scan_warned = false;
+    // The PII types the configuration applies, sorted by name (see CheckedPIITypes)
+    std::vector<std::string> configured_types;
 };
+
+// The PII types a scan applies under the configuration, sorted by name: the enabled
+// types, without ORGANIZATION, LOCATION and MISC while the NER model cannot run (NAME
+// then still runs on the name dictionary). An empty enabled list means the default
+// set (every type except the opt-in POSTAL_CODE).
+static std::vector<std::string> CheckedPIITypes(const PIIConfigSnapshot &config, bool ner_unavailable) {
+    std::vector<std::string> types;
+    for (const auto type : PIIEngine::Instance().GetSupportedTypes()) {
+        if (!config.IsTypeEnabled(type)) {
+            continue;
+        }
+        if (ner_unavailable && IsNERType(type) && type != PIIType::NAME) {
+            continue;
+        }
+        types.push_back(PIITypeToString(type));
+    }
+    std::sort(types.begin(), types.end());
+    types.erase(std::unique(types.begin(), types.end()), types.end());
+    return types;
+}
+
+// The name of the NER model that runs, or "" when it cannot run
+static std::string ActiveNERModelName() {
+    if (NERUnavailable()) {
+        return std::string();
+    }
+#if HAVE_OPENVINO
+    return NERModelManager::Instance().GetStatusSnapshot().model_name;
+#else
+    return std::string();
+#endif
+}
 
 unique_ptr<GlobalTableFunctionState> PIIScanTableInit(ClientContext &, TableFunctionInitInput &) {
     return make_uniq<PIIScanTableState>();
@@ -4519,22 +4579,8 @@ unique_ptr<FunctionData> PIIScanTableBind(ClientContext &context, TableFunctionB
     }
     auto table_name = RequireNonNullArgument(input, 0, "pii_scan_table", "table_name");
 
-    // Get optional column filter
-    std::vector<std::string> column_filter;
-    if (input.inputs.size() > 1 && !input.inputs[1].IsNull()) {
-        auto cols_str = input.inputs[1].GetValue<std::string>();
-        // Parse comma-separated column names
-        std::stringstream ss(cols_str);
-        std::string col;
-        while (std::getline(ss, col, ',')) {
-            // Trim whitespace
-            col.erase(0, col.find_first_not_of(" \t"));
-            col.erase(col.find_last_not_of(" \t") + 1);
-            if (!col.empty()) {
-                column_filter.push_back(col);
-            }
-        }
-    }
+    // Get optional column filter (second argument or columns := ...)
+    auto column_filter = ParsePIIColumnFilter(input, "pii_scan_table");
     // Resolve the filter now so an unknown column is a bind error; the scan uses the
     // table's own spelling of each name
     if (!column_filter.empty()) {
@@ -4561,6 +4607,14 @@ unique_ptr<FunctionData> PIIScanTableBind(ClientContext &context, TableFunctionB
     return_types.emplace_back(LogicalTypeId::BIGINT);
 
     names.emplace_back("status");
+    return_types.emplace_back(LogicalTypeId::VARCHAR);
+
+    // The record of what the scan checked: the PII types applied to the column and
+    // the NER model that ran on it, so "no_match" can be read correctly
+    names.emplace_back("checked_types");
+    return_types.emplace_back(LogicalType::LIST(LogicalTypeId::VARCHAR));
+
+    names.emplace_back("ner_model");
     return_types.emplace_back(LogicalTypeId::VARCHAR);
 
     return make_uniq<PIIScanTableBindData>(table_name, column_filter);
@@ -4674,9 +4728,20 @@ void PIIScanTableFunction(ClientContext &context, TableFunctionInput &input, Dat
             }
             // NER types were requested but the model could not run: say so in
             // the status, so a clean result is not mistaken for "no names"
-            const std::string ner_note = state.wants_ner && NERUnavailable() ? " (NER unavailable)" : "";
+            const bool ner_unavailable = NERUnavailable();
+            const std::string ner_note = state.wants_ner && ner_unavailable ? " (NER unavailable)" : "";
+            // The types and the model are judged after the column is scanned: the
+            // first NER call loads (or fails to load) the model
+            const auto checked_types = CheckedPIITypes(state.config, ner_unavailable);
+            const std::string ner_model = state.wants_ner ? ActiveNERModelName() : std::string();
+            AnofoxTrace(AnofoxLogLevel::Debug, "pii_scan_table: column " + col_name + " checked " +
+                                                   std::to_string(checked_types.size()) + " type(s), NER model '" +
+                                                   ner_model + "'");
             if (col_results.empty()) {
-                state.pending.push_back(MakePIIScanStatusRow(col_name, values_scanned, "no_match" + ner_note));
+                auto row = MakePIIScanStatusRow(col_name, values_scanned, "no_match" + ner_note);
+                row.checked_types = checked_types;
+                row.ner_model = ner_model;
+                state.pending.push_back(std::move(row));
                 continue;
             }
 
@@ -4689,6 +4754,8 @@ void PIIScanTableFunction(ClientContext &context, TableFunctionInput &input, Dat
                 res.confidence = res.confidence_sum / static_cast<double>(res.match_count);
                 res.values_scanned = values_scanned;
                 res.status += ner_note;
+                res.checked_types = checked_types;
+                res.ner_model = ner_model;
                 state.pending.push_back(std::move(res));
             }
             std::sort(state.pending.begin() + static_cast<std::ptrdiff_t>(first_pending), state.pending.end(),
@@ -4738,6 +4805,15 @@ void PIIScanTableFunction(ClientContext &context, TableFunctionInput &input, Dat
         // Column 5: values_scanned, column 6: status
         output.SetValue(5, i, Value::BIGINT(res.values_scanned));
         output.SetValue(6, i, Value(res.status));
+
+        // Column 7: checked_types (empty for skipped and unreadable columns),
+        // column 8: ner_model (NULL when the model did not run on the column)
+        std::vector<Value> checked;
+        for (const auto &type : res.checked_types) {
+            checked.push_back(Value(type));
+        }
+        output.SetValue(7, i, Value::LIST(LogicalTypeId::VARCHAR, std::move(checked)));
+        output.SetValue(8, i, res.ner_model.empty() ? Value(LogicalType::VARCHAR) : Value(res.ner_model));
     }
 
     state.pending_offset += count;
@@ -4750,6 +4826,7 @@ TableFunctionSet CreatePIIScanTableFunctionSet() {
     TableFunction func1("anofox_tab_pii_scan_table",
                         {LogicalType::VARCHAR},
                         DATAZOO_GUARD(ANOFOX_TABULAR_BANNER, PIIScanTableFunction), DATAZOO_GUARD(ANOFOX_TABULAR_BANNER, PIIScanTableBind), PIIScanTableInit);
+    duckdb_compat::AddNamedParameter(func1, PII_COLUMNS_PARAMETER, LogicalType(LogicalTypeId::VARCHAR));
     set.AddFunction(func1);
 
     // Version 2: table_name + column filter

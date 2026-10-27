@@ -742,14 +742,16 @@ pii_scan_table(table_name VARCHAR [, columns VARCHAR]) -> TABLE(
     sample_values  VARCHAR[],
     confidence     DOUBLE,
     values_scanned BIGINT,
-    status         VARCHAR
+    status         VARCHAR,
+    checked_types  VARCHAR[],
+    ner_model      VARCHAR
 )
 ```
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `table_name` | `VARCHAR` | required | The table to scan |
-| `columns` | `VARCHAR` | all columns that hold text: `VARCHAR` (`JSON` included) and nested types with a `VARCHAR` inside (`STRUCT`, `LIST`, `ARRAY`, `MAP`, `UNION`, in any combination), scanned as their `VARCHAR` rendering | Comma-separated column names. Names match case-insensitively; an unknown name is an error. A named column of another type (`BIGINT`, `DATE`, `INTEGER[]`, ...) is cast to `VARCHAR` and scanned |
+| `columns` | `VARCHAR` | all columns that hold text: `VARCHAR` (`JSON` included) and nested types with a `VARCHAR` inside (`STRUCT`, `LIST`, `ARRAY`, `MAP`, `UNION`, in any combination), scanned as their `VARCHAR` rendering | Comma-separated column names, as the second argument or by name (`columns := 'email, note'`). Names match case-insensitively; an unknown name is an error. A named column of another type (`BIGINT`, `DATE`, `INTEGER[]`, ...) is cast to `VARCHAR` and scanned |
 
 | Column | Type | Description |
 |--------|------|-------------|
@@ -760,6 +762,8 @@ pii_scan_table(table_name VARCHAR [, columns VARCHAR]) -> TABLE(
 | `confidence` | `DOUBLE` | Mean confidence of the matches: `1.0` for pattern types (lower when `anofox_pii_require_checksum = false` adds checksum failures at `0.6`), the mean model score for NER types; `NULL` on a row without a match |
 | `values_scanned` | `BIGINT` | Number of non-`NULL` values of the column that were scanned; `0` for a skipped column |
 | `status` | `VARCHAR` | `scanned`: the row reports a PII type found in the column. `no_match`: the column was scanned and nothing was found. `skipped (<type>)`, e.g. `skipped (DATE)`: the column was not scanned because it holds no text (numbers, dates, `BLOB`, or nested types of only those, such as `INTEGER[]`); name it in `columns` to scan it. `error (<message>)`: the column could not be read. `scanned (NER unavailable)` and `no_match (NER unavailable)`: as `scanned` and `no_match`, but the NER types (`NAME`, `ORGANIZATION`, `LOCATION`, `MISC`) are enabled and the model could not run (status `NOT_DOWNLOADED`, `FAILED` or `NOT_AVAILABLE` in [`anofox_ner_status`](#anofox_ner_status)): `NAME` was checked with the name dictionary only, and organizations, locations and other entities were not checked at all |
+| `checked_types` | `VARCHAR[]` | The PII types applied to the column, sorted by name: the types of `anofox_pii_enabled_types` (all default types when it is empty), without `ORGANIZATION`, `LOCATION` and `MISC` when the NER model could not run. Empty for a skipped column and a column that could not be read |
+| `ner_model` | `VARCHAR` | The NER model that ran on the column (`bert-multi`, see `anofox_ner_model`); `NULL` when no NER type was enabled, the model could not run, or the column was not scanned |
 
 Rows come in table column order and, within a column, ordered by `pii_type`. Without `columns`
 every column of the table appears; with `columns` exactly the named columns appear.
@@ -771,8 +775,9 @@ A nested column is scanned as its `VARCHAR` rendering: a contact `STRUCT` as
 `sample_values` holds the matched text inside it; in `pii_audit_table`, `original_value`,
 `masked_value` and the positions refer to that rendering.
 
-`no_match` means that detection found nothing, not that the column holds no personal data:
-detection misses values it cannot recognise, such as a two-letter first name. Without the NER
+`no_match` means that detection found nothing among the types in `checked_types`, not that the
+column holds no personal data: a type that was not enabled was not checked, and detection misses
+values it cannot recognise, such as a two-letter first name or a name in lower case. Without the NER
 model the status says `(NER unavailable)`, so a scan run offline is not mistaken for a full one. Mask columns known
 to hold PII with [`pii_mask_value`](#pii_mask_value).
 
@@ -827,6 +832,30 @@ FROM pii_scan_table('customers', 'email,note');
 └─────────────┴──────────┴─────────────┴─────────┘
 ```
 
+`checked_types` records what a `no_match` covers. With only `EMAIL` enabled, the `note` column
+holds a phone number and an IBAN but reports `no_match`, and the record shows that only
+`EMAIL` was checked:
+
+```sql
+SET anofox_pii_enabled_types = 'EMAIL';
+SELECT column_name, status, checked_types, ner_model
+FROM pii_scan_table('customers', columns := 'email, note');
+```
+
+```text
+┌─────────────┬──────────┬───────────────┬───────────┐
+│ column_name │  status  │ checked_types │ ner_model │
+│   varchar   │ varchar  │   varchar[]   │  varchar  │
+├─────────────┼──────────┼───────────────┼───────────┤
+│ email       │ scanned  │ [EMAIL]       │ NULL      │
+│ note        │ no_match │ [EMAIL]       │ NULL      │
+└─────────────┴──────────┴───────────────┴───────────┘
+```
+
+```sql
+RESET anofox_pii_enabled_types;
+```
+
 ---
 
 ## `pii_audit_table`
@@ -854,7 +883,7 @@ pii_audit_table(table_name VARCHAR [, columns VARCHAR] [, id_column := VARCHAR])
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `table_name` | `VARCHAR` | required | The table to audit |
-| `columns` | `VARCHAR` | all columns that hold text: `VARCHAR` (`JSON` included) and nested types with a `VARCHAR` inside (`STRUCT`, `LIST`, `ARRAY`, `MAP`, `UNION`, in any combination), scanned as their `VARCHAR` rendering | Comma-separated column names. Names match case-insensitively; an unknown name is an error. A named column of another type (`BIGINT`, `DATE`, `INTEGER[]`, ...) is cast to `VARCHAR` and scanned |
+| `columns` | `VARCHAR` | all columns that hold text: `VARCHAR` (`JSON` included) and nested types with a `VARCHAR` inside (`STRUCT`, `LIST`, `ARRAY`, `MAP`, `UNION`, in any combination), scanned as their `VARCHAR` rendering | Comma-separated column names, as the second argument or by name (`columns := 'email, note'`). Names match case-insensitively; an unknown name is an error. A named column of another type (`BIGINT`, `DATE`, `INTEGER[]`, ...) is cast to `VARCHAR` and scanned |
 | `id_column` | `VARCHAR`, named only | none | A column whose value is added after `row_id`, under its own name and type |
 
 | Column | Type | Description |

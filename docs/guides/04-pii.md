@@ -100,6 +100,32 @@ FROM pii_scan_table('customers');
 This is the record to keep for an audit: every column of the table is listed. Name a skipped
 column in the `columns` argument to scan it as text.
 
+Two more columns of the record say what the scan checked: `checked_types` lists the PII types
+that were applied to the column, and `ner_model` names the NER model that ran on it (`NULL` when
+none did). Keep them with the record, because a `no_match` only covers the types that were
+checked. With `anofox_pii_enabled_types` restricted to `EMAIL`, the phone number, IBAN and IP address in
+`note` are not found, and the record shows why:
+
+```sql
+SET anofox_pii_enabled_types = 'EMAIL';
+SELECT column_name, status, checked_types, ner_model
+FROM pii_scan_table('customers', columns := 'phone, note');
+```
+
+```text
+┌─────────────┬──────────┬───────────────┬───────────┐
+│ column_name │  status  │ checked_types │ ner_model │
+│   varchar   │ varchar  │   varchar[]   │  varchar  │
+├─────────────┼──────────┼───────────────┼───────────┤
+│ phone       │ no_match │ [EMAIL]       │ NULL      │
+│ note        │ no_match │ [EMAIL]       │ NULL      │
+└─────────────┴──────────┴───────────────┴───────────┘
+```
+
+```sql
+RESET anofox_pii_enabled_types;
+```
+
 `match_count` counts matches, not rows: a note with two phone numbers counts twice, so a count
 can even exceed `values_scanned`. Fewer matches than values, or `no_match`, means that detection
 found nothing in the other values, not that they are free of personal data. `first_name` holds
