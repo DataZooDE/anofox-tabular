@@ -7,6 +7,7 @@
 - Count the changes by type and inspect old and new values side by side
 - Diff tables with a compound key, or on a subset of columns
 - Back the diff with a profile and a few checks before you switch over
+- See which columns a migration added, dropped, renamed or retyped
 
 Every example creates its own data. Run them in order in one DuckDB session, after
 `LOAD anofox_tabular;`.
@@ -205,7 +206,81 @@ The row count passes: the migration dropped one order and created one, so the to
 10. The diff and `profile_summary` agree on that. Only the foreign-key check catches order 11 and
 its unknown customer 999. A volume check alone would have missed the problem.
 
-## 7. A sign-off query
+## 7. Schema drift and type changes
+
+The diff compares rows, not schemas. A column that exists in only one of the two tables (added,
+dropped or renamed) is not compared, and the trace log names it as a warning. List the schema
+drift explicitly by comparing the `DESCRIBE` output of both tables. Here a CRM migration
+dropped `fax`, added `segment`, renamed `city` to `town` and changed the types of `zip`,
+`credit_limit` and the key:
+
+```sql
+CREATE TABLE crm_old (customer_id INTEGER, company VARCHAR, city VARCHAR, zip INTEGER,
+                      credit_limit DECIMAL(12, 2), fax VARCHAR);
+INSERT INTO crm_old VALUES
+    (1001, 'Brauhaus Mueller GmbH', 'Munich',   80331, 5000.00, '+49 89 123456'),
+    (1003, 'Nordsee Fisch KG',      'Kiel',         7, 2500.00, NULL),
+    (1004, 'Alpine Outdoor AG',     'Zurich',    8001, 1200.00, '+41 44 765432');
+
+CREATE TABLE crm_new (customer_id BIGINT, company VARCHAR, town VARCHAR, zip VARCHAR,
+                      credit_limit DOUBLE, segment VARCHAR);
+INSERT INTO crm_new VALUES
+    (1001, 'Brauhaus Mueller GmbH', 'Munich', '80331', 5000.0, 'enterprise'),
+    (1003, 'Nordsee Fisch KG',      'Kiel',   '007',   2500.0, 'smb'),
+    (1004, 'Alpine Outdoor AG',     'Zurich', 'n/a',   1200.0, 'enterprise');
+
+WITH old_cols AS (SELECT column_name, column_type FROM (DESCRIBE crm_old)),
+     new_cols AS (SELECT column_name, column_type FROM (DESCRIBE crm_new))
+SELECT coalesce(o.column_name, n.column_name) AS column_name,
+       o.column_type AS old_type, n.column_type AS new_type,
+       CASE WHEN o.column_name IS NULL THEN 'added'
+            WHEN n.column_name IS NULL THEN 'dropped'
+            ELSE 'type changed' END AS drift
+FROM old_cols o FULL OUTER JOIN new_cols n ON lower(o.column_name) = lower(n.column_name)
+WHERE o.column_type IS DISTINCT FROM n.column_type
+ORDER BY drift, column_name;
+```
+
+```text
+┌──────────────┬───────────────┬──────────┬──────────────┐
+│ column_name  │   old_type    │ new_type │    drift     │
+│   varchar    │    varchar    │ varchar  │   varchar    │
+├──────────────┼───────────────┼──────────┼──────────────┤
+│ segment      │ NULL          │ VARCHAR  │ added        │
+│ town         │ NULL          │ VARCHAR  │ added        │
+│ city         │ VARCHAR       │ NULL     │ dropped      │
+│ fax          │ VARCHAR       │ NULL     │ dropped      │
+│ credit_limit │ DECIMAL(12,2) │ DOUBLE   │ type changed │
+│ customer_id  │ INTEGER       │ BIGINT   │ type changed │
+│ zip          │ INTEGER       │ VARCHAR  │ type changed │
+└──────────────┴───────────────┴──────────┴──────────────┘
+```
+
+A renamed column shows up as one dropped and one added column (`city` and `town`). To compare
+it anyway, diff a view that renames it back.
+
+Columns whose type changed are still compared. When the old and the new type are not both
+numeric, the diff compares the values as text, so `7` and `'007'` differ and `'n/a'` does not
+abort the diff with a conversion error. Numeric type changes compare by value: `5000.00` and
+`5000.0` are equal.
+
+```sql
+SELECT diff_type, customer_id, zip, credit_limit
+FROM diff_joindiff('crm_old', 'crm_new', 'customer_id')
+ORDER BY customer_id;
+```
+
+```text
+┌───────────┬─────────────┬─────────┬──────────────┐
+│ diff_type │ customer_id │   zip   │ credit_limit │
+│  varchar  │    int64    │ varchar │    double    │
+├───────────┼─────────────┼─────────┼──────────────┤
+│ changed   │        1003 │ 007     │       2500.0 │
+│ changed   │        1004 │ n/a     │       1200.0 │
+└───────────┴─────────────┴─────────┴──────────────┘
+```
+
+## 8. A sign-off query
 
 Put the pieces together in one query that returns a single verdict:
 

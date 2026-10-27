@@ -74,9 +74,62 @@ vector<idx_t> MatchColumnNames(const string &function_name, const string &table_
 
 // Resolve `requested` column names of `table_name` (see MatchColumnNames). The relation is
 // bound with a sibling connection (LIMIT 0 reads no rows), so like the functions that read
-// through such a connection it cannot see TEMP tables of the calling connection.
+// through such a connection it cannot see TEMP tables of the calling connection: a name that
+// resolves to a TEMP table in the caller's context is rejected (RejectTempTable).
 vector<ResolvedColumn> ResolveColumns(ClientContext &context, const string &function_name, const string &table_name,
                                       const vector<string> &requested);
+
+// A table or view looked up through the catalog of the calling context (TEMP tables and
+// the search path included, no sibling connection).
+struct RelationInfo {
+	//! false when the name is not a catalog table or view (e.g. a file read by a replacement scan)
+	bool found = false;
+	//! the relation lives in the temp catalog of the calling connection
+	bool is_temp = false;
+	bool is_view = false;
+	vector<ResolvedColumn> columns;
+};
+
+// Look up `table_name` (optionally catalog/schema qualified) in the caller's context.
+// Never throws: a missing relation, catalog or schema yields found = false.
+RelationInfo LookupRelation(ClientContext &context, const string &table_name);
+
+// The column `column_name` (case-insensitive) of `relation`, or nullptr.
+const ResolvedColumn *FindColumn(const RelationInfo &relation, const string &column_name);
+
+// Functions that read their input through a sibling connection (Connection con(*context.db))
+// cannot see the TEMP tables of the calling connection. When `table_name` resolves to a TEMP
+// table in the caller's context this throws
+// BinderException("TEMP tables are not supported by <function_name>; use a regular table").
+void RejectTempTable(ClientContext &context, const string &function_name, const string &table_name);
+
+// Bind-time check of a statistical check's input column: the column must exist in
+// `table_name` (else the MatchColumnNames error) and be numeric or BOOLEAN (else
+// "<function_name>: column '<c>' must be numeric, got <TYPE>"). Relations the catalog does
+// not know (replacement scans) are not checked here.
+void RequireNumericColumn(ClientContext &context, const string &function_name, const string &table_name,
+                          const string &column_name);
+
+// The type of `column_name` in `table_name` as the caller's context sees it, or
+// LogicalTypeId::INVALID when it cannot be determined at bind time.
+LogicalType LookupColumnType(ClientContext &context, const string &table_name, const string &column_name);
+
+// SQL expression for `column_sql` as a plain TIMESTAMP in UTC. A TIMESTAMP WITH TIME ZONE
+// column is converted through its epoch, so the result is the same with and without the ICU
+// extension and whatever the session TimeZone (a plain CAST converts to the session time
+// zone when ICU is loaded). Other types are CAST AS TIMESTAMP (read as UTC as they are).
+string UtcTimestampSQL(const string &column_sql, const LogicalType &type);
+// SQL expression for the UTC calendar date of `column_sql` (see UtcTimestampSQL).
+string UtcDateSQL(const string &column_sql, const LogicalType &type);
+// The current time as a plain UTC TIMESTAMP, independent of ICU and the session TimeZone.
+string UtcNowSQL();
+
+// Threshold literals of the check functions with a fixed output type: the value (or
+// `null_default` when the value is NULL) as CAST(... AS DOUBLE) / CAST(... AS BIGINT), so a
+// threshold column has the same type whatever literal the caller passed (0.015 would
+// otherwise be a DECIMAL(4,3), 1 an INTEGER).
+string DoubleThresholdSQL(const Value &value, const string &null_default = "NULL");
+string BigintThresholdSQL(const Value &value, const string &null_default = "NULL");
 
 } // namespace anofox
 } // namespace duckdb

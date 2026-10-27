@@ -1,24 +1,19 @@
 #include "anofox_diff.hpp"
 #include "anofox_function_alias.hpp"
 #include "anofox_sql_utils.hpp"
+#include "anofox_trace.hpp"
 #include "telemetry.hpp"
 
-#include "duckdb/catalog/catalog.hpp"
-#include "duckdb/catalog/catalog_entry/table_catalog_entry.hpp"
-#include "duckdb/catalog/catalog_entry/view_catalog_entry.hpp"
-#include "duckdb/catalog/entry_lookup_info.hpp"
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/common/types/value.hpp"
 #include "duckdb/function/table_function.hpp"
 #include "duckdb/parser/parser.hpp"
-#include "duckdb/parser/qualified_name.hpp"
 #include "duckdb/parser/tableref/subqueryref.hpp"
 #include "duckdb/parser/parsed_data/create_table_function_info.hpp"
 #include "duckdb/main/client_context.hpp"
 #include "duckdb_compat.hpp"
 
 #include <string>
-#include <type_traits>
 #include <unordered_set>
 #include "anofox_tabular_banner.hpp"
 
@@ -59,71 +54,27 @@ vector<string> ParseColumnList(const Value &column_value) {
 	return result;
 }
 
-// DuckDB v1.5 and 2.0 resolve view columns via BindView()/GetColumnInfo(). The
-// fallback overload (bound names stored directly on the catalog entry) served
-// DuckDB v1.4, which is no longer supported; it is only instantiated when
-// GetColumnInfo() is missing. The available API is detected at compile time.
-template <typename T, typename = void>
-struct ViewHasGetColumnInfo : std::false_type {};
-template <typename T>
-struct ViewHasGetColumnInfo<T, std::void_t<decltype(std::declval<T &>().GetColumnInfo())>> : std::true_type {};
-
-template <typename VIEW>
-typename std::enable_if<ViewHasGetColumnInfo<VIEW>::value, vector<string>>::type
-ResolveViewColumnNames(ClientContext &context, VIEW &view) {
-	view.BindView(context);
-	auto column_info = view.GetColumnInfo();
-	if (!column_info) {
-		return {};
-	}
-	vector<string> result;
-	for (idx_t i = 0; i < column_info->names.size(); i++) {
-		result.push_back(i < view.aliases.size() ? duckdb_compat::Str(view.aliases[i])
-		                                         : duckdb_compat::Str(column_info->names[i]));
-	}
-	return result;
-}
-
-template <typename VIEW>
-typename std::enable_if<!ViewHasGetColumnInfo<VIEW>::value, vector<string>>::type
-ResolveViewColumnNames(ClientContext &, VIEW &view) {
-	vector<string> result;
-	for (idx_t i = 0; i < view.names.size(); i++) {
-		result.push_back(i < view.aliases.size() ? view.aliases[i] : view.names[i]);
-	}
-	return result;
-}
-
-// Resolve the column names of a table or view through the catalog so schema
-// problems surface as clear binder errors instead of confusing errors from
-// the generated SQL.
-vector<string> GetRelationColumnNames(ClientContext &context, const string &function_name, const string &table_name) {
-	auto qname = QualifiedName::Parse(table_name);
-	auto entry_name = duckdb_compat::QualifiedLocalName(qname);
-	EntryLookupInfo lookup_info(CatalogType::TABLE_ENTRY, duckdb_compat::EntryName(entry_name));
-	auto entry = Catalog::GetEntry(context, duckdb_compat::Ident(duckdb_compat::QualifiedCatalog(qname)),
-	                               duckdb_compat::Ident(duckdb_compat::QualifiedSchema(qname)), lookup_info,
-	                               OnEntryNotFound::RETURN_NULL);
-	if (!entry) {
+// Resolve the columns (names and types) of a table or view through the catalog of the
+// calling context so schema problems surface as clear binder errors instead of confusing
+// errors from the generated SQL.
+vector<ResolvedColumn> GetRelationColumns(ClientContext &context, const string &function_name,
+                                          const string &table_name) {
+	auto relation = LookupRelation(context, table_name);
+	if (!relation.found) {
 		throw BinderException("%s: table or view '%s' does not exist", function_name, table_name);
 	}
-
-	vector<string> result;
-	if (entry->type == CatalogType::TABLE_ENTRY) {
-		auto &table = entry->Cast<TableCatalogEntry>();
-		for (auto &col : table.GetColumns().Logical()) {
-			result.push_back(duckdb_compat::Str(col.Name()));
-		}
-	} else if (entry->type == CatalogType::VIEW_ENTRY) {
-		auto &view = entry->Cast<ViewCatalogEntry>();
-		result = ResolveViewColumnNames(context, view);
-		if (result.empty()) {
-			throw BinderException("%s: unable to resolve the columns of view '%s'", function_name, table_name);
-		}
-	} else {
-		throw BinderException("%s: '%s' is not a table or view", function_name, table_name);
+	if (relation.columns.empty()) {
+		throw BinderException("%s: unable to resolve the columns of view '%s'", function_name, table_name);
 	}
-	return result;
+	return relation.columns;
+}
+
+vector<string> ColumnNames(const vector<ResolvedColumn> &columns) {
+	vector<string> names;
+	for (auto &column : columns) {
+		names.push_back(column.name);
+	}
+	return names;
 }
 
 // DuckDB matches identifiers case-insensitively, so validation does too.
@@ -157,39 +108,105 @@ void ValidateCompareColumns(const string &function_name, const vector<string> &c
 	}
 }
 
+// The type of `name` (case-insensitive) in `columns`; the column was validated before
+const LogicalType &ColumnType(const vector<ResolvedColumn> &columns, const string &name) {
+	for (auto &column : columns) {
+		if (StringUtil::CIEquals(column.name, name)) {
+			return column.type;
+		}
+	}
+	throw InternalException("diff: column '%s' was not resolved", name);
+}
+
+// Columns whose type differs between source and target are compared on their text form
+// (CAST AS VARCHAR) when the types are not both numeric: an implicit cast would abort the diff
+// on a value like 'n/a' (INTEGER -> VARCHAR) or hide a change like 7 -> '007'. Numeric type
+// changes (INTEGER -> BIGINT, DECIMAL -> DOUBLE) compare by value: 5000.00 equals 5000.0.
+bool NeedsTextComparison(const LogicalType &source_type, const LogicalType &target_type) {
+	if (source_type == target_type) {
+		return false;
+	}
+	return !(source_type.IsNumeric() && target_type.IsNumeric());
+}
+
+// The resolved column plan of a diff: the effective compare set and the (lower-case) names
+// of the key and compare columns that are compared on their text form.
+struct DiffColumnPlan {
+	vector<string> compare_columns;
+	std::unordered_set<string> text_columns;
+};
+
+// Note the columns of `names` whose type differs between the two tables, with a trace warning.
+void PlanTypeChanges(const string &function_name, const vector<string> &names, const string &role,
+                     const vector<ResolvedColumn> &source_columns, const vector<ResolvedColumn> &target_columns,
+                     DiffColumnPlan &plan) {
+	for (const auto &name : names) {
+		auto &source_type = ColumnType(source_columns, name);
+		auto &target_type = ColumnType(target_columns, name);
+		if (source_type == target_type) {
+			continue;
+		}
+		bool as_text = NeedsTextComparison(source_type, target_type);
+		if (as_text) {
+			plan.text_columns.insert(StringUtil::Lower(name));
+		}
+		AnofoxTrace(AnofoxLogLevel::Warn, function_name + ": " + role + " column '" + name + "' changed type " +
+		                                      source_type.ToString() + " -> " + target_type.ToString() +
+		                                      (as_text ? "; compared as VARCHAR" : "; compared by numeric value"));
+	}
+}
+
 // Validate the requested key/compare columns against both table schemas and
 // resolve the effective compare set (defaults to the shared non-key columns).
-vector<string> ResolveCompareColumns(ClientContext &context, const string &function_name, const string &source_table,
+DiffColumnPlan ResolveCompareColumns(ClientContext &context, const string &function_name, const string &source_table,
                                      const string &target_table, const vector<string> &primary_keys,
                                      const vector<string> &compare_columns) {
-	auto source_columns = GetRelationColumnNames(context, function_name, source_table);
-	auto target_columns = GetRelationColumnNames(context, function_name, target_table);
-	auto source_set = MakeColumnSet(source_columns);
-	auto target_set = MakeColumnSet(target_columns);
+	auto source_columns = GetRelationColumns(context, function_name, source_table);
+	auto target_columns = GetRelationColumns(context, function_name, target_table);
+	auto source_set = MakeColumnSet(ColumnNames(source_columns));
+	auto target_set = MakeColumnSet(ColumnNames(target_columns));
 
 	ValidatePrimaryKeys(function_name, primary_keys, source_set, "source", source_table);
 	ValidatePrimaryKeys(function_name, primary_keys, target_set, "target", target_table);
 
+	DiffColumnPlan plan;
 	if (!compare_columns.empty()) {
 		ValidateCompareColumns(function_name, compare_columns, source_set, "source", source_table);
 		ValidateCompareColumns(function_name, compare_columns, target_set, "target", target_table);
-		return compare_columns;
-	}
-
-	// Default: compare every non-key column the two tables share, in target
-	// column order (the output projects the target side)
-	auto pk_set = MakeColumnSet(primary_keys);
-	vector<string> shared_columns;
-	for (const auto &col : target_columns) {
-		auto lower = StringUtil::Lower(col);
-		if (pk_set.find(lower) != pk_set.end()) {
-			continue;
+		plan.compare_columns = compare_columns;
+	} else {
+		// Default: compare every non-key column the two tables share, in target
+		// column order (the output projects the target side)
+		auto pk_set = MakeColumnSet(primary_keys);
+		vector<string> target_only;
+		for (const auto &column : target_columns) {
+			auto lower = StringUtil::Lower(column.name);
+			if (pk_set.find(lower) != pk_set.end()) {
+				continue;
+			}
+			if (source_set.find(lower) != source_set.end()) {
+				plan.compare_columns.push_back(column.name);
+			} else {
+				target_only.push_back(column.name);
+			}
 		}
-		if (source_set.find(lower) != source_set.end()) {
-			shared_columns.push_back(col);
+		vector<string> source_only;
+		for (const auto &column : source_columns) {
+			if (target_set.find(StringUtil::Lower(column.name)) == target_set.end()) {
+				source_only.push_back(column.name);
+			}
+		}
+		// Schema drift is not a row change: columns on one side only are not compared
+		if (!source_only.empty() || !target_only.empty()) {
+			AnofoxTrace(AnofoxLogLevel::Warn,
+			            function_name + ": columns present on one side only are not compared (source only: [" +
+			                StringUtil::Join(source_only, ", ") + "], target only: [" +
+			                StringUtil::Join(target_only, ", ") + "])");
 		}
 	}
-	return shared_columns;
+	PlanTypeChanges(function_name, primary_keys, "key", source_columns, target_columns, plan);
+	PlanTypeChanges(function_name, plan.compare_columns, "compare", source_columns, target_columns, plan);
+	return plan;
 }
 
 } // anonymous namespace
@@ -291,9 +308,19 @@ static string BuildUniqueKeyGuard(const string &function_name, const string &sou
 	       ") ORDER BY side LIMIT 1)) IS NULL";
 }
 
+// `side`.`column`, on its text form when the column's type changed between the tables
+static string SideColumnSQL(const string &side, const string &column, const DiffColumnPlan &plan) {
+	string ref = side + "." + QuoteSqlIdentifier(column);
+	if (plan.text_columns.count(StringUtil::Lower(column))) {
+		return "CAST(" + ref + " AS VARCHAR)";
+	}
+	return ref;
+}
+
 static string GenerateJoinDiffSQL(const string &function_name, const string &source_table,
                                   const string &target_table, const vector<string> &primary_keys,
-                                  const vector<string> &compare_columns, bool include_all) {
+                                  const DiffColumnPlan &plan, bool include_all) {
+	const auto &compare_columns = plan.compare_columns;
 	// NULL-safe primary key join condition: rows whose key components are
 	// NULL still match their counterpart on the other side
 	string pk_join_condition;
@@ -301,8 +328,8 @@ static string GenerateJoinDiffSQL(const string &function_name, const string &sou
 		if (i > 0) {
 			pk_join_condition += " AND ";
 		}
-		pk_join_condition += "s." + QuoteSqlIdentifier(primary_keys[i]) + " IS NOT DISTINCT FROM t." +
-		                     QuoteSqlIdentifier(primary_keys[i]);
+		pk_join_condition += SideColumnSQL("s", primary_keys[i], plan) + " IS NOT DISTINCT FROM " +
+		                     SideColumnSQL("t", primary_keys[i], plan);
 	}
 
 	// Build the COALESCE expressions for primary keys
@@ -311,8 +338,8 @@ static string GenerateJoinDiffSQL(const string &function_name, const string &sou
 		if (i > 0) {
 			pk_select += ", ";
 		}
-		pk_select += "COALESCE(s." + QuoteSqlIdentifier(primary_keys[i]) + ", t." + QuoteSqlIdentifier(primary_keys[i]) +
-		             ") AS " + QuoteSqlIdentifier(primary_keys[i]);
+		pk_select += "COALESCE(" + SideColumnSQL("s", primary_keys[i], plan) + ", " +
+		             SideColumnSQL("t", primary_keys[i], plan) + ") AS " + QuoteSqlIdentifier(primary_keys[i]);
 	}
 
 	// Classify rows via the side-presence markers (robust against NULL keys)
@@ -329,8 +356,8 @@ static string GenerateJoinDiffSQL(const string &function_name, const string &sou
 			if (i > 0) {
 				sql += " OR ";
 			}
-			sql += "s." + QuoteSqlIdentifier(compare_columns[i]) + " IS DISTINCT FROM t." +
-			       QuoteSqlIdentifier(compare_columns[i]);
+			sql += SideColumnSQL("s", compare_columns[i], plan) + " IS DISTINCT FROM " +
+			       SideColumnSQL("t", compare_columns[i], plan);
 		}
 		sql += ") THEN 'changed' ";
 	}
@@ -389,12 +416,12 @@ static unique_ptr<TableRef> JoinDiffBindReplace(ClientContext &context, TableFun
 	}
 
 	// Validate both schemas and resolve the effective compare set
-	compare_columns = ResolveCompareColumns(context, "diff_joindiff", args.source_table, args.target_table,
-	                                        args.primary_keys, compare_columns);
+	auto plan = ResolveCompareColumns(context, "diff_joindiff", args.source_table, args.target_table,
+	                                  args.primary_keys, compare_columns);
 
 	// Generate SQL query
 	string sql = GenerateJoinDiffSQL("diff_joindiff", args.source_table, args.target_table, args.primary_keys,
-	                                 compare_columns, include_all);
+	                                 plan, include_all);
 
 	// Parse and return as SubqueryRef
 	auto subquery_ref = ParseSubquery(sql, context,
@@ -419,12 +446,12 @@ static unique_ptr<TableRef> HashDiffBindReplace(ClientContext &context, TableFun
 	auto args = ResolveDiffArguments("diff_hashdiff", input);
 
 	// Validate both schemas and resolve the compare set (all shared non-key columns)
-	auto compare_columns =
+	auto plan =
 	    ResolveCompareColumns(context, "diff_hashdiff", args.source_table, args.target_table, args.primary_keys, {});
 
 	// Generate SQL query using same logic as JoinDiff
 	string sql = GenerateJoinDiffSQL("diff_hashdiff", args.source_table, args.target_table, args.primary_keys,
-	                                 compare_columns, false);
+	                                 plan, false);
 
 	// Parse and return as SubqueryRef
 	auto subquery_ref = ParseSubquery(sql, context,

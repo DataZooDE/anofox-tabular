@@ -1,12 +1,18 @@
 #include "anofox_sql_utils.hpp"
 
 #include "anofox_trace.hpp"
+#include "duckdb/catalog/catalog.hpp"
+#include "duckdb/catalog/catalog_entry/table_catalog_entry.hpp"
+#include "duckdb/catalog/catalog_entry/view_catalog_entry.hpp"
+#include "duckdb/catalog/entry_lookup_info.hpp"
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/string_util.hpp"
+#include "duckdb/parser/qualified_name.hpp"
 #include "duckdb_compat.hpp"
 
 #include <algorithm>
 #include <cmath>
+#include <type_traits>
 
 namespace duckdb {
 namespace anofox {
@@ -190,6 +196,7 @@ vector<idx_t> MatchColumnNames(const string &function_name, const string &table_
 
 vector<ResolvedColumn> ResolveColumns(ClientContext &context, const string &function_name, const string &table_name,
                                       const vector<string> &requested) {
+	RejectTempTable(context, function_name, table_name);
 	Connection con(*context.db);
 	auto result = con.Query("SELECT * FROM " + BuildQueryTableRef(table_name) + " LIMIT 0");
 	if (result->HasError()) {
@@ -206,6 +213,153 @@ vector<ResolvedColumn> ResolveColumns(ClientContext &context, const string &func
 	AnofoxTrace(AnofoxLogLevel::Debug, function_name + ": resolved " + std::to_string(columns.size()) +
 	                                       " column(s) of '" + table_name + "'");
 	return columns;
+}
+
+namespace {
+// DuckDB v1.5 and 2.0 resolve view columns via BindView()/GetColumnInfo(); the fallback
+// (bound names/types stored on the entry) is only instantiated when GetColumnInfo() is
+// missing. The available API is detected at compile time.
+template <typename T, typename = void>
+struct ViewHasGetColumnInfo : std::false_type {};
+template <typename T>
+struct ViewHasGetColumnInfo<T, std::void_t<decltype(std::declval<T &>().GetColumnInfo())>> : std::true_type {};
+
+template <typename VIEW>
+typename std::enable_if<ViewHasGetColumnInfo<VIEW>::value, vector<ResolvedColumn>>::type
+ResolveViewColumns(ClientContext &context, VIEW &view) {
+	view.BindView(context);
+	auto column_info = view.GetColumnInfo();
+	if (!column_info) {
+		return {};
+	}
+	vector<ResolvedColumn> result;
+	for (idx_t i = 0; i < column_info->names.size(); i++) {
+		string name = i < view.aliases.size() ? duckdb_compat::Str(view.aliases[i])
+		                                      : duckdb_compat::Str(column_info->names[i]);
+		result.push_back({name, i < column_info->types.size() ? column_info->types[i] : LogicalType()});
+	}
+	return result;
+}
+
+template <typename VIEW>
+typename std::enable_if<!ViewHasGetColumnInfo<VIEW>::value, vector<ResolvedColumn>>::type
+ResolveViewColumns(ClientContext &, VIEW &view) {
+	vector<ResolvedColumn> result;
+	for (idx_t i = 0; i < view.names.size(); i++) {
+		result.push_back({i < view.aliases.size() ? view.aliases[i] : view.names[i],
+		                  i < view.types.size() ? view.types[i] : LogicalType()});
+	}
+	return result;
+}
+} // namespace
+
+RelationInfo LookupRelation(ClientContext &context, const string &table_name) {
+	RelationInfo info;
+	try {
+		auto qname = QualifiedName::Parse(table_name);
+		auto entry_name = duckdb_compat::QualifiedLocalName(qname);
+		EntryLookupInfo lookup_info(CatalogType::TABLE_ENTRY, duckdb_compat::EntryName(entry_name));
+		auto entry = Catalog::GetEntry(context, duckdb_compat::Ident(duckdb_compat::QualifiedCatalog(qname)),
+		                               duckdb_compat::Ident(duckdb_compat::QualifiedSchema(qname)), lookup_info,
+		                               OnEntryNotFound::RETURN_NULL);
+		if (!entry) {
+			return info;
+		}
+		if (entry->type == CatalogType::TABLE_ENTRY) {
+			auto &table = entry->Cast<TableCatalogEntry>();
+			for (auto &col : table.GetColumns().Logical()) {
+				info.columns.push_back({duckdb_compat::Str(col.Name()), col.Type()});
+			}
+		} else if (entry->type == CatalogType::VIEW_ENTRY) {
+			info.is_view = true;
+			info.columns = ResolveViewColumns(context, entry->Cast<ViewCatalogEntry>());
+		} else {
+			return info;
+		}
+		info.found = true;
+		info.is_temp = entry->ParentCatalog().IsTemporaryCatalog();
+	} catch (const std::exception &ex) {
+		// e.g. an unknown catalog/schema or a file path: not a catalog relation
+		AnofoxTrace(AnofoxLogLevel::Debug, "catalog lookup of '" + table_name + "' failed: " + ex.what());
+		info = RelationInfo();
+	}
+	return info;
+}
+
+const ResolvedColumn *FindColumn(const RelationInfo &relation, const string &column_name) {
+	for (auto &column : relation.columns) {
+		if (StringUtil::CIEquals(column.name, column_name)) {
+			return &column;
+		}
+	}
+	return nullptr;
+}
+
+void RejectTempTable(ClientContext &context, const string &function_name, const string &table_name) {
+	auto relation = LookupRelation(context, table_name);
+	if (relation.found && relation.is_temp) {
+		AnofoxTrace(AnofoxLogLevel::Debug,
+		            function_name + ": '" + table_name + "' is a TEMP table, which a sibling connection cannot read");
+		throw BinderException("TEMP tables are not supported by %s; use a regular table (CREATE TABLE ... AS "
+		                      "SELECT * FROM %s)",
+		                      function_name, table_name);
+	}
+}
+
+void RequireNumericColumn(ClientContext &context, const string &function_name, const string &table_name,
+                          const string &column_name) {
+	auto relation = LookupRelation(context, table_name);
+	if (!relation.found || relation.columns.empty()) {
+		return;
+	}
+	vector<string> available_names;
+	for (auto &column : relation.columns) {
+		available_names.push_back(column.name);
+	}
+	auto idx = MatchColumnNames(function_name, table_name, available_names, {column_name})[0];
+	auto &column = relation.columns[idx];
+	if (column.type.id() == LogicalTypeId::INVALID || column.type.id() == LogicalTypeId::UNKNOWN) {
+		return;
+	}
+	if (!column.type.IsNumeric() && column.type.id() != LogicalTypeId::BOOLEAN) {
+		throw BinderException("%s: column '%s' must be numeric, got %s", function_name, column.name,
+		                      column.type.ToString());
+	}
+}
+
+LogicalType LookupColumnType(ClientContext &context, const string &table_name, const string &column_name) {
+	auto relation = LookupRelation(context, table_name);
+	auto column = FindColumn(relation, column_name);
+	return column ? column->type : LogicalType(LogicalTypeId::INVALID);
+}
+
+string UtcTimestampSQL(const string &column_sql, const LogicalType &type) {
+	if (type.id() == LogicalTypeId::TIMESTAMP_TZ) {
+		// epoch_us of the instant is time zone independent; make_timestamp(BIGINT) reads it as UTC
+		return "make_timestamp(epoch_us(" + column_sql + "))";
+	}
+	return "CAST(" + column_sql + " AS TIMESTAMP)";
+}
+
+string UtcDateSQL(const string &column_sql, const LogicalType &type) {
+	if (type.id() == LogicalTypeId::TIMESTAMP_TZ) {
+		return "CAST(" + UtcTimestampSQL(column_sql, type) + " AS DATE)";
+	}
+	return "CAST(" + column_sql + " AS DATE)";
+}
+
+string UtcNowSQL() {
+	return "make_timestamp(epoch_us(now()))";
+}
+
+string DoubleThresholdSQL(const Value &value, const string &null_default) {
+	string literal = value.IsNull() ? null_default : "'" + EscapeSqlStringLiteral(value.ToString()) + "'";
+	return "CAST(" + literal + " AS DOUBLE)";
+}
+
+string BigintThresholdSQL(const Value &value, const string &null_default) {
+	string literal = value.IsNull() ? null_default : "'" + EscapeSqlStringLiteral(value.ToString()) + "'";
+	return "CAST(" + literal + " AS BIGINT)";
 }
 
 } // namespace anofox

@@ -67,7 +67,7 @@ Output columns:
 | Column | Type | Description |
 |--------|------|-------------|
 | `diff_type` | `VARCHAR` | `added`, `removed`, `changed`, or `unchanged` (only with `include_all`) |
-| key columns | the key's type | `COALESCE` of the source and target key value |
+| key columns | the key's type | `COALESCE` of the source and target key value. When the key's type differs between the tables and is not numeric on both sides, `VARCHAR` |
 | other target columns | their type | The values of the target row. `NULL` for a `removed` row, which has no target row |
 
 Behavior:
@@ -76,6 +76,14 @@ Behavior:
   is compared, not reported as removed and added.
 - A row is `changed` when any compare column `IS DISTINCT FROM` its counterpart, so a change from
   or to `NULL` counts.
+- Columns that exist in only one of the two tables (added, dropped or renamed columns) are not
+  compared by default; the trace log names them as a warning. See
+  [Guide: schema drift and type changes](../guides/05-diffing-and-migration.md#7-schema-drift-and-type-changes) for how to list them.
+- A key or compare column whose type differs between the tables is compared on its text form
+  (`CAST(... AS VARCHAR)`), unless both types are numeric: `7` and `'007'` differ, `8001` and
+  `'n/a'` differ instead of aborting the diff with a conversion error. Numeric type changes
+  (`INTEGER` to `BIGINT`, `DECIMAL` to `DOUBLE`) compare by value, so `5000.00` equals `5000.0`.
+  The trace log names each column with both types.
 - The key and compare columns are checked against both tables at bind time. A missing column or
   table is a binder error.
 - The primary key must be unique in both tables. A repeated key value would join every source row
@@ -123,6 +131,37 @@ ORDER BY d.id;
 │ added     │     5 │ NULL     │ Leipzig  │      NULL │        50 │
 └───────────┴───────┴──────────┴──────────┴───────────┴───────────┘
 ```
+
+### Columns whose type changed
+
+A migration that turned the integer `zip` into a `VARCHAR` (keeping leading zeros, `'n/a'` for
+unknowns), the `DECIMAL` credit limit into a `DOUBLE` and the key into a `BIGINT`:
+
+```sql
+CREATE TABLE crm_v1 (customer_id INTEGER, zip INTEGER, credit_limit DECIMAL(12, 2));
+INSERT INTO crm_v1 VALUES (1001, 80331, 5000.00), (1003, 7, 2500.00), (1004, 8001, 1200.00);
+
+CREATE TABLE crm_v2 (customer_id BIGINT, zip VARCHAR, credit_limit DOUBLE);
+INSERT INTO crm_v2 VALUES (1001, '80331', 5000.0), (1003, '007', 2500.0), (1004, 'n/a', 1200.0);
+
+SELECT diff_type, customer_id, zip, credit_limit
+FROM diff_joindiff('crm_v1', 'crm_v2', 'customer_id', include_all := true)
+ORDER BY customer_id;
+```
+
+```text
+┌───────────┬─────────────┬─────────┬──────────────┐
+│ diff_type │ customer_id │   zip   │ credit_limit │
+│  varchar  │    int64    │ varchar │    double    │
+├───────────┼─────────────┼─────────┼──────────────┤
+│ unchanged │        1001 │ 80331   │       5000.0 │
+│ changed   │        1003 │ 007     │       2500.0 │
+│ changed   │        1004 │ n/a     │       1200.0 │
+└───────────┴─────────────┴─────────┴──────────────┘
+```
+
+`zip` is compared as text, so `7` -> `'007'` and `8001` -> `'n/a'` are changes. The credit
+limits and the keys compare by value. The output shows the target's types.
 
 ### Compare a subset of columns
 
