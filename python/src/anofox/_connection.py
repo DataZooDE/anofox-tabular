@@ -303,14 +303,28 @@ class AnofoxConnection:
         df:
             pandas or polars DataFrame.
         rules:
-            Mapping of ``{check_name: params_dict}``.  Supported checks:
-            ``"volume"``, ``"null_rate"``, ``"distinct_count"``; any other
-            name raises :class:`ValueError`.
+            Mapping of ``{check_name: params_dict}``. Supported checks and
+            their keys:
+
+            - ``"volume"``: ``min_rows`` (default 1), ``max_rows``
+            - ``"null_rate"``: ``column`` (required), ``max_null_rate``
+              (default 0.0)
+            - ``"distinct_count"``: ``column`` (required), ``min_distinct``
+              (default 1), ``max_distinct``
+
+            For example ``{"volume": {"min_rows": 100}, "null_rate":
+            {"column": "email", "max_null_rate": 0.05}}``. Any other check
+            name, a key a check does not know, a missing ``column`` or a value
+            that is not a dict raises :class:`ValueError` before a check runs.
+            Use :mod:`anofox.quality` for the other checks.
 
         Returns
         -------
-        dict
-            ``{"status": "pass"|"fail", "checks": {check_name: result_dict}}``.
+        QualityResult
+            ``status`` (``"pass"`` when every check passes, else ``"fail"``)
+            and ``checks`` (``{check_name: result_dict}``, the dicts of
+            :mod:`anofox.quality`). ``result["status"]`` and
+            ``result["checks"]`` work too.
         """
         from ._table import table_inputs
         from ._utils import detect_df_type
@@ -324,6 +338,8 @@ class AnofoxConnection:
                 f"supported: {', '.join(map(repr, _QUALITY_CHECK_RULES))}. "
                 "Use anofox.quality for the other checks."
             )
+        for check_name, params in rules.items():
+            _check_rule_params(check_name, params)
         results = {}
         with table_inputs(self, df) as (table_name,):
             for check_name, params in rules.items():
@@ -354,7 +370,41 @@ class AnofoxConnection:
         )
 
 
-_QUALITY_CHECK_RULES = ("volume", "null_rate", "distinct_count")
+#: The rules of :meth:`AnofoxConnection.quality_check` and the keys each one takes.
+_QUALITY_CHECK_KEYS = {
+    "volume": ("min_rows", "max_rows"),
+    "null_rate": ("column", "max_null_rate"),
+    "distinct_count": ("column", "min_distinct", "max_distinct"),
+}
+_QUALITY_CHECK_RULES = tuple(_QUALITY_CHECK_KEYS)
+
+
+def _check_rule_params(check_name: str, params: Any) -> None:
+    """
+    Raise ValueError for a quality_check rule whose parameters are not a dict,
+    hold a key the check does not take, or lack a required ``column``.
+
+    A misspelled key (``{"volume": {"min": 10}}``) would otherwise be ignored
+    and the check run with its default threshold.
+    """
+    allowed = _QUALITY_CHECK_KEYS[check_name]
+    valid = ", ".join(map(repr, allowed))
+    if not isinstance(params, dict):
+        raise ValueError(
+            f"quality_check rule {check_name!r} takes a dict of parameters "
+            f"({valid}), got {params!r}"
+        )
+    unknown = [key for key in params if key not in allowed]
+    if unknown:
+        raise ValueError(
+            f"unknown key(s) {', '.join(map(repr, unknown))} in quality_check rule "
+            f"{check_name!r}; valid keys: {valid}"
+        )
+    if "column" in allowed and params.get("column") is None:
+        raise ValueError(
+            f"quality_check rule {check_name!r} needs a 'column', "
+            f"e.g. {{{check_name!r}: {{'column': 'email', ...}}}}"
+        )
 
 
 def _rows_to_frame(rows: list[dict], columns: list[str], df_type: str) -> Any:

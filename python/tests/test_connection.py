@@ -116,6 +116,57 @@ class TestQualityCheckRules:
         assert set(result["checks"]) == {"null_rate"}
 
 
+def _signups():
+    import pandas as pd
+    return pd.DataFrame({
+        "customer_id": [f"C-{i:04d}" for i in range(1, 9)],
+        "email": ["ana@example.com", None, "li@example.org", "jo@example.net",
+                  None, "max@example.de", "eva@example.at", "tim@example.ch"],
+        "country": ["DE", "DE", "AT", "CH", "DE", "DE", "AT", "CH"],
+    })
+
+
+class TestQualityCheckRuleKeys:
+    """Keys inside a rule are validated: a misspelled threshold must not be ignored."""
+
+    def test_unknown_key_in_volume_raises(self, conn):
+        with pytest.raises(ValueError) as exc:
+            conn.quality_check(_signups(), {"volume": {"min": 10}})
+        message = str(exc.value)
+        assert "'min'" in message and "volume" in message
+        assert "min_rows" in message and "max_rows" in message
+
+    def test_unknown_key_in_null_rate_raises(self, conn):
+        with pytest.raises(ValueError) as exc:
+            conn.quality_check(_signups(), {"null_rate": {"column": "email", "max_rate": 0.1}})
+        message = str(exc.value)
+        assert "'max_rate'" in message and "max_null_rate" in message
+
+    def test_missing_column_raises_value_error(self, conn):
+        with pytest.raises(ValueError) as exc:
+            conn.quality_check(_signups(), {"null_rate": {"max_null_rate": 0.1}})
+        assert "'column'" in str(exc.value) and "null_rate" in str(exc.value)
+        with pytest.raises(ValueError, match="distinct_count"):
+            conn.quality_check(_signups(), {"distinct_count": {"min_distinct": 2}})
+
+    def test_rule_params_must_be_a_dict(self, conn):
+        with pytest.raises(ValueError, match="volume"):
+            conn.quality_check(_signups(), {"volume": 10})
+
+    def test_valid_rules_run(self, conn):
+        from anofox._connection import QualityResult
+        result = conn.quality_check(_signups(), {
+            "volume": {"min_rows": 5, "max_rows": 100},
+            "null_rate": {"column": "email", "max_null_rate": 0.1},
+            "distinct_count": {"column": "country", "min_distinct": 2, "max_distinct": 5},
+        })
+        assert isinstance(result, QualityResult)
+        assert result.status == "fail"
+        assert {n: c["status"] for n, c in result.checks.items()} == {
+            "volume": "pass", "null_rate": "fail", "distinct_count": "pass",
+        }
+
+
 class TestPendingResults:
     """
     A wrapper call must leave no unfinished query result behind, and must not

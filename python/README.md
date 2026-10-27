@@ -112,6 +112,15 @@ result = conn.validate(contacts, schema={
 })
 print(result.passed)      # False
 print(result.failures)    # DataFrame: column, row_id, value, rule
+
+# ── Quality rules on a DataFrame ──────────────────────────────────────
+checks = conn.quality_check(contacts, {
+    "volume": {"min_rows": 1, "max_rows": 10_000},               # min_rows, max_rows
+    "null_rate": {"column": "email", "max_null_rate": 0.05},     # column, max_null_rate
+    "distinct_count": {"column": "phone", "min_distinct": 2},    # column, min_distinct, max_distinct
+})
+print(checks.status)                       # 'pass' or 'fail'
+print(checks.checks["null_rate"]["null_rate"])
 ```
 
 ## DataFrames
@@ -160,8 +169,12 @@ print(result.failures)    # DataFrame: column, row_id, value, rule
   `NaN`) is skipped, as in SQL; `include_nulls=True` reports it as a failure whose rule ends in
   ` missing` (`"email(regex) missing"`). A schema key or `region_column` that is not a column
   of the DataFrame raises `ValueError` listing the columns.
-- **`conn.quality_check(df, rules)`** supports the rules `volume`, `null_rate` and
-  `distinct_count`; any other rule name raises `ValueError`.
+- **`conn.quality_check(df, rules)`** supports the rules `volume` (keys `min_rows`, default 1,
+  and `max_rows`), `null_rate` (`column`, `max_null_rate`, default 0.0) and `distinct_count`
+  (`column`, `min_distinct`, default 1, and `max_distinct`). Any other rule name, a key the
+  rule does not take (`{"volume": {"min": 10}}`) or a missing `column` raises `ValueError`
+  listing the valid names. It returns a `QualityResult` with `status` (`"pass"` or `"fail"`)
+  and `checks` (one result dict per rule); `result["status"]` works too.
 
 ## Results
 
