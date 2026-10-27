@@ -230,3 +230,77 @@ class TestMaskReplace:
         from anofox import pii
         with pytest.raises(ValueError, match="replace.*DataFrame"):
             call(pii, conn)
+
+
+def _setting(conn):
+    return conn.execute("SELECT current_setting('anofox_pii_enabled_types')").fetchone()[0]
+
+
+@pytest.fixture
+def tickets():
+    return pandas.DataFrame({
+        "ticket_id": [5001, 5002, 5003],
+        "body": [
+            "Please call me back on +49 30 1234567, thanks",
+            "Invoice copy to anna.schmidt@example.de please",
+            "Refund to IBAN DE89370400440532013000 and mail ops@example.com",
+        ],
+    }, index=[11, 12, 13])
+
+
+class TestPiiTypes:
+    """types= restricts detection for one call and restores the setting afterwards."""
+
+    def test_mask_text_with_type_list(self, conn):
+        from anofox import pii
+        text = "Mail anna@example.de or call +49 30 1234567"
+        assert pii.pii_mask(conn, text, types=["EMAIL"]) == "Mail [EMAIL] or call +49 30 1234567"
+        assert _setting(conn) == ""
+
+    def test_mask_dataframe_with_comma_string(self, conn, tickets):
+        from anofox import pii
+        out = pii.pii_mask(conn, tickets, column="body", types="EMAIL, IBAN")
+        assert out.index.tolist() == [11, 12, 13]
+        assert out["pii_mask"].tolist() == [
+            "Please call me back on +49 30 1234567, thanks",
+            "Invoice copy to [EMAIL] please",
+            "Refund to IBAN [IBAN] and mail [EMAIL]",
+        ]
+        assert _setting(conn) == ""
+
+    def test_detect_and_contains(self, conn):
+        from anofox import pii
+        found = pii.pii_detect(conn, "call +49 30 1234567 or anna@example.de", types=["PHONE"])
+        assert [m["type"] for m in found] == ["PHONE"]
+        assert pii.pii_contains(conn, "anna@example.de", types=["PHONE"]) is False
+        assert pii.pii_contains(conn, "anna@example.de", types=["EMAIL"]) is True
+
+    def test_scan_and_audit_table(self, conn, tickets):
+        from anofox import pii
+        scan = pii.pii_scan_table(conn, tickets, columns=["body"], types=["EMAIL"])
+        assert list(scan["checked_types"].iloc[0]) == ["EMAIL"]
+        audit = pii.pii_audit_table(conn, tickets, columns=["body"], id_column="ticket_id", types=["EMAIL"])
+        assert sorted(audit["ticket_id"].tolist()) == [5002, 5003]
+        assert _setting(conn) == ""
+
+    def test_previous_setting_restored(self, conn):
+        from anofox import pii
+        conn.execute("SET anofox_pii_enabled_types = 'EMAIL,PHONE'")
+        try:
+            assert pii.pii_mask(conn, "anna@example.de, IBAN DE89370400440532013000",
+                                types=["IBAN"]) == "anna@example.de, IBAN [IBAN]"
+            assert _setting(conn) == "EMAIL,PHONE"
+        finally:
+            conn.execute("RESET anofox_pii_enabled_types")
+
+    def test_unknown_type_raises_and_keeps_setting(self, conn):
+        import duckdb
+        from anofox import pii
+        with pytest.raises(duckdb.Error, match="Unknown PII type"):
+            pii.pii_mask(conn, "anna@example.de", types=["EMAIL", "PASSPORT_NO"])
+        assert _setting(conn) == ""
+
+    def test_empty_types_raises(self, conn):
+        from anofox import pii
+        with pytest.raises(ValueError, match="types"):
+            pii.pii_mask(conn, "anna@example.de", types=[])

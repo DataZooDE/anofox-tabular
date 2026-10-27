@@ -5,9 +5,10 @@ PII detection, masking, and scanning wrappers.
 from __future__ import annotations
 
 import json
-from typing import Any, Optional, Sequence, Union
+from contextlib import contextmanager
+from typing import Any, Iterator, Optional, Sequence, Union
 
-from ._sql import fetch_frame, fetch_one, id_column_arg, quote_ident
+from ._sql import fetch_frame, fetch_one, id_column_arg, quote_ident, run
 from ._table import (
     TableLike,
     apply_scalar,
@@ -21,6 +22,7 @@ def pii_detect(
     conn: Any,
     text_or_df: Union[str, Any],
     column: Optional[str] = None,
+    types: Union[str, Sequence[str], None] = None,
 ) -> Union[list[dict], Any]:
     """
     Detect PII entities in text.
@@ -33,6 +35,12 @@ def pii_detect(
         A plain text string or a pandas/polars DataFrame.
     column:
         Column name when *text_or_df* is a DataFrame.
+    types:
+        PII types to detect in this call only, as a list (``["EMAIL", "IBAN"]``)
+        or a comma-separated string. ``None`` (default) uses the setting
+        ``anofox_pii_enabled_types``. Leaving out the NER types (``NAME``,
+        ``ORGANIZATION``, ``LOCATION``, ``MISC``) skips the NER model, which is
+        much faster. See :func:`enabled_types`.
 
     Returns
     -------
@@ -42,15 +50,17 @@ def pii_detect(
         When *text_or_df* is a DataFrame; adds ``pii_detect`` column.
     """
     if isinstance(text_or_df, str):
-        raw = fetch_one(conn, "SELECT anofox_tab_pii_detect(?)", [text_or_df])
+        with enabled_types(conn, types):
+            raw = fetch_one(conn, "SELECT anofox_tab_pii_detect(?)", [text_or_df])
         return _parse_json_list(raw)
 
     df_type = check_row_input(text_or_df, column)
 
-    return apply_scalar(
-        conn, text_or_df, df_type,
-        f"anofox_tab_pii_detect({quote_ident(column)})", [], "pii_detect",
-    )
+    with enabled_types(conn, types):
+        return apply_scalar(
+            conn, text_or_df, df_type,
+            f"anofox_tab_pii_detect({quote_ident(column)})", [], "pii_detect",
+        )
 
 
 def pii_mask(
@@ -59,6 +69,7 @@ def pii_mask(
     strategy: str = "redact",
     column: Optional[str] = None,
     replace: bool = False,
+    types: Union[str, Sequence[str], None] = None,
 ) -> Union[str, Any]:
     """
     Mask all detected PII in a text or in a DataFrame column.
@@ -79,6 +90,12 @@ def pii_mask(
         *column*, like the other row-wise helpers, so the result still holds
         the raw value. ``True``: put the masked text in *column* itself, so
         the result no longer holds the raw value.
+    types:
+        PII types to detect in this call only, as a list (``["EMAIL", "IBAN"]``)
+        or a comma-separated string. ``None`` (default) uses the setting
+        ``anofox_pii_enabled_types``. Leaving out the NER types (``NAME``,
+        ``ORGANIZATION``, ``LOCATION``, ``MISC``) skips the NER model, which is
+        much faster. See :func:`enabled_types`.
 
     Returns
     -------
@@ -92,15 +109,17 @@ def pii_mask(
     """
     _check_replace(replace, text_or_df)
     if isinstance(text_or_df, str):
-        value = fetch_one(conn, "SELECT anofox_tab_pii_mask(?, ?)", [text_or_df, strategy])
+        with enabled_types(conn, types):
+            value = fetch_one(conn, "SELECT anofox_tab_pii_mask(?, ?)", [text_or_df, strategy])
         return str(value) if value is not None else ""
 
     df_type = check_row_input(text_or_df, column)
-    return apply_scalar(
-        conn, text_or_df, df_type,
-        f"anofox_tab_pii_mask({quote_ident(column)}, ?)", [strategy],
-        column if replace else "pii_mask",
-    )
+    with enabled_types(conn, types):
+        return apply_scalar(
+            conn, text_or_df, df_type,
+            f"anofox_tab_pii_mask({quote_ident(column)}, ?)", [strategy],
+            column if replace else "pii_mask",
+        )
 
 
 def pii_mask_value(
@@ -164,6 +183,7 @@ def _check_replace(replace: bool, value: Any) -> None:
 def pii_contains(
     conn: Any,
     text: str,
+    types: Union[str, Sequence[str], None] = None,
 ) -> bool:
     """
     Return True if *text* contains any detectable PII.
@@ -174,14 +194,22 @@ def pii_contains(
         An :class:`~anofox.AnofoxConnection`.
     text:
         Input text to inspect.
+    types:
+        PII types to detect in this call only, as a list (``["EMAIL", "IBAN"]``)
+        or a comma-separated string. ``None`` (default) uses the setting
+        ``anofox_pii_enabled_types``. Leaving out the NER types (``NAME``,
+        ``ORGANIZATION``, ``LOCATION``, ``MISC``) skips the NER model, which is
+        much faster. See :func:`enabled_types`.
     """
-    return bool(fetch_one(conn, "SELECT anofox_tab_pii_contains(?)", [text]))
+    with enabled_types(conn, types):
+        return bool(fetch_one(conn, "SELECT anofox_tab_pii_contains(?)", [text]))
 
 
 def pii_scan_table(
     conn: Any,
     table_name: TableLike,
     columns: Union[str, Sequence[str], None] = None,
+    types: Union[str, Sequence[str], None] = None,
 ) -> Any:
     """
     Scan all (or selected) string columns of a table for PII.
@@ -199,8 +227,14 @@ def pii_scan_table(
     columns:
         Specific columns to scan, as a list or a comma-separated string. When
         *None* all text columns are scanned (extension default behaviour).
+    types:
+        PII types to detect in this call only, as a list (``["EMAIL", "IBAN"]``)
+        or a comma-separated string. ``None`` (default) uses the setting
+        ``anofox_pii_enabled_types``. Leaving out the NER types (``NAME``,
+        ``ORGANIZATION``, ``LOCATION``, ``MISC``) skips the NER model, which is
+        much faster. See :func:`enabled_types`.
     """
-    with table_inputs(conn, table_name) as (resolved,):
+    with enabled_types(conn, types), table_inputs(conn, table_name) as (resolved,):
         params: list = [resolved]
         if columns is not None:
             params.append(columns if isinstance(columns, str) else ",".join(columns))
@@ -216,6 +250,7 @@ def pii_audit_table(
     table_name: TableLike,
     columns: Union[str, Sequence[str], None] = None,
     id_column: Optional[str] = None,
+    types: Union[str, Sequence[str], None] = None,
 ) -> Any:
     """
     Audit a table for PII, returning row-level detail.
@@ -232,6 +267,12 @@ def pii_audit_table(
     id_column:
         Optional identifier column whose value is added to every audit row,
         directly after ``row_id``.
+    types:
+        PII types to detect in this call only, as a list (``["EMAIL", "IBAN"]``)
+        or a comma-separated string. ``None`` (default) uses the setting
+        ``anofox_pii_enabled_types``. Leaving out the NER types (``NAME``,
+        ``ORGANIZATION``, ``LOCATION``, ``MISC``) skips the NER model, which is
+        much faster. See :func:`enabled_types`.
 
     Returns
     -------
@@ -239,7 +280,7 @@ def pii_audit_table(
         Row-level PII audit with original/masked values (polars for a polars
         input, else pandas).
     """
-    with table_inputs(conn, table_name) as (resolved,):
+    with enabled_types(conn, types), table_inputs(conn, table_name) as (resolved,):
         params: list = [resolved]
         if columns is not None:
             params.append(columns if isinstance(columns, str) else ",".join(columns))
@@ -249,6 +290,42 @@ def pii_audit_table(
             conn, f"SELECT * FROM anofox_tab_pii_audit_table({placeholders}{id_arg})", params,
             output_df_type(table_name),
         )
+
+
+@contextmanager
+def enabled_types(conn: Any, types: Union[str, Sequence[str], None]) -> Iterator[None]:
+    """
+    Restrict PII detection to *types* for the ``with`` block.
+
+    Sets ``anofox_pii_enabled_types`` to *types* (a list or a comma-separated
+    string) and restores the previous value afterwards, also when the block
+    raises. ``None`` leaves the setting alone. An unknown type raises the
+    extension's error and leaves the setting unchanged. The setting applies to
+    the whole database, so do not run detection on another thread of the same
+    database meanwhile.
+    """
+    if types is None:
+        yield
+        return
+    names = [t.strip() for t in (types.split(",") if isinstance(types, str) else types)]
+    names = [t for t in names if t]
+    if not names:
+        raise ValueError("types must name at least one PII type, e.g. ['EMAIL']; use None for the setting")
+    value = ",".join(names)
+    previous = fetch_one(conn, "SELECT current_setting('anofox_pii_enabled_types')")
+    run(conn, f"SET anofox_pii_enabled_types = {_sql_string(value)}")
+    try:
+        yield
+    finally:
+        if previous:
+            run(conn, f"SET anofox_pii_enabled_types = {_sql_string(previous)}")
+        else:
+            run(conn, "RESET anofox_pii_enabled_types")
+
+
+def _sql_string(value: str) -> str:
+    """*value* as a SQL string literal (SET takes no bound parameters)."""
+    return "'" + value.replace("'", "''") + "'"
 
 
 # ---------------------------------------------------------------------------

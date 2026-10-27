@@ -249,6 +249,36 @@ print(masked[["id", "note"]].to_string(index=False))
   3    SSN [US_SSN]
 ```
 
+### Restrict the PII types
+
+By default every PII type is detected, including the NER types (`NAME`, `ORGANIZATION`,
+`LOCATION`, `MISC`) that run a neural model on each text. The model is loaded on the first
+call that needs it, and it runs per row: masking 200 short notes takes several seconds (on
+the order of 10 to 15 s on a laptop CPU), against a few milliseconds for the pattern types.
+When you only need some types, pass `types=` (a list or a comma-separated string) to
+`pii_detect`, `pii_mask`, `pii_contains`, `pii_scan_table` or `pii_audit_table`:
+
+```python
+notes = pd.DataFrame({"note": [
+    "Anna Schmidt, anna.schmidt@example.de",
+    "call +49 30 1234567",
+]})
+masked = pii.pii_mask(conn, notes, column="note", types=["EMAIL", "PHONE"])
+print(masked["pii_mask"].tolist())
+```
+
+```text
+['Anna Schmidt, [EMAIL]', 'call [PHONE]']
+```
+
+`types=` sets `anofox_pii_enabled_types` for the call and restores the previous value
+afterwards; the name stays unmasked because `NAME` was not requested. To use the same types
+for several calls, set it once with `pii.enabled_types(conn, ["EMAIL", "PHONE"])` as a
+`with` block, or with `SET anofox_pii_enabled_types = 'EMAIL,PHONE'` for the connection. The
+setting applies to the whole database, so do not detect PII on another thread of the same
+database at the same time. An unknown type raises `duckdb.InvalidInputException`
+(`Unknown PII type`).
+
 ## Score anomalies
 
 ```python

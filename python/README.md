@@ -96,6 +96,7 @@ print(pii.pii_mask(conn, "test@example.com", strategy="redact"))
 print(pii.pii_mask(conn, df, column="email"))                 # adds a 'pii_mask' column
 print(pii.pii_mask(conn, df, column="email", replace=True))   # masks 'email' itself
 print(pii.pii_scan_table(conn, "orders"))
+print(pii.pii_mask(conn, df, column="email", types=["EMAIL", "PHONE"]))  # no NER model: fast
 
 # ── Diff ──────────────────────────────────────────────────────────────
 print(diff.joindiff(conn, "orders", "orders_v2", primary_keys="id"))
@@ -194,6 +195,12 @@ print(checks.checks["null_rate"]["null_rate"])
   the input's index labels, so `df["is_anomaly"] = scores["is_anomaly"]` aligns; rows with a
   `NULL` feature are not in the output and get `NaN`. `row_id` is the 1-based row number in
   the input. A polars output keeps the input's row order and `row_id`.
+- The PII wrappers `pii_detect`, `pii_mask`, `pii_contains`, `pii_scan_table` and
+  `pii_audit_table` take `types=` (a list or a comma-separated string) to detect only those
+  types in the call; it sets `anofox_pii_enabled_types` and restores it afterwards
+  (`pii.enabled_types(conn, types)` does the same for a `with` block). Without the NER types
+  (`NAME`, `ORGANIZATION`, `LOCATION`, `MISC`) the NER model does not run, which makes
+  masking many rows much faster.
 - `id_column=` adds an input column to the per-row output; with `output_mode="summary"` it
   raises `ValueError` (`id_column needs output_mode='scores'`, `'outliers'` for
   `outlier_tree`). Errors raised by DuckDB keep their type, without the `LINE 1:` excerpt
@@ -213,7 +220,7 @@ print(checks.checks["null_rate"]["null_rate"])
 | `anofox.validate` | `email_is_valid`, `email_validate`, `phone_is_valid`, `phone_parse`, `phone_format`, `phone_region` |
 | `anofox.quality` | `volume`, `null_rate`, `distinct_count`, `freshness`, `zscore`, `iqr`, `schema_check`, `regex_match`, `values_in_set`, `agg_check`, `duplicate_count`, `occurrence`, `match_rate`, `compliance`, `rel_count_change`, `metric_anomaly_iqr`, `rolling_values_in_set`, `define_checks`, `run_checks` |
 | `anofox.anomaly` | `isolation_forest`, `isolation_forest_mv`, `dbscan`, `dbscan_mv`, `outlier_tree` |
-| `anofox.pii` | `pii_detect`, `pii_mask`, `pii_mask_value`, `pii_contains`, `pii_scan_table`, `pii_audit_table` |
+| `anofox.pii` | `pii_detect`, `pii_mask`, `pii_mask_value`, `pii_contains`, `pii_scan_table`, `pii_audit_table`, `enabled_types` |
 | `anofox.diff` | `joindiff`, `hashdiff`, `diff_schema` |
 | `anofox.profile` | `profile_table`, `profile_summary`, `profile_correlations` |
 | `anofox.money` | `make_money(conn, amount, currency)` (or a DataFrame with `column=` and `currency=` / `currency_column=`), `money_from_cents`, `is_valid_currency`, `currency_symbol`, `money_add`, etc. |
