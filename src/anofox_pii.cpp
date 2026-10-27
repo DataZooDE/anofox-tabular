@@ -1668,23 +1668,26 @@ PhoneRecognizer::PhoneRecognizer()
         PIIType::PHONE,
         "Phone Number",
         // Group 1: a number that starts at the beginning of the text or after
-        // whitespace, ':', ';', '(' or '[' (ECMAScript has no lookbehind, so
-        // that character is consumed and FindMatches reports group 1 only):
+        // any character that is no letter, digit or '+' (whitespace, quotes,
+        // '=', ',', '>', '|', '/', ...; ECMAScript has no lookbehind, so that
+        // character is consumed and FindMatches reports group 1 only). This
+        // covers JSON values, CSV fields, HTML cells and "tel=+49...":
         // - international: +CC or 00CC (00 form needs a separator after the
         //   country code), then up to six digit groups or a parenthesised
         //   group such as "(0)", "(415)": +49 (0) 221 4711-0, +491711234567
         // - national: an area code 0XX..0XXXXX, compact numbers are not
         //   matched; "(089) 123 456 78", "0171 1234567", "089/12345678",
         //   "089-123456-78"
-        // The number must end at whitespace, punctuation or the end of text.
+        // The number must end at the end of text or at a character that is no
+        // letter, digit or '+' ("</td>", '"', '&', ...).
         // Group 2: US style (555) 123-4567.
         // Dots are no separator in national numbers so dates (25.10.2026),
         // amounts and version strings stay unmatched; Validate() checks the
         // digit count.
-        R"((?:^|[\s:;(\[]))"
+        R"((?:^|[^A-Za-z0-9+]))"
         R"(((?:\+\d{1,3}|00[1-9]\d{0,2}(?=[ \-./]))(?:[ \-./]?\(\d{1,4}\)|[ \-./]?\d{1,5}){1,6})"
         R"(|(?:\(0[1-9]\d{1,4}\) ?|0[1-9]\d{1,4}[ \-/])\d{2,8}(?:[ \-/]\d{1,8}){0,3}))"
-        R"((?=$|[\s,;:.!?)\]]))"
+        R"((?=$|[^A-Za-z0-9+]))"
         R"(|(\(\d{3}\)[\s\-\.]?\d{3}[\s\-\.]?\d{4}))"
     ) {}
 
@@ -1704,11 +1707,26 @@ std::vector<PIIMatch> PhoneRecognizer::FindMatches(const std::string &text) cons
         auto start = static_cast<size_t>(match.position(group));
         std::string number = match[group].str();
 
-        // A number without "+" right after "<digit><space>" continues a
-        // longer digit sequence, e.g. the "0044 0532 0130 00" groups of an IBAN.
-        if (group == 1 && number[0] != '+' && start >= 2 && std::isspace(static_cast<unsigned char>(text[start - 1])) &&
-            std::isdigit(static_cast<unsigned char>(text[start - 2]))) {
-            AnofoxTrace(AnofoxLogLevel::Trace, "pii: phone candidate continues a digit sequence: " + number);
+        // A number without "+" right after a digit and a separator (space,
+        // '/', '.') continues a longer digit sequence, e.g. the
+        // "0044 0532 0130 00" groups of an IBAN. A dash joins it to any
+        // letter or digit before ("20261027-0001", the groups of a UUID).
+        if (group == 1 && number[0] != '+' && start >= 2) {
+            const auto before = static_cast<unsigned char>(text[start - 1]);
+            const auto previous = static_cast<unsigned char>(text[start - 2]);
+            const bool continues = (before == '-' && std::isalnum(previous)) ||
+                                   ((std::isspace(before) || before == '/' || before == '.') && std::isdigit(previous));
+            if (continues) {
+                AnofoxTrace(AnofoxLogLevel::Trace, "pii: phone candidate continues a digit sequence: " + number);
+                continue;
+            }
+        }
+        // Likewise a dash right after the number that leads on to letters or
+        // digits ("0123-4567-8901-abcdef...") makes it part of a longer token
+        const size_t stop = start + number.size();
+        if (group == 1 && stop + 1 < text.size() && text[stop] == '-' &&
+            std::isalnum(static_cast<unsigned char>(text[stop + 1]))) {
+            AnofoxTrace(AnofoxLogLevel::Trace, "pii: phone candidate continues into a longer token: " + number);
             continue;
         }
         if (Validate(number)) {
