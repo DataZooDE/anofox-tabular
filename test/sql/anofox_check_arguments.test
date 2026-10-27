@@ -187,10 +187,11 @@ SELECT status, threshold FROM duplicate_count('support_tickets', 'ticket_id', NU
 ----
 pass	0
 
+# (ticket 9006 has no customer: a NULL key is left out of the rate, the other 5 all match)
 query TR
 SELECT status, threshold FROM match_rate('support_tickets', 'support_customers', 'customer_id', 'customer_id', NULL)
 ----
-fail	1.0
+pass	1.0
 
 query TR
 SELECT status, threshold FROM compliance('support_tickets', 'ticket_id > 9000', NULL)

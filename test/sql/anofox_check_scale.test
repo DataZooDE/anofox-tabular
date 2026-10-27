@@ -101,9 +101,10 @@ SELECT status FROM duplicate_count('big_orders', 'customer_ref', 1000)
 ----
 fail
 
-# ~2% of customer refs are missing from the reference table (c49000..c49999)
+# ~2% of customer refs are missing from the reference table (c49000..c49999); the ~3% NULL
+# refs are left out of the rate
 query TT
-SELECT status, match_rate BETWEEN 0.90 AND 0.97
+SELECT status, match_rate BETWEEN 0.975 AND 0.985
 FROM match_rate('big_orders', 'big_customers', 'customer_ref', 'customer_id', 0.99)
 ----
 fail	true

@@ -314,9 +314,28 @@ static void ParseCheckParams(CheckSpec &spec, const string &params_json) {
 	spec.agg = get_scalar("agg");
 	spec.mode = get_scalar("mode");
 	spec.expression = get_scalar("expression");
+	// Key column lists: a comma-separated string or a JSON array of column names
+	auto get_columns = [&](const char *key) -> string {
+		auto *val = yyjson_obj_get(root, key);
+		if (!val || !yyjson_is_arr(val)) {
+			return get_scalar(key);
+		}
+		vector<string> columns;
+		size_t idx, max;
+		yyjson_val *element;
+		yyjson_arr_foreach(val, idx, max, element) {
+			if (!yyjson_is_str(element)) {
+				throw BinderException("run_checks: check '" + spec.check_name + "': params." + key +
+				                      " must be a string or a JSON array of strings");
+			}
+			columns.push_back(yyjson_get_str(element));
+		}
+		return StringUtil::Join(columns, ", ");
+	};
+
 	spec.right_table = get_scalar("right_table");
-	spec.left_keys = get_scalar("left_keys");
-	spec.right_keys = get_scalar("right_keys");
+	spec.left_keys = get_columns("left_keys");
+	spec.right_keys = get_columns("right_keys");
 	spec.date_column = get_scalar("date_column");
 	spec.count_column = get_scalar("count_column");
 	spec.metric_column = get_scalar("metric_column");
@@ -604,9 +623,9 @@ static vector<CheckSpec> ReadCheckSpecs(ClientContext &context, const string &ch
 		spec.identifier_column = str_at(row, 8);
 		spec.filter_expr = str_at(row, 9);
 		if (spec.check_name.empty()) {
-			throw BinderException("run_checks: every check in '" + checks_table + "' must have a check_name");
-		}
-		if (spec.table_name.empty()) {
+			// Its result row could not be told apart from the other checks' rows
+			spec.config_error = "every check needs a check_name";
+		} else if (spec.table_name.empty()) {
 			spec.config_error = "the check has no table_name";
 		} else {
 			try {
@@ -619,6 +638,21 @@ static vector<CheckSpec> ReadCheckSpecs(ClientContext &context, const string &ch
 	}
 	if (specs.empty()) {
 		throw BinderException("run_checks: checks table '" + checks_table + "' contains no checks");
+	}
+	// Checks sharing a name: their result rows (and a stored result history) would be
+	// ambiguous, so none of them runs
+	std::unordered_map<string, idx_t> name_counts;
+	for (auto &spec : specs) {
+		if (!spec.check_name.empty()) {
+			name_counts[spec.check_name]++;
+		}
+	}
+	for (auto &spec : specs) {
+		auto count = spec.check_name.empty() ? 0 : name_counts[spec.check_name];
+		if (count > 1) {
+			spec.config_error = "check_name '" + spec.check_name + "' is used by " + std::to_string(count) +
+			                    " checks; check names must be unique";
+		}
 	}
 	return specs;
 }
@@ -992,7 +1026,10 @@ static CheckBranch BuildCheckBranch(ClientContext &context, const CheckSpec &spe
 		                   " GROUP BY 1) SELECT CAST(" + extreme + " AS DOUBLE) AS value FROM counts";
 		return branch;
 	} else if (spec.check_type == "match_rate") {
-		RequireColumn(spec);
+		// The left keys: params.left_keys, else column_name
+		if (spec.left_keys.empty()) {
+			RequireColumn(spec);
+		}
 		RequireParam(spec, spec.right_table, "right_table");
 		string left_keys_str = spec.left_keys.empty() ? spec.column_name : spec.left_keys;
 		RequireParam(spec, spec.right_keys, "right_keys");
@@ -1004,8 +1041,12 @@ static CheckBranch BuildCheckBranch(ClientContext &context, const CheckSpec &spe
 		}
 		string left_cols, right_cols, join_cond;
 		vector<string> left_key_exprs;
+		// A NULL key matches nothing; null_rate reports it, the rate leaves it out
+		vector<string> key_not_null, key_null;
 		for (size_t i = 0; i < left_keys.size(); i++) {
 			left_key_exprs.push_back("l.k" + std::to_string(i));
+			key_not_null.push_back(QuoteSqlIdentifier(left_keys[i]) + " IS NOT NULL");
+			key_null.push_back(QuoteSqlIdentifier(left_keys[i]) + " IS NULL");
 			string alias = "k" + std::to_string(i);
 			if (i > 0) {
 				left_cols += ", ";
@@ -1016,16 +1057,22 @@ static CheckBranch BuildCheckBranch(ClientContext &context, const CheckSpec &spe
 			right_cols += QuoteSqlIdentifier(right_keys[i]) + " AS " + alias;
 			join_cond += "l." + alias + " = r." + alias;
 		}
+		string filter_and = filter_sql.empty() ? "" : "(" + filter_sql + ") AND ";
+		string null_keys = "(SELECT COUNT(*) FROM " + table_ref + " WHERE " + filter_and + "(" +
+		                   StringUtil::Join(key_null, " OR ") + "))";
 		branch.inner_sql = "SELECT CAST(COUNT(r.matched) AS DOUBLE) / NULLIF(COUNT(*), 0) AS value, " +
-		                   SampleAggregateSQL(KeyTextSQL(left_key_exprs), "r.matched IS NULL") + " AS samples "
-		                   "FROM (SELECT " + left_cols + " FROM " + table_ref + where_clause + ") l "
+		                   SampleAggregateSQL(KeyTextSQL(left_key_exprs), "r.matched IS NULL") + " AS samples, " +
+		                   null_keys + " AS __null_keys "
+		                   "FROM (SELECT " + left_cols + " FROM " + table_ref + " WHERE " + filter_and +
+		                   StringUtil::Join(key_not_null, " AND ") + ") l "
 		                   "LEFT JOIN (SELECT DISTINCT " + right_cols + ", 1 AS matched FROM " +
 		                   BuildQueryTableRef(spec.right_table) + ") r ON " + join_cond;
 		branch.has_samples = true;
+		branch.message_suffixes.push_back("CASE WHEN __c.__null_keys > 0 THEN '; ' || CAST(__c.__null_keys AS "
+		                                  "VARCHAR) || ' row(s) with a NULL key excluded' ELSE '' END");
 		return branch;
 	} else if (spec.check_type == "rel_count_change") {
 		RequireParam(spec, spec.date_column, "date_column");
-		string date_id = QuoteSqlIdentifier(spec.date_column);
 		string cnt_expr = spec.count_column.empty()
 		                      ? "COUNT(*)"
 		                      : "COUNT(DISTINCT " + QuoteSqlIdentifier(spec.count_column) + ")";
@@ -1046,9 +1093,16 @@ static CheckBranch BuildCheckBranch(ClientContext &context, const CheckSpec &spe
 		return branch;
 	} else if (spec.check_type == "metric_anomaly_iqr") {
 		RequireParam(spec, spec.date_column, "date_column");
-		string metric_expr = spec.metric_column.empty()
-		                         ? "CAST(COUNT(*) AS DOUBLE)"
-		                         : "AVG(CAST(" + QuoteSqlIdentifier(spec.metric_column) + " AS DOUBLE))";
+		// The metric is params.metric_column or else column_name; without either the row count
+		if (!spec.metric_column.empty() && !spec.column_name.empty() &&
+		    !StringUtil::CIEquals(spec.metric_column, spec.column_name)) {
+			throw BinderException("run_checks: check '" + spec.check_name + "': column_name '" + spec.column_name +
+			                      "' and params.metric_column '" + spec.metric_column +
+			                      "' name different columns; set only one");
+		}
+		const string &metric_column = spec.metric_column.empty() ? spec.column_name : spec.metric_column;
+		string metric_expr = metric_column.empty() ? "CAST(COUNT(*) AS DOUBLE)"
+		                                           : "AVG(CAST(" + QuoteSqlIdentifier(metric_column) + " AS DOUBLE))";
 		string ref_lit = spec.reference_date_sql.empty() ? "NULL" : spec.reference_date_sql;
 		string window_val = std::to_string(ParseWindowDays(spec, 30));
 		string k_val = "1.5";
@@ -1126,13 +1180,18 @@ static CheckBranch BuildCheckBranch(ClientContext &context, const CheckSpec &spe
 	return branch;
 }
 
+// The check_name of a result row as SQL: NULL for a check without one
+static string CheckNameSQL(const CheckSpec &spec) {
+	return spec.check_name.empty() ? "CAST(NULL AS VARCHAR)" : "'" + EscapeSqlStringLiteral(spec.check_name) + "'";
+}
+
 // Build a constant single-row error result for a check that cannot run
 static string BuildErrorRowSQL(const CheckSpec &spec, const string &error_message) {
 	string col_lit = spec.column_name.empty()
 	                     ? "CAST(NULL AS VARCHAR)"
 	                     : "'" + EscapeSqlStringLiteral(spec.column_name) + "'";
 	return string("SELECT ") + UTC_NOW_SQL + " AS run_ts,"
-	       "'" + EscapeSqlStringLiteral(spec.check_name) + "' AS check_name, "
+	       + CheckNameSQL(spec) + " AS check_name, "
 	       "'" + EscapeSqlStringLiteral(spec.check_type) + "' AS check_type, "
 	       "'" + EscapeSqlStringLiteral(spec.table_name) + "' AS table_name, "
 	       + col_lit + " AS column_name, "
@@ -1152,7 +1211,7 @@ static string UniformRowSQL(const CheckSpec &spec, const string &identifier_expr
 	                     ? "CAST(NULL AS VARCHAR)"
 	                     : "'" + EscapeSqlStringLiteral(spec.column_name) + "'";
 	return string("SELECT ") + UTC_NOW_SQL + " AS run_ts,"
-	       "'" + EscapeSqlStringLiteral(spec.check_name) + "' AS check_name, "
+	       + CheckNameSQL(spec) + " AS check_name, "
 	       "'" + EscapeSqlStringLiteral(spec.check_type) + "' AS check_type, "
 	       "'" + EscapeSqlStringLiteral(spec.table_name) + "' AS table_name, "
 	       + col_lit + " AS column_name, "
@@ -1298,8 +1357,7 @@ static vector<string> ReferencedColumns(const CheckSpec &spec) {
 		for (auto &column : ParseCommaSeparatedColumns(spec.left_keys.empty() ? spec.column_name : spec.left_keys)) {
 			add(column);
 		}
-	} else if (type != "volume" && type != "compliance" && type != "rel_count_change" &&
-	           type != "metric_anomaly_iqr") {
+	} else if (type != "volume" && type != "compliance" && type != "rel_count_change") {
 		add(spec.column_name);
 	}
 	add(spec.identifier_column);
@@ -1386,7 +1444,7 @@ static string CheckErrorMessage(const CheckSpec &spec, string cause) {
 	if (newline != string::npos) {
 		cause = cause.substr(0, newline);
 	}
-	const string check_prefix = "check '" + spec.check_name + "'";
+	const string check_prefix = spec.check_name.empty() ? "check without check_name" : "check '" + spec.check_name + "'";
 	for (auto &prefix : {string("run_checks: ") + check_prefix + " (" + spec.check_type + ")",
 	                     string("run_checks: ") + check_prefix, string("run_checks: ")}) {
 		if (StringUtil::StartsWith(cause, prefix)) {

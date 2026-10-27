@@ -599,6 +599,11 @@ Passes when the share of left-table rows that have a partner in the right table 
 `min_rate`. Use it as a foreign-key check. The right side is deduplicated on its keys, so
 duplicate right rows do not raise the rate.
 
+A left row with a NULL key column (for a key of several columns: any of them) matches nothing
+and is left out of the rate: `total_count` counts the rows with a complete key only, and the
+message ends with `; 2 row(s) with a NULL key excluded`. Check the NULL keys with
+[`null_rate`](#null_rate). This matches SQL foreign keys, which accept a NULL reference.
+
 ```text
 match_rate(left_table VARCHAR, right_table VARCHAR, left_keys VARCHAR, right_keys VARCHAR [, min_rate DOUBLE])
   -> TABLE(status VARCHAR, match_rate DOUBLE, matched_count BIGINT, total_count BIGINT, threshold DOUBLE,
@@ -613,7 +618,9 @@ match_rate(left_table VARCHAR, right_table VARCHAR, left_keys VARCHAR, right_key
 | `right_keys` | `VARCHAR` | required | Comma-separated key columns of `right_table`, same number as `left_keys` |
 | `min_rate` | `DOUBLE` | `1.0` (also for `NULL`) | Lowest allowed match rate |
 
-An empty left table passes with `total_count = 0`.
+An empty left table passes with `total_count = 0`, and so does a left table whose keys are all
+NULL (message `No left rows with a non-NULL key (2 row(s) with a NULL key excluded); match rate
+check passed trivially`).
 
 ```sql
 SELECT status, round(match_rate, 4) AS match_rate, matched_count, total_count
@@ -687,7 +694,12 @@ LINE 1: SELECT * FROM compliance('orders', 'amount > 0; DROP TABLE orders');
 
 `rel_count_change`, `metric_anomaly_iqr` and `rolling_values_in_set` evaluate one reference
 date. By default this is the latest date in the data; the optional `reference_date` argument
-sets it.
+sets it, positionally or by name (`reference_date := DATE '2026-01-30'`, which leaves the
+arguments before it at their defaults). Passing it both ways is an error.
+
+The date column may be a `DATE`, a `TIMESTAMP` or a `TIMESTAMP WITH TIME ZONE` (bucketed by
+its UTC date), or text holding dates (`'2026-10-21'`); a text value that is no date, such as
+`'n/a'`, counts as no date and its row is left out.
 
 All three also accept the named parameters `start_date := DATE` and `end_date := DATE`. With
 them, the check evaluates every day of the inclusive range and returns one row per date,
@@ -1003,7 +1015,8 @@ run_checks(checks_table VARCHAR)
 `run_checks` reads a checks table in the caller's transaction when the query is bound, like a
 plain `SELECT` does: definitions inserted, updated or deleted inside `BEGIN ... COMMIT` are used
 before the commit, and a TEMP table works. This holds for every DuckDB table, also one of an
-attached DuckDB database. The checked tables may be TEMP tables or views.
+attached DuckDB database. The checked tables may be TEMP tables or views. A table name can
+be qualified (`'mig.orders'`); see [Table and column arguments](00-conventions.md#table-and-column-arguments).
 
 A checks *view* (or a table of another database type, such as an attached Postgres database) is
 read through a second connection, which sees only committed data. A TEMP view is therefore the
@@ -1019,7 +1032,7 @@ ignored. A checks table without a required column is an error that names it, for
 
 | Column | Type | Required | Description |
 |--------|------|----------|-------------|
-| `check_name` | `VARCHAR` | yes | Label of the check; results are ordered by it |
+| `check_name` | `VARCHAR` | yes | Label of the check, unique in the table; results are ordered by it |
 | `check_type` | `VARCHAR` | yes | One of the types below |
 | `table_name` | `VARCHAR` | yes | The table or view to check |
 | `column_name` | `VARCHAR` | no | The column; `NULL` where the type needs none. Comma-separated for `duplicate_count` |
@@ -1027,7 +1040,7 @@ ignored. A checks table without a required column is an error that names it, for
 | `lower_threshold` | `DOUBLE` | no | Fail when `value` is below it; `NULL` = unbounded |
 | `upper_threshold` | `DOUBLE` | no | Fail when `value` is above it; `NULL` = unbounded |
 | `monitor_only` | `BOOLEAN` | no | `true` records `'warn'` instead of `'fail'` |
-| `identifier_column` | `VARCHAR` | no | One result row per distinct value of this column |
+| `identifier_column` | `VARCHAR` | no | One result row per distinct value of this column; the rows where it is NULL form one more partition, reported with a NULL `identifier` |
 | `filter_expr` | `VARCHAR` | no | SQL boolean pre-filter on the checked table |
 
 ### Check types
@@ -1050,14 +1063,30 @@ The `value` column holds the measure of each type:
 | `compliance` | compliance rate | `expression` (required) | yes |
 | `freshness` | age in seconds (the thresholds are seconds too) | `reference_time` (default: the current UTC time, no ICU needed) | yes |
 | `occurrence` | frequency of the extreme value | `mode`: `max` (default) or `min` | no |
-| `match_rate` | match rate | `right_table`, `right_keys` (required), `left_keys` (default `column_name`) | no |
-| `rel_count_change` | relative change | `date_column` (required), `count_column`, `window_days` (7), `reference_date`, `fill_missing_days` (`false`) | no |
-| `metric_anomaly_iqr` | daily metric | `date_column` (required), `metric_column`, `window_days` (30), `k` (1.5), `reference_date` | no |
+| `match_rate` | match rate over the rows with a non-NULL key | `right_table`, `right_keys` (required), `left_keys` (default `column_name`); the keys as a comma-separated string or a JSON array (`["customer_id", "region"]`) | no |
+| `rel_count_change` | relative change | `date_column` (required), `count_column` (counted with `COUNT(DISTINCT ...)` per day; default: rows), `window_days` (7), `reference_date`, `fill_missing_days` (`false`) | no |
+| `metric_anomaly_iqr` | daily metric: `AVG` of `metric_column`, else of `column_name`, else the row count | `date_column` (required), `metric_column`, `window_days` (30), `k` (1.5), `reference_date` | no |
 | `rolling_values_in_set` | share in set | `date_column` (required), `allowed_values`, `window_days` (7), `reference_date` | no |
 
 For `metric_anomaly_iqr` the IQR bounds replace the table's thresholds and appear in
 `lower_threshold` and `upper_threshold`. The `mode` parameter of the direct function is not
-available in a suite; both bounds apply.
+available in a suite; both bounds apply. The metric column is `params.metric_column` or the
+check's `column_name`; when both are set they must name the same column, otherwise the check
+is an `error` row (`column_name 'amount' and params.metric_column 'order_id' name different
+columns; set only one`).
+
+`match_rate` leaves left rows with a NULL key out of the rate, like the direct
+[`match_rate`](#match_rate), and its message says how many:
+`match_rate value 0.833 violates thresholds (0.833 < lower 1.0); samples: '99'; 2 row(s) with a NULL key excluded`.
+A `null_rate` check on the key column reports the NULL keys.
+
+The `date_column` of `rel_count_change`, `metric_anomaly_iqr` and `rolling_values_in_set` must
+be a `DATE`, `TIMESTAMP` or `TIMESTAMP WITH TIME ZONE` column, or text holding dates. A text
+value that is not a date (`'n/a'`) does not stop the suite: its row is skipped and the message
+says how many rows were, for example
+`rel_count_change value -0.5 is within thresholds; 2 row(s) skipped (shipped_on is not a date)`.
+A column of another type (a `BIGINT` such as `20261021`) is an `error` row:
+`params.date_column 'event_day' has type BIGINT; expected DATE, TIMESTAMP, TIMESTAMP WITH TIME ZONE or a VARCHAR holding dates`.
 
 Every type also accepts the `params` key `fail_on_empty` (`true` or `false`, default `false`):
 with `true` a check that has no rows to evaluate (an empty table, or a `filter_expr` that
@@ -1070,8 +1099,9 @@ trivially.
 example a misspelled `refernce_date`, is an `error` row that lists the valid keys:
 `unknown params key 'refernce_date' (valid keys for rel_count_change: date_column, count_column, window_days, reference_date, fill_missing_days, fail_on_empty)`.
 Typed values are checked when the suite is built: `reference_date` must be a date
-(`YYYY-MM-DD`), `reference_time` a timestamp (`YYYY-MM-DD[ HH:MM[:SS]]`, optionally with a UTC
-offset such as `+02:00`), `window_days` a positive integer, `k` a finite number and
+(`YYYY-MM-DD`) or a date token, `reference_time` a timestamp (`YYYY-MM-DD[ HH:MM[:SS]]`,
+optionally with a UTC offset such as `+02:00`) or a date token, `window_days` a positive
+integer, `k` a finite number and
 `fill_missing_days` `true` or `false`. A malformed
 value is an `error` row of that check that names the key, the value and the expected format,
 for example `params.reference_date '21/10/2026' is not a valid date (expected YYYY-MM-DD)`; the
@@ -1079,6 +1109,11 @@ other checks run.
 
 `filter_expr` accepts the date tokens `${today}`, `${yesterday}`, `${today+N}`, `${today-N}`,
 `${yesterday+N}` and `${yesterday-N}` (UTC dates), for example `order_date >= ${today-7}`.
+`params.reference_date` and `params.reference_time` accept one such token as their whole
+value: `{"reference_date": "${yesterday}"}` evaluates the last complete day of every run, and
+`{"reference_time": "${today}"}` is midnight UTC of the run's date. A nightly checks table then
+needs no daily `UPDATE`. An unknown token is an `error` row:
+`unknown token '${tomorrow}' in params.reference_date (supported: today, yesterday, today+N, today-N, yesterday-N)`.
 
 The message of a check with a `filter_expr` ends with how many rows the filter kept, for
 example `null_rate value 0.0 is within thresholds; filter matched 0/399 rows`: a nightly check
@@ -1122,6 +1157,12 @@ are, for example:
 - an `agg` check on a column that is not numeric
 - an unknown `check_type` or one that exists only as a direct function, invalid `params` JSON, a missing required `params` key, a `params`
   key the type does not accept, or a malformed typed `params` value (see above)
+- a NULL `check_name` (the row's `check_name` is NULL and the message
+  `check without check_name (volume) cannot run: every check needs a check_name`), or a
+  `check_name` that several checks share: each of them is an `error` row
+  (`check_name 'orders_volume' is used by 2 checks; check names must be unique`), since their
+  results could not be told apart
+- a `date_column` that is not a date, timestamp or text column (see above)
 - a `compliance` expression or `filter_expr` that does not parse or references an unknown column
 - a `match_rate` `right_table` that does not exist
 - `lower_threshold` greater than `upper_threshold`, or a rate threshold outside 0 to 1 for

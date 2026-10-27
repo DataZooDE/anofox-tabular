@@ -312,8 +312,12 @@ static string GenerateMatchRateSQL(const string &left_ref, const string &right_r
 	string left_cols;
 	string right_cols;
 	string join_cond;
+	// A row with a NULL key column matches nothing: it is left out of the rate (null_rate
+	// reports it) and counted in null_key_count
+	string any_key_null;
 	for (size_t i = 0; i < left_keys.size(); i++) {
 		string alias = "k" + std::to_string(i);
+		any_key_null += (i > 0 ? " OR " : "") + alias + " IS NULL";
 		if (i > 0) {
 			left_cols += ", ";
 			right_cols += ", ";
@@ -324,9 +328,10 @@ static string GenerateMatchRateSQL(const string &left_ref, const string &right_r
 		join_cond += "l." + alias + " = r." + alias;
 	}
 
-	return "WITH l AS ("
+	return "WITH l_all AS ("
 		"SELECT " + left_cols + " FROM " + left_ref +
 		"), "
+		"l AS (SELECT * FROM l_all WHERE NOT (" + any_key_null + ")), "
 		"r AS ("
 		"SELECT DISTINCT " + right_cols + ", 1 AS matched FROM " + right_ref +
 		"), "
@@ -335,6 +340,7 @@ static string GenerateMatchRateSQL(const string &left_ref, const string &right_r
 		"), "
 		"stats AS ("
 		"SELECT "
+		"  (SELECT COUNT(*) FROM l_all WHERE " + any_key_null + ") AS null_key_count, "
 		"  COUNT(*) AS total_count, "
 		"  COALESCE(CAST(COUNT(matched) AS BIGINT), 0) AS matched_count, "
 		"  COALESCE(CAST(COUNT(matched) AS DOUBLE) / NULLIF(COUNT(*), 0), 0.0) AS match_rate "
@@ -351,6 +357,8 @@ static string GenerateMatchRateSQL(const string &left_ref, const string &right_r
 		"total_count, "
 		+ min_val + " AS threshold, "
 		"CASE "
+		"  WHEN total_count = 0 AND null_key_count > 0 THEN 'No left rows with a non-NULL key (' || "
+		"    CAST(null_key_count AS VARCHAR) || ' row(s) with a NULL key excluded); match rate check passed trivially' "
 		"  WHEN total_count = 0 THEN 'Left table is empty (0 rows); match rate check passed trivially' "
 		"  WHEN match_rate >= " + min_val + " THEN "
 		"    'Match rate ' || " + RoundedNumberSQL("match_rate") + " || ' (' || CAST(matched_count AS VARCHAR) || '/' || "
@@ -358,7 +366,8 @@ static string GenerateMatchRateSQL(const string &left_ref, const string &right_r
 		"  ELSE "
 		"    'Match rate ' || " + RoundedNumberSQL("match_rate") + " || ' (' || CAST(matched_count AS VARCHAR) || '/' || "
 		"    CAST(total_count AS VARCHAR) || ') is below minimum ' || CAST(" + min_val + " AS VARCHAR) "
-		"END AS message "
+		"END || CASE WHEN total_count > 0 AND null_key_count > 0 THEN '; ' || CAST(null_key_count AS VARCHAR) || "
+		"  ' row(s) with a NULL key excluded' ELSE '' END AS message "
 		"FROM stats";
 }
 
@@ -664,6 +673,14 @@ static ReferenceDates ReadReferenceDates(TableFunctionBindInput &input, idx_t re
                                          const string &function_name) {
 	ReferenceDates dates;
 	dates.reference_date = (input.inputs.size() > ref_index) ? input.inputs[ref_index] : Value();
+	auto named_reference = duckdb_compat::FindNamedParameter(input.named_parameters, "reference_date");
+	if (named_reference && !named_reference->IsNull()) {
+		if (!dates.reference_date.IsNull()) {
+			throw BinderException(function_name +
+			                      ": reference_date is given twice (positionally and as reference_date :=)");
+		}
+		dates.reference_date = named_reference->DefaultCastAs(LogicalType(LogicalTypeId::DATE));
+	}
 	auto start = duckdb_compat::FindNamedParameter(input.named_parameters, "start_date");
 	auto end = duckdb_compat::FindNamedParameter(input.named_parameters, "end_date");
 	if (!start && !end) {
@@ -716,9 +733,11 @@ static string EventsSeries(const string &table_name, const string &column_name) 
 	return column_name.empty() ? table_name : table_name + "." + column_name;
 }
 
-// Declare the optional start_date/end_date named parameters (#109) on every overload
+// Declare the optional start_date/end_date named parameters (#109) on every overload, and
+// reference_date by name as an alternative to the positional argument
 static void AddDateRangeParameters(TableFunctionSet &set) {
 	duckdb_compat::ForEachFunction(set, [](TableFunction &func) {
+		duckdb_compat::AddNamedParameter(func, "reference_date", LogicalType(LogicalTypeId::DATE));
 		duckdb_compat::AddNamedParameter(func, "start_date", LogicalType(LogicalTypeId::DATE));
 		duckdb_compat::AddNamedParameter(func, "end_date", LogicalType(LogicalTypeId::DATE));
 	});
