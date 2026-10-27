@@ -1,0 +1,242 @@
+# name: test/sql/anofox_second_connection_transaction.test
+# description: The anomaly, profiling and PII table scans read their input through a second
+#              connection, which sees only committed data. A nightly load that runs them inside
+#              its open transaction would silently analyse yesterday's data (the new outlier is
+#              never scored) or fail with a confusing Catalog Error for a table created in the
+#              transaction. They refuse with one clear error while the transaction has
+#              uncommitted changes; autocommit, a transaction that only reads, and one that only
+#              writes TEMP tables keep working; after COMMIT the new rows are analysed.
+# group: [anofox_tabular]
+
+require anofox_tabular
+
+statement ok
+LOAD anofox_tabular
+
+statement ok
+SET anofox_tab_trace_enabled = false
+
+statement ok
+SET anofox_pii_enabled_types = 'EMAIL,PHONE'
+
+# ===--------------------------------------------------------------------===
+# Committed state: a week of cold-store sensor readings and the customer
+# contacts of a shop
+# ===--------------------------------------------------------------------===
+
+statement ok
+CREATE TABLE cold_store_readings AS
+SELECT i AS reading_id,
+       TIMESTAMP '2026-10-20 00:00:00' + INTERVAL (i * 15) MINUTE AS read_at,
+       3.5 + (i % 10) * 0.1 AS temperature_c,
+       81.0 + (i % 7) * 0.5 AS humidity_pct,
+       CASE WHEN i % 2 = 0 THEN 'north' ELSE 'south' END AS zone
+FROM range(100) t(i)
+
+statement ok
+CREATE TABLE customer_contacts (customer_id INTEGER, full_name VARCHAR, email VARCHAR, phone VARCHAR)
+
+statement ok
+INSERT INTO customer_contacts VALUES
+    (1001, 'Anna Schmidt', 'anna.schmidt@example.de', '+49 30 1234567'),
+    (1002, 'Ben Mueller',  'ben.mueller@example.de',  NULL),
+    (1003, 'Clara Weber',  NULL,                      '+49 89 7654321')
+
+# Autocommit: every function reads the committed table
+
+query I
+SELECT total_count FROM isolation_forest('cold_store_readings', 'temperature_c', 100, 256, 0.02, 'summary', 42)
+----
+100
+
+query I
+SELECT row_count FROM profile_summary('cold_store_readings')
+----
+100
+
+query I
+SELECT count(*) FROM pii_audit_table('customer_contacts')
+----
+4
+
+# ===--------------------------------------------------------------------===
+# The nightly load: a compressor failure reading arrives and the job runs
+# its anomaly scan before COMMIT
+# ===--------------------------------------------------------------------===
+
+statement ok
+BEGIN
+
+statement ok
+INSERT INTO cold_store_readings VALUES (100, TIMESTAMP '2026-10-21 01:00:00', 19.8, 97.0, 'north')
+
+# The caller's own checks see the uncommitted row ...
+query I
+SELECT row_count FROM volume('cold_store_readings', 1, NULL)
+----
+101
+
+# ... the second-connection functions would not, so they refuse
+
+statement error
+SELECT * FROM isolation_forest('cold_store_readings', 'temperature_c', 100, 256, 0.02, 'summary', 42)
+----
+isolation_forest reads the last committed data, but this transaction has uncommitted changes; call it after COMMIT, or outside a transaction
+
+statement error
+SELECT * FROM anofox_tab_isolation_forest_mv('cold_store_readings', 'temperature_c, humidity_pct', 100, 256, 0.02, 'scores', 42)
+----
+isolation_forest_mv reads the last committed data, but this transaction has uncommitted changes
+
+statement error
+SELECT * FROM dbscan('cold_store_readings', 'temperature_c', 0.5, 5, 'clusters')
+----
+dbscan reads the last committed data, but this transaction has uncommitted changes
+
+statement error
+SELECT * FROM dbscan_mv('cold_store_readings', 'temperature_c, humidity_pct', 1.0, 5, 'clusters')
+----
+dbscan_mv reads the last committed data, but this transaction has uncommitted changes
+
+statement error
+SELECT * FROM outlier_tree('cold_store_readings', 'zone, temperature_c', 'outliers')
+----
+outlier_tree reads the last committed data, but this transaction has uncommitted changes
+
+statement error
+SELECT * FROM profile_table('cold_store_readings')
+----
+profile_table reads the last committed data, but this transaction has uncommitted changes
+
+statement error
+SELECT * FROM anofox_tab_profile_summary('cold_store_readings')
+----
+profile_summary reads the last committed data, but this transaction has uncommitted changes
+
+statement error
+SELECT * FROM profile_correlations('cold_store_readings')
+----
+profile_correlations reads the last committed data, but this transaction has uncommitted changes
+
+# Any write counts, also to a table the function does not read
+statement error
+SELECT * FROM pii_scan_table('customer_contacts')
+----
+pii_scan_table reads the last committed data, but this transaction has uncommitted changes
+
+statement error
+SELECT * FROM pii_audit_table('customer_contacts', 'email')
+----
+pii_audit_table reads the last committed data, but this transaction has uncommitted changes
+
+# DuckDB 2.0 aborts the transaction on any error (v1.5 keeps it after a bind error): the job
+# rolls back and runs the load again, with the scans after COMMIT
+statement ok
+ROLLBACK
+
+statement ok
+BEGIN
+
+statement ok
+INSERT INTO cold_store_readings VALUES (100, TIMESTAMP '2026-10-21 01:00:00', 19.8, 97.0, 'north')
+
+statement ok
+COMMIT
+
+# After COMMIT the compressor failure is scored and flagged
+
+query IIT
+SELECT total_count, outlier_count, status
+FROM isolation_forest('cold_store_readings', 'temperature_c', 100, 256, 0.01, 'summary', 42)
+----
+101	1	fail
+
+query I
+SELECT reading_id
+FROM isolation_forest('cold_store_readings', 'temperature_c', 100, 256, 0.01, 'scores', 42, id_column := 'reading_id')
+WHERE is_anomaly
+----
+100
+
+# ===--------------------------------------------------------------------===
+# A staging table created inside the transaction: the clear error instead of
+# a Catalog Error from the second connection
+# ===--------------------------------------------------------------------===
+
+statement ok
+BEGIN
+
+statement ok
+CREATE TABLE contacts_staging AS SELECT * FROM customer_contacts
+
+statement error
+SELECT * FROM pii_scan_table('contacts_staging')
+----
+pii_scan_table reads the last committed data, but this transaction has uncommitted changes; call it after COMMIT, or outside a transaction
+
+statement error
+SELECT * FROM profile_table('contacts_staging')
+----
+profile_table reads the last committed data, but this transaction has uncommitted changes
+
+statement ok
+ROLLBACK
+
+# ===--------------------------------------------------------------------===
+# A transaction that only reads keeps working
+# ===--------------------------------------------------------------------===
+
+statement ok
+BEGIN
+
+query I
+SELECT total_count FROM isolation_forest('cold_store_readings', 'temperature_c', 100, 256, 0.01, 'summary', 42)
+----
+101
+
+query I
+SELECT count(*) FROM dbscan_mv('cold_store_readings', 'temperature_c, humidity_pct', 1.0, 5, 'clusters')
+----
+101
+
+query TI
+SELECT column_name, row_count FROM profile_table('cold_store_readings', ['temperature_c'])
+----
+temperature_c	101
+
+query TTI
+SELECT column_name, pii_type, match_count FROM pii_scan_table('customer_contacts', 'email')
+----
+email	EMAIL	2
+
+statement ok
+COMMIT
+
+# ===--------------------------------------------------------------------===
+# Writes to TEMP tables do not count: the committed data is all there is
+# ===--------------------------------------------------------------------===
+
+statement ok
+BEGIN
+
+statement ok
+CREATE TEMP TABLE scan_notes (note VARCHAR)
+
+statement ok
+INSERT INTO scan_notes VALUES ('nightly contact scan')
+
+query I
+SELECT count(*) FROM pii_audit_table('customer_contacts')
+----
+4
+
+query I
+SELECT row_count FROM profile_summary('cold_store_readings')
+----
+101
+
+statement ok
+COMMIT
+
+statement ok
+RESET anofox_pii_enabled_types

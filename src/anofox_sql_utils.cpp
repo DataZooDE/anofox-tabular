@@ -10,6 +10,7 @@
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/parser/qualified_name.hpp"
 #include "duckdb/planner/binder.hpp"
+#include "duckdb/transaction/meta_transaction.hpp"
 #include "duckdb_compat.hpp"
 
 #include <algorithm>
@@ -208,6 +209,7 @@ vector<idx_t> MatchColumnNames(const string &function_name, const string &table_
 vector<ResolvedColumn> ResolveColumns(ClientContext &context, const string &function_name, const string &table_name,
                                       const vector<string> &requested) {
 	RejectTempTable(context, function_name, table_name);
+	RejectUncommittedChanges(context, function_name);
 	Connection con(*context.db);
 	auto result = con.Query("SELECT * FROM " + BuildQueryTableRef(table_name) + " LIMIT 0");
 	if (result->HasError()) {
@@ -515,6 +517,23 @@ string DoubleThresholdSQL(const Value &value, const string &null_default) {
 string BigintThresholdSQL(const Value &value, const string &null_default) {
 	string literal = value.IsNull() ? null_default : "'" + EscapeSqlStringLiteral(value.ToString()) + "'";
 	return "CAST(" + literal + " AS BIGINT)";
+}
+
+// Second-connection reads and the caller's open transaction (see the header)
+void RejectUncommittedChanges(ClientContext &context, const string &function_name) {
+	if (context.transaction.IsAutoCommit() || !context.transaction.HasActiveTransaction()) {
+		return;
+	}
+	auto modified = MetaTransaction::Get(context).ModifiedDatabase();
+	if (!modified) {
+		return;
+	}
+	AnofoxTrace(AnofoxLogLevel::Debug, function_name + ": the current transaction modified database '" +
+	                                       modified->GetName() + "', which a sibling connection cannot see");
+	// A bind error, like the TEMP table rejection; DuckDB 2.0 aborts the transaction on any error
+	throw BinderException("%s reads the last committed data, but this transaction has uncommitted changes; "
+	                      "call it after COMMIT, or outside a transaction",
+	                      function_name);
 }
 
 } // namespace anofox

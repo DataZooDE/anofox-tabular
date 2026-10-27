@@ -14,7 +14,10 @@ input row (or per outlier).
 
 These functions read the table through a second connection. Pass a regular table or a view,
 not a TEMP table: a TEMP table fails with
-`TEMP tables are not supported by isolation_forest; use a regular table`.
+`TEMP tables are not supported by isolation_forest; use a regular table`. The second connection
+sees only committed data, so inside a transaction with uncommitted changes the functions refuse
+to run; call them after `COMMIT` (see
+[Conventions](00-conventions.md#table-and-column-arguments)).
 
 ## Functions
 

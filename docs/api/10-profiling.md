@@ -10,8 +10,9 @@
 
 The profiling functions read the table through a second connection. Pass a regular table or a
 view; a TEMP table is rejected with
-`TEMP tables are not supported by profile_table; use a regular table`. See
-[Conventions](00-conventions.md#table-and-column-arguments).
+`TEMP tables are not supported by profile_table; use a regular table`. They see only committed
+data, so inside a transaction with uncommitted changes they refuse to run; call them after
+`COMMIT`. See [Conventions](00-conventions.md#table-and-column-arguments).
 
 ## Functions
 

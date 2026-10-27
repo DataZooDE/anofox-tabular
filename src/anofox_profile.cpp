@@ -231,6 +231,7 @@ static unique_ptr<TableRef> ProfileSummaryBindReplace(ClientContext &context,
 	}
 	string table_name = RequireNonNullArgument(input, 0, "profile_summary", "table_name");
 	RejectTempTable(context, "profile_summary", table_name);
+	RejectUncommittedChanges(context, "profile_summary");
 
 	AnofoxTrace(AnofoxLogLevel::Debug,
 	            "profile: profile_summary introspecting '" + table_name + "'");
@@ -318,6 +319,7 @@ static unique_ptr<FunctionData> ProfileTableBind(ClientContext &context,
 
 	string table_name = RequireNonNullArgument(input, 0, "profile_table", "table_name");
 	RejectTempTable(context, "profile_table", table_name);
+	RejectUncommittedChanges(context, "profile_table");
 
 	vector<string> columns;
 	if (input.inputs.size() > 1 && !input.inputs[1].IsNull() &&
@@ -707,6 +709,7 @@ static unique_ptr<FunctionData> ProfileCorrelationsBind(ClientContext &context,
 
 	string table_name = RequireNonNullArgument(input, 0, "profile_correlations", "table_name");
 	RejectTempTable(context, "profile_correlations", table_name);
+	RejectUncommittedChanges(context, "profile_correlations");
 
 	vector<string> columns;
 	if (input.inputs.size() > 1 && !input.inputs[1].IsNull() &&

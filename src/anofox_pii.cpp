@@ -4255,6 +4255,7 @@ unique_ptr<FunctionData> PIIAuditTableBind(ClientContext &context, TableFunction
         throw BinderException("pii_audit_table requires a table name");
     }
     auto table_name = RequireNonNullArgument(input, 0, "pii_audit_table", "table_name");
+    RejectUncommittedChanges(context, "pii_audit_table");
 
     // Get optional column filter (second argument or columns := ...)
     auto column_filter = ParsePIIColumnFilter(input, "pii_audit_table");
@@ -4584,6 +4585,7 @@ unique_ptr<FunctionData> PIIScanTableBind(ClientContext &context, TableFunctionB
         throw BinderException("pii_scan_table requires a table name");
     }
     auto table_name = RequireNonNullArgument(input, 0, "pii_scan_table", "table_name");
+    RejectUncommittedChanges(context, "pii_scan_table");
 
     // Get optional column filter (second argument or columns := ...)
     auto column_filter = ParsePIIColumnFilter(input, "pii_scan_table");

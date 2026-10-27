@@ -61,6 +61,31 @@ LINE 1: SELECT status FROM isolation_forest('scratch', 'v');
 Use a regular table (`CREATE TABLE`) instead. The functions that need one are listed in
 [API conventions](../api/00-conventions.md#table-and-column-arguments).
 
+## "reads the last committed data, but this transaction has uncommitted changes"
+
+The same functions see only committed data through their second connection. Inside a
+transaction that has inserted, updated or deleted rows, or created a table, they would miss
+those changes, so they refuse:
+
+```sql
+CREATE TABLE orders AS SELECT i AS order_id, 20.0 + (i % 7) AS amount FROM range(200) t(i);
+BEGIN;
+INSERT INTO orders VALUES (200, 9999.0);
+SELECT status FROM isolation_forest('orders', 'amount');
+ROLLBACK;
+```
+
+```text
+Binder Error: isolation_forest reads the last committed data, but this transaction has uncommitted changes; call it after COMMIT, or outside a transaction
+
+LINE 1: SELECT status FROM isolation_forest('orders', 'amount');
+                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+```
+
+On DuckDB 2.0 any error aborts the open transaction, this one too: `ROLLBACK`, run the load
+again and call the function after `COMMIT`. A transaction that has only read data, or has
+written only TEMP tables, runs these functions on the committed data.
+
 ## "Invalid named parameter"
 
 Most parameters are positional. Only a few accept `name := value`; the list is in

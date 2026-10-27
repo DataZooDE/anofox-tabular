@@ -175,7 +175,8 @@ Every function has a canonical name with the prefix `anofox_tab_` and a short al
 `vat_is_valid` and `anofox_tab_vat_is_valid` are the same function. Arguments are positional;
 `id_column`, `start_date`/`end_date` and every `diff_*` parameter also accept the named form
 `name := value`. Table functions take the table name as a string, and a few of them need a
-regular table instead of a TEMP table; see [API conventions](docs/api/00-conventions.md).
+regular table instead of a TEMP table and read only committed data; see
+[API conventions](docs/api/00-conventions.md).
 
 A few things that often trip people up:
 

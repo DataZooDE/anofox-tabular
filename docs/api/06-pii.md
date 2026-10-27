@@ -742,7 +742,9 @@ one row for every column without a match, so the result accounts for every colum
 show which columns were scanned and found clean, and which were not scanned at all. It accepts
 regular tables and views, not TEMP tables (see
 [Conventions](00-conventions.md#table-and-column-arguments)); a TEMP table is an error that says
-so and suggests copying it into a regular table.
+so and suggests copying it into a regular table. It reads the table through a second connection,
+which sees only committed data: inside a transaction with uncommitted changes it refuses to run,
+so call it after `COMMIT`.
 
 ```text
 pii_scan_table(table_name VARCHAR [, columns VARCHAR]) -> TABLE(
@@ -873,7 +875,8 @@ RESET anofox_pii_enabled_types;
 Canonical name: `anofox_tab_pii_audit_table`. Table function.
 
 Returns one row per PII match, with the original and the masked value. Like `pii_scan_table` it
-accepts regular tables and views, not TEMP tables; a TEMP table is an error that says so.
+accepts regular tables and views, not TEMP tables; a TEMP table is an error that says so. Inside
+a transaction with uncommitted changes it refuses to run, as `pii_scan_table` does.
 
 ```text
 pii_audit_table(table_name VARCHAR [, columns VARCHAR] [, id_column := VARCHAR]) -> TABLE(

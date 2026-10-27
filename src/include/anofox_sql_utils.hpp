@@ -113,6 +113,14 @@ const ResolvedColumn *FindColumn(const RelationInfo &relation, const string &col
 // BinderException("TEMP tables are not supported by <function_name>; use a regular table").
 void RejectTempTable(ClientContext &context, const string &function_name, const string &table_name);
 
+// Functions that read their input through a sibling connection see the last committed data
+// only. Inside an explicit transaction that has written to a database (INSERT/UPDATE/DELETE,
+// CREATE TABLE, ...; writes to TEMP objects do not count) that data would silently miss the
+// caller's changes, so this throws BinderException("<function_name> reads the last committed
+// data, but this transaction has uncommitted changes; ..."). Autocommit statements and
+// read-only transactions pass.
+void RejectUncommittedChanges(ClientContext &context, const string &function_name);
+
 // Bind-time check of a statistical check's input column: the column must exist in
 // `table_name` (else the MatchColumnNames error) and be numeric or BOOLEAN (else
 // "<function_name>: column '<c>' must be numeric, got <TYPE>"). Relations the catalog does

@@ -6,7 +6,7 @@
 - Understand the two names of every function
 - Know when you can pass arguments by name with `:=`
 - Read the signatures on the module pages
-- Know which functions need a regular table instead of a TEMP table
+- Know which functions need a regular table instead of a TEMP table, and committed data
 - Keep one bad value from stopping a query with `TRY()`
 
 ## Function names
@@ -173,6 +173,33 @@ tables of your session, so these functions reject a TEMP table when the query is
 | `isolation_forest`, `isolation_forest_mv`, `dbscan`, `dbscan_mv`, `outlier_tree`, `pii_scan_table`, `pii_audit_table`, `profile_table`, `profile_summary`, `profile_correlations` | regular tables and views, not TEMP tables |
 | `run_checks` | a checks table (TEMP too, read in your transaction) or a regular checks view; the checked tables may be TEMP tables or views |
 | all other table functions | tables, views and TEMP tables |
+
+The second connection also reads only committed data. Inside an explicit transaction
+(`BEGIN ... COMMIT`) these ten functions would not see the rows the transaction inserted,
+updated or deleted, nor a table it created. So once the transaction has uncommitted changes they
+refuse when the query is bound, with `<function> reads the last committed data, but this
+transaction has uncommitted changes; call it after COMMIT, or outside a transaction`. On DuckDB
+2.0 this error, like any error, aborts the transaction: roll back, run the load again and call
+the function after `COMMIT`. A transaction that has only read data, or has written only TEMP
+tables, runs them on the committed data. Outside a transaction (autocommit) nothing changes:
+
+```sql
+CREATE TABLE cold_store AS SELECT i AS reading_id, 3.5 + (i % 10) * 0.1 AS temperature_c FROM range(100) t(i);
+BEGIN;
+INSERT INTO cold_store VALUES (100, 19.8);
+SELECT * FROM isolation_forest('cold_store', 'temperature_c');
+ROLLBACK;
+```
+
+```text
+Binder Error: isolation_forest reads the last committed data, but this transaction has uncommitted changes; call it after COMMIT, or outside a transaction
+
+LINE 1: SELECT * FROM isolation_forest('cold_store', 'temperature_c');
+                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+```
+
+The other functions, such as `volume` or `null_rate`, read the table in your transaction and see
+the uncommitted rows.
 
 ## Types
 
