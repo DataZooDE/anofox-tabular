@@ -27,11 +27,16 @@ struct PhoneNumberParts {
 	//! Why the number is not valid (a PhoneNumberInvalidReason value); empty
 	//! when it is valid.
 	std::string reason;
+	//! Digits of a trailing extension ("ext. 123", "x123", "Durchwahl 123") that
+	//! was split off before validation; empty when the input has none.
+	std::string extension;
 };
 
 //! Values of the `reason` field of phonenumber_parse
 struct PhoneNumberInvalidReason {
 	static constexpr const char *NOT_A_NUMBER = "not_a_number";
+	//! The number contains letters (other than a leading label or an extension marker)
+	static constexpr const char *INVALID_CHARACTERS = "invalid_characters";
 	static constexpr const char *UNSUPPORTED_REGION = "unsupported_region";
 	static constexpr const char *INVALID_COUNTRY_CODE = "unsupported_country_code";
 	static constexpr const char *INVALID_LENGTH = "invalid_length";

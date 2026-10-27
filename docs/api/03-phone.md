@@ -15,7 +15,7 @@ JP, CN, IN, BR, MX, AR, RU, NL, SE, NO, DK, FI and CH. Numbers of other regions 
 
 | Function | Canonical name | Kind | Returns |
 |----------|----------------|------|---------|
-| [`phonenumber_parse`](#phonenumber_parse) | `anofox_tab_phonenumber_parse` | scalar | `STRUCT` with country code, national number, region, type |
+| [`phonenumber_parse`](#phonenumber_parse) | `anofox_tab_phonenumber_parse` | scalar | `STRUCT` with country code, national number, region, type, extension, reason |
 | [`phonenumber_is_valid`](#phonenumber_is_valid) | `anofox_tab_phonenumber_is_valid` | scalar | `BOOLEAN` |
 | [`phonenumber_is_possible`](#phonenumber_is_possible) | `anofox_tab_phonenumber_is_possible` | scalar | `BOOLEAN` |
 | [`phonenumber_is_valid_for_region`](#phonenumber_is_valid_for_region) | `anofox_tab_phonenumber_is_valid_for_region` | scalar | `BOOLEAN` |
@@ -34,7 +34,10 @@ starts with `+` carries its own country code. When `region` is `NULL`, the setti
 surrounding spaces are ignored (`' gb '` is `GB`); a `region` of only spaces counts as `NULL`.
 `'UK'` is accepted as an alias of `'GB'`, both as `region` and in the default-region setting. A
 `region` that is not one of the 21 supported codes (for example `'AT'`) makes a number without
-`+` invalid; `phonenumber_parse` reports it as `unsupported_region`.
+`+` invalid; `phonenumber_parse` reports it as `unsupported_region`. This is deliberate: a
+`region` argument is data, often a column, so one row with an unknown country makes that row
+invalid but does not stop the query. The [default-region setting](#default-region) is
+configuration instead and rejects an unsupported code with an error when it is set.
 
 ```sql
 SELECT phonenumber_format('020 7946 0958', 'UK', 'E164') AS uk,
@@ -76,6 +79,48 @@ SELECT phonenumber_format('0049 30 12345678', 'DE', 'E164') AS idd,
 └───────────────┴───────────────┴──────────┘
 ```
 
+### Labels, extensions and letters
+
+Phone fields typed by people carry more than digits. The parser reads spaces, `-`, `.`, `/` and
+parentheses as separators and handles three more cases:
+
+- **A leading label** is dropped: `Tel`, `Telefon`, `Telephone`, `Phone`, `Mobil`, `Mobile`,
+  `Cell` or `Fax` (any case), followed by `.`, `:` or a space. `Tel: 030 12345678`,
+  `Mobil 0171 1234567` and the RFC 3966 form `tel:+49-30-12345678` are all valid.
+- **A trailing extension** is split off and ignored for validation and formatting: the marker
+  `ext`, `extension`, `x`, `Durchwahl` or `DW` (any case, optionally followed by `.` or `:`),
+  then only digits up to the end. `phonenumber_parse` returns the digits in the field
+  `extension`. A `-` is a separator and never starts an extension, so `030 12345-67` is read as
+  one number.
+- **Any other letter makes the number invalid** with reason `invalid_characters`:
+  `650foo2530000`, `030 12A34567` and `+49 30 1234 FAX 5678` are rejected instead of being read
+  as the digits that are left. Vanity numbers such as `1-800-FLOWERS` are not converted. Input
+  without any digit (`n/a`) is `not_a_number`.
+
+```sql
+SELECT phone,
+       (phonenumber_parse(phone, 'DE')).valid AS valid,
+       phonenumber_format(phone, 'DE', 'E164') AS e164,
+       (phonenumber_parse(phone, 'DE')).extension AS extension,
+       (phonenumber_parse(phone, 'DE')).reason AS reason
+FROM (VALUES ('Tel.: 030 12345678'), ('030 12345678 Durchwahl 215'), ('+1 650-253-0000 ext. 123'),
+             ('030 12A34567'), ('+49 30 1234 FAX 5678'), ('n/a')) t(phone);
+```
+
+```text
+┌────────────────────────────┬─────────┬───────────────┬───────────┬────────────────────┐
+│           phone            │  valid  │     e164      │ extension │       reason       │
+│          varchar           │ boolean │    varchar    │  varchar  │      varchar       │
+├────────────────────────────┼─────────┼───────────────┼───────────┼────────────────────┤
+│ Tel.: 030 12345678         │ true    │ +493012345678 │ NULL      │ NULL               │
+│ 030 12345678 Durchwahl 215 │ true    │ +493012345678 │ 215       │ NULL               │
+│ +1 650-253-0000 ext. 123   │ true    │ +16502530000  │ 123       │ NULL               │
+│ 030 12A34567               │ false   │ NULL          │ NULL      │ invalid_characters │
+│ +49 30 1234 FAX 5678       │ false   │ NULL          │ NULL      │ invalid_characters │
+│ n/a                        │ false   │ NULL          │ NULL      │ not_a_number       │
+└────────────────────────────┴─────────┴───────────────┴───────────┴────────────────────┘
+```
+
 ```sql
 CREATE TABLE contacts AS
 SELECT * FROM (VALUES
@@ -103,7 +148,8 @@ phonenumber_parse(phone VARCHAR, region VARCHAR) -> STRUCT(
     national_number VARCHAR,
     region          VARCHAR,
     type            VARCHAR,
-    reason          VARCHAR
+    reason          VARCHAR,
+    extension       VARCHAR
 )
 ```
 
@@ -115,10 +161,12 @@ phonenumber_parse(phone VARCHAR, region VARCHAR) -> STRUCT(
 | `region` | `VARCHAR` | Region code, e.g. `US`, `GB` |
 | `type` | `VARCHAR` | `fixed_line`, `mobile`, `fixed_line_or_mobile` or `toll_free` |
 | `reason` | `VARCHAR` | `NULL` when the number is valid, else why it is not (see below) |
+| `extension` | `VARCHAR` | Digits of a trailing extension (`ext. 123`, `x123`, `Durchwahl 123`), see [Labels, extensions and letters](#labels-extensions-and-letters); `NULL` when there is none or the number is not valid |
 
 | `reason` | Meaning |
 |----------|---------|
 | `not_a_number` | The input has no digits |
+| `invalid_characters` | The number contains letters, other than a leading label or a trailing extension marker |
 | `unsupported_region` | A number without `+` and a `region` that is not one of the 21 supported regions |
 | `unsupported_country_code` | The country code after `+` (or the international prefix) is not one of the supported regions, e.g. `+43` (Austria) |
 | `invalid_length` | The national number has a length that the region does not use |
@@ -430,7 +478,10 @@ SELECT * FROM phonenumber_status();
 ## Default region
 
 `SET anofox_tab_phonenumber_default_region = 'DE';` changes the region used when the `region`
-argument is `NULL`. Only the 21 supported region codes are accepted:
+argument is `NULL`. Only the 21 supported region codes are accepted; unlike an unsupported
+`region` argument, which only makes the numbers of that row invalid (`unsupported_region`), an
+unsupported setting is an error, so a typo in the configuration does not silently invalidate
+every national number:
 
 ```sql
 SET anofox_tab_phonenumber_default_region = 'XX';

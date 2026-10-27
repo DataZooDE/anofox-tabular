@@ -32,6 +32,110 @@ namespace phonenumber {
 
 namespace {
 
+bool IsAsciiLetter(char c) {
+	return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z');
+}
+
+bool IsAsciiDigit(char c) {
+	return c >= '0' && c <= '9';
+}
+
+bool IsBlank(char c) {
+	return c == ' ' || c == '\t' || c == '\r' || c == '\n';
+}
+
+//! A raw phone field split into the number itself and the parts around it.
+struct PhoneInput {
+	//! The number without a leading label and without a trailing extension
+	std::string number;
+	//! Digits of a trailing extension ("ext. 123" -> "123"); empty when there is none
+	std::string extension;
+	//! The number contains a letter that is not part of a label or an extension marker
+	bool has_letters = false;
+};
+
+//! Leading labels people type into a phone field ("Tel: 030 ...", "Mobil 0171 ...").
+//! Longer labels come first so that "telefon" is not read as "tel" + "efon".
+constexpr const char* PHONE_LABELS[] = {"telephone", "telefon", "phone", "mobile", "mobil", "cell", "tel", "fax"};
+//! Markers of a trailing extension ("ext. 12", "x12", "Durchwahl 12", "DW 12")
+constexpr const char* EXTENSION_MARKERS[] = {"extension", "durchwahl", "ext", "dw", "x"};
+
+//! Case-insensitive test whether `text` has `word` (lower-case ASCII) at position `pos`
+bool HasWordAt(const std::string& text, size_t pos, const char* word) {
+	const size_t len = std::char_traits<char>::length(word);
+	if (pos + len > text.size()) {
+		return false;
+	}
+	for (size_t i = 0; i < len; i++) {
+		if (std::tolower(static_cast<unsigned char>(text[pos + i])) != word[i]) {
+			return false;
+		}
+	}
+	return true;
+}
+
+//! Splits a raw phone field into number, extension and a letter flag.
+//! - A leading label (PHONE_LABELS, case-insensitive) followed by '.', ':' or a blank is dropped;
+//!   this also accepts the RFC 3966 form "tel:+1-650-253-0000".
+//! - A trailing extension marker (EXTENSION_MARKERS, case-insensitive, not glued to a preceding
+//!   letter) followed by optional '.', ':', blanks and then only digits is split off. Separators
+//!   such as '-' never start an extension: "030 12345-67" stays one number.
+//! - Any other ASCII letter in the remaining number sets has_letters.
+PhoneInput SplitPhoneInput(const std::string& raw) {
+	PhoneInput input;
+	std::string text = raw;
+	StringUtil::Trim(text);
+
+	for (const char* label : PHONE_LABELS) {
+		const size_t len = std::char_traits<char>::length(label);
+		if (HasWordAt(text, 0, label) && text.size() > len &&
+		    (text[len] == '.' || text[len] == ':' || IsBlank(text[len]))) {
+			size_t pos = len;
+			while (pos < text.size() && (text[pos] == '.' || text[pos] == ':' || IsBlank(text[pos]))) {
+				pos++;
+			}
+			text = text.substr(pos);
+			break;
+		}
+	}
+
+	// Trailing extension: <number> <marker>[.][:] <digits>
+	size_t digits_start = text.size();
+	while (digits_start > 0 && IsAsciiDigit(text[digits_start - 1])) {
+		digits_start--;
+	}
+	if (digits_start < text.size()) {
+		size_t marker_end = digits_start;
+		while (marker_end > 0 &&
+		       (IsBlank(text[marker_end - 1]) || text[marker_end - 1] == '.' || text[marker_end - 1] == ':')) {
+			marker_end--;
+		}
+		for (const char* marker : EXTENSION_MARKERS) {
+			const size_t len = std::char_traits<char>::length(marker);
+			if (marker_end < len || !HasWordAt(text, marker_end - len, marker)) {
+				continue;
+			}
+			const size_t marker_start = marker_end - len;
+			// "FAX 5678" must not be read as "FA" + "x 5678"
+			if (marker_start > 0 && IsAsciiLetter(text[marker_start - 1])) {
+				continue;
+			}
+			std::string number = text.substr(0, marker_start);
+			// An extension needs a number in front of it ("x123" alone is not a number)
+			if (std::none_of(number.begin(), number.end(), IsAsciiDigit)) {
+				continue;
+			}
+			input.extension = text.substr(digits_start);
+			text = std::move(number);
+			break;
+		}
+	}
+
+	input.has_letters = std::any_of(text.begin(), text.end(), IsAsciiLetter);
+	input.number = std::move(text);
+	return input;
+}
+
 // Helper to normalize phone number string (remove spaces, hyphens, parentheses, etc.)
 std::string NormalizePhoneNumber(const std::string& input) {
 	std::string normalized;
@@ -228,13 +332,25 @@ PhoneNumberParts PhoneNumberManager::Parse(const std::string& raw_number, const 
 
 	PhoneNumberParts parts;
 
-	// Normalize the input
-	std::string normalized = NormalizePhoneNumber(raw_number);
-	if (normalized.empty()) {
+	// Drop a leading label, split off a trailing extension, then normalize
+	auto input = SplitPhoneInput(raw_number);
+	std::string normalized = NormalizePhoneNumber(input.number);
+	if (normalized.empty() || normalized == "+") {
 		AnofoxTrace(AnofoxLogLevel::Debug, "PhoneNumber parse failed: empty number");
 		parts.reason = PhoneNumberInvalidReason::NOT_A_NUMBER;
 		return parts;
 	}
+	if (input.has_letters) {
+		// No vanity numbers: a letter inside the number is a typo or a note, not a digit
+		AnofoxTrace(AnofoxLogLevel::Debug, "PhoneNumber parse failed: letters in number=" + input.number);
+		parts.reason = PhoneNumberInvalidReason::INVALID_CHARACTERS;
+		return parts;
+	}
+	if (!input.extension.empty()) {
+		AnofoxTrace(AnofoxLogLevel::Debug,
+		            "PhoneNumber parse: extension " + input.extension + " split off number=" + input.number);
+	}
+	parts.extension = input.extension;
 
 	std::string hint_upper = NormalizeRegionCode(region_hint);
 
@@ -706,6 +822,7 @@ void PhoneParseFunction(DataChunk& args, ExpressionState& state, Vector& result)
 	auto& region_vec = anofox::VectorRef(children[3]);
 	auto& type_vec = anofox::VectorRef(children[4]);
 	auto& reason_vec = anofox::VectorRef(children[5]);
+	auto& extension_vec = anofox::VectorRef(children[6]);
 
 	auto valid_data = duckdb_compat::FlatData<bool>(valid_vec);
 	auto country_data = duckdb_compat::FlatData<int32_t>(country_code_vec);
@@ -713,6 +830,7 @@ void PhoneParseFunction(DataChunk& args, ExpressionState& state, Vector& result)
 	auto region_data_out = duckdb_compat::FlatData<string_t>(region_vec);
 	auto type_data = duckdb_compat::FlatData<string_t>(type_vec);
 	auto reason_data = duckdb_compat::FlatData<string_t>(reason_vec);
+	auto extension_data = duckdb_compat::FlatData<string_t>(extension_vec);
 
 	for (idx_t i = 0; i < args.size(); i++) {
 		auto nr_idx = number_data.sel->get_index(i);
@@ -750,11 +868,18 @@ void PhoneParseFunction(DataChunk& args, ExpressionState& state, Vector& result)
 			region_data_out[i] = StringVector::AddString(region_vec, parts.region_code);
 			type_data[i] = StringVector::AddString(type_vec, parts.type);
 			FlatVector::SetNull(reason_vec, i, true);
+			if (parts.extension.empty()) {
+				FlatVector::SetNull(extension_vec, i, true);
+			} else {
+				FlatVector::SetNull(extension_vec, i, false);
+				extension_data[i] = StringVector::AddString(extension_vec, parts.extension);
+			}
 		} else {
 			FlatVector::SetNull(country_code_vec, i, true);
 			FlatVector::SetNull(national_number_vec, i, true);
 			FlatVector::SetNull(region_vec, i, true);
 			FlatVector::SetNull(type_vec, i, true);
+			FlatVector::SetNull(extension_vec, i, true);
 			FlatVector::SetNull(reason_vec, i, false);
 			reason_data[i] = StringVector::AddString(reason_vec, parts.reason);
 		}
@@ -1108,7 +1233,8 @@ ScalarFunction CreateParseScalar(const string& name) {
 	                                             {"national_number", LogicalTypeId::VARCHAR},
 	                                             {"region", LogicalTypeId::VARCHAR},
 	                                             {"type", LogicalTypeId::VARCHAR},
-	                                             {"reason", LogicalTypeId::VARCHAR}}),
+	                                             {"reason", LogicalTypeId::VARCHAR},
+	                                             {"extension", LogicalTypeId::VARCHAR}}),
 	                        PhoneParseFunction);
 	duckdb_compat::SetStability(function, FunctionStability::CONSISTENT_WITHIN_QUERY);
 	duckdb_compat::SetNullHandling(function, FunctionNullHandling::SPECIAL_HANDLING);
@@ -1190,7 +1316,7 @@ void RegisterPhonenumberFunctions(ExtensionLoader& loader) {
 	// Register phonenumber_parse
 	{
 		FunctionDescription desc;
-		desc.description = "Parses a phone number string and returns a struct with validity, country code, national number, region, number type and, for an invalid number, the reason.";
+		desc.description = "Parses a phone number string and returns a struct with validity, country code, national number, region, number type, the extension split off the input and, for an invalid number, the reason.";
 		desc.parameter_names = {"phone", "region"};
 		desc.parameter_types = {LogicalType::VARCHAR, LogicalType::VARCHAR};
 		desc.examples = {"SELECT phonenumber_parse('+14155552671', NULL);"};
