@@ -7,8 +7,9 @@ from __future__ import annotations
 import functools
 import inspect
 import re
+from decimal import Decimal
 from contextlib import contextmanager
-from typing import Any, Callable, Iterator, Optional, TypeVar, Union
+from typing import Any, Callable, Iterator, Optional, Sequence, TypeVar, Union
 
 from ._sql import fetch_frame, fetch_one, quote_ident
 from ._utils import (
@@ -227,6 +228,29 @@ def accepts_dataframes(*param_names: str) -> Callable[[F], F]:
     return decorator
 
 
+def is_missing(value: Any) -> bool:
+    """
+    True for a single missing value: ``None``, ``pandas.NA``, ``pandas.NaT``
+    or a float/Decimal NaN (also a numpy float NaN).
+
+    The scalar wrappers return ``None`` for it, like the SQL functions return
+    ``NULL`` for a ``NULL`` argument.
+    """
+    if value is None:
+        return True
+    if isinstance(value, float):  # includes numpy.float64
+        return value != value
+    if isinstance(value, Decimal):
+        return value.is_nan()
+    cls = type(value)
+    module = cls.__module__.split(".")[0]
+    if module == "pandas":
+        return cls.__name__ in ("NAType", "NaTType")
+    if module == "numpy" and getattr(getattr(value, "dtype", None), "kind", None) == "f":
+        return bool(value != value)
+    return False
+
+
 def _describe(value: Any) -> str:
     """Short description of *value*'s type for error messages."""
     if value is None:
@@ -260,6 +284,7 @@ def apply_scalar(
     expression: str,
     params: list,
     result_name: str,
+    text_columns: Sequence[str] = (),
 ) -> Any:
     """
     Return a copy of *df* with one added column *result_name*.
@@ -271,8 +296,13 @@ def apply_scalar(
     already quoted) with ``?`` placeholders for *params*. The result keeps the
     input's rows in their order, its other columns unchanged and, for pandas,
     its index, so the new column can be assigned back to the input.
+
+    *text_columns* are the columns the SQL function reads as ``VARCHAR``. One
+    that holds only missing values is passed as a ``VARCHAR`` column of
+    ``NULL``: pandas reads an empty CSV column as float64 NaN, which would
+    otherwise reach the function as ``DOUBLE`` and fail to bind.
     """
-    with registered_view(conn.native, df) as (view, position):
+    with registered_view(conn.native, _missing_as_text(df, df_type, text_columns)) as (view, position):
         try:
             result = fetch_frame(
                 conn,
@@ -292,3 +322,22 @@ def apply_scalar(
             return out
         values = result.get_column(result_name)
         return df.with_columns(values)
+
+
+def _missing_as_text(df: Any, df_type: str, columns: Sequence[str]) -> Any:
+    """*df* with each of *columns* that holds only missing values replaced by a string column of nulls."""
+    for column in dict.fromkeys(c for c in columns if c is not None):
+        if df_type == "pandas":
+            series = df[column]
+            if series.isna().all():
+                import pandas as pd
+                df = df.assign(**{column: pd.Series([None] * len(df), index=df.index, dtype="string")})
+        else:
+            import polars as pl
+            series = df.get_column(column)
+            missing = series.is_null()
+            if series.dtype.is_float():
+                missing = missing | series.is_nan()
+            if bool(missing.all()) and series.dtype != pl.String:
+                df = df.with_columns(pl.lit(None, dtype=pl.String).alias(column))
+    return df

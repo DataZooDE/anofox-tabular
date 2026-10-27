@@ -4,7 +4,8 @@ VAT number validation and lookup wrappers.
 Every function takes a single string (returns a scalar) or a pandas/polars
 DataFrame with ``column=`` (returns a copy of the DataFrame with one added
 column named after the function, input index and row order kept). A value
-the extension cannot parse gives ``None`` (SQL ``NULL``). The checks run
+the extension cannot parse gives ``None`` (SQL ``NULL``), and so does a
+missing value (``None``, ``pandas.NA`` or NaN). The checks run
 locally; none of them queries the EU VIES service.
 """
 
@@ -13,7 +14,7 @@ from __future__ import annotations
 from typing import Any, Callable, Optional, Union
 
 from ._sql import fetch_one, quote_ident
-from ._table import apply_scalar, check_row_input
+from ._table import apply_scalar, check_row_input, is_missing
 
 
 def make_vat(conn: Any, vat_string: Union[str, Any], column: Optional[str] = None) -> Union[Optional[dict], Any]:
@@ -157,6 +158,8 @@ def _vat_call(
     """Call *sql_function* on a string (converted with *convert*) or on *column* of a DataFrame."""
     extra = list(extra_params or [])
     placeholders = "".join(", ?" for _ in extra)
+    if is_missing(value):
+        return None
     if isinstance(value, str):
         return convert(fetch_one(conn, f"SELECT {sql_function}(?{placeholders})", [value, *extra]))
 
@@ -164,6 +167,7 @@ def _vat_call(
     return apply_scalar(
         conn, value, df_type,
         f"{sql_function}({quote_ident(column)}{placeholders})", extra, result_name,
+        text_columns=[column],
     )
 
 

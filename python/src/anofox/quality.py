@@ -16,16 +16,61 @@ and ``message`` (DECIMAL values as float). ``_raw`` keeps the raw result row.
 from __future__ import annotations
 
 import datetime
+import functools
+import inspect
 import json
+import numbers
 from decimal import Decimal
-from typing import Any, Optional, Union
+from typing import Any, Callable, Optional, TypeVar, Union
 
 from ._sql import quote_table_name, run
 from ._table import TableLike, accepts_dataframes, without_temp_names
 
 
+F = TypeVar("F", bound=Callable[..., Any])
 
-@accepts_dataframes("table_name")
+#: The parameters of the checks that name columns.
+_COLUMN_PARAMETERS = frozenset({
+    "column_name", "column_names", "timestamp_column", "required_columns",
+    "left_keys", "right_keys", "date_column", "count_column", "metric_column",
+})
+
+
+def _column_label(value: Any) -> Any:
+    """An integer column label (pandas allows them) as the string DuckDB knows the column by."""
+    if isinstance(value, numbers.Integral) and not isinstance(value, bool):
+        return str(value)
+    if isinstance(value, (list, tuple)):
+        return [_column_label(v) for v in value]
+    return value
+
+
+def _dataframe_check(*table_params: str) -> Callable[[F], F]:
+    """
+    :func:`~anofox._table.accepts_dataframes` for a check, which also takes
+    integer column labels.
+
+    A pandas DataFrame may have integer column labels (``read_csv(header=None)``);
+    its copy in DuckDB names those columns ``"0"``, ``"1"``, ... . The column
+    parameters are passed to SQL as those strings.
+    """
+    def decorator(func: F) -> F:
+        signature = inspect.signature(func)
+
+        @functools.wraps(func)
+        def wrapper(*args: Any, **kwargs: Any) -> Any:
+            bound = signature.bind(*args, **kwargs)
+            for name in _COLUMN_PARAMETERS.intersection(bound.arguments):
+                bound.arguments[name] = _column_label(bound.arguments[name])
+            return func(*bound.args, **bound.kwargs)
+
+        return accepts_dataframes(*table_params)(wrapper)  # type: ignore[return-value]
+
+    return decorator
+
+
+
+@_dataframe_check("table_name")
 def volume(
     conn: Any,
     table_name: TableLike,
@@ -65,7 +110,7 @@ def volume(
 cursor, {"min_rows": min_rows, "max_rows": max_rows})
 
 
-@accepts_dataframes("table_name")
+@_dataframe_check("table_name")
 def null_rate(
     conn: Any,
     table_name: TableLike,
@@ -98,7 +143,7 @@ def null_rate(
 cursor, {"column": column_name, "max_null_rate": max_null_rate})
 
 
-@accepts_dataframes("table_name")
+@_dataframe_check("table_name")
 def distinct_count(
     conn: Any,
     table_name: TableLike,
@@ -136,7 +181,7 @@ def distinct_count(
     )
 
 
-@accepts_dataframes("table_name")
+@_dataframe_check("table_name")
 def freshness(
     conn: Any,
     table_name: TableLike,
@@ -185,7 +230,7 @@ def freshness(
     )
 
 
-@accepts_dataframes("table_name")
+@_dataframe_check("table_name")
 def zscore(
     conn: Any,
     table_name: TableLike,
@@ -218,7 +263,7 @@ def zscore(
 cursor, {"column": column_name, "threshold": threshold})
 
 
-@accepts_dataframes("table_name")
+@_dataframe_check("table_name")
 def iqr(
     conn: Any,
     table_name: TableLike,
@@ -251,7 +296,7 @@ def iqr(
 cursor, {"column": column_name, "multiplier": multiplier})
 
 
-@accepts_dataframes("table_name")
+@_dataframe_check("table_name")
 def schema_check(
     conn: Any,
     table_name: TableLike,
@@ -282,7 +327,7 @@ def schema_check(
 cursor, {"required_columns": required_columns})
 
 
-@accepts_dataframes("table_name")
+@_dataframe_check("table_name")
 def regex_match(
     conn: Any,
     table_name: TableLike,
@@ -335,7 +380,7 @@ def regex_match(
     )
 
 
-@accepts_dataframes("table_name")
+@_dataframe_check("table_name")
 def values_in_set(
     conn: Any,
     table_name: TableLike,
@@ -373,7 +418,7 @@ def values_in_set(
     )
 
 
-@accepts_dataframes("table_name")
+@_dataframe_check("table_name")
 def agg_check(
     conn: Any,
     table_name: TableLike,
@@ -422,7 +467,7 @@ def agg_check(
     )
 
 
-@accepts_dataframes("table_name")
+@_dataframe_check("table_name")
 def duplicate_count(
     conn: Any,
     table_name: TableLike,
@@ -459,7 +504,7 @@ def duplicate_count(
 cursor, {"columns": cols, "max_duplicates": max_duplicates})
 
 
-@accepts_dataframes("table_name")
+@_dataframe_check("table_name")
 def occurrence(
     conn: Any,
     table_name: TableLike,
@@ -508,7 +553,7 @@ def occurrence(
     )
 
 
-@accepts_dataframes("left_table", "right_table")
+@_dataframe_check("left_table", "right_table")
 def match_rate(
     conn: Any,
     left_table: TableLike,
@@ -553,7 +598,7 @@ def match_rate(
     )
 
 
-@accepts_dataframes("table_name")
+@_dataframe_check("table_name")
 def compliance(
     conn: Any,
     table_name: TableLike,
@@ -590,7 +635,7 @@ def compliance(
 cursor, {"expression": expression, "min_rate": min_rate})
 
 
-@accepts_dataframes("table_name")
+@_dataframe_check("table_name")
 def rel_count_change(
     conn: Any,
     table_name: TableLike,
@@ -654,7 +699,7 @@ def rel_count_change(
     )
 
 
-@accepts_dataframes("table_name")
+@_dataframe_check("table_name")
 def metric_anomaly_iqr(
     conn: Any,
     table_name: TableLike,
@@ -723,7 +768,7 @@ def metric_anomaly_iqr(
     )
 
 
-@accepts_dataframes("table_name")
+@_dataframe_check("table_name")
 def rolling_values_in_set(
     conn: Any,
     table_name: TableLike,

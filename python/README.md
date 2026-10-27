@@ -139,6 +139,12 @@ print(checks.checks["null_rate"]["null_rate"])
   DataFrame only `null` does; a float `NaN` stays a NaN value, so `null_rate` and `conn.profile`
   do not count it as missing. Use `df.fill_nan(None)` to treat it as missing (see
   [the Python guide](../docs/guides/06-python.md#missing-values-nan-and-null)).
+  A single missing value (`None`, `pd.NA` or `NaN`) passed to a scalar helper of
+  `anofox.validate`, `anofox.vat`, `anofox.money` or `anofox.pii` gives `None`, like SQL `NULL`.
+  A text column that holds only missing values, such as the `float64` NaN column pandas reads
+  for an empty CSV column, gives missing results in the row-wise helpers.
+- **Column labels.** The `anofox.quality` checks also take integer column labels (pandas
+  `read_csv(header=None)` gives `0`, `1`, ...); the result names the column `"0"`, `"1"`, ...
 - **Row-wise results** (`email_is_valid`, `email_validate`, `phone_is_valid`, `phone_parse`,
   `phone_format`, `phone_region`, the `anofox.vat` functions, `make_money`, `pii_detect`,
   `pii_mask` with `column=`) are a copy of the input plus one column. They keep

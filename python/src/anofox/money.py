@@ -6,6 +6,8 @@ Amounts are exact decimals: DuckDB returns them as :class:`decimal.Decimal`, and
 the wrappers preserve that type so no binary floating point drift is introduced.
 Python-side results come back as dicts with ``amount`` and ``currency`` keys
 when DuckDB returns a struct, or as plain scalars for scalar-returning functions.
+A missing argument (``None``, ``pandas.NA`` or NaN) gives ``None``, as SQL
+``NULL`` gives ``NULL``.
 """
 
 from __future__ import annotations
@@ -14,7 +16,7 @@ from decimal import Decimal
 from typing import Any, Optional, Union
 
 from ._sql import fetch_one, fetch_row, quote_ident
-from ._table import apply_scalar, check_row_input
+from ._table import apply_scalar, check_row_input, is_missing
 
 
 def make_money(
@@ -33,9 +35,10 @@ def make_money(
         An :class:`~anofox.AnofoxConnection`.
     amount:
         Monetary amount, or a pandas/polars DataFrame (with *column*). A single
-        amount must be finite (NaN/Inf raise) and within the DECIMAL(18,3) range; it is
-        rounded half away from zero to 3 decimals. A :class:`decimal.Decimal`
-        is kept exact; a ``float`` holds about 15 significant digits. ``None``
+        amount must be within the DECIMAL(18,3) range (an infinite amount
+        raises); it is rounded half away from zero to 3 decimals. A
+        :class:`decimal.Decimal` is kept exact; a ``float`` holds about 15
+        significant digits. A missing amount (``None``, ``pandas.NA`` or NaN)
         gives ``None``.
     currency:
         ISO 4217 currency code for every value, e.g. ``"USD"`` or ``"EUR"``
@@ -60,6 +63,8 @@ def make_money(
     """
     if currency is not None and currency_column is not None:
         raise ValueError("pass either 'currency' or 'currency_column', not both.")
+    if is_missing(amount):
+        amount = None
     if amount is None or (isinstance(amount, (int, float, Decimal)) and not isinstance(amount, bool)):
         if currency_column is not None:
             raise ValueError("'currency_column' requires a DataFrame input.")
@@ -81,10 +86,11 @@ def make_money(
         # out-of-range amount) becomes a missing value instead of failing the
         # whole DataFrame, like every other row-wise wrapper.
         f"TRY(anofox_tab_money({quote_ident(column)}, {currency_sql}))", params, "make_money",
+        text_columns=[currency_column],
     )
 
 
-def money_from_cents(conn: Any, cents: int, currency: str) -> dict:
+def money_from_cents(conn: Any, cents: Optional[int], currency: Optional[str]) -> Optional[dict]:
     """
     Create a money value from integer cents.
 
@@ -103,8 +109,11 @@ def money_from_cents(conn: Any, cents: int, currency: str) -> dict:
         ``{"amount": decimal.Decimal, "currency": str}`` where ``amount`` is in
         major units (the cents value divided by the currency's
         ``subunit_to_unit``, e.g. ``1000`` cents -> ``Decimal("10.000")`` USD).
-        The conversion is exact for the full BIGINT cents range.
+        The conversion is exact for the full BIGINT cents range. ``None``
+        when *cents* or *currency* is missing.
     """
+    if is_missing(cents) or is_missing(currency):
+        return None
     result = fetch_row(
         conn,
         "SELECT anofox_tab_money_from_cents(?, ?)", [cents, currency]
@@ -112,8 +121,10 @@ def money_from_cents(conn: Any, cents: int, currency: str) -> dict:
     return _struct_to_dict(result[0])
 
 
-def money_amount(conn: Any, money: dict) -> Decimal:
+def money_amount(conn: Any, money: Optional[dict]) -> Optional[Decimal]:
     """Extract the exact numeric amount (``decimal.Decimal``) from a money dict."""
+    if is_missing(money):
+        return None
     result = fetch_row(
         conn,
         f"SELECT anofox_tab_money_amount({_MONEY_SQL})", _money_params(money)
@@ -121,8 +132,10 @@ def money_amount(conn: Any, money: dict) -> Decimal:
     return Decimal(result[0]) if not isinstance(result[0], Decimal) else result[0]
 
 
-def money_currency(conn: Any, money: dict) -> str:
+def money_currency(conn: Any, money: Optional[dict]) -> Optional[str]:
     """Extract the currency code from a money dict."""
+    if is_missing(money):
+        return None
     result = fetch_row(
         conn,
         f"SELECT anofox_tab_money_currency({_MONEY_SQL})", _money_params(money)
@@ -130,8 +143,10 @@ def money_currency(conn: Any, money: dict) -> str:
     return str(result[0])
 
 
-def is_valid_currency(conn: Any, code: str) -> bool:
+def is_valid_currency(conn: Any, code: Optional[str]) -> Optional[bool]:
     """Return True if *code* is a known ISO 4217 currency code."""
+    if is_missing(code):
+        return None
     result = fetch_row(
         conn,
         "SELECT anofox_tab_is_valid_currency(?)", [code]
@@ -139,8 +154,10 @@ def is_valid_currency(conn: Any, code: str) -> bool:
     return bool(result[0])
 
 
-def currency_symbol(conn: Any, code: str) -> str:
+def currency_symbol(conn: Any, code: Optional[str]) -> Optional[str]:
     """Return the currency symbol for an ISO 4217 code (e.g. ``"$"`` for ``"USD"``); ``""`` for an unsupported code."""
+    if is_missing(code):
+        return None
     result = fetch_row(
         conn,
         "SELECT anofox_tab_currency_symbol(?)", [code]
@@ -148,8 +165,10 @@ def currency_symbol(conn: Any, code: str) -> str:
     return str(result[0]) if result[0] is not None else ""
 
 
-def currency_name(conn: Any, code: str) -> str:
+def currency_name(conn: Any, code: Optional[str]) -> Optional[str]:
     """Return the full name of a currency (e.g. ``"United States Dollar"`` for ``"USD"``); ``""`` for an unsupported code."""
+    if is_missing(code):
+        return None
     result = fetch_row(
         conn,
         "SELECT anofox_tab_currency_name(?)", [code]
@@ -157,7 +176,7 @@ def currency_name(conn: Any, code: str) -> str:
     return str(result[0]) if result[0] is not None else ""
 
 
-def money_format(conn: Any, money: dict, fmt: str = "code") -> str:
+def money_format(conn: Any, money: Optional[dict], fmt: str = "code") -> Optional[str]:
     """
     Format a money value as a string, like SQL ``money_format(money, format_style)``.
 
@@ -176,6 +195,8 @@ def money_format(conn: Any, money: dict, fmt: str = "code") -> str:
     -------
     str
     """
+    if is_missing(money):
+        return None
     result = fetch_row(
         conn,
         f"SELECT anofox_tab_money_format({_MONEY_SQL}, ?)", [*_money_params(money), fmt]
@@ -183,8 +204,10 @@ def money_format(conn: Any, money: dict, fmt: str = "code") -> str:
     return str(result[0]) if result[0] is not None else ""
 
 
-def money_is_positive(conn: Any, money: dict) -> bool:
+def money_is_positive(conn: Any, money: Optional[dict]) -> Optional[bool]:
     """Return True if the money amount is > 0."""
+    if is_missing(money):
+        return None
     result = fetch_row(
         conn,
         f"SELECT anofox_tab_money_is_positive({_MONEY_SQL})", _money_params(money)
@@ -192,8 +215,10 @@ def money_is_positive(conn: Any, money: dict) -> bool:
     return bool(result[0])
 
 
-def money_is_negative(conn: Any, money: dict) -> bool:
+def money_is_negative(conn: Any, money: Optional[dict]) -> Optional[bool]:
     """Return True if the money amount is < 0."""
+    if is_missing(money):
+        return None
     result = fetch_row(
         conn,
         f"SELECT anofox_tab_money_is_negative({_MONEY_SQL})", _money_params(money)
@@ -201,8 +226,10 @@ def money_is_negative(conn: Any, money: dict) -> bool:
     return bool(result[0])
 
 
-def money_is_zero(conn: Any, money: dict) -> bool:
+def money_is_zero(conn: Any, money: Optional[dict]) -> Optional[bool]:
     """Return True if the money amount is 0."""
+    if is_missing(money):
+        return None
     result = fetch_row(
         conn,
         f"SELECT anofox_tab_money_is_zero({_MONEY_SQL})", _money_params(money)
@@ -210,8 +237,10 @@ def money_is_zero(conn: Any, money: dict) -> bool:
     return bool(result[0])
 
 
-def money_abs(conn: Any, money: dict) -> dict:
+def money_abs(conn: Any, money: Optional[dict]) -> Optional[dict]:
     """Return the absolute value of a money amount."""
+    if is_missing(money):
+        return None
     result = fetch_row(
         conn,
         f"SELECT anofox_tab_money_abs({_MONEY_SQL})", _money_params(money)
@@ -219,8 +248,10 @@ def money_abs(conn: Any, money: dict) -> dict:
     return _struct_to_dict(result[0])
 
 
-def money_add(conn: Any, m1: dict, m2: dict) -> dict:
+def money_add(conn: Any, m1: Optional[dict], m2: Optional[dict]) -> Optional[dict]:
     """Add two money values (must share the same currency)."""
+    if is_missing(m1) or is_missing(m2):
+        return None
     result = fetch_row(
         conn,
         f"SELECT anofox_tab_money_add({_MONEY_SQL}, {_MONEY_SQL})",
@@ -229,8 +260,10 @@ def money_add(conn: Any, m1: dict, m2: dict) -> dict:
     return _struct_to_dict(result[0])
 
 
-def money_subtract(conn: Any, m1: dict, m2: dict) -> dict:
+def money_subtract(conn: Any, m1: Optional[dict], m2: Optional[dict]) -> Optional[dict]:
     """Subtract *m2* from *m1* (must share the same currency)."""
+    if is_missing(m1) or is_missing(m2):
+        return None
     result = fetch_row(
         conn,
         f"SELECT anofox_tab_money_subtract({_MONEY_SQL}, {_MONEY_SQL})",
@@ -239,8 +272,10 @@ def money_subtract(conn: Any, m1: dict, m2: dict) -> dict:
     return _struct_to_dict(result[0])
 
 
-def money_multiply(conn: Any, money: dict, factor: float) -> dict:
+def money_multiply(conn: Any, money: Optional[dict], factor: Optional[float]) -> Optional[dict]:
     """Multiply a money amount by a scalar factor."""
+    if is_missing(money) or is_missing(factor):
+        return None
     result = fetch_row(
         conn,
         f"SELECT anofox_tab_money_multiply({_MONEY_SQL}, ?)", [*_money_params(money), factor]
@@ -248,8 +283,12 @@ def money_multiply(conn: Any, money: dict, factor: float) -> dict:
     return _struct_to_dict(result[0])
 
 
-def money_in_range(conn: Any, money: dict, min_amount: float, max_amount: float) -> bool:
+def money_in_range(
+    conn: Any, money: Optional[dict], min_amount: Optional[float], max_amount: Optional[float]
+) -> Optional[bool]:
     """Return True if the money amount is within [min_amount, max_amount]."""
+    if is_missing(money) or is_missing(min_amount) or is_missing(max_amount):
+        return None
     result = fetch_row(
         conn,
         f"SELECT anofox_tab_money_in_range({_MONEY_SQL}, ?, ?)",
@@ -258,8 +297,10 @@ def money_in_range(conn: Any, money: dict, min_amount: float, max_amount: float)
     return bool(result[0])
 
 
-def money_same_currency(conn: Any, m1: dict, m2: dict) -> bool:
+def money_same_currency(conn: Any, m1: Optional[dict], m2: Optional[dict]) -> Optional[bool]:
     """Return True if *m1* and *m2* share the same currency."""
+    if is_missing(m1) or is_missing(m2):
+        return None
     result = fetch_row(
         conn,
         f"SELECT anofox_tab_money_same_currency({_MONEY_SQL}, {_MONEY_SQL})",

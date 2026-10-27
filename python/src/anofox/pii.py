@@ -13,6 +13,7 @@ from ._table import (
     TableLike,
     apply_scalar,
     check_row_input,
+    is_missing,
     output_df_type,
     table_inputs,
 )
@@ -44,11 +45,14 @@ def pii_detect(
 
     Returns
     -------
-    list[dict]
-        When *text_or_df* is a string.
+    list[dict] or None
+        When *text_or_df* is a string; ``None`` for a missing value
+        (``None``, ``pandas.NA`` or NaN), like SQL ``NULL``.
     DataFrame
         When *text_or_df* is a DataFrame; adds ``pii_detect`` column.
     """
+    if is_missing(text_or_df):
+        return None
     if isinstance(text_or_df, str):
         with enabled_types(conn, types):
             raw = fetch_one(conn, "SELECT anofox_tab_pii_detect(?)", [text_or_df])
@@ -60,6 +64,7 @@ def pii_detect(
         return apply_scalar(
             conn, text_or_df, df_type,
             f"anofox_tab_pii_detect({quote_ident(column)})", [], "pii_detect",
+            text_columns=[column],
         )
 
 
@@ -99,15 +104,17 @@ def pii_mask(
 
     Returns
     -------
-    str
+    str or None
         When *text_or_df* is a string: the text with PII replaced according to
-        *strategy*.
+        *strategy*; ``None`` for a missing value (``None``, ``pandas.NA`` or NaN).
     DataFrame
         When *text_or_df* is a DataFrame: a copy with an added ``pii_mask``
         column, or with *column* masked when ``replace=True`` (same index and
         row order as the input).
     """
     _check_replace(replace, text_or_df)
+    if is_missing(text_or_df):
+        return None
     if isinstance(text_or_df, str):
         with enabled_types(conn, types):
             value = fetch_one(conn, "SELECT anofox_tab_pii_mask(?, ?)", [text_or_df, strategy])
@@ -118,7 +125,7 @@ def pii_mask(
         return apply_scalar(
             conn, text_or_df, df_type,
             f"anofox_tab_pii_mask({quote_ident(column)}, ?)", [strategy],
-            column if replace else "pii_mask",
+            column if replace else "pii_mask", text_columns=[column],
         )
 
 
@@ -141,7 +148,8 @@ def pii_mask_value(
     conn:
         An :class:`~anofox.AnofoxConnection`.
     value_or_df:
-        A value, ``None``, or a pandas/polars DataFrame (with *column*).
+        A value, a missing value (``None``, ``pandas.NA`` or NaN), or a
+        pandas/polars DataFrame (with *column*).
     pii_type:
         The PII type the values belong to, e.g. ``"NAME"`` or ``"PHONE"``.
     strategy:
@@ -156,13 +164,15 @@ def pii_mask_value(
     Returns
     -------
     str or None
-        For a value: the masked value; ``None`` for ``None``.
+        For a value: the masked value; ``None`` for a missing value.
     DataFrame
         For a DataFrame: a copy with an added ``pii_mask_value`` column, or
         with *column* masked when ``replace=True`` (same index and row order
         as the input).
     """
     _check_replace(replace, value_or_df)
+    if is_missing(value_or_df):
+        value_or_df = None
     if value_or_df is None or isinstance(value_or_df, str):
         return fetch_one(conn, "SELECT anofox_tab_pii_mask_value(?, ?, ?)", [value_or_df, pii_type, strategy])
 
@@ -176,17 +186,18 @@ def pii_mask_value(
 
 def _check_replace(replace: bool, value: Any) -> None:
     """Raise ValueError when ``replace=True`` is given for a single value."""
-    if replace and (value is None or isinstance(value, str)):
+    if replace and (is_missing(value) or isinstance(value, str)):
         raise ValueError("'replace=True' requires a DataFrame input (with column=).")
 
 
 def pii_contains(
     conn: Any,
-    text: str,
+    text: Optional[str],
     types: Union[str, Sequence[str], None] = None,
-) -> bool:
+) -> Optional[bool]:
     """
-    Return True if *text* contains any detectable PII.
+    Return True if *text* contains any detectable PII; ``None`` for a missing
+    value (``None``, ``pandas.NA`` or NaN), like SQL ``NULL``.
 
     Parameters
     ----------
@@ -201,6 +212,8 @@ def pii_contains(
         ``ORGANIZATION``, ``LOCATION``, ``MISC``) skips the NER model, which is
         much faster. See :func:`enabled_types`.
     """
+    if is_missing(text):
+        return None
     with enabled_types(conn, types):
         return bool(fetch_one(conn, "SELECT anofox_tab_pii_contains(?)", [text]))
 

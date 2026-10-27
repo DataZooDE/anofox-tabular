@@ -579,7 +579,9 @@ To combine them, rename first, e.g.
 pandas and polars mark a missing number differently, and the difference survives the copy into
 DuckDB:
 
-- **pandas**: `NaN` and `None` in any column (float, string or object) become SQL `NULL`.
+- **pandas**: `NaN` and `None` in any column (float, string or object) become SQL `NULL`. A text
+  column that holds only missing values (pandas reads an empty CSV column as `float64` NaN) gives
+  missing results in the row-wise helpers, not a type error.
 - **polars**: `None` (`null`) becomes `NULL`, but a float `NaN` stays a `DOUBLE` NaN, an ordinary
   value. It is not counted by `null_rate` or `conn.profile`; the numeric checks report it (for
   example `zscore`: "1 NaN/Inf value(s) ignored"), and `make_money` gives `None` for it.
@@ -600,6 +602,21 @@ polars 1
 
 To treat a polars NaN as missing, convert it first: `df.fill_nan(None)` (`pl.from_pandas()`
 already turns NaN into `null`).
+
+A single missing value (`None`, `pd.NA` or `float("nan")`) passed to a scalar helper of
+`anofox.validate`, `anofox.vat`, `anofox.money` or `anofox.pii` gives `None`, as the SQL function
+gives `NULL`:
+
+```python
+from anofox import money, vat
+
+print(validate.email_is_valid(conn, None), vat.vat_is_valid(conn, pd.NA),
+      money.make_money(conn, float("nan"), "EUR"))
+```
+
+```text
+None None None
+```
 
 The anomaly detectors treat a NaN and an infinite value differently from each other. A `NULL` row
 is left out by all of them.

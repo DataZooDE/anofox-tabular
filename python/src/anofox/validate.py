@@ -12,7 +12,7 @@ import warnings
 from typing import Any, Optional, Union
 
 from ._sql import fetch_one, quote_ident
-from ._table import apply_scalar, check_row_input
+from ._table import apply_scalar, check_row_input, is_missing
 
 
 # ---------------------------------------------------------------------------
@@ -78,6 +78,8 @@ def email_is_valid(
         When *email_or_df* is a DataFrame; contains all original columns
         plus ``email_is_valid`` (bool, missing for an unknown outcome).
     """
+    if is_missing(email_or_df):
+        return None
     if isinstance(email_or_df, str):
         result = fetch_one(conn, "SELECT anofox_tab_email_is_valid(?, ?)", [email_or_df, mode])
         return None if result is None else bool(result)
@@ -88,6 +90,7 @@ def email_is_valid(
     return apply_scalar(
         conn, email_or_df, df_type,
         f"anofox_tab_email_is_valid({quote_ident(column)}, ?)", [mode], "email_is_valid",
+        text_columns=[column],
     )
 
 
@@ -118,6 +121,8 @@ def email_validate(
     DataFrame
         When *email_or_df* is a DataFrame.
     """
+    if is_missing(email_or_df):
+        return None
     if isinstance(email_or_df, str):
         raw = fetch_one(conn, "SELECT anofox_tab_email_validate(?, ?)", [email_or_df, mode])
         if isinstance(raw, dict):
@@ -135,6 +140,7 @@ def email_validate(
     return apply_scalar(
         conn, email_or_df, df_type,
         f"anofox_tab_email_validate({quote_ident(column)}, ?)", [mode], "email_validate",
+        text_columns=[column],
     )
 
 
@@ -168,7 +174,9 @@ def phone_is_valid(
         DataFrame only: column holding the region code of each row. Cannot be
         combined with *region*.
     """
-    region_sql, region_params = _region_arg(region, region_column, isinstance(phone_or_df, str))
+    region_sql, region_params = _region_arg(region, region_column, _is_scalar(phone_or_df))
+    if is_missing(phone_or_df):
+        return None
     if isinstance(phone_or_df, str):
         return bool(fetch_one(conn, "SELECT anofox_tab_phonenumber_is_valid(?, ?)", [phone_or_df, *region_params]))
 
@@ -177,7 +185,7 @@ def phone_is_valid(
     return apply_scalar(
         conn, phone_or_df, df_type,
         f"anofox_tab_phonenumber_is_valid({quote_ident(column)}, {region_sql})", region_params,
-        "phone_is_valid",
+        "phone_is_valid", text_columns=[column, region_column],
     )
 
 
@@ -206,7 +214,9 @@ def phone_parse(
         DataFrame only: column holding the region hint of each row. Cannot be
         combined with *region*.
     """
-    region_sql, region_params = _region_arg(region, region_column, isinstance(phone_or_df, str))
+    region_sql, region_params = _region_arg(region, region_column, _is_scalar(phone_or_df))
+    if is_missing(phone_or_df):
+        return None
     if isinstance(phone_or_df, str):
         raw = fetch_one(conn, "SELECT anofox_tab_phonenumber_parse(?, ?)", [phone_or_df, *region_params])
         if isinstance(raw, dict):
@@ -223,7 +233,7 @@ def phone_parse(
     return apply_scalar(
         conn, phone_or_df, df_type,
         f"anofox_tab_phonenumber_parse({quote_ident(column)}, {region_sql})", region_params,
-        "phone_parse",
+        "phone_parse", text_columns=[column, region_column],
     )
 
 
@@ -280,7 +290,9 @@ def phone_format(
         format = fmt
     if format is None:
         format = "E164"
-    region_sql, region_params = _region_arg(region, region_column, isinstance(phone_or_df, str))
+    region_sql, region_params = _region_arg(region, region_column, _is_scalar(phone_or_df))
+    if is_missing(phone_or_df):
+        return None
     if isinstance(phone_or_df, str):
         return fetch_one(
             conn, "SELECT anofox_tab_phonenumber_format(?, ?, ?)", [phone_or_df, *region_params, format]
@@ -291,7 +303,7 @@ def phone_format(
     return apply_scalar(
         conn, phone_or_df, df_type,
         f"anofox_tab_phonenumber_format({quote_ident(column)}, {region_sql}, ?)",
-        [*region_params, format], "phone_format",
+        [*region_params, format], "phone_format", text_columns=[column, region_column],
     )
 
 
@@ -329,7 +341,9 @@ def phone_region(
         When *phone_or_df* is a DataFrame: a copy with an added
         ``phone_region`` column.
     """
-    region_sql, region_params = _region_arg(hint, region_column, isinstance(phone_or_df, str))
+    region_sql, region_params = _region_arg(hint, region_column, _is_scalar(phone_or_df))
+    if is_missing(phone_or_df):
+        return None
     if isinstance(phone_or_df, str):
         return fetch_one(conn, "SELECT anofox_tab_phonenumber_region(?, ?)", [phone_or_df, *region_params])
 
@@ -338,13 +352,18 @@ def phone_region(
     return apply_scalar(
         conn, phone_or_df, df_type,
         f"anofox_tab_phonenumber_region({quote_ident(column)}, {region_sql})", region_params,
-        "phone_region",
+        "phone_region", text_columns=[column, region_column],
     )
 
 
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
+
+def _is_scalar(value: Any) -> bool:
+    """True for a single value (a string or a missing value), False for a DataFrame."""
+    return isinstance(value, str) or is_missing(value)
+
 
 def _region_arg(
     region: Optional[str], region_column: Optional[str], scalar_input: bool

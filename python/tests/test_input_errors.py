@@ -47,9 +47,9 @@ def test_series_gets_a_series_hint(conn, module, name):
 
 
 @pytest.mark.parametrize("module,name", ROW_WISE)
-def test_none_is_a_type_error(conn, module, name):
-    with pytest.raises(TypeError, match="None"):
-        _func(module, name)(conn, None)
+def test_none_gives_none(conn, module, name):
+    # A missing value is SQL NULL, not a wrong type (see test_missing_inputs.py).
+    assert _func(module, name)(conn, None) is None
 
 
 @pytest.mark.parametrize("module,name", ROW_WISE)
