@@ -488,6 +488,21 @@ SET params = json_object('date_column', 'order_date',
 WHERE check_name = 'orders_arrived';
 ```
 
+`rel_count_change` averages only the days that have rows. When the load also failed on
+some of the days before, those days drop out of the baseline instead of counting as 0: after
+four empty days in a 5-day window the baseline is the one day that arrived, and a day with the
+same count passes. To count every calendar day of the window, a day without rows as 0, set
+`"fill_missing_days": true` (the direct function takes `fill_missing_days := true`):
+
+```sql no-run
+UPDATE nightly_checks
+SET params = '{"date_column": "order_date", "reference_date": "2026-03-15", "fill_missing_days": true}'
+WHERE check_name = 'orders_arrived';
+```
+
+The days before the first row of the table are not filled, so a new table does not start with
+an artificially low baseline.
+
 Then turn any `fail` or `error` into a failed statement with `error()`. The DuckDB CLI exits
 with a non-zero code when a statement fails, so a scheduler (cron, Airflow, a CI job) sees the
 failure:

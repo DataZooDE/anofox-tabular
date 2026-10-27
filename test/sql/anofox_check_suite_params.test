@@ -96,7 +96,7 @@ INSERT INTO nightly_checks VALUES
 query TTT
 SELECT check_name, status, message FROM run_checks('nightly_checks') ORDER BY check_name
 ----
-orders_change	error	check 'orders_change' (rel_count_change) cannot run: unknown params key 'refernce_date' (valid keys for rel_count_change: date_column, count_column, window_days, reference_date, fail_on_empty)
+orders_change	error	check 'orders_change' (rel_count_change) cannot run: unknown params key 'refernce_date' (valid keys for rel_count_change: date_column, count_column, window_days, reference_date, fill_missing_days, fail_on_empty)
 rows_loaded	error	check 'rows_loaded' (volume) cannot run: unknown params key 'window_days' (valid keys for volume: fail_on_empty)
 rows_plain	pass	volume value 8.0 is within thresholds
 status_ok	error	check 'status_ok' (values_in_set) cannot run: unknown params keys 'alowed', 'patern' (valid keys for values_in_set: allowed_values, fail_on_empty)

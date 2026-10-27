@@ -724,7 +724,7 @@ thresholds.
 rel_count_change(table_name VARCHAR, date_column VARCHAR
                  [, count_column VARCHAR [, window_days BIGINT [, lower_threshold DOUBLE
                  [, upper_threshold DOUBLE [, reference_date DATE]]]]]
-                 [, start_date := DATE, end_date := DATE])
+                 [, start_date := DATE, end_date := DATE] [, fill_missing_days := BOOLEAN])
   -> TABLE(status VARCHAR, reference_date DATE, reference_count DOUBLE, baseline_avg DOUBLE,
            baseline_days BIGINT, rel_change DOUBLE, lower_threshold DOUBLE, upper_threshold DOUBLE,
            message VARCHAR)
@@ -740,8 +740,17 @@ rel_count_change(table_name VARCHAR, date_column VARCHAR
 | `upper_threshold` | `DOUBLE` | `0.5` | Highest allowed relative change |
 | `reference_date` | `DATE` | `NULL` = latest date in the data | The date to evaluate |
 | `start_date`, `end_date` | `DATE`, named | none | Evaluate every day of this range |
+| `fill_missing_days` | `BOOLEAN`, named | `false` | Count calendar days without rows as 0 in the baseline |
 
 Empty input, no baseline days and a zero baseline pass with a message that says so.
+
+By default the baseline is the average of the days *with rows* in the window, and
+`baseline_days` counts them: an outage of several days does not lower the baseline, it only
+shortens it. With `fill_missing_days := true` every calendar day of the window counts, a day
+without rows as 0, from the first day with data on (the days before the data starts are no
+history, not an outage). `baseline_days` is then the number of calendar days. A day of the
+window that is missing makes the baseline smaller, so a normal day after an outage reads as a
+jump. The reference day itself counts as 0 when it has no rows, with or without the option.
 
 ```sql
 SELECT status, reference_date, reference_count, baseline_avg, rel_change
@@ -899,8 +908,9 @@ FROM rolling_values_in_set('orders', 'status', ['completed', 'pending', 'failed'
 `rel_count_change_events` (canonical `anofox_tab_rel_count_change_events`),
 `metric_anomaly_iqr_events` (canonical `anofox_tab_metric_anomaly_iqr_events`) and
 `rolling_values_in_set_events` (canonical `anofox_tab_rolling_values_in_set_events`) are table
-functions. Each takes exactly the arguments of its base check, including `reference_date` and
-the `start_date := DATE, end_date := DATE` range. It returns one row per reference date whose
+functions. Each takes exactly the arguments of its base check, including `reference_date`,
+the `start_date := DATE, end_date := DATE` range and, for `rel_count_change_events`,
+`fill_missing_days`. It returns one row per reference date whose
 check fails or warns, ordered by `ds`. Passing dates are not events, so a passing single-date
 call returns no rows.
 
@@ -1041,7 +1051,7 @@ The `value` column holds the measure of each type:
 | `freshness` | age in seconds (the thresholds are seconds too) | `reference_time` (default: the current UTC time, no ICU needed) | yes |
 | `occurrence` | frequency of the extreme value | `mode`: `max` (default) or `min` | no |
 | `match_rate` | match rate | `right_table`, `right_keys` (required), `left_keys` (default `column_name`) | no |
-| `rel_count_change` | relative change | `date_column` (required), `count_column`, `window_days` (7), `reference_date` | no |
+| `rel_count_change` | relative change | `date_column` (required), `count_column`, `window_days` (7), `reference_date`, `fill_missing_days` (`false`) | no |
 | `metric_anomaly_iqr` | daily metric | `date_column` (required), `metric_column`, `window_days` (30), `k` (1.5), `reference_date` | no |
 | `rolling_values_in_set` | share in set | `date_column` (required), `allowed_values`, `window_days` (7), `reference_date` | no |
 
@@ -1058,10 +1068,11 @@ trivially.
 
 `params` may only hold the keys listed for its type and `fail_on_empty`. Any other key, for
 example a misspelled `refernce_date`, is an `error` row that lists the valid keys:
-`unknown params key 'refernce_date' (valid keys for rel_count_change: date_column, count_column, window_days, reference_date, fail_on_empty)`.
+`unknown params key 'refernce_date' (valid keys for rel_count_change: date_column, count_column, window_days, reference_date, fill_missing_days, fail_on_empty)`.
 Typed values are checked when the suite is built: `reference_date` must be a date
 (`YYYY-MM-DD`), `reference_time` a timestamp (`YYYY-MM-DD[ HH:MM[:SS]]`, optionally with a UTC
-offset such as `+02:00`), `window_days` a positive integer and `k` a finite number. A malformed
+offset such as `+02:00`), `window_days` a positive integer, `k` a finite number and
+`fill_missing_days` `true` or `false`. A malformed
 value is an `error` row of that check that names the key, the value and the expected format,
 for example `params.reference_date '21/10/2026' is not a valid date (expected YYYY-MM-DD)`; the
 other checks run.

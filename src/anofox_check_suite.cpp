@@ -66,6 +66,8 @@ struct CheckSpec {
 	string filter_expr;
 	// params.fail_on_empty: no rows to evaluate (empty table, or a filter matching no rows) fails
 	bool fail_on_empty = false;
+	// params.fill_missing_days (rel_count_change): calendar days without rows count as 0
+	bool fill_missing_days = false;
 	// A problem found while reading the check (e.g. invalid params JSON); the check then
 	// yields an 'error' row instead of failing the whole run
 	string config_error;
@@ -86,7 +88,7 @@ static const vector<string> *ParamsKeysFor(const string &check_type) {
 	    {"freshness", {"reference_time"}},
 	    {"occurrence", {"mode"}},
 	    {"match_rate", {"right_table", "right_keys", "left_keys"}},
-	    {"rel_count_change", {"date_column", "count_column", "window_days", "reference_date"}},
+	    {"rel_count_change", {"date_column", "count_column", "window_days", "reference_date", "fill_missing_days"}},
 	    {"metric_anomaly_iqr", {"date_column", "metric_column", "window_days", "k", "reference_date"}},
 	    {"rolling_values_in_set", {"date_column", "allowed_values", "window_days", "reference_date"}},
 	};
@@ -277,6 +279,14 @@ static void ParseCheckParams(CheckSpec &spec, const string &params_json) {
 			                      "': params.fail_on_empty must be true or false");
 		}
 		spec.fail_on_empty = yyjson_get_bool(fail_on_empty);
+	}
+	auto *fill_missing_days = yyjson_obj_get(root, "fill_missing_days");
+	if (fill_missing_days && !yyjson_is_null(fill_missing_days)) {
+		if (!yyjson_is_bool(fill_missing_days)) {
+			throw BinderException("run_checks: check '" + spec.check_name +
+			                      "': params.fill_missing_days must be true or false");
+		}
+		spec.fill_missing_days = yyjson_get_bool(fill_missing_days);
 	}
 
 	auto *allowed = yyjson_obj_get(root, "allowed_values");
@@ -953,15 +963,14 @@ static CheckBranch BuildCheckBranch(ClientContext &context, const CheckSpec &spe
 		                      ? "COUNT(*)"
 		                      : "COUNT(DISTINCT " + QuoteSqlIdentifier(spec.count_column) + ")";
 		string ref_lit = spec.reference_date_sql.empty() ? "NULL" : spec.reference_date_sql;
-		string window_val = std::to_string(ParseWindowDays(spec, 7));
+		auto window_days = ParseWindowDays(spec, 7);
 		branch.inner_sql =
 		    "WITH daily AS (SELECT CAST(" + date_id + " AS DATE) AS d, " + cnt_expr + " AS c FROM " + table_ref +
 		    " WHERE " + date_id + " IS NOT NULL" + (filter_sql.empty() ? "" : " AND (" + filter_sql + ")") +
 		    " GROUP BY 1), "
 		    "ref AS (SELECT COALESCE(" + ref_lit + ", MAX(d)) AS ref_d FROM daily), "
-		    "b AS (SELECT r.ref_d, (SELECT c FROM daily WHERE d = r.ref_d) AS ref_c, "
-		    "(SELECT AVG(c) FROM daily WHERE d < r.ref_d AND d >= r.ref_d - " + window_val + ") AS baseline_avg "
-		    "FROM ref r) "
+		    "b AS (SELECT r.ref_d, (SELECT c FROM daily WHERE d = r.ref_d) AS ref_c, " +
+		    BuildRelCountBaselineSQL("r.ref_d", window_days, spec.fill_missing_days) + " FROM ref r) "
 		    "SELECT CAST(CASE WHEN baseline_avg IS NULL OR baseline_avg = 0 THEN NULL "
 		    "ELSE (COALESCE(ref_c, 0) - baseline_avg) / baseline_avg END AS DOUBLE) AS value FROM b";
 		return branch;

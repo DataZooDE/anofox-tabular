@@ -432,15 +432,31 @@ static string BuildReferenceDatesSQL(const ReferenceDates &dates, const string &
 	       latest_from;
 }
 
+string BuildRelCountBaselineSQL(const string &ref_expr, int64_t window_days, bool fill_missing_days) {
+	string window_val = std::to_string(window_days);
+	string in_window = "d < " + ref_expr + " AND d >= " + ref_expr + " - " + window_val;
+	if (!fill_missing_days) {
+		return "(SELECT AVG(c) FROM daily WHERE " + in_window + ") AS baseline_avg, "
+		       "(SELECT COUNT(*) FROM daily WHERE " + in_window + ") AS baseline_days";
+	}
+	// Calendar days of the window from the first day with data on (the days before the data
+	// starts are no history, not an outage); the days without rows add 0 to the sum
+	string calendar_days = "GREATEST(CAST(" + ref_expr + " - GREATEST(" + ref_expr + " - " + window_val +
+	                       ", (SELECT MIN(d) FROM daily)) AS BIGINT), 0)";
+	return "CASE WHEN " + calendar_days + " > 0 THEN CAST(COALESCE((SELECT SUM(c) FROM daily WHERE " + in_window +
+	       "), 0) AS DOUBLE) / " + calendar_days + " END AS baseline_avg, " + calendar_days + " AS baseline_days";
+}
+
 // Helper: Generate SQL for relative count change checks.
 // Compares the (distinct) count on the reference date against the average over the
 // window_days days strictly before it; rel_change = (ref - baseline) / baseline.
 // Trivial-pass semantics: empty input, missing baseline days or a zero baseline pass
 // with an explicit message (not enough history is not a failure).
+// fill_missing_days: see BuildRelCountBaselineSQL.
 static string GenerateRelCountChangeSQL(const string &table_ref, const string &date_column,
                                         const LogicalType &date_type, const string &count_column,
                                         int64_t window_days, const Value &lower, const Value &upper,
-                                        const ReferenceDates &dates) {
+                                        const ReferenceDates &dates, bool fill_missing_days) {
 	string lower_val = DoubleThresholdSQL(lower);
 	string upper_val = DoubleThresholdSQL(upper);
 	string date_id = QuoteSqlIdentifier(date_column);
@@ -454,9 +470,8 @@ static string GenerateRelCountChangeSQL(const string &table_ref, const string &d
 		"ref AS (" + BuildReferenceDatesSQL(dates, "MAX(d)", "daily") + "), "
 		"refstats AS ("
 		"SELECT r.ref_d, "
-		"  (SELECT c FROM daily WHERE d = r.ref_d) AS ref_c, "
-		"  (SELECT AVG(c) FROM daily WHERE d < r.ref_d AND d >= r.ref_d - " + window_val + ") AS baseline_avg, "
-		"  (SELECT COUNT(*) FROM daily WHERE d < r.ref_d AND d >= r.ref_d - " + window_val + ") AS baseline_days "
+		"  (SELECT c FROM daily WHERE d = r.ref_d) AS ref_c, " +
+		BuildRelCountBaselineSQL("r.ref_d", window_days, fill_missing_days) + " "
 		"FROM ref r"
 		"), "
 		"summary AS ("
@@ -911,6 +926,11 @@ static string BuildRelCountChangeSQL(ClientContext &context, TableFunctionBindIn
 	ValidateFiniteDouble(upper, "rel_count_change", "upper_threshold");
 	ValidateThresholdOrder(lower, upper, "rel_count_change", "lower_threshold", "upper_threshold");
 	auto dates = ReadReferenceDates(input, 6, "rel_count_change");
+	bool fill_missing_days = false;
+	auto fill = duckdb_compat::FindNamedParameter(input.named_parameters, "fill_missing_days");
+	if (fill && !fill->IsNull()) {
+		fill_missing_days = BooleanValue::Get(fill->DefaultCastAs(LogicalType(LogicalTypeId::BOOLEAN)));
+	}
 
 	if (events) {
 		events->kind = "rel_count_change";
@@ -926,8 +946,11 @@ static string BuildRelCountChangeSQL(ClientContext &context, TableFunctionBindIn
 		columns.push_back(count_column);
 	}
 	auto date_type = TimeColumnType(function_name, RequireRelationColumns(context, function_name, table_name, columns)[0]);
+	AnofoxTrace(AnofoxLogLevel::Debug, "check: " + function_name + " table='" + table_name + "', window_days=" +
+	                                       std::to_string(window_days) +
+	                                       (fill_missing_days ? ", missing days count as 0" : ""));
 	return GenerateRelCountChangeSQL(table_ref, date_column, date_type, count_column, window_days, lower, upper,
-	                                 dates);
+	                                 dates, fill_missing_days);
 }
 
 static unique_ptr<TableRef> CheckRelCountChangeBindReplace(ClientContext &context, TableFunctionBindInput &input) {
@@ -1205,13 +1228,18 @@ void RegisterCheckFunctions(ExtensionLoader &loader) {
 	AddPrefixAritiesBindReplace(rel_count_set, "anofox_tab_rel_count_change", rel_count_args, 2,
 	                            DATAZOO_GUARD(ANOFOX_TABULAR_BANNER, CheckRelCountChangeBindReplace));
 	AddDateRangeParameters(rel_count_set);
+	duckdb_compat::ForEachFunction(rel_count_set, [](TableFunction &func) {
+		duckdb_compat::AddNamedParameter(func, "fill_missing_days", LogicalType(LogicalTypeId::BOOLEAN));
+	});
 	{
 		FunctionDescription desc;
 		desc.description =
 		    "Asserts that the daily (distinct) count on the reference date deviates from the rolling window average "
 		    "by a relative change within [lower_threshold, upper_threshold]. Defaults: count rows, 7-day window, "
 		    "reference = latest date in the data. With start_date := DATE, end_date := DATE (instead of "
-		    "reference_date) returns one row per day of the inclusive range, ordered by date.";
+		    "reference_date) returns one row per day of the inclusive range, ordered by date. With "
+		    "fill_missing_days := true the calendar days without rows count as 0 in the baseline (default: only "
+		    "days with rows are averaged).";
 		desc.parameter_names = {"table_name", "date_column",     "count_column",   "window_days",
 		                        "lower_threshold", "upper_threshold", "reference_date"};
 		desc.examples = {"SELECT * FROM rel_count_change('orders', 'order_date', NULL, 7, -0.5, 0.5);",
@@ -1226,9 +1254,13 @@ void RegisterCheckFunctions(ExtensionLoader &loader) {
 	AddPrefixAritiesBindReplace(rel_count_events_set, "anofox_tab_rel_count_change_events", rel_count_args, 2,
 	                            DATAZOO_GUARD(ANOFOX_TABULAR_BANNER, CheckRelCountChangeEventsBindReplace));
 	AddDateRangeParameters(rel_count_events_set);
+	duckdb_compat::ForEachFunction(rel_count_events_set, [](TableFunction &func) {
+		duckdb_compat::AddNamedParameter(func, "fill_missing_days", LogicalType(LogicalTypeId::BOOLEAN));
+	});
 	{
 		FunctionDescription desc;
-		desc.description = "Events companion of rel_count_change (same arguments, including start_date/end_date)."
+		desc.description = "Events companion of rel_count_change (same arguments, including start_date/end_date "
+		                   "and fill_missing_days)."
 		                   " Returns the contract `events` shape (ds, kind, label, severity, value, threshold, series): one row per "
 		    "reference date whose check fails (severity 'alarm') or warns ('warning'), ordered by ds; passing dates "
 		    "are not events.";

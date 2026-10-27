@@ -25,6 +25,12 @@ string BuildFiniteAggregateExpr(const string &agg_upper, const string &double_ex
 // COUNT of the NaN/Inf values of double_expr.
 string BuildNonFiniteCountExpr(const string &double_expr);
 
+// The baseline columns of rel_count_change ("<avg> AS baseline_avg, <days> AS baseline_days")
+// over a CTE daily(d DATE, c) for the reference date ref_expr: the window_days days strictly
+// before it. By default the days with rows are averaged; with fill_missing_days the calendar
+// days of the window from the first day with data on count, a day without rows as 0.
+string BuildRelCountBaselineSQL(const string &ref_expr, int64_t window_days, bool fill_missing_days);
+
 // Build a ['a', 'b', ...]::VARCHAR[] literal from a LIST value.
 string BuildVarcharArrayLiteral(const Value &list_value);
 
