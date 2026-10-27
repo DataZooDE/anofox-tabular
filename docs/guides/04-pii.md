@@ -226,6 +226,29 @@ detection never found are gone: had `first_name` and `phone` been masked with `p
 `Li`, `Bo` and `01511234567` would still be in the export and this scan would not report them.
 Mask columns that are known to hold PII with `pii_mask_value`.
 
+This matters most for name columns. `pii_mask_column(last_name, 'NAME', 'redact')` masks only
+the cells where the NER model labels the surname `NAME`; a surname it reads as a company or
+place (`ORGANIZATION`, `LOCATION`) stays in clear text. For a column that holds names, use
+`pii_mask_value(last_name, 'NAME', 'redact')`.
+
+Street addresses are no single PII type. `POSTAL_CODE` (see section 5) finds postcodes, but
+the street and house number stay. Where a column holds addresses, split it with
+`postal_parse_address` from the [postal module](../api/02-postal.md#postal_parse_address) and
+keep only the parts you need. This block is not run as part of the documentation tests, as it
+needs the libpostal data (about 500 MB, see the postal page):
+
+```sql no-run
+SELECT customer_id,
+       pii_mask_value(concat_ws(' ', (a).road, (a).house_number), 'LOCATION', 'redact') AS street,
+       left((a).postcode, 2) || '***'                                                AS postcode_area,
+       (a).city                                                                       AS city
+FROM (SELECT customer_id, postal_parse_address(address) AS a FROM customer_addresses);
+-- 'Hauptstraße 5, 80331 München' -> street = '[LOCATION]', postcode_area = '80***', city = 'münchen'
+```
+
+libpostal lower-cases the parts it returns. A row where libpostal finds no road keeps a `NULL`
+street; `concat_ws` of only `NULL` parts is an empty string, which `pii_mask_value` leaves empty.
+
 The `ORGANIZATION` row comes from the NER model, which reads the label `[IP_ADDRESS]` as an
 organization name. NER results are statistical, so review them before you act on them. The
 model is trained on English: on German or other non-English free text it misses many names and

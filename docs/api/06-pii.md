@@ -532,6 +532,14 @@ SELECT pii_mask_column('Li', 'NAME', 'redact') AS first_name,
 └────────────┴─────────────┘
 ```
 
+The same holds for surnames: `pii_mask_column(last_name, 'NAME', ...)` masks a surname only
+where the NER model labels it `NAME`. A surname it reads as `ORGANIZATION` or `LOCATION`
+(many surnames are also company or place names) stays in clear text. Mask a column that holds
+names with `pii_mask_value(last_name, 'NAME', ...)`. For street addresses, split the column with
+[`postal_parse_address`](02-postal.md#postal_parse_address) and mask the road and house number
+with `pii_mask_value`; the [PII guide](../guides/04-pii.md#4-mask-the-data-for-an-export) has a
+recipe.
+
 ---
 
 ## `pii_redact_column`
