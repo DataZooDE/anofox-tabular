@@ -65,8 +65,9 @@ def vat_exists(conn: Any, vat_string: Union[str, Any], column: Optional[str] = N
 
     Only the prefix is checked: not the length or pattern of the number, and
     not whether the number is registered (nothing is looked up online). For
-    example ``"DE12"`` is True and ``"UK123456789"`` is False (``UK`` is not a
-    VAT prefix; use ``GB`` or ``XI``). Accepts a DataFrame with *column*.
+    example ``"DE12"`` is True, while ``"DE"`` (no number after the prefix)
+    and ``"UK123456789"`` are False (``UK`` is not a VAT prefix; use ``GB`` or
+    ``XI``). Accepts a DataFrame with *column*.
     """
     return _vat_call(conn, vat_string, column, "anofox_tab_vat_exists", "vat_exists", _to_bool)
 

@@ -97,8 +97,10 @@ vat_is_valid_syntax(vat_number VARCHAR) -> BOOLEAN
 
 Canonical name: `anofox_tab_vat_exists`. Scalar function.
 
-Checks only that the number starts with a supported prefix followed by a number. It does not
-check the length or pattern, and it does not check that the number is registered.
+Checks only that the value starts with a supported prefix followed by a number (at least one
+digit after the prefix). A bare country code such as `'DE'`, or a prefix followed by letters
+only, is `false`. It does not check the length or pattern, and it does not check that the number
+is registered.
 
 ```text
 vat_exists(vat_number VARCHAR) -> BOOLEAN
@@ -128,6 +130,26 @@ FROM suppliers ORDER BY id;
 ```
 
 `DE123456789` has a valid syntax but a wrong check digit.
+
+A column that holds only the country for some suppliers:
+
+```sql
+SELECT v, vat_exists(v) AS has_prefix
+FROM (VALUES ('DE'), ('de '), ('DE ABC'), ('DE1'), ('ATU13585627')) t(v);
+```
+
+```text
+┌─────────────┬────────────┐
+│      v      │ has_prefix │
+│   varchar   │  boolean   │
+├─────────────┼────────────┤
+│ DE          │ false      │
+│ de          │ false      │
+│ DE ABC      │ false      │
+│ DE1         │ true       │
+│ ATU13585627 │ true       │
+└─────────────┴────────────┘
+```
 
 ---
 

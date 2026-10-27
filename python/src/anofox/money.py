@@ -164,8 +164,8 @@ def money_format(conn: Any, money: dict, fmt: str = "code") -> str:
         Money dict with ``amount`` and ``currency`` keys.
     fmt:
         Format style: ``"code"`` (default, ``1234.50 EUR``), ``"symbol"``
-        (``1.234,50 €``) or ``"long"`` (``1.234,50 Euro``). Any other string
-        is formatted like ``"code"``; it is not a template.
+        (``1.234,50 €``) or ``"long"`` (``1.234,50 Euro``), case-insensitive.
+        Any other string raises a DuckDB error; it is not a template.
 
     Returns
     -------

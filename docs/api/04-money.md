@@ -374,8 +374,9 @@ money_format(money MONEY, format_style VARCHAR) -> VARCHAR
 | `long` | `1.234,50 Euro` | Currency name, localized number |
 | `code` | `1234.50 EUR` | ISO code, dot as decimal mark, no grouping |
 
-The number of decimals follows the currency: 2 for USD and EUR, none for JPY. Any other style
-string is formatted like `code`. The style names are case-sensitive.
+The number of decimals follows the currency: 2 for USD and EUR, none for JPY. The style names
+are case-insensitive (`'Symbol'` is `symbol`); any other style raises an error. A `NULL` money
+value or style returns `NULL`.
 
 ```sql
 SELECT money_format(money(1234567.891, 'USD'), 'symbol') AS usd,
@@ -410,6 +411,16 @@ SELECT money_format(money(-42.5, 'USD'), 'symbol') AS usd,
 ├─────────┼──────────┼─────────────┼────────────┤
 │ -$42.50 │ -42,50 € │ -42,50 Euro │ -42.50 EUR │
 └─────────┴──────────┴─────────────┴────────────┘
+```
+
+An unknown style:
+
+```sql
+SELECT money_format(money(19.99, 'EUR'), 'bogus');
+```
+
+```text
+Invalid Input Error: Unsupported money format style: bogus (expected 'symbol', 'long' or 'code')
 ```
 
 ---

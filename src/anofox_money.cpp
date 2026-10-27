@@ -3,6 +3,7 @@
 #include "anofox_function_alias.hpp"
 #include "anofox_trace.hpp"
 #include "telemetry.hpp"
+#include "duckdb/common/string_util.hpp"
 #include "duckdb/common/types/value.hpp"
 #include "duckdb/common/types/vector.hpp"
 #include "duckdb/common/types/decimal.hpp"
@@ -425,7 +426,13 @@ static void AnofoxMoneyFormatFunction(DataChunk &args, ExpressionState &state, V
         } else {
             auto scaled = data.Amount(i);
             auto currency_code = data.Currency(i).GetString();
-            auto format_style = style_values[style_idx].GetString();
+            // Styles are case-insensitive; an unknown style is an error rather
+            // than a silent fallback to 'code' (like vat_format/phonenumber_format)
+            auto format_style = StringUtil::Lower(style_values[style_idx].GetString());
+            if (format_style != "symbol" && format_style != "long" && format_style != "code") {
+                throw InvalidInputException("Unsupported money format style: %s (expected 'symbol', 'long' or 'code')",
+                                            style_values[style_idx].GetString());
+            }
 
             auto &currency = LookupCurrencyOrThrow(registry, currency_code);
 
@@ -449,7 +456,7 @@ static void AnofoxMoneyFormatFunction(DataChunk &args, ExpressionState &state, V
                 // Localized amount with the full currency name: 1.234,56 Euro
                 formatted = FormatMoneyAmount(scaled, currency, true) + " " + currency.name;
             } else {
-                // 'code' and default: canonical machine-readable amount with the ISO code
+                // 'code': canonical machine-readable amount with the ISO code
                 formatted = FormatMoneyAmount(scaled, currency, false) + " " + currency.iso_code;
             }
 
@@ -843,7 +850,7 @@ void RegisterMoneyFunctions(ExtensionLoader &loader) {
     }
     {
         FunctionDescription desc;
-        desc.description = "Formats a money value as a string using the specified style ('symbol', 'long' or 'code'; any other style formats like 'code').";
+        desc.description = "Formats a money value as a string using the specified style ('symbol', 'long' or 'code', case-insensitive); any other style is an error.";
         desc.parameter_names = {"money", "format_style"};
         desc.parameter_types = {GetMoneyType(), LogicalType::VARCHAR};
         desc.examples = {"SELECT money_format(money(19.99, 'USD'), 'symbol');"};

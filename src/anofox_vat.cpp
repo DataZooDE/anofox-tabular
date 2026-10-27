@@ -6,6 +6,8 @@
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/common/vector_operations/vector_operations.hpp"
 
+#include <algorithm>
+
 namespace duckdb {
 
 // ============================================================================
@@ -94,7 +96,13 @@ static void VATExistsFunc(DataChunk& args, ExpressionState& state,
                          Vector& result) {
   auto& registry = VATRegistry::Instance();
   IterateSingleStringInput(args, result, [&](std::string_view input, size_t idx) {
-    SetBoolResult(result, idx, registry.SplitVAT(input).has_value());
+    // A supported prefix followed by a number: a bare country code ('DE') or a
+    // prefix with letters only is not a VAT number
+    auto split_result = registry.SplitVAT(input);
+    bool has_number = split_result.has_value() &&
+                      std::any_of(split_result->second.begin(), split_result->second.end(),
+                                  [](char c) { return c >= '0' && c <= '9'; });
+    SetBoolResult(result, idx, has_number);
   });
 }
 
@@ -289,7 +297,7 @@ void RegisterVATFunctions(ExtensionLoader& loader) {
   }
   {
     FunctionDescription desc;
-    desc.description = "Returns TRUE if the country prefix of the VAT number exists in the supported country list.";
+    desc.description = "Returns TRUE if the VAT number starts with a supported country prefix followed by a number (at least one digit); no length, pattern or check-digit validation.";
     desc.parameter_names = {"vat_number"};
     desc.parameter_types = {LogicalType::VARCHAR};
     desc.examples = {"SELECT vat_exists('DE123456789');"};

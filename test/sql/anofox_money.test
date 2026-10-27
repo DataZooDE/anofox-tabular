@@ -305,11 +305,11 @@ SELECT anofox_tab_money_format(anofox_tab_money(1000.00, 'JPY'), 'long');
 ----
 1,000 Japanese Yen
 
-# Test anofox_tab_money_format with default/unknown style (defaults to code)
-query T
+# Test anofox_tab_money_format with an unknown style (an error, no silent fallback to code)
+statement error
 SELECT anofox_tab_money_format(anofox_tab_money(100.50, 'USD'), 'unknown');
 ----
-100.50 USD
+Unsupported money format style: unknown
 
 # Test anofox_tab_money_format with NULL values
 query T
