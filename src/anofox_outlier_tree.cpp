@@ -835,6 +835,7 @@ static unique_ptr<FunctionData> OutlierTreeBind(ClientContext &context, TableFun
     }
 
     std::string table_name = RequireNonNullArgument(input, 0, "outlier_tree", "table_name");
+    RejectTempTable(context, "outlier_tree", table_name);
     std::string columns_str = RequireNonNullArgument(input, 1, "outlier_tree", "columns");
 
     // Parse column names

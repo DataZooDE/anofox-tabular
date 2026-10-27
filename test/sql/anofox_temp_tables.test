@@ -1,0 +1,87 @@
+# name: test/sql/anofox_temp_tables.test
+# description: Functions that read their table through a separate connection (profiling,
+#              anomaly detection) cannot see a TEMP table of the calling connection. They
+#              now say so instead of reporting that the table does not exist. The SQL-based
+#              checks and diffs read in the caller's connection and keep working on TEMP tables.
+# group: [anofox_tabular]
+
+require anofox_tabular
+
+statement ok
+LOAD anofox_tabular
+
+statement ok
+SET anofox_tab_trace_enabled = false
+
+# A staging extract kept as a TEMP table for the session
+statement ok
+CREATE TEMP TABLE staging_invoices (invoice_no VARCHAR, net_amount DOUBLE, vat_amount DOUBLE)
+
+statement ok
+INSERT INTO staging_invoices VALUES
+    ('INV-2026-0101', 1250.00, 237.50),
+    ('INV-2026-0102',   89.90,  17.08),
+    ('INV-2026-0103',  420.00,  79.80),
+    ('INV-2026-0104',  310.50,  58.99),
+    ('INV-2026-0105',   77.00,  14.63)
+
+statement error
+SELECT * FROM profile_summary('staging_invoices')
+----
+TEMP tables are not supported by profile_summary; use a regular table
+
+statement error
+SELECT * FROM profile_table('staging_invoices')
+----
+TEMP tables are not supported by profile_table; use a regular table
+
+statement error
+SELECT * FROM profile_correlations('staging_invoices')
+----
+TEMP tables are not supported by profile_correlations; use a regular table
+
+statement error
+SELECT * FROM isolation_forest('staging_invoices', 'net_amount')
+----
+TEMP tables are not supported by isolation_forest; use a regular table
+
+statement error
+SELECT * FROM dbscan('staging_invoices', 'net_amount', 10.0, 2)
+----
+TEMP tables are not supported by dbscan; use a regular table
+
+statement error
+SELECT * FROM outlier_tree('staging_invoices', 'net_amount, vat_amount', 'summary')
+----
+TEMP tables are not supported by outlier_tree; use a regular table
+
+# the explicitly qualified name is recognised too
+statement error
+SELECT * FROM profile_summary('temp.main.staging_invoices')
+----
+TEMP tables are not supported by profile_summary; use a regular table
+
+# the SQL-based checks and diffs work on TEMP tables
+query TI
+SELECT status, outlier_count FROM zscore('staging_invoices', 'net_amount', 3)
+----
+pass	0
+
+query TI
+SELECT status, row_count FROM volume('staging_invoices', 1, NULL)
+----
+pass	5
+
+query I
+SELECT COUNT(*) FROM diff_joindiff('staging_invoices', 'staging_invoices', 'invoice_no')
+----
+0
+
+# the same data as a regular table profiles fine
+statement ok
+CREATE TABLE invoices AS SELECT * FROM staging_invoices
+
+query II
+SELECT row_count, column_count FROM profile_summary('invoices')
+----
+5	3

@@ -66,8 +66,9 @@ WHERE map_extract_value(tags, 'anofox.output') IS NOT NULL AND (description IS N
 # Test data
 # ===--------------------------------------------------------------------===
 
+# a regular table: profile_correlations reads through a second connection (no TEMP tables)
 statement ok
-CREATE TEMP TABLE orders AS
+CREATE TABLE orders AS
 SELECT d::DATE AS order_date, CASE WHEN r % 2 = 0 THEN 'shipped' ELSE 'open' END AS status,
        CAST(r AS DOUBLE) AS amount, CAST(r * 2 AS DOUBLE) AS qty
 FROM (

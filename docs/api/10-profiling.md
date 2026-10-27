@@ -9,7 +9,9 @@
 - Find correlated numeric columns
 
 The profiling functions read the table through a second connection. Pass a regular table or a
-view; a TEMP table is not found. See [Conventions](00-conventions.md#table-and-column-arguments).
+view; a TEMP table is rejected with
+`TEMP tables are not supported by profile_table; use a regular table`. See
+[Conventions](00-conventions.md#table-and-column-arguments).
 
 ## Functions
 
@@ -210,7 +212,7 @@ Output columns:
 | `column_count` | `BIGINT` | Columns in the table |
 | `numeric_columns` | `BIGINT` | Numeric columns |
 | `string_columns` | `BIGINT` | String columns |
-| `temporal_columns` | `BIGINT` | Date and time columns |
+| `temporal_columns` | `BIGINT` | Date, time and `INTERVAL` columns |
 | `boolean_columns` | `BIGINT` | Boolean columns |
 | `complex_columns` | `BIGINT` | `LIST`, `MAP`, `STRUCT` and `UNION` columns |
 | `total_nulls` | `BIGINT` | `NULL` cells over all columns |
@@ -240,7 +242,9 @@ FROM profile_summary('orders');
 Canonical name: `anofox_tab_profile_correlations`. Table function.
 
 Computes the Pearson and Spearman correlation of every pair of numeric columns. Each pair appears
-once. Rows where either value is `NULL`, NaN or `±Inf` are left out of the pair.
+once. Rows where either value is `NULL`, NaN or `±Inf` are left out of the pair. Only numeric
+columns take part: `INTERVAL`, date and string columns are skipped. Both coefficients are
+clamped to [-1, 1], so floating-point rounding never reports `1.0000000000000002`.
 
 ```text
 profile_correlations(table_name VARCHAR [, columns VARCHAR[]])

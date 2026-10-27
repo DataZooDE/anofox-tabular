@@ -41,10 +41,10 @@ SET anofox_tab_trace_level = 'warn';
 Or turn it off with `SET anofox_tab_trace_enabled = false;`. See
 [Configuration: tracing](configuration.md#tracing).
 
-## "Table with name ... does not exist" for a TEMP table
+## "TEMP tables are not supported" for a TEMP table
 
 Several table functions read the data through a second connection, which cannot see the TEMP
-tables of your session:
+tables of your session. They reject a TEMP table when the query is bound:
 
 ```sql
 CREATE TEMP TABLE scratch AS SELECT range * 1.0 AS v FROM range(50);
@@ -52,11 +52,7 @@ SELECT status FROM isolation_forest('scratch', 'v');
 ```
 
 ```text
-Binder Error: isolation_forest: cannot read table 'scratch': Catalog Error: Table with name scratch does not exist!
-Did you mean "sqlite_schema"?
-
-LINE 1: SELECT * FROM query_table('scratch') LIMIT 0
-             ^^^^^^^
+Binder Error: TEMP tables are not supported by isolation_forest; use a regular table (CREATE TABLE ... AS SELECT * FROM scratch)
 
 LINE 1: SELECT status FROM isolation_forest('scratch', 'v');
                            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

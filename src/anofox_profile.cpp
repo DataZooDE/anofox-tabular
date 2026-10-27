@@ -67,6 +67,11 @@ static ColumnCategory ClassifyColumn(const string &data_type) {
 		return ColumnCategory::LIST;
 	}
 
+	// INTERVAL before the numeric check, which would match its "INT"
+	if (upper_type == "INTERVAL") {
+		return ColumnCategory::TEMPORAL;
+	}
+
 	// Scalar types
 	if (upper_type.find("INT") != string::npos || upper_type == "DOUBLE" ||
 	    upper_type == "FLOAT" || upper_type == "REAL" ||
@@ -88,6 +93,11 @@ static ColumnCategory ClassifyColumn(const string &data_type) {
 		return ColumnCategory::TEMPORAL;
 	}
 	return ColumnCategory::OTHER;
+}
+
+// A correlation coefficient clamped to [-1, 1] (NULL stays NULL)
+static string ClampUnitSQL(const string &expr) {
+	return "CASE WHEN " + expr + " > 1 THEN 1.0 WHEN " + expr + " < -1 THEN -1.0 ELSE " + expr + " END";
 }
 
 static bool IsComplexCategory(ColumnCategory cat) {
@@ -214,6 +224,7 @@ static unique_ptr<TableRef> ProfileSummaryBindReplace(ClientContext &context,
 		throw BinderException("profile_summary requires 1 argument: table_name");
 	}
 	string table_name = RequireNonNullArgument(input, 0, "profile_summary", "table_name");
+	RejectTempTable(context, "profile_summary", table_name);
 
 	AnofoxTrace(AnofoxLogLevel::Debug,
 	            "profile: profile_summary introspecting '" + table_name + "'");
@@ -294,6 +305,7 @@ static unique_ptr<FunctionData> ProfileTableBind(ClientContext &context,
 	}
 
 	string table_name = RequireNonNullArgument(input, 0, "profile_table", "table_name");
+	RejectTempTable(context, "profile_table", table_name);
 
 	vector<string> columns;
 	if (input.inputs.size() > 1 && !input.inputs[1].IsNull() &&
@@ -655,6 +667,7 @@ static unique_ptr<FunctionData> ProfileCorrelationsBind(ClientContext &context,
 	}
 
 	string table_name = RequireNonNullArgument(input, 0, "profile_correlations", "table_name");
+	RejectTempTable(context, "profile_correlations", table_name);
 
 	vector<string> columns;
 	if (input.inputs.size() > 1 && !input.inputs[1].IsNull() &&
@@ -728,7 +741,9 @@ static void ProfileCorrelationsExecute(ClientContext &context, TableFunctionInpu
 
 				// Pearson: CORR on raw values
 				// Spearman: CORR on rank-transformed values (subquery to separate window from agg)
-				sql += "SELECT"
+				// Both clamped to [-1, 1]: floating-point rounding can yield 1.0000000000000002
+				sql += "SELECT column_a, column_b, " + ClampUnitSQL("pearson") + " AS pearson, " +
+				       ClampUnitSQL("spearman") + " AS spearman, n FROM (SELECT"
 				       " " + col_a_lit + " AS column_a,"
 				       " " + col_b_lit + " AS column_b,"
 				       " CORR(a_val, b_val) AS pearson,"
@@ -745,7 +760,7 @@ static void ProfileCorrelationsExecute(ClientContext &context, TableFunctionInpu
 				       "   FROM src"
 				       // finite pairs only: one NaN/Inf turns CORR into NaN
 				       "   WHERE isfinite(TRY_CAST(" + ea + " AS DOUBLE)) AND isfinite(TRY_CAST(" + eb + " AS DOUBLE))"
-				       " ) _corr_sub";
+				       " ) _corr_sub) _corr_pair";
 			}
 		}
 

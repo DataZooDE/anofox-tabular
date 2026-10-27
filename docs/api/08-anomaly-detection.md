@@ -13,7 +13,8 @@ All functions here are table functions that run unsupervised: they need no label
 input row (or per outlier).
 
 These functions read the table through a second connection. Pass a regular table or a view,
-not a TEMP table: a TEMP table fails with `Table with name ... does not exist`.
+not a TEMP table: a TEMP table fails with
+`TEMP tables are not supported by isolation_forest; use a regular table`.
 
 ## Functions
 
