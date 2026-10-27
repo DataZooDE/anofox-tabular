@@ -20,9 +20,9 @@ def isolation_forest(
     table_or_df: Union[str, Any],
     column: str,
     output_mode: str = "summary",
-    n_trees: int = 100,
+    n_trees: Optional[int] = None,
     sample_size: Optional[int] = None,
-    contamination: float = 0.1,
+    contamination: Optional[float] = None,
     id_column: Optional[str] = None,
     seed: Optional[int] = None,
 ) -> Union[dict, Any]:
@@ -41,11 +41,11 @@ def isolation_forest(
         ``"summary"`` → dict with counts; ``"scores"`` → DataFrame with
         anomaly scores per row.
     n_trees:
-        Number of isolation trees (default 100).
+        Number of isolation trees (``None``: the extension default, 100).
     sample_size:
         Sub-sample size per tree.  When ``None`` the extension default (256) is used.
     contamination:
-        Expected fraction of anomalies (default 0.1).
+        Expected fraction of anomalies (``None``: the extension default, 0.1).
     id_column:
         Optional identifier column of the input whose value is added to the
         per-row output, directly after ``row_id``. Only valid with
@@ -78,9 +78,9 @@ def isolation_forest_mv(
     table_or_df: Union[str, Any],
     columns: Union[str, Sequence[str]],
     output_mode: str = "summary",
-    n_trees: int = 100,
+    n_trees: Optional[int] = None,
     sample_size: Optional[int] = None,
-    contamination: float = 0.1,
+    contamination: Optional[float] = None,
     id_column: Optional[str] = None,
     seed: Optional[int] = None,
     ndim: Optional[int] = None,
@@ -100,11 +100,11 @@ def isolation_forest_mv(
     output_mode:
         ``"summary"`` → dict; ``"scores"`` → DataFrame.
     n_trees:
-        Number of isolation trees (default 100).
+        Number of isolation trees (``None``: the extension default, 100).
     sample_size:
-        Sub-sample size per tree.
+        Sub-sample size per tree (``None``: the extension default, 256).
     contamination:
-        Expected fraction of anomalies (default 0.1).
+        Expected fraction of anomalies (``None``: the extension default, 0.1).
     id_column:
         Optional identifier column of the input whose value is added to the
         per-row output, directly after ``row_id``. Only valid with
@@ -136,8 +136,8 @@ def dbscan(
     table_or_df: Union[str, Any],
     column: str,
     output_mode: str = "summary",
-    epsilon: float = 0.5,
-    min_points: int = 5,
+    epsilon: Optional[float] = None,
+    min_points: Optional[int] = None,
     id_column: Optional[str] = None,
 ) -> Union[dict, Any]:
     """
@@ -156,9 +156,9 @@ def dbscan(
         with one row per analysed row; rows with a NULL feature are left out,
         and ``row_id`` is the 1-based table row number.
     epsilon:
-        Neighbourhood radius ε (default 0.5).
+        Neighbourhood radius ε (``None``: the extension default, 0.5).
     min_points:
-        Minimum cluster size (default 5).
+        Minimum cluster size (``None``: the extension default, 5).
     id_column:
         Optional identifier column of the input whose value is added to the
         per-row output, directly after ``row_id``. Only valid with
@@ -184,8 +184,8 @@ def dbscan_mv(
     table_or_df: Union[str, Any],
     columns: Union[str, Sequence[str]],
     output_mode: str = "summary",
-    epsilon: float = 0.5,
-    min_points: int = 5,
+    epsilon: Optional[float] = None,
+    min_points: Optional[int] = None,
     id_column: Optional[str] = None,
 ) -> Union[dict, Any]:
     """
@@ -205,9 +205,9 @@ def dbscan_mv(
         with one row per analysed row; rows with a NULL feature are left out,
         and ``row_id`` is the 1-based table row number.
     epsilon:
-        Neighbourhood radius ε (default 0.5).
+        Neighbourhood radius ε (``None``: the extension default, 0.5).
     min_points:
-        Minimum cluster size (default 5).
+        Minimum cluster size (``None``: the extension default, 5).
     id_column:
         Optional identifier column of the input whose value is added to the
         per-row output, directly after ``row_id``. Only valid with

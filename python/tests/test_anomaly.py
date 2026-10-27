@@ -563,3 +563,27 @@ class TestRegisteredViewName:
         from anofox import anomaly
         result = anomaly.isolation_forest(conn, _staff_frame(), "salary", seed=3)
         assert result["total_count"] == 200
+
+
+class TestSqlDefaults:
+    """Parameters left out are passed as NULL, so the extension's defaults apply."""
+
+    @pytest.mark.parametrize("func,params", [
+        ("isolation_forest", ["n_trees", "sample_size", "contamination"]),
+        ("isolation_forest_mv", ["n_trees", "sample_size", "contamination"]),
+        ("dbscan", ["epsilon", "min_points"]),
+        ("dbscan_mv", ["epsilon", "min_points"]),
+    ])
+    def test_defaults_are_none(self, func, params):
+        import inspect
+        from anofox import anomaly
+        signature = inspect.signature(getattr(anomaly, func))
+        for name in params:
+            assert signature.parameters[name].default is None, name
+
+    def test_summary_reports_extension_defaults(self, conn, id_table):
+        from anofox import anomaly
+        forest = anomaly.isolation_forest(conn, id_table, "x", seed=1)
+        assert (forest["n_trees"], forest["contamination"]) == (100, 0.1)
+        clusters = anomaly.dbscan(conn, id_table, "x")
+        assert (clusters["eps"], clusters["min_pts"]) == (0.5, 5)
