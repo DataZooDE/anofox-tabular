@@ -1,0 +1,90 @@
+# name: test/sql/anofox_pii_ids_hashes.test
+# description: UUIDs and md5/sha1/sha256 hex digests are identifiers, not secrets:
+#              they are neither API_KEY nor MAC_ADDRESS. Real AWS, GitHub, Stripe
+#              and Slack style keys and real MAC addresses are still found.
+# group: [sql]
+
+require anofox_tabular
+
+statement ok
+LOAD anofox_tabular;
+
+statement ok
+SET anofox_pii_enabled_types = 'EMAIL,PHONE,CREDIT_CARD,US_SSN,IP_ADDRESS,IBAN,DE_TAX_ID,URL,US_PASSPORT,CRYPTO_ADDRESS,UK_NINO,MAC_ADDRESS,API_KEY';
+
+# ============================================================================
+# An order table keyed by UUIDs, with content hashes of the attachments
+# ============================================================================
+
+statement ok
+CREATE TABLE orders AS SELECT * FROM (VALUES
+    ('6513270e-269e-4d37-b2a7-4de452e6b438', '7b9b436cd2670e815ed7c9ef51f5e820', 'cce6750044f00f3b00844d6ffe59affc64e51b05'),
+    ('d23f0824-128b-4f33-8c5c-7fd0a6a3a450', '6e7f85a9d0fe9b5dfb504c6f2991d744', 'c86d267e9c6c89416bf9e96ba7fa62a4ba1ec93f'),
+    ('9531985d-5d9d-49f8-9818-e811892f902b', '18899d7d59a5ab5aa0dff9fca8604ece', 'f3f09676260b647ca1498bc48044f37b42d7c468'),
+    ('36f675cc-81e7-4ef5-a8e2-5d940ed90475', 'f93e03b37135ae237598681bcd60abf2', '6caa6e17dc328685e2b5244fe72601d1e07e10f9'),
+    ('6b0d549b-6f03-475a-9600-a35a099950d8', '001469a0ffeadb85e6f0c13bb37bd148', 'fc0594aa13aed28fdfcfb0f117206bf38a39e22a'),
+    ('8d116ece-1738-47d9-bd9c-172411e20b8f', '9bf8c4be8b3fc15c4623226aa6e2318e', 'b49b7b4fe5f5fa8fc9542e41c7628ee60433bb8cdf69b224695a5cd8d973b4ad'),
+    ('90c192cf-d3ac-44af-8f21-ddb66cad4a26', '46db13d79fc5919186dc112f79ece22b', '201e33b22aa4f55a98fc6b5b14c6ab2b99bccc1b1ca0a18af0454a047f6b0672'),
+    ('A170B338-3926-4059-B28C-105D1FB17C23', 'CD75315A553EF07EB20E55A3CC895955', '90113FCF1FC0EF0A7211E08DE474D6DF04048D61F0A1DFC2C6D3869FFD9297F1'),
+    ('{0FD630F1-F29D-4DA9-953F-48F1A09F76B5}', 'ab8ea8cd1e695b8703026617473badcf', '4ffb08b597b10d8cf83b239d492705bf'),
+    ('{0cb1e29c-658c-4a14-95e6-0af593bd04cf}', 'de7bcf9f887da2d3887862840de32bc7', '1345602ce71bad1b3c3ad032b348e7c3'),
+    ('8e81973e0bec47b0b898d190f9ebdacc', '9e107d9d372bb6826bd81d3542a419d6', '2fd4e1c67a2d28fced849ee1bb76e7391b93eb12'),
+    ('6b4cb242-4a23-4596-a217-beaddbc496cb', 'd41d8cd98f00b204e9800998ecf8427e', 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855')
+) t(order_id, attachment_md5, attachment_hash);
+
+query III
+SELECT count(*) FILTER (WHERE len(pii_detect(order_id)) > 0),
+       count(*) FILTER (WHERE len(pii_detect(attachment_md5)) > 0),
+       count(*) FILTER (WHERE len(pii_detect(attachment_hash)) > 0)
+FROM orders;
+----
+0	0	0
+
+# Inside a log line the ids stay readable
+query I
+SELECT count(*) FROM orders
+WHERE pii_mask('order ' || order_id || ' attachment md5=' || attachment_md5 || ' sha=' || attachment_hash)
+   <> 'order ' || order_id || ' attachment md5=' || attachment_md5 || ' sha=' || attachment_hash;
+----
+0
+
+# The last UUID group is no bare MAC address
+query T
+SELECT pii_mask('request 9531985d-5d9d-49f8-9818-e811892f902b failed');
+----
+request 9531985d-5d9d-49f8-9818-e811892f902b failed
+
+# ============================================================================
+# Real keys and MAC addresses are still found
+# (fake keys, assembled with || so the file holds no secret-shaped literal for secret scanners)
+# ============================================================================
+
+query IT
+SELECT i, list_transform(pii_detect(s), lambda x: x.type) FROM (VALUES
+    (1, 'aws_access_key_id = AKIAIOSFODNN7EXAMPLE'),
+    (2, 'GITHUB_TOKEN=gh' || 'p_' || 'wWPw5k4aXcaT4fNP0UcnZwJUVFk6LO0pINUx'),
+    (3, 'stripe.api_key = "sk_' || 'live_' || '51Hq8xKLyjWDarjtT1zdp7dcXyZ2abQ9"'),
+    (4, 'SLACK_BOT_TOKEN=xo' || 'xb-' || '2401183-AbCdEfGhIjKlMnOpQrStUvWx'),
+    (5, 'Authorization: Bearer Zx8Kq2LmN4pR7sT1vW3yB6dF9gH0jK5c'),
+    (6, 'device 00:1A:2B:3C:4D:5E online'),
+    (7, 'device 001A2B3C4D5E online'),
+    (8, 'device 001a.2b3c.4d5e online')
+) t(i, s) ORDER BY i;
+----
+1	[API_KEY]
+2	[API_KEY]
+3	[API_KEY]
+4	[API_KEY]
+5	[API_KEY]
+6	[MAC_ADDRESS]
+7	[MAC_ADDRESS]
+8	[MAC_ADDRESS]
+
+# A mixed-case hex run is no digest (digests are written in one case)
+query T
+SELECT list_transform(pii_detect('key=9E107d9D372bB6826bD81d3542A419d6'), lambda x: x.type);
+----
+[API_KEY]
+
+statement ok
+SET anofox_pii_enabled_types = '';

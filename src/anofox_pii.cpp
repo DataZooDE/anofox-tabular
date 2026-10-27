@@ -1530,6 +1530,56 @@ std::string EmailRecognizer::GetPartialMask(const std::string &text) const {
 }
 
 // ============================================================================
+// Identifiers that look like keys or MAC addresses
+// ============================================================================
+
+namespace {
+
+bool IsHexRun(const std::string &text, size_t pos, size_t count) {
+    if (pos + count > text.size()) {
+        return false;
+    }
+    return std::all_of(text.begin() + static_cast<std::ptrdiff_t>(pos),
+                       text.begin() + static_cast<std::ptrdiff_t>(pos + count),
+                       [](char c) { return std::isxdigit(static_cast<unsigned char>(c)) != 0; });
+}
+
+// A canonical 8-4-4-4-12 UUID starting at pos (any case)
+bool IsUuidAt(const std::string &text, size_t pos) {
+    static constexpr size_t GROUPS[] = {8, 4, 4, 4, 12};
+    size_t i = pos;
+    for (size_t g = 0; g < 5; g++) {
+        if (g > 0) {
+            if (i >= text.size() || text[i] != '-') {
+                return false;
+            }
+            i++;
+        }
+        if (!IsHexRun(text, i, GROUPS[g])) {
+            return false;
+        }
+        i += GROUPS[g];
+    }
+    return true;
+}
+
+// A UUID, or a md5/sha1/sha256 hex digest (32, 40 or 64 hex characters in
+// one case). These identify records and files; they are no secrets.
+bool IsUuidOrHexDigest(const std::string &text) {
+    if (text.size() == 36 && IsUuidAt(text, 0)) {
+        return true;
+    }
+    if ((text.size() != 32 && text.size() != 40 && text.size() != 64) || !IsHexRun(text, 0, text.size())) {
+        return false;
+    }
+    const bool has_lower = std::any_of(text.begin(), text.end(), [](char c) { return c >= 'a' && c <= 'f'; });
+    const bool has_upper = std::any_of(text.begin(), text.end(), [](char c) { return c >= 'A' && c <= 'F'; });
+    return !(has_lower && has_upper);
+}
+
+} // namespace
+
+// ============================================================================
 // MAC Address Recognizer
 // ============================================================================
 
@@ -1557,12 +1607,22 @@ MACAddressRecognizer::~MACAddressRecognizer() {
 std::vector<PIIMatch> MACAddressRecognizer::FindMatches(const std::string &text) const {
     // The pattern cannot look behind: drop a dotted match that continues
     // earlier groups ("aabb.ccdd.eeff.0011" has four groups, no MAC has)
+    // The bare 12-character form can also be the last group of a UUID
+    // ("9531985d-5d9d-49f8-9818-e811892f902b"), which is no MAC either.
     auto matches = RegexRecognizer::FindMatches(text);
     matches.erase(std::remove_if(matches.begin(), matches.end(),
                                  [&text](const PIIMatch &match) {
-                                     return match.matched_text.size() == 14 && match.matched_text[4] == '.' &&
-                                            match.start_pos >= 2 && text[match.start_pos - 1] == '.' &&
-                                            std::isxdigit(static_cast<unsigned char>(text[match.start_pos - 2]));
+                                     const bool continues_dotted =
+                                         match.matched_text.size() == 14 && match.matched_text[4] == '.' &&
+                                         match.start_pos >= 2 && text[match.start_pos - 1] == '.' &&
+                                         std::isxdigit(static_cast<unsigned char>(text[match.start_pos - 2]));
+                                     const bool uuid_group = match.matched_text.size() == 12 && match.start_pos >= 24 &&
+                                                             IsUuidAt(text, match.start_pos - 24);
+                                     if (uuid_group) {
+                                         AnofoxTrace(AnofoxLogLevel::Trace,
+                                                     "pii: MAC candidate is the last group of a UUID: " + match.matched_text);
+                                     }
+                                     return continues_dotted || uuid_group;
                                  }),
                   matches.end());
     return matches;
@@ -1919,6 +1979,12 @@ bool APIKeyRecognizer::Validate(const std::string &text) const {
             text[3] == '_') {
             return true;
         }
+    }
+
+    // UUIDs and md5/sha1/sha256 digests are hex identifiers, not secrets
+    if (IsUuidOrHexDigest(text)) {
+        AnofoxTrace(AnofoxLogLevel::Trace, "pii: API key candidate is a UUID or hex digest: " + text);
+        return false;
     }
 
     // Generic pattern - require high entropy to reduce false positives
