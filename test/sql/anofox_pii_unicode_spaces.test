@@ -1,0 +1,157 @@
+# name: test/sql/anofox_pii_unicode_spaces.test
+# description: Unicode space separators (no-break space U+00A0, narrow no-break space U+202F, thin space U+2009, figure space U+2007) between digit groups count as spaces in PII detection, masking, hashing, pii_scan_table and pii_audit_table; offsets stay byte offsets of the input and the text around a match keeps its own spaces
+# group: [anofox_tabular]
+
+require anofox_tabular
+
+statement ok
+LOAD anofox_tabular
+
+# Pattern types only, so the results do not depend on the NER model
+statement ok
+SET anofox_pii_enabled_types = 'EMAIL,PHONE,IBAN,CREDIT_CARD';
+
+statement ok
+SET anofox_tab_phonenumber_default_region = 'DE';
+
+# Copied from a PDF: no-break spaces between the digit groups
+query TT
+SELECT pii_mask('Tel +49' || chr(160) || '30' || chr(160) || '12345678'),
+       pii_mask('IBAN DE89' || chr(160) || '3704' || chr(160) || '0044' || chr(160) || '0532' || chr(160) || '0130' || chr(160) || '00');
+----
+Tel [PHONE]	IBAN [IBAN]
+
+# CRM notes pasted from PDFs, Excel exports and web forms. chr(160) U+00A0
+# no-break space, chr(8239) U+202F narrow no-break space, chr(8201) U+2009
+# thin space, chr(8199) U+2007 figure space
+statement ok
+CREATE TABLE crm_notes AS SELECT * FROM (VALUES
+    (1, 'Rückruf unter +49' || chr(160) || '30' || chr(160) || '12345678 erbeten'),
+    (2, 'Mobil 0171' || chr(160) || '1234567, Büro 030' || chr(8239) || '1234' || chr(8239) || '5678'),
+    (3, 'Erstattung auf DE89' || chr(8239) || '3704' || chr(8239) || '0044' || chr(8239) || '0532' || chr(8239) || '0130' || chr(8239) || '00 bitte'),
+    (4, 'Karte 4111' || chr(8201) || '1111' || chr(8201) || '1111' || chr(8201) || '1111 gültig bis 12/27'),
+    (5, 'Kontakt: anna.schmidt@example.de' || chr(160) || '/' || chr(160) || 'Fax +49' || chr(8199) || '89' || chr(8199) || '9876543'),
+    (6, 'Keine Kontaktdaten hinterlegt')
+) t(note_id, note);
+
+# The spaces around a match stay as they were (shown as <NBSP>)
+query IT
+SELECT note_id, replace(pii_mask(note), chr(160), '<NBSP>') FROM crm_notes ORDER BY note_id;
+----
+1	Rückruf unter [PHONE] erbeten
+2	Mobil [PHONE], Büro [PHONE]
+3	Erstattung auf [IBAN] bitte
+4	Karte [CREDIT_CARD] gültig bis 12/27
+5	Kontakt: [EMAIL]<NBSP>/<NBSP>Fax [PHONE]
+6	Keine Kontaktdaten hinterlegt
+
+# Offsets are byte offsets of the input (ü and each no-break space take two
+# bytes); the reported text is the input's text, no-break spaces included
+query TIIIT
+SELECT m.type, m.start_pos, m.end_pos, octet_length(encode(m.text)),
+       m.text = '+49' || chr(160) || '30' || chr(160) || '12345678'
+FROM (SELECT unnest(pii_detect(note)) AS m FROM crm_notes WHERE note_id = 1);
+----
+PHONE	15	32	17	true
+
+query TII
+SELECT m.type, m.start_pos, m.end_pos FROM (SELECT unnest(pii_detect(note)) AS m FROM crm_notes WHERE note_id = 2);
+----
+PHONE	6	19
+PHONE	27	44
+
+# German phone formats with no-break spaces: slash, "(0)", area code dash
+query TT
+SELECT phone, list_transform(pii_detect('Tel. ' || replace(phone, ' ', chr(160))), lambda m: m.type || ':' || replace(m.text, chr(160), ' '))
+FROM (VALUES ('089 / 12345678'), ('+49 (0) 221 4711-0'), ('0221 4711-0'), ('0049 171 2345678'), ('(089) 123 456 78')) t(phone);
+----
+089 / 12345678	['PHONE:089 / 12345678']
++49 (0) 221 4711-0	['PHONE:+49 (0) 221 4711-0']
+0221 4711-0	['PHONE:0221 4711-0']
+0049 171 2345678	['PHONE:0049 171 2345678']
+(089) 123 456 78	['PHONE:(089) 123 456 78']
+
+# Partial masks treat the separators as spaces: the same mask as with ASCII spaces
+query IT
+SELECT note_id, pii_mask(note, 'partial') = pii_mask(replace(replace(replace(replace(note, chr(160), ' '), chr(8239), ' '), chr(8201), ' '), chr(8199), ' '), 'partial')
+FROM crm_notes WHERE note_id < 5 ORDER BY note_id;
+----
+1	true
+2	true
+3	true
+4	true
+
+query TTT
+SELECT pii_mask('IBAN DE89' || chr(160) || '3704' || chr(160) || '0044' || chr(160) || '0532' || chr(160) || '0130' || chr(160) || '00', 'partial'),
+       pii_mask('Karte 4111' || chr(8201) || '1111' || chr(8201) || '1111' || chr(8201) || '1111', 'partial'),
+       pii_mask('Karte 3782' || chr(160) || '822463' || chr(160) || '10005', 'partial');
+----
+IBAN DE89**************3000	Karte 4111********1111	Karte ***********0005
+
+# Hashes ignore the kind of space: equal to the hash of the ASCII-spaced value
+query TTTT
+SELECT pii_mask_value('DE89' || chr(160) || '3704' || chr(160) || '0044' || chr(160) || '0532' || chr(160) || '0130' || chr(160) || '00', 'IBAN', 'hash')
+           = pii_mask_value('DE89 3704 0044 0532 0130 00', 'IBAN', 'hash'),
+       pii_mask_value('4111' || chr(8201) || '1111' || chr(8201) || '1111' || chr(8201) || '1111', 'CREDIT_CARD', 'hash')
+           = pii_mask_value('4111 1111 1111 1111', 'CREDIT_CARD', 'hash'),
+       pii_mask_value('+49' || chr(160) || '30' || chr(160) || '12345678', 'PHONE', 'hash')
+           = pii_mask_value('+49 30 12345678', 'PHONE', 'hash'),
+       pii_mask_value('030' || chr(8239) || '12345678', 'PHONE', 'hash') = left(sha256('+493012345678'), 16);
+----
+true	true	true	true
+
+query IT
+SELECT note_id, pii_mask(note, 'hash') = pii_mask(replace(replace(replace(replace(note, chr(160), ' '), chr(8239), ' '), chr(8201), ' '), chr(8199), ' '), 'hash')
+FROM crm_notes WHERE note_id < 5 ORDER BY note_id;
+----
+1	true
+2	true
+3	true
+4	true
+
+# Validation functions accept the value with no-break spaces
+query TT
+SELECT pii_is_valid_iban('DE89' || chr(160) || '3704' || chr(160) || '0044' || chr(160) || '0532' || chr(160) || '0130' || chr(160) || '00'),
+       pii_is_valid_credit_card('4111' || chr(8239) || '1111' || chr(8239) || '1111' || chr(8239) || '1111');
+----
+true	true
+
+# pii_scan_table finds every value
+query TTI
+SELECT column_name, pii_type, match_count FROM pii_scan_table('crm_notes', 'note') ORDER BY pii_type;
+----
+note	CREDIT_CARD	1
+note	EMAIL	1
+note	IBAN	1
+note	PHONE	4
+
+# pii_audit_table reports every match with the input's text
+query ITTT
+SELECT row_id, pii_type,
+       replace(replace(replace(replace(matched_text, chr(160), '<NBSP>'), chr(8239), '<NNBSP>'), chr(8201), '<THSP>'), chr(8199), '<FIGSP>'),
+       replace(masked_value, chr(160), '<NBSP>')
+FROM pii_audit_table('crm_notes', 'note') ORDER BY row_id, start_pos;
+----
+1	PHONE	+49<NBSP>30<NBSP>12345678	Rückruf unter [PHONE] erbeten
+2	PHONE	0171<NBSP>1234567	Mobil [PHONE], Büro [PHONE]
+2	PHONE	030<NNBSP>1234<NNBSP>5678	Mobil [PHONE], Büro [PHONE]
+3	IBAN	DE89<NNBSP>3704<NNBSP>0044<NNBSP>0532<NNBSP>0130<NNBSP>00	Erstattung auf [IBAN] bitte
+4	CREDIT_CARD	4111<THSP>1111<THSP>1111<THSP>1111	Karte [CREDIT_CARD] gültig bis 12/27
+5	EMAIL	anna.schmidt@example.de	Kontakt: [EMAIL]<NBSP>/<NBSP>Fax [PHONE]
+5	PHONE	+49<FIGSP>89<FIGSP>9876543	Kontakt: [EMAIL]<NBSP>/<NBSP>Fax [PHONE]
+
+# A no-break space is no part of an e-mail address or URL next to it
+statement ok
+SET anofox_pii_enabled_types = 'EMAIL,URL';
+
+query T
+SELECT list_transform(pii_detect('Mail:' || chr(160) || 'max@web.de' || chr(160) || 'oder https://example.com/kontakt' || chr(160) || 'ansehen'), lambda m: m.type || ':' || m.text);
+----
+['EMAIL:max@web.de', 'URL:https://example.com/kontakt']
+
+# Restore the process-wide settings for the tests that follow
+statement ok
+SET anofox_pii_enabled_types = '';
+
+statement ok
+RESET anofox_tab_phonenumber_default_region;

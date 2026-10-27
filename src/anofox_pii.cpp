@@ -424,6 +424,131 @@ std::string NormalizeForHash(PIIType type, const std::string &text) {
         return text;
     }
 }
+
+// ---------------------------------------------------------------------------
+// Unicode space separators. Values copied from PDFs, spreadsheets and web
+// forms separate digit groups with a no-break space (U+00A0), a narrow
+// no-break space (U+202F, the French and Swiss thousands separator), a thin
+// space (U+2009) or a figure space (U+2007): "+49 30 12345678" with U+00A0.
+// The pattern recognizers and the hash and partial masks treat every space
+// separator (Unicode category Zs) like an ASCII space.
+// ---------------------------------------------------------------------------
+
+// Byte length of the Unicode space separator other than U+0020 that starts
+// at `pos`, 0 when there is none: U+00A0, U+1680, U+2000-U+200A, U+202F,
+// U+205F and U+3000
+size_t UnicodeSpaceLengthAt(const std::string &text, size_t pos) {
+    const auto b0 = static_cast<unsigned char>(text[pos]);
+    if (b0 < 0xC2) {
+        return 0;
+    }
+    if (b0 == 0xC2) {
+        return pos + 1 < text.size() && static_cast<unsigned char>(text[pos + 1]) == 0xA0 ? 2 : 0;
+    }
+    if (pos + 2 >= text.size()) {
+        return 0;
+    }
+    const auto b1 = static_cast<unsigned char>(text[pos + 1]);
+    const auto b2 = static_cast<unsigned char>(text[pos + 2]);
+    const bool space = (b0 == 0xE1 && b1 == 0x9A && b2 == 0x80) ||                   // U+1680
+                       (b0 == 0xE2 && b1 == 0x80 && (b2 <= 0x8A || b2 == 0xAF)) || // U+2000-U+200A, U+202F
+                       (b0 == 0xE2 && b1 == 0x81 && b2 == 0x9F) ||                   // U+205F
+                       (b0 == 0xE3 && b1 == 0x80 && b2 == 0x80);                     // U+3000
+    return space ? 3 : 0;
+}
+
+// The text with every Unicode space separator replaced by one ASCII space,
+// so the pattern recognizers (whose patterns and scanners know ' ' only) find
+// "DE89<NBSP>3704<NBSP>..." like "DE89 3704 ...". Match offsets in the folded
+// text are mapped back to byte offsets of the original text, and the matched
+// text is taken from the original, so detection reports and masking replaces
+// exactly the bytes of the input.
+class SpaceFoldedText {
+public:
+    explicit SpaceFoldedText(const std::string &original) : original_(original) {
+        size_t copied = 0;  // original bytes before this are in folded_
+        for (size_t pos = 0; pos < original.size(); ++pos) {
+            const size_t length = UnicodeSpaceLengthAt(original, pos);
+            if (length == 0) {
+                continue;
+            }
+            if (offsets_.empty()) {
+                folded_.reserve(original.size());
+                offsets_.reserve(original.size() + 1);
+            }
+            CopyRange(copied, pos);
+            folded_ += ' ';
+            offsets_.push_back(pos);
+            pos += length - 1;
+            copied = pos + 1;
+        }
+        if (!offsets_.empty()) {
+            CopyRange(copied, original.size());
+            offsets_.push_back(original.size());
+        }
+    }
+
+    // The text the pattern recognizers scan
+    const std::string &Text() const {
+        return offsets_.empty() ? original_ : folded_;
+    }
+
+    // Map a match found in Text() onto the original text
+    void MapToOriginal(PIIMatch &match) const {
+        if (offsets_.empty()) {
+            return;
+        }
+        match.start_pos = offsets_[match.start_pos];
+        match.end_pos = offsets_[match.end_pos];
+        match.matched_text = original_.substr(match.start_pos, match.end_pos - match.start_pos);
+    }
+
+private:
+    void CopyRange(size_t from, size_t to) {
+        folded_.append(original_, from, to - from);
+        for (size_t i = from; i < to; ++i) {
+            offsets_.push_back(i);
+        }
+    }
+
+    const std::string &original_;
+    std::string folded_;
+    // Byte offset in original_ of each byte of folded_, plus the end; empty
+    // when the text has no Unicode space separator (folded_ is unused then)
+    std::vector<size_t> offsets_;
+};
+
+// text with every Unicode space separator replaced by one ASCII space
+std::string FoldUnicodeSpaces(const std::string &text) {
+    return SpaceFoldedText(text).Text();
+}
+
+// Whether text has a letter outside the (sorted, non-overlapping) spans of
+// `covered`. A NER span that overlaps a pattern match is dropped and a NER
+// span without a letter names nobody, so without such a letter the NER model
+// cannot add anything to the pattern matches.
+bool HasLetterOutside(const std::string &text, const std::vector<PIIMatch> &covered) {
+    size_t pos = 0;
+    auto span = covered.begin();
+    while (pos < text.size()) {
+        while (span != covered.end() && span->end_pos <= pos) {
+            ++span;
+        }
+        if (span != covered.end() && span->start_pos <= pos) {
+            pos = span->end_pos;
+            continue;
+        }
+        uint32_t cp = 0;
+        const size_t length = DecodeUTF8CodePoint(text, pos, cp);
+        if (cp < 0x80 ? std::isalpha(static_cast<int>(cp)) != 0
+                      : ClassifyNERCodePoint(cp) == NERCharClass::WORD ||
+                            ClassifyNERCodePoint(cp) == NERCharClass::IDEOGRAPH) {
+            return true;
+        }
+        pos += std::max<size_t>(length, 1);
+    }
+    return false;
+}
 } // anonymous namespace
 
 // ============================================================================
@@ -2992,20 +3117,23 @@ bool PIIEngine::ValidateType(const std::string &text, PIIType type) const {
         return false;
     }
 
+    // Unicode space separators count as spaces, as in detection
+    const std::string folded = FoldUnicodeSpaces(text);
+
     // First check if text matches the pattern
-    auto matches = recognizer->FindMatches(text);
+    auto matches = recognizer->FindMatches(folded);
 
     // Look for an exact match (the entire text should match)
     for (const auto &match : matches) {
-        if (match.matched_text == text) {
+        if (match.matched_text == folded) {
             // Then validate checksum/format
-            return recognizer->Validate(text);
+            return recognizer->Validate(folded);
         }
     }
 
     // Also try validating directly - some validators work on the raw input
     // This handles cases where the text IS the value (not wrapped in context)
-    return recognizer->Validate(text);
+    return recognizer->Validate(folded);
 }
 
 std::vector<PIIMatch> PIIEngine::Detect(
@@ -3028,41 +3156,89 @@ std::vector<PIIMatch> PIIEngine::Detect(
         NERModelManager::Instance().RequireModel();
     }
 
-    std::vector<PIIMatch> all_matches;
+    bool run_ner = false;
+    auto matches = DetectPatterns(text, effective_types, config, run_ner);
+    if (!run_ner) {
+        return matches;
+    }
+    return AddNERMatches(text, effective_types, config, std::move(matches));
+}
 
+namespace {
+
+// Whether a recognizer of `type` runs for effective_types; without a filter,
+// opt-in types stay off
+bool IsSelectedType(PIIType type, const std::vector<PIIType> &effective_types) {
+    return effective_types.empty()
+               ? !IsOptInPIIType(type)
+               : std::find(effective_types.begin(), effective_types.end(), type) != effective_types.end();
+}
+
+// The matches of one recognizer in text at or above the configured minimum
+// confidence, with the checksum failures when anofox_pii_require_checksum is
+// false (mistyped IBANs, card numbers, reported at lower confidence)
+std::vector<PIIMatch> RecognizerMatches(const PIIRecognizer &recognizer, const std::string &text,
+                                        const PIIConfigSnapshot &config) {
+    auto matches = recognizer.FindMatches(text);
+    if (!config.require_checksum) {
+        auto failures = recognizer.FindChecksumFailures(text);
+        std::move(failures.begin(), failures.end(), std::back_inserter(matches));
+    }
+    matches.erase(std::remove_if(matches.begin(), matches.end(),
+                                 [&config](const PIIMatch &match) { return match.confidence < config.min_confidence; }),
+                  matches.end());
+    return matches;
+}
+
+} // namespace
+
+std::vector<PIIMatch> PIIEngine::DetectPatterns(const std::string &text, const std::vector<PIIType> &effective_types,
+                                                const PIIConfigSnapshot &config, bool &run_ner) const {
+    const SpaceFoldedText folded(text);
+    bool wants_ner = false;
+    std::vector<PIIMatch> all_matches;
     for (const auto &recognizer : recognizers_) {
-        // Filter by types if specified; without a filter, opt-in types stay off
         const auto type = recognizer->GetType();
-        if (effective_types.empty() ? IsOptInPIIType(type)
-                                    : std::find(effective_types.begin(), effective_types.end(), type) ==
-                                          effective_types.end()) {
+        if (!IsSelectedType(type, effective_types)) {
             continue;
         }
-
-        auto matches = recognizer->FindMatches(text);
-        if (!config.require_checksum) {
-            // anofox_pii_require_checksum = false: also report values whose
-            // checksum fails (mistyped IBANs, card numbers) at lower confidence
-            auto failures = recognizer->FindChecksumFailures(text);
-            std::move(failures.begin(), failures.end(), std::back_inserter(matches));
+        if (IsNERType(type)) {
+            wants_ner = true;
+            continue;
         }
+        auto matches = RecognizerMatches(*recognizer, folded.Text(), config);
         for (auto &match : matches) {
-            // Apply the configured minimum confidence threshold centrally
-            if (match.confidence < config.min_confidence) {
-                continue;
-            }
-            if (IsNERType(match.type)) {
-                if (!WidenToWords(text, match) || !ContainsLetter(match.matched_text) ||
-                    IsFieldLabel(match.matched_text) ||
-                    IsCountryOrCurrencyCode(match.matched_text)) {
-                    continue;
-                }
-            }
+            folded.MapToOriginal(match);
             all_matches.push_back(std::move(match));
         }
     }
+    auto resolved = ResolveOverlaps(std::move(all_matches));
+    // A value made of pattern matches only ("max.mustermann@example.com",
+    // "+49 30 12345678") gives the NER model nothing to find: skip inference
+    run_ner = wants_ner && HasLetterOutside(text, resolved);
+    if (wants_ner && !run_ner) {
+        AnofoxTrace(AnofoxLogLevel::Trace, "pii: NER skipped, the pattern matches cover every letter of the value");
+    }
+    return resolved;
+}
 
-    return ResolveOverlaps(std::move(all_matches));
+std::vector<PIIMatch> PIIEngine::AddNERMatches(const std::string &text, const std::vector<PIIType> &effective_types,
+                                               const PIIConfigSnapshot &config, std::vector<PIIMatch> matches) const {
+    // NER recognizers see the original text: the tokenizer splits on Unicode spaces itself
+    for (const auto &recognizer : recognizers_) {
+        const auto type = recognizer->GetType();
+        if (!IsNERType(type) || !IsSelectedType(type, effective_types)) {
+            continue;
+        }
+        for (auto &match : RecognizerMatches(*recognizer, text, config)) {
+            if (!WidenToWords(text, match) || !ContainsLetter(match.matched_text) ||
+                IsFieldLabel(match.matched_text) || IsCountryOrCurrencyCode(match.matched_text)) {
+                continue;
+            }
+            matches.push_back(std::move(match));
+        }
+    }
+    return ResolveOverlaps(std::move(matches));
 }
 
 std::vector<PIIMatch> PIIEngine::ResolveOverlaps(std::vector<PIIMatch> matches) {
@@ -3182,21 +3358,36 @@ std::vector<std::vector<PIIMatch>> PIIEngine::DetectBatch(
         return all_results;
     }
 
-    // Pre-warm NER cache by running batch extraction
-    // This ensures subsequent Detect calls hit the cache instead of re-running inference.
-    // Skipped when no NER type is requested, so regex-only scans never pay for inference
     const std::vector<PIIType> &effective_types = !types.empty() ? types : config.enabled_types;
-    const bool wants_ner = WantsNERTypes(effective_types);
-    auto &ner = NERModelManager::Instance();
-    if (wants_ner && ner.IsAvailable()) {
-        AnofoxTrace(AnofoxLogLevel::Debug,
-                    "pii: Pre-warming NER cache for " + std::to_string(texts.size()) + " texts");
-        ner.ExtractEntitiesBatch(texts);
+    if (config.ner_required && WantsNERTypes(effective_types)) {
+        NERModelManager::Instance().RequireModel();
     }
 
-    // Now run individual detection for each text (NER calls will hit cache)
-    for (const auto &text : texts) {
-        all_results.push_back(Detect(text, types, config));
+    // Pattern matches first: they tell which texts still need the NER model
+    std::vector<bool> run_ner(texts.size(), false);
+    std::vector<std::string> ner_texts;
+    for (size_t i = 0; i < texts.size(); ++i) {
+        bool needs_ner = false;
+        all_results.push_back(DetectPatterns(texts[i], effective_types, config, needs_ner));
+        run_ner[i] = needs_ner;
+        if (needs_ner) {
+            ner_texts.push_back(texts[i]);
+        }
+    }
+
+    // Pre-warm the NER cache with one batch inference over the texts that
+    // need the model, so the per-text NER recognizers below hit the cache
+    auto &ner = NERModelManager::Instance();
+    if (!ner_texts.empty() && ner.IsAvailable()) {
+        AnofoxTrace(AnofoxLogLevel::Debug, "pii: Pre-warming NER cache for " + std::to_string(ner_texts.size()) +
+                                               " of " + std::to_string(texts.size()) + " texts");
+        ner.ExtractEntitiesBatch(ner_texts);
+    }
+
+    for (size_t i = 0; i < texts.size(); ++i) {
+        if (run_ner[i]) {
+            all_results[i] = AddNERMatches(texts[i], effective_types, config, std::move(all_results[i]));
+        }
     }
 
     return all_results;
@@ -3212,7 +3403,9 @@ std::string PIIEngine::ApplyMask(const PIIMatch &match, MaskStrategy strategy) c
             // SHA-256 of the normalised value, so equal values join across
             // formats. Not anonymisation: small value spaces (phone numbers,
             // card numbers) can be brute-forced back to the value.
-            const std::string normalized = NormalizeForHash(match.type, match.matched_text);
+            // Unicode space separators count as spaces: "DE89<NBSP>3704 ..."
+            // hashes like "DE89 3704 ..."
+            const std::string normalized = NormalizeForHash(match.type, FoldUnicodeSpaces(match.matched_text));
             unsigned char hash[SHA256_DIGEST_LENGTH];
             SHA256(reinterpret_cast<const unsigned char*>(normalized.data()), normalized.size(), hash);
             std::ostringstream oss;
@@ -3232,7 +3425,9 @@ std::string PIIEngine::ApplyMask(const PIIMatch &match, MaskStrategy strategy) c
             if (!recognizer) {
                 return Utf8Stars(match.matched_text);
             }
-            std::string masked = recognizer->GetPartialMask(match.matched_text);
+            // The type's partial mask reads separators as ASCII spaces (and
+            // writes them so)
+            std::string masked = recognizer->GetPartialMask(FoldUnicodeSpaces(match.matched_text));
             if (!IsValidUtf8(masked) ||
                 CountLettersAndDigits(masked) > CountLettersAndDigits(match.matched_text) / 2) {
                 AnofoxTrace(AnofoxLogLevel::Debug, "pii: partial mask of a " + PIITypeToString(match.type) +

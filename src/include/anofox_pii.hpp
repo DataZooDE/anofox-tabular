@@ -677,6 +677,23 @@ private:
     static std::vector<PIIMatch> ResolveOverlaps(std::vector<PIIMatch> matches);
 
     /**
+     * First detection phase: the matches of the pattern (non-NER)
+     * recognizers among effective_types, resolved. Unicode space separators
+     * count as ASCII spaces; offsets refer to `text`. Sets run_ner when a NER
+     * recognizer is selected and could add a match: when some letter of the
+     * text lies outside the pattern matches.
+     */
+    std::vector<PIIMatch> DetectPatterns(const std::string &text, const std::vector<PIIType> &effective_types,
+                                         const PIIConfigSnapshot &config, bool &run_ner) const;
+
+    /**
+     * Second detection phase: add the matches of the selected NER
+     * recognizers to the resolved pattern matches and resolve again.
+     */
+    std::vector<PIIMatch> AddNERMatches(const std::string &text, const std::vector<PIIType> &effective_types,
+                                        const PIIConfigSnapshot &config, std::vector<PIIMatch> matches) const;
+
+    /**
      * Apply masking to a single match
      */
     std::string ApplyMask(const PIIMatch &match, MaskStrategy strategy) const;

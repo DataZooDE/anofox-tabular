@@ -289,7 +289,9 @@ eight other languages; the English-only `distilbert-en` misses many names and pl
 or other non-English free text (see [NER model](../api/06-pii.md#ner-model)).
 
 `hash` is the first 16 hex characters of the SHA-256 of the card number with spaces and dashes
-removed, so `4111 1111 1111 1111` and `4111-1111-1111-1111` give the same value. It has no key:
+removed, so `4111 1111 1111 1111` and `4111-1111-1111-1111` give the same value; a no-break
+space or another Unicode space separator (common in values pasted from PDFs and spreadsheets)
+counts as a space, in detection as in the hash. It has no key:
 it is a pseudonym, not anonymisation. Card numbers, phone numbers and SSNs can be enumerated, so
 a determined reader can recover them from their hashes. See
 [Hashing](../api/06-pii.md#hashing).
@@ -324,7 +326,9 @@ ORDER BY column_name, pii_type;
 
 Leaving out `NAME`, `ORGANIZATION`, `LOCATION` and `MISC` also makes scans much faster: the NER
 model takes in the order of tens of milliseconds per row, pattern matching a tiny fraction of
-that (see [Throughput](../api/06-pii.md#throughput)).
+that (see [Throughput](../api/06-pii.md#throughput)). Columns that hold only addresses or phone
+numbers stay fast with the NER types on: a value whose letters all lie inside pattern matches
+skips the model.
 
 Set it back to the default types:
 

@@ -1,0 +1,60 @@
+# name: test/sql/anofox_pii_ner_pattern_skip.test
+# description: With the NER types enabled, a value whose letters all lie inside pattern matches (an email column, a phone column) skips the NER model, so hashing 1000 distinct addresses takes moments; values with other words still go through NER and give NAME, ORGANIZATION and LOCATION matches
+# group: [anofox_tabular]
+
+require-env OPENVINO_AVAILABLE
+
+require anofox_tabular
+
+statement ok
+LOAD anofox_tabular
+
+# Default types: the pattern types and the NER types
+statement ok
+SET anofox_pii_enabled_types = '';
+
+# A newsletter list: 1000 distinct addresses, and a phone column
+statement ok
+CREATE TABLE newsletter AS
+SELECT i AS subscriber_id,
+       'kunde.' || i || '@beispiel-shop.de' AS email,
+       '+49 30 ' || (5550000 + i) AS phone
+FROM range(1000) r(i);
+
+# Every address is hashed like pii_mask_value: the lower-case address's SHA-256
+query I
+SELECT count(*) FROM newsletter WHERE pii_mask(email, 'hash') = left(sha256(email), 16);
+----
+1000
+
+query I
+SELECT count(*) FROM newsletter WHERE pii_mask(phone) = '[PHONE]';
+----
+1000
+
+query TI
+SELECT m.type, count(*) FROM (SELECT unnest(pii_detect(email || ', ' || phone)) AS m FROM newsletter) GROUP BY ALL ORDER BY ALL;
+----
+EMAIL	1000
+PHONE	1000
+
+query TTI
+SELECT column_name, pii_type, match_count FROM pii_scan_table('newsletter', 'email, phone') ORDER BY column_name, pii_type;
+----
+email	EMAIL	1000
+phone	PHONE	1000
+
+# A value with words besides the pattern matches still runs the NER model
+query T
+SELECT pii_mask('Anna Schmidt <anna.schmidt@example.de>, Tel. +49 30 12345678');
+----
+[NAME] <[EMAIL]>, Tel. [PHONE]
+
+query I
+SELECT list_contains(list_transform(pii_detect('Bestellt von Anna Schmidt für Siemens AG, kunde.1@beispiel-shop.de'), lambda m: m.type), 'NAME');
+----
+true
+
+# Restore the process-wide PII settings for the tests that follow
+statement ok
+SET anofox_pii_enabled_types = '';

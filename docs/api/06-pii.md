@@ -74,6 +74,28 @@ NER types need the NER model.
 | `LOCATION` | Places | NER only |
 | `MISC` | Other named entities | NER only |
 
+Values copied from PDFs, spreadsheets and web forms often separate digit groups with a no-break
+space (U+00A0), a narrow no-break space (U+202F), a thin space (U+2009) or a figure space
+(U+2007). The pattern types treat these and every other Unicode space separator like a space,
+so `+49 30 12345678` or `DE89 3704 0044 …` written with no-break spaces is found. `start_pos`,
+`end_pos` and `text` of a match refer to the input as it is, and masking replaces exactly those
+bytes: the spaces around a match stay as they were. Validation functions, hashes and partial
+masks read the separators as spaces too.
+
+```sql
+SELECT pii_mask('Rückruf: +49' || chr(160) || '30' || chr(160) || '12345678, Erstattung auf DE89' || chr(8239) || '3704'
+                || chr(8239) || '0044' || chr(8239) || '0532' || chr(8239) || '0130' || chr(8239) || '00') AS masked;
+```
+
+```text
+┌─────────────────────────────────────────┐
+│                 masked                  │
+│                 varchar                 │
+├─────────────────────────────────────────┤
+│ Rückruf: [PHONE], Erstattung auf [IBAN] │
+└─────────────────────────────────────────┘
+```
+
 Special categories of personal data (GDPR Art. 9) are not detected: there is no type for health
 data (diagnoses, treatments, medication), religious or philosophical beliefs, racial or ethnic
 origin, political opinions, trade-union membership, sex life or sexual orientation, genetic or
@@ -203,6 +225,9 @@ completely. Each type has its own rule:
 | `DE_ID_CARD` | The first character (part of the authority code) | `T220001293` → `T*********` |
 | Any other type | The first and last character from 5 characters on, the first and last 2 from 8 characters on; up to 4 characters are masked completely | |
 
+A partial mask reads Unicode space separators in a match as spaces; where a rule keeps
+separators, it writes ASCII spaces.
+
 The half rule is checked for every match: a type-specific mask that would reveal more than half of
 the letters and digits of the value (possible for unusual values passed to
 [`pii_mask_value`](#pii_mask_value)) is replaced by one `*` per character.
@@ -245,6 +270,9 @@ so hashed columns can still be joined and counted:
 | `IBAN`, `UK_NINO`, `DE_SVNR`, `DE_KVNR`, `DE_ID_CARD` | Same separators removed, upper-cased |
 | `EMAIL` | Lower-cased |
 | all other types | None: the matched text is hashed as it is |
+
+Unicode space separators (no-break space and the like) count as spaces before the normalisation,
+so `DE89` + no-break space + `3704 …` hashes like `DE89 3704 …`.
 
 ```sql
 SELECT pii_mask_column(card, 'CREDIT_CARD', 'hash') AS hashed,
@@ -1194,7 +1222,9 @@ Pattern-based detection is fast: plain regular expressions and checksums. NER is
 distinct text runs through the model, which takes in the order of tens of milliseconds per row on
 a CPU, so a scan of a million free-text rows takes hours. Results are cached per distinct text
 (`anofox_ner_cache_size`), which helps only for repeated values. Values without any word (ids,
-hashes, numbers) skip the model, and texts longer than 256 tokens take one model run per window.
+hashes, numbers) skip the model, and so do values whose letters all lie inside pattern matches
+(an email or phone column): the model could only tag text inside those matches, and pattern
+matches win over NER spans anyway. Texts longer than 256 tokens take one model run per window.
 When `pii_scan_table` runs the NER types over more than 100,000 values, it logs a warning once
 with this hint.
 
