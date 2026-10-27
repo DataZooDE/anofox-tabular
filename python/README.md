@@ -174,6 +174,9 @@ print(result.failures)    # DataFrame: column, row_id, value, rule
   `"outliers"` (outlier tree); an unknown `output_mode` raises `ValueError`. Column lists
   can be a list or a comma-separated string (`"amount, items"`). A column whose name contains
   a comma cannot be selected and raises `ValueError`.
+- With no scored row (`total_count` 0) the `isolation_forest` summary has `avg_value`
+  `None`. A DataFrame column of only `None` raises `ValueError` ("column 'amount' has no
+  non-null values") in `isolation_forest`, `isolation_forest_mv`, `dbscan` and `dbscan_mv`.
 
 ## Module overview
 

@@ -378,3 +378,55 @@ class TestNanHandling:
         forest = anomaly.isolation_forest(conn, clean, "amount", seed=7)
         clusters = anomaly.dbscan(conn, clean, "amount", epsilon=0.5, min_points=3)
         assert forest["total_count"] == clusters["total_count"] == 9
+
+
+class TestEmptyAndAllMissingInput:
+    """No scored row gives avg_value None (as documented); a column with only
+    missing values names that problem instead of 'must be numeric, got NULL'."""
+
+    @staticmethod
+    def _payments(amounts):
+        return pandas.DataFrame({
+            "payment_id": [f"PAY-{7000 + i}" for i in range(len(amounts))],
+            "amount": amounts,
+            "items": [float(1 + i % 4) for i in range(len(amounts))],
+        })
+
+    def test_empty_dataframe_avg_value_is_none(self, conn):
+        from anofox import anomaly
+        empty = self._payments(pandas.Series([], dtype="float64"))
+        result = anomaly.isolation_forest(conn, empty, "amount")
+        assert result["total_count"] == 0
+        assert result["avg_value"] is None
+
+    def test_all_nan_column_avg_value_is_none(self, conn):
+        from anofox import anomaly
+        df = self._payments([float("nan")] * 4)
+        result = anomaly.isolation_forest(conn, df, "amount")
+        assert result["total_count"] == 0
+        assert result["avg_value"] is None
+
+    def test_scored_rows_keep_avg_value(self, conn):
+        from anofox import anomaly
+        df = self._payments([120.0, 80.0, 100.0, 100.0])
+        result = anomaly.isolation_forest(conn, df, "amount", seed=1)
+        assert result["avg_value"] == pytest.approx(100.0)
+
+    @pytest.mark.parametrize("function, columns", [
+        ("isolation_forest", "amount"),
+        ("isolation_forest_mv", ["items", "amount"]),
+        ("dbscan", "amount"),
+        ("dbscan_mv", ["items", "amount"]),
+    ])
+    def test_all_none_column_raises(self, conn, function, columns):
+        from anofox import anomaly
+        df = self._payments([None] * 6)
+        with pytest.raises(ValueError, match=r"^column 'amount' has no non-null values"):
+            getattr(anomaly, function)(conn, df, columns)
+
+    def test_all_none_polars_column_raises(self, conn):
+        pl = pytest.importorskip("polars")
+        from anofox import anomaly
+        df = pl.DataFrame({"payment_id": ["PAY-1", "PAY-2"], "amount": [None, None]})
+        with pytest.raises(ValueError, match=r"column 'amount' has no non-null values"):
+            anomaly.isolation_forest(conn, df, "amount")

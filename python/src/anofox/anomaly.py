@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from typing import Any, Optional, Sequence, Union
 
-from ._sql import fetch_frame, id_column_arg
+from ._sql import fetch_frame, id_column_arg, quote_ident
 from ._table import output_df_type, table_inputs
 
 
@@ -57,9 +57,13 @@ def isolation_forest(
     Returns
     -------
     dict or DataFrame
+        The summary's ``avg_value`` is ``None`` when no row was scored
+        (``total_count`` 0). A DataFrame column of only ``None`` raises
+        ValueError.
     """
     _check_output_mode("isolation_forest", output_mode)
     with table_inputs(conn, table_or_df) as (table_name,):
+        _check_has_values(conn, table_or_df, table_name, [column])
         params = [table_name, column, n_trees, sample_size, contamination, output_mode, seed]
         query = (
             "SELECT * FROM anofox_tab_isolation_forest(?, ?, ?::BIGINT, ?::BIGINT, ?::DOUBLE, ?, ?::BIGINT"
@@ -115,6 +119,7 @@ def isolation_forest_mv(
     _check_output_mode("isolation_forest_mv", output_mode)
     cols_csv = _columns_csv(columns)
     with table_inputs(conn, table_or_df) as (table_name,):
+        _check_has_values(conn, table_or_df, table_name, cols_csv.split(","))
         params = [table_name, cols_csv, n_trees, sample_size, contamination, output_mode, seed, ndim]
         query = (
             "SELECT * FROM anofox_tab_isolation_forest_mv("
@@ -162,6 +167,7 @@ def dbscan(
     # package-level "scores" naming consistent with the other detectors.
     sql_mode = "clusters" if output_mode == "scores" else output_mode
     with table_inputs(conn, table_or_df) as (table_name,):
+        _check_has_values(conn, table_or_df, table_name, [column])
         params = [table_name, column, epsilon, min_points, sql_mode]
         query = (
             "SELECT * FROM anofox_tab_dbscan(?, ?, ?::DOUBLE, ?::BIGINT, ?"
@@ -208,6 +214,7 @@ def dbscan_mv(
     cols_csv = _columns_csv(columns)
     sql_mode = "clusters" if output_mode == "scores" else output_mode
     with table_inputs(conn, table_or_df) as (table_name,):
+        _check_has_values(conn, table_or_df, table_name, cols_csv.split(","))
         params = [table_name, cols_csv, epsilon, min_points, sql_mode]
         query = (
             "SELECT * FROM anofox_tab_dbscan_mv(?, ?, ?::DOUBLE, ?::BIGINT, ?"
@@ -301,6 +308,27 @@ def _columns_csv(columns: Union[str, Sequence[str]]) -> str:
     return ",".join(columns)
 
 
+def _check_has_values(conn: Any, table_or_df: Any, table_name: str, columns: Sequence[str]) -> None:
+    """
+    Raise ValueError for a DataFrame column that holds no value at all.
+
+    A pandas/polars column of only ``None`` has no type, so DuckDB copies it
+    as type ``NULL`` and the extension reports "must be numeric, got NULL",
+    which hides the actual problem. Table names are passed through unchanged.
+    """
+    if isinstance(table_or_df, str):
+        return
+    wanted = {name.strip() for name in columns}
+    native = getattr(conn, "native", conn)
+    rows = native.execute(f"DESCRIBE {quote_ident(table_name)}").fetchall()
+    for name, column_type, *_ in rows:
+        if name in wanted and column_type.strip('"') == "NULL":
+            raise ValueError(
+                f"column {name!r} has no non-null values; the anomaly detectors need "
+                "at least one number in it"
+            )
+
+
 _OUTPUT_MODES = {
     "isolation_forest": ("summary", "scores"),
     "isolation_forest_mv": ("summary", "scores"),
@@ -336,4 +364,9 @@ def _execute_anomaly(
     if not rows:
         return {"status": "error", "error": "no result"}
 
-    return dict(zip(col_names, rows[0]))
+    summary = dict(zip(col_names, rows[0]))
+    # The mean of no values is undefined: report None, as documented, also
+    # where the extension returns 0.0 for an empty input.
+    if "avg_value" in summary and summary.get("total_count") == 0:
+        summary["avg_value"] = None
+    return summary

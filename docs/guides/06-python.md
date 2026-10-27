@@ -277,7 +277,10 @@ extension applies its own default. `dbscan` returns one row per analyzed row wit
 `output_mode="clusters"`, `outlier_tree` one row per outlier with `output_mode="outliers"`. Rows
 with a `NULL` in a selected column are left out; `row_id` is still the 1-based row number in
 the input, so the remaining rows keep their numbers. A polars `NaN` is not a `NULL`; see
-[Missing values](#missing-values-nan-and-null) for how each detector treats it.
+[Missing values](#missing-values-nan-and-null) for how each detector treats it. When no row is
+scored (an empty DataFrame, or only missing values), the `isolation_forest` summary has
+`total_count` 0 and `avg_value` `None`. A DataFrame column that holds only `None` has no type;
+the numeric detectors raise `ValueError: column 'amount' has no non-null values` for it.
 
 ## Diff two DataFrames
 
