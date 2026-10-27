@@ -378,7 +378,7 @@ class TestColumnNamesWithCommas:
 
 
 class TestNanHandling:
-    """A polars NaN is a value, not a NULL; each detector treats it its own way (guide 06)."""
+    """A polars NaN is left out like a NULL by every detector; inf is kept (guide 06)."""
 
     @pytest.fixture
     def amounts(self):
@@ -396,14 +396,15 @@ class TestNanHandling:
         inf_row = scores.filter(scores["order_id"] == 111)
         assert inf_row["is_anomaly"].to_list() == [True]
 
-    def test_dbscan_keeps_nan_as_noise(self, conn, amounts):
+    def test_dbscan_leaves_nan_out_and_keeps_inf_as_noise(self, conn, amounts):
         from anofox import anomaly
         clusters = anomaly.dbscan(
             conn, amounts, "amount", output_mode="clusters",
             epsilon=0.5, min_points=3, id_column="order_id",
         )
+        assert 109 not in clusters["order_id"].to_list()  # NaN, like the NULL of 110
         noise = clusters.filter(clusters["point_type"] == "NOISE")
-        assert sorted(noise["order_id"].to_list()) == [109, 111]
+        assert noise["order_id"].to_list() == [111]
 
     def test_fill_nan_gives_the_same_rows_to_both(self, conn, amounts):
         from anofox import anomaly

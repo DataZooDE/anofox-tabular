@@ -204,7 +204,9 @@ print(checks.checks["null_rate"]["null_rate"])
 - The per-row output (`"scores"`, `"clusters"`, `"outliers"`) of a pandas DataFrame carries
   the input's index labels, so `df["is_anomaly"] = scores["is_anomaly"]` aligns; rows with a
   `NULL` feature are not in the output and get `NaN`. `row_id` is the 1-based row number in
-  the input. A polars output keeps the input's row order and `row_id`.
+  the input. A polars output keeps the input's row order and `row_id`. A float `NaN` is left
+  out like a `NULL` by every detector, also in a polars DataFrame, so pandas and polars give
+  the same result.
 - The PII wrappers `pii_detect`, `pii_mask`, `pii_contains`, `pii_scan_table` and
   `pii_audit_table` take `types=` (a list or a comma-separated string) to detect only those
   types in the call; it sets `anofox_pii_enabled_types` and restores it afterwards

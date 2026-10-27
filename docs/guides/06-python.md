@@ -383,8 +383,8 @@ Python defaults are the SQL defaults: a parameter you leave out is passed as `NU
 extension applies its own default. `dbscan` returns one row per analyzed row with
 `output_mode="clusters"`, `outlier_tree` one row per outlier with `output_mode="outliers"`. Rows
 with a `NULL` in a selected column are left out; `row_id` is still the 1-based row number in
-the input, so the remaining rows keep their numbers. A polars `NaN` is not a `NULL`; see
-[Missing values](#missing-values-nan-and-null) for how each detector treats it. When no row is
+the input, so the remaining rows keep their numbers. A `NaN` is left out like a `NULL`, also in
+a polars DataFrame; see [Missing values](#missing-values-nan-and-null). When no row is
 scored (an empty DataFrame, or only missing values), the `isolation_forest` summary has
 `total_count` 0 and `avg_value` `None`. A DataFrame column that holds only `None` has no type;
 the numeric detectors raise `ValueError: column 'amount' has no non-null values` for it.
@@ -618,37 +618,32 @@ print(validate.email_is_valid(conn, None), vat.vat_is_valid(conn, pd.NA),
 None None None
 ```
 
-The anomaly detectors treat a NaN and an infinite value differently from each other. A `NULL` row
-is left out by all of them.
+The anomaly wrappers copy a polars NaN as `NULL`, so for them both libraries behave the same: a
+`NaN` row is left out by every detector, like a `NULL` row (the DataFrame you pass is not
+changed). An infinite value is kept:
 
-| Detector | `NaN` | `inf` / `-inf` |
+| Detector | `NaN` or `NULL` | `inf` / `-inf` |
 |---|---|---|
-| `isolation_forest`, `isolation_forest_mv` | Left out like a `NULL` (not in `total_count`, no score row) | Scored; usually flagged as anomalies |
-| `dbscan`, `dbscan_mv` | Kept, and always `NOISE` (`is_anomaly = True`) | Kept, and `NOISE` |
-| `outlier_tree` | Kept in `total_rows`, but never flagged | Can be flagged |
-
-So the same polars column can give different counts in the two detectors:
+| `isolation_forest`, `isolation_forest_mv` | Left out (not in `total_count`, no score row) | Scored; usually flagged as anomalies |
+| `dbscan`, `dbscan_mv` | Left out | Kept, and `NOISE` |
+| `outlier_tree` | Left out | Can be flagged |
 
 ```python
 amounts = [49.9, 50.1, 50.0, 49.8, 50.2, 50.3, float("nan"), None]
-orders = pl.DataFrame({"amount": amounts})
-forest = anomaly.isolation_forest(conn, orders, "amount", seed=7)
-clusters = anomaly.dbscan(conn, orders, "amount", epsilon=0.5, min_points=3)
-print(forest["total_count"], clusters["total_count"], clusters["noise_count"])
-
-clean = orders.fill_nan(None)
-clusters = anomaly.dbscan(conn, clean, "amount", epsilon=0.5, min_points=3)
-print(clusters["total_count"], clusters["noise_count"])
+for orders in (pd.DataFrame({"amount": amounts}), pl.DataFrame({"amount": amounts})):
+    forest = anomaly.isolation_forest(conn, orders, "amount", seed=7)
+    clusters = anomaly.dbscan(conn, orders, "amount", epsilon=0.5, min_points=3)
+    print(forest["total_count"], clusters["total_count"], clusters["noise_count"])
 ```
 
 ```text
-6 7 1
-6 0
+6 6 0
+6 6 0
 ```
 
-For the same treatment in every detector, call `df.fill_nan(None)` before you run them. Then a
-NaN is a `NULL` and every detector leaves it out. Filter infinite values yourself if they are
-errors rather than extreme values.
+In SQL a `NaN` in a table is a value: the Isolation Forest skips it, but DBSCAN calls it noise
+and OutlierTree counts it in `total_rows`. Filter infinite values yourself if they are errors
+rather than extreme values.
 
 ## Use polars
 

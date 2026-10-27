@@ -5,6 +5,10 @@ Functions accept either a table name string or a DataFrame.
 When ``output_mode="summary"`` they return a ``dict``; when
 ``output_mode="scores"`` they return a DataFrame: polars for a polars input,
 pandas otherwise.
+
+A row with a ``NULL`` in a selected column is left out. A float NaN in a
+DataFrame is left out too, for pandas and polars alike (pandas copies it as
+``NULL``; the wrappers copy a polars NaN as ``NULL`` as well).
 """
 
 from __future__ import annotations
@@ -63,6 +67,7 @@ def isolation_forest(
     """
     _check_output_mode("isolation_forest", output_mode)
     _check_id_column("isolation_forest", output_mode, id_column)
+    table_or_df = _nan_as_null(table_or_df)
     with table_inputs(conn, table_or_df) as (table_name,):
         _check_has_values(conn, table_or_df, table_name, [column])
         params = [table_name, column, n_trees, sample_size, contamination, output_mode, seed]
@@ -120,6 +125,7 @@ def isolation_forest_mv(
     _check_output_mode("isolation_forest_mv", output_mode)
     _check_id_column("isolation_forest_mv", output_mode, id_column)
     cols_csv = _columns_csv(columns)
+    table_or_df = _nan_as_null(table_or_df)
     with table_inputs(conn, table_or_df) as (table_name,):
         _check_has_values(conn, table_or_df, table_name, cols_csv.split(","))
         params = [table_name, cols_csv, n_trees, sample_size, contamination, output_mode, seed, ndim]
@@ -169,6 +175,7 @@ def dbscan(
     # The extension's per-row DBSCAN mode is named 'clusters'; keep the
     # package-level "scores" naming consistent with the other detectors.
     sql_mode = "clusters" if output_mode == "scores" else output_mode
+    table_or_df = _nan_as_null(table_or_df)
     with table_inputs(conn, table_or_df) as (table_name,):
         _check_has_values(conn, table_or_df, table_name, [column])
         params = [table_name, column, epsilon, min_points, sql_mode]
@@ -217,6 +224,7 @@ def dbscan_mv(
     _check_id_column("dbscan_mv", output_mode, id_column)
     cols_csv = _columns_csv(columns)
     sql_mode = "clusters" if output_mode == "scores" else output_mode
+    table_or_df = _nan_as_null(table_or_df)
     with table_inputs(conn, table_or_df) as (table_name,):
         _check_has_values(conn, table_or_df, table_name, cols_csv.split(","))
         params = [table_name, cols_csv, epsilon, min_points, sql_mode]
@@ -290,6 +298,7 @@ def outlier_tree(
     _check_output_mode("outlier_tree", output_mode)
     _check_id_column("outlier_tree", output_mode, id_column)
     cols_csv = _columns_csv(columns)
+    table_or_df = _nan_as_null(table_or_df)
     with table_inputs(conn, table_or_df) as (table_name,):
         params = [table_name, cols_csv, output_mode, max_depth, max_perc_outliers,
                   min_size_numeric, min_size_categ, z_norm, z_outlier]
@@ -321,6 +330,24 @@ _CONDITIONS_SCHEMA = (
     '[{"column":"VARCHAR","type":"VARCHAR","operator":"VARCHAR",'
     '"value":"DOUBLE","values":["VARCHAR"]}]'
 )
+
+
+def _nan_as_null(table_or_df: Any) -> Any:
+    """
+    A polars DataFrame with each float NaN replaced by null; anything else unchanged.
+
+    pandas turns NaN into SQL ``NULL`` when the DataFrame is copied into
+    DuckDB, polars keeps it as a NaN value, which the detectors treat
+    differently from a NULL (DBSCAN calls it noise, OutlierTree counts it). As
+    a null, a NaN row is left out by every detector, for both libraries. The
+    caller's DataFrame is not changed.
+    """
+    if isinstance(table_or_df, str) or type(table_or_df).__module__.split(".")[0] != "polars":
+        return table_or_df
+    import polars as pl
+    if not hasattr(table_or_df, "with_columns"):  # a polars object that is not a DataFrame
+        return table_or_df
+    return table_or_df.with_columns(pl.col(pl.Float32, pl.Float64).fill_nan(None))
 
 
 def _columns_csv(columns: Union[str, Sequence[str]]) -> str:
