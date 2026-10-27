@@ -199,7 +199,9 @@ print(checks.checks["null_rate"]["null_rate"])
   (`o'brien@example.ie`) is safe to pass.
 - The anomaly wrappers use the SQL defaults: every tuning parameter defaults to `None`, is
   passed as `NULL`, and the extension applies its default (`n_trees` 100, `contamination` 0.1,
-  `epsilon` 0.5, `min_points` 5, ...). `isolation_forest` and `isolation_forest_mv` take
+  `eps` 0.5, `min_pts` 5, ...). DBSCAN takes the SQL names `eps=` and `min_pts=`; the former
+  names `epsilon=` and `min_points=` still work but give a `DeprecationWarning` (both names of
+  one parameter raise `TypeError`). `isolation_forest` and `isolation_forest_mv` take
   `seed=` for reproducible scores (`isolation_forest_mv` also `ndim=`). The per-row modes
   are `"scores"` (isolation forest), `"clusters"` (DBSCAN; `"scores"` is accepted too) and
   `"outliers"` (outlier tree); an unknown `output_mode` raises `ValueError`. Column lists

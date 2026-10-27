@@ -74,8 +74,8 @@ class TestIsolationForestWarnsOnFewRows:
 PER_ROW = [
     ("isolation_forest", "amount", "scores", {"seed": 3}),
     ("isolation_forest_mv", ["amount", "line_items"], "scores", {"seed": 3}),
-    ("dbscan", "amount", "clusters", {"epsilon": 5.0, "min_points": 3}),
-    ("dbscan_mv", ["amount", "line_items"], "clusters", {"epsilon": 5.0, "min_points": 3}),
+    ("dbscan", "amount", "clusters", {"eps": 5.0, "min_pts": 3}),
+    ("dbscan_mv", ["amount", "line_items"], "clusters", {"eps": 5.0, "min_pts": 3}),
     ("outlier_tree", ["line_items", "amount"], "outliers", {"min_size_numeric": 5, "z_outlier": 3.0}),
 ]
 

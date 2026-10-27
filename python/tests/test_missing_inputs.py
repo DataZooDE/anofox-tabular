@@ -234,7 +234,7 @@ class TestIntegerColumnLabelsOutsideQuality:
 
     def test_dbscan_single_column(self, conn, readings):
         from anofox import anomaly
-        result = anomaly.dbscan(conn, readings, 1, epsilon=0.5, min_points=3)
+        result = anomaly.dbscan(conn, readings, 1, eps=0.5, min_pts=3)
         assert result["noise_count"] == 1
 
     def test_all_none_int_column_names_the_column(self, conn, readings):

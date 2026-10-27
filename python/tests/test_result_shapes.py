@@ -35,7 +35,7 @@ class TestUnivariateValueColumn:
     def test_dbscan(self, conn):
         from anofox import anomaly
         out = anomaly.dbscan(conn, pl.from_pandas(_orders()), "order_total", output_mode="clusters",
-                             epsilon=5.0, min_points=3)
+                             eps=5.0, min_pts=3)
         assert "value" in out.columns and "order_total" not in out.columns
 
 

@@ -141,8 +141,8 @@ class TestAnomalyScoresKeepIndex:
     CASES = [
         ("isolation_forest", "amount", {"output_mode": "scores", "seed": 3}),
         ("isolation_forest_mv", ["amount", "items"], {"output_mode": "scores", "seed": 3}),
-        ("dbscan", "amount", {"output_mode": "scores", "epsilon": 15.0, "min_points": 3}),
-        ("dbscan_mv", ["amount", "items"], {"output_mode": "clusters", "epsilon": 15.0, "min_points": 3}),
+        ("dbscan", "amount", {"output_mode": "scores", "eps": 15.0, "min_pts": 3}),
+        ("dbscan_mv", ["amount", "items"], {"output_mode": "clusters", "eps": 15.0, "min_pts": 3}),
     ]
 
     @pytest.mark.parametrize("func,columns,kwargs", CASES)

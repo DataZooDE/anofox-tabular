@@ -49,8 +49,8 @@ def _per_row(result):
 DETECTORS = [
     ("isolation_forest", "weight_kg", {"seed": 11, "sample_size": 28}),
     ("isolation_forest_mv", ["weight_kg", "distance_km"], {"seed": 11, "sample_size": 27}),
-    ("dbscan", "weight_kg", {"epsilon": 0.5, "min_points": 3}),
-    ("dbscan_mv", ["weight_kg", "distance_km"], {"epsilon": 20.0, "min_points": 3}),
+    ("dbscan", "weight_kg", {"eps": 0.5, "min_pts": 3}),
+    ("dbscan_mv", ["weight_kg", "distance_km"], {"eps": 20.0, "min_pts": 3}),
 ]
 
 
@@ -95,5 +95,5 @@ def test_outlier_tree_is_the_same_for_pandas_and_polars(conn):
 def test_polars_input_is_not_changed(conn):
     from anofox import anomaly
     _, polars_df = _frames()
-    anomaly.dbscan(conn, polars_df, "weight_kg", epsilon=0.5, min_points=3)
+    anomaly.dbscan(conn, polars_df, "weight_kg", eps=0.5, min_pts=3)
     assert polars_df["weight_kg"].is_nan().sum() == 1

@@ -169,9 +169,12 @@ def dbscan(
     table_or_df: Union[str, Any],
     column: str,
     output_mode: str = "summary",
+    eps: Optional[float] = None,
+    min_pts: Optional[int] = None,
+    id_column: Optional[str] = None,
+    *,
     epsilon: Optional[float] = None,
     min_points: Optional[int] = None,
-    id_column: Optional[str] = None,
 ) -> Union[dict, DataFrame]:
     """
     Run DBSCAN clustering on a single numeric column.
@@ -189,17 +192,24 @@ def dbscan(
         with one row per analysed row; rows with a NULL feature are left out,
         and ``row_id`` is the 1-based table row number. The clustered column
         is named ``value`` in it, as in SQL, whatever the input column is called.
-    epsilon:
-        Neighbourhood radius ε (``None``: the extension default, 0.5).
-    min_points:
+    eps:
+        Neighbourhood radius ε (``None``: the extension default, 0.5), a
+        distance in the units of the data: amounts in euros need a radius in
+        euros, or scale the column(s) first (e.g. to z-scores).
+    min_pts:
         Minimum cluster size (``None``: the extension default, 5).
     id_column:
         Optional identifier column of the input whose value is added to the
         per-row output, directly after ``row_id``. Only valid with
         ``output_mode="scores"``/``"clusters"``.
+    epsilon, min_points:
+        Deprecated keyword names of ``eps`` and ``min_pts`` (a
+        :class:`DeprecationWarning`); passing both names of one parameter
+        raises TypeError.
     """
     _check_output_mode("dbscan", output_mode)
     _check_id_column("dbscan", output_mode, id_column)
+    eps, min_pts = _dbscan_arguments("dbscan", eps, min_pts, epsilon, min_points)
     column, id_column = column_label(column), column_label(id_column)
     # The extension's per-row DBSCAN mode is named 'clusters'; keep the
     # package-level "scores" naming consistent with the other detectors.
@@ -207,7 +217,7 @@ def dbscan(
     table_or_df = _nan_as_null(table_or_df)
     with table_inputs(conn, table_or_df) as (table_name,):
         _check_has_values(conn, table_or_df, table_name, [column])
-        params = [table_name, column, epsilon, min_points, sql_mode]
+        params = [table_name, column, eps, min_pts, sql_mode]
         query = (
             "SELECT * FROM anofox_tab_dbscan(?, ?, ?::DOUBLE, ?::BIGINT, ?"
             f"{id_column_arg(id_column, params)})"
@@ -220,9 +230,12 @@ def dbscan_mv(
     table_or_df: Union[str, Any],
     columns: Union[str, Sequence[str]],
     output_mode: str = "summary",
+    eps: Optional[float] = None,
+    min_pts: Optional[int] = None,
+    id_column: Optional[str] = None,
+    *,
     epsilon: Optional[float] = None,
     min_points: Optional[int] = None,
-    id_column: Optional[str] = None,
 ) -> Union[dict, DataFrame]:
     """
     Run multivariate DBSCAN across multiple numeric columns.
@@ -240,24 +253,31 @@ def dbscan_mv(
         ``"summary"`` → dict; ``"scores"`` (or ``"clusters"``) → DataFrame
         with one row per analysed row; rows with a NULL feature are left out,
         and ``row_id`` is the 1-based table row number.
-    epsilon:
-        Neighbourhood radius ε (``None``: the extension default, 0.5).
-    min_points:
+    eps:
+        Neighbourhood radius ε (``None``: the extension default, 0.5), a
+        distance in the units of the data: amounts in euros need a radius in
+        euros, or scale the column(s) first (e.g. to z-scores).
+    min_pts:
         Minimum cluster size (``None``: the extension default, 5).
     id_column:
         Optional identifier column of the input whose value is added to the
         per-row output, directly after ``row_id``. Only valid with
         ``output_mode="scores"``/``"clusters"``.
+    epsilon, min_points:
+        Deprecated keyword names of ``eps`` and ``min_pts`` (a
+        :class:`DeprecationWarning`); passing both names of one parameter
+        raises TypeError.
     """
     _check_output_mode("dbscan_mv", output_mode)
     _check_id_column("dbscan_mv", output_mode, id_column)
+    eps, min_pts = _dbscan_arguments("dbscan_mv", eps, min_pts, epsilon, min_points)
     id_column = column_label(id_column)
     cols_csv = _columns_csv(columns)
     sql_mode = "clusters" if output_mode == "scores" else output_mode
     table_or_df = _nan_as_null(table_or_df)
     with table_inputs(conn, table_or_df) as (table_name,):
         _check_has_values(conn, table_or_df, table_name, cols_csv.split(","))
-        params = [table_name, cols_csv, epsilon, min_points, sql_mode]
+        params = [table_name, cols_csv, eps, min_pts, sql_mode]
         query = (
             "SELECT * FROM anofox_tab_dbscan_mv(?, ?, ?::DOUBLE, ?::BIGINT, ?"
             f"{id_column_arg(id_column, params)})"
@@ -367,6 +387,38 @@ _CONDITIONS_SCHEMA = (
     '[{"column":"VARCHAR","type":"VARCHAR","operator":"VARCHAR",'
     '"value":"DOUBLE","values":["VARCHAR"]}]'
 )
+
+
+def _dbscan_arguments(
+    function: str,
+    eps: Optional[float],
+    min_pts: Optional[int],
+    epsilon: Optional[float],
+    min_points: Optional[int],
+) -> tuple:
+    """
+    ``(eps, min_pts)`` from the SQL names and their deprecated aliases.
+
+    ``epsilon``/``min_points`` were the package's own names; the SQL functions
+    and the documentation call them ``eps``/``min_pts``.
+    """
+    resolved = []
+    for name, value, old_name, old_value in (
+        ("eps", eps, "epsilon", epsilon), ("min_pts", min_pts, "min_points", min_points),
+    ):
+        if old_value is not None:
+            if value is not None:
+                raise TypeError(
+                    f"{function}: pass {name}= or its deprecated alias {old_name}=, not both"
+                )
+            warnings.warn(
+                f"{function}: {old_name}= is deprecated; use {name}= (the SQL name)",
+                DeprecationWarning,
+                stacklevel=3,
+            )
+            value = old_value
+        resolved.append(value)
+    return tuple(resolved)
 
 
 def _nan_as_null(table_or_df: Any) -> Any:

@@ -401,7 +401,7 @@ class TestNanHandling:
         from anofox import anomaly
         clusters = anomaly.dbscan(
             conn, amounts, "amount", output_mode="clusters",
-            epsilon=0.5, min_points=3, id_column="order_id",
+            eps=0.5, min_pts=3, id_column="order_id",
         )
         assert 109 not in clusters["order_id"].to_list()  # NaN, like the NULL of 110
         noise = clusters.filter(clusters["point_type"] == "NOISE")
@@ -412,7 +412,7 @@ class TestNanHandling:
         from anofox import anomaly
         clean = amounts.fill_nan(None)
         forest = anomaly.isolation_forest(conn, clean, "amount", seed=7)
-        clusters = anomaly.dbscan(conn, clean, "amount", epsilon=0.5, min_points=3)
+        clusters = anomaly.dbscan(conn, clean, "amount", eps=0.5, min_pts=3)
         assert forest["total_count"] == clusters["total_count"] == 9
 
 
@@ -591,3 +591,55 @@ class TestSqlDefaults:
         assert (forest["n_trees"], forest["contamination"]) == (100, 0.1)
         clusters = anomaly.dbscan(conn, id_table, "x")
         assert (clusters["eps"], clusters["min_pts"]) == (0.5, 5)
+
+
+class TestDbscanParameterNames:
+    """dbscan/dbscan_mv take the SQL names eps= and min_pts=; epsilon=/min_points= are deprecated."""
+
+    @pytest.fixture(params=["pandas", "polars"])
+    def baskets(self, request):
+        # Basket values in euros: a dense cluster around 40 EUR and one 980 EUR order.
+        rows = {
+            "order_id": [f"SO-{2001 + i}" for i in range(12)],
+            "amount": [42.5, 39.9, 45.0, 41.2, 44.8, 40.1, 43.3, 38.7, 46.2, 41.9, 39.5, 980.0],
+            "items": [2, 2, 3, 2, 3, 2, 3, 2, 3, 2, 2, 3],
+        }
+        if request.param == "pandas":
+            import pandas as pd
+            return pd.DataFrame(rows)
+        import polars as pl
+        return pl.DataFrame(rows)
+
+    def test_sql_names(self, conn, baskets):
+        import warnings
+        from anofox import anomaly
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            single = anomaly.dbscan(conn, baskets, "amount", eps=5.0, min_pts=3)
+            multi = anomaly.dbscan_mv(conn, baskets, ["amount", "items"], eps=5.0, min_pts=3)
+        assert (single["cluster_count"], single["noise_count"]) == (1, 1)
+        assert (multi["cluster_count"], multi["noise_count"]) == (1, 1)
+
+    @pytest.mark.parametrize("function, columns", [("dbscan", "amount"), ("dbscan_mv", ["amount", "items"])])
+    def test_old_names_still_work_with_deprecation_warning(self, conn, baskets, function, columns):
+        from anofox import anomaly
+        with pytest.warns(DeprecationWarning, match=r"epsilon= is deprecated; use eps="):
+            with pytest.warns(DeprecationWarning, match=r"min_points= is deprecated; use min_pts="):
+                old = getattr(anomaly, function)(conn, baskets, columns, epsilon=5.0, min_points=3)
+        new = getattr(anomaly, function)(conn, baskets, columns, eps=5.0, min_pts=3)
+        assert old == new
+
+    @pytest.mark.parametrize("kwargs", [
+        {"eps": 5.0, "epsilon": 5.0}, {"min_pts": 3, "min_points": 3},
+    ])
+    def test_both_names_raise(self, conn, baskets, kwargs):
+        from anofox import anomaly
+        with pytest.raises(TypeError, match="not both"):
+            anomaly.dbscan(conn, baskets, "amount", **kwargs)
+        with pytest.raises(TypeError, match="not both"):
+            anomaly.dbscan_mv(conn, baskets, ["amount"], **kwargs)
+
+    def test_positional_order_unchanged(self, conn, baskets):
+        from anofox import anomaly
+        out = anomaly.dbscan(conn, baskets, "amount", "summary", 5.0, 3)
+        assert out["noise_count"] == 1

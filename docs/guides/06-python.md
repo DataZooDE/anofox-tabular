@@ -497,21 +497,42 @@ order_id  amount  items  anomaly_score
 `id_column` works only with a per-row `output_mode`; with the default `"summary"` it raises
 `ValueError: isolation_forest_mv: id_column needs output_mode='scores'`.
 
-### Scale the features for DBSCAN
+### Choose `eps` for DBSCAN
 
-`epsilon` is a distance in the units of the data. With amounts in euros and item counts in one
-call, a radius of 0.5 is far too small for the amounts, and almost every order is noise. Put the
-columns on one scale first, for example as z-scores, and then choose `epsilon` on that scale:
+`eps` (the SQL name; `epsilon=` is a deprecated alias) is a distance in the units of the data,
+also for a single column. For order amounts in euros the default radius of 0.5 euros is far too
+small: almost every order is noise. Choose `eps` in euros, or scale the column first, for
+example to z-scores, and then choose `eps` on that scale:
 
 ```python
-raw = anomaly.dbscan_mv(conn, orders, ["amount", "items"], epsilon=0.5, min_points=3)
+for eps in (0.5, 5.0):
+    result = anomaly.dbscan(conn, orders, "amount", eps=eps, min_pts=3)
+    print(eps, result["cluster_count"], result["noise_count"])
+
+amount = orders["amount"]
+scaled = orders.assign(amount=(amount - amount.mean()) / amount.std())
+print(anomaly.dbscan(conn, scaled, "amount", eps=0.5, min_pts=3)["noise_count"])
+```
+
+```text
+0.5 1 9
+5.0 1 1
+1
+```
+
+With several columns, scale them all: with amounts in euros and item counts in one call, a
+radius that suits the item counts is far too small for the amounts. Put the columns on one
+scale first, and then choose `eps` on that scale:
+
+```python
+raw = anomaly.dbscan_mv(conn, orders, ["amount", "items"], eps=0.5, min_pts=3)
 print(raw["cluster_count"], raw["noise_count"])
 
 features = ["amount", "items"]
 scaled = orders.copy()
 scaled[features] = (orders[features] - orders[features].mean()) / orders[features].std()
 clusters = anomaly.dbscan_mv(conn, scaled, features, output_mode="clusters",
-                             epsilon=0.5, min_points=3, id_column="order_id")
+                             eps=0.5, min_pts=3, id_column="order_id")
 print(clusters.loc[clusters["is_anomaly"], ["order_id", "cluster_id"]].to_string(index=False))
 ```
 
@@ -687,7 +708,7 @@ amounts = [49.9, 50.1, 50.0, 49.8, 50.2, 50.3, 49.7, 50.4, 50.0, 49.9, 50.1, 50.
            float("nan"), None]
 for orders in (pd.DataFrame({"amount": amounts}), pl.DataFrame({"amount": amounts})):
     forest = anomaly.isolation_forest(conn, orders, "amount", seed=7)
-    clusters = anomaly.dbscan(conn, orders, "amount", epsilon=0.5, min_points=3)
+    clusters = anomaly.dbscan(conn, orders, "amount", eps=0.5, min_pts=3)
     print(forest["total_count"], clusters["total_count"], clusters["noise_count"])
 ```
 
