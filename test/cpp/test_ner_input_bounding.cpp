@@ -8,9 +8,9 @@
 //  - HasNaturalLanguageWord: which values NER skips
 //  - ValidateLogitsShape: rejects output tensors whose shape does not match
 //    seq_length x NUM_LABELS before any logits are read
-//  - BasicWordSplit: documents the current ASCII-focused word splitting of
-//    the hand-written WordPiece tokenizer (UTF-8 bytes are kept intact inside
-//    words, but non-ASCII punctuation/whitespace is NOT recognized)
+//  - BasicWordSplit: the BERT-style (Unicode-aware) word splitting of
+//    the hand-written WordPiece tokenizer (UTF-8 sequences stay intact inside
+//    words; Unicode punctuation, spaces and CJK ideographs split words)
 //
 // Built into anofox_tabular_cpp_tests; no OpenVINO runtime required.
 //===----------------------------------------------------------------------===//
@@ -189,21 +189,40 @@ TEST_CASE("BasicWordSplit splits ASCII words and punctuation", "[ner][tokenizer]
     REQUIRE(words == expected);
 }
 
-TEST_CASE("BasicWordSplit keeps UTF-8 multibyte sequences intact (documented limitation)",
-          "[ner][tokenizer][utf8]") {
-    // The splitter classifies single bytes with std::isspace/std::ispunct, so
-    // it only understands ASCII separators. UTF-8 continuation bytes are
-    // never split apart — multibyte words survive as complete byte sequences.
+TEST_CASE("BasicWordSplit keeps UTF-8 multibyte sequences intact", "[ner][tokenizer][utf8]") {
     auto words = BasicWordSplit("Herr Müller wohnt in Köln");
     std::vector<std::string> expected = {"Herr", "M\xC3\xBCller", "wohnt", "in", "K\xC3\xB6ln"};
     REQUIRE(words == expected);
 
-    // Documented limitation: non-ASCII punctuation (here U+00AB) is NOT a
-    // word boundary — the surrounding text stays one token.
-    // Split the literal so the \xAB hex escape does not greedily absorb the
-    // following 'b' (also a hex digit) into an out-of-range \xABb escape, which
-    // clang rejects as a hard error.
-    auto guillemet = BasicWordSplit("a\xC2\xAB" "b");
-    REQUIRE(guillemet.size() == 1);
-    REQUIRE(guillemet[0] == "a\xC2\xAB" "b");
+    // A broken UTF-8 sequence stays in its word; no byte is dropped
+    auto broken = BasicWordSplit("ab\xC3" "x \xFF");
+    std::vector<std::string> expected_broken = {"ab\xC3" "x", "\xFF"};
+    REQUIRE(broken == expected_broken);
+}
+
+TEST_CASE("BasicWordSplit splits on Unicode punctuation and spaces like the BERT pre-tokenizer",
+          "[ner][tokenizer][utf8]") {
+    // German quotes and the en dash are punctuation: the name is a word of its
+    // own, as the multilingual models were trained on
+    auto quoted = BasicWordSplit("\xE2\x80\x9ESabine Wei\xC3\x9F\xE2\x80\x9C \xE2\x80\x93 Allianz");
+    std::vector<std::string> expected_quoted = {"\xE2\x80\x9E", "Sabine", "Wei\xC3\x9F", "\xE2\x80\x9C",
+                                                "\xE2\x80\x93", "Allianz"};
+    REQUIRE(quoted == expected_quoted);
+
+    // Guillemets (U+00AB) separate words; no-break space (U+00A0) is a space
+    auto guillemet = BasicWordSplit("a\xC2\xAB" "b\xC2\xA0" "c");
+    std::vector<std::string> expected_guillemet = {"a", "\xC2\xAB", "b", "c"};
+    REQUIRE(guillemet == expected_guillemet);
+
+    // Inverted question mark (Spanish) and CJK ideographs are single words
+    auto spanish = BasicWordSplit("\xC2\xBF" "Dónde?");
+    std::vector<std::string> expected_spanish = {"\xC2\xBF", "D\xC3\xB3nde", "?"};
+    REQUIRE(spanish == expected_spanish);
+    auto chinese = BasicWordSplit("\xE5\x8C\x97\xE4\xBA\xAC" "AB");
+    std::vector<std::string> expected_chinese = {"\xE5\x8C\x97", "\xE4\xBA\xAC", "AB"};
+    REQUIRE(chinese == expected_chinese);
+
+    // The euro sign is a symbol, not punctuation, in BERT as here
+    auto euro = BasicWordSplit("100\xE2\x82\xAC");
+    REQUIRE(euro.size() == 1);
 }

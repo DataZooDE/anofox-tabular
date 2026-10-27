@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cctype>
+#include <cstdint>
 #include <mutex>
 #include <unordered_map>
 #include <list>
@@ -421,36 +422,125 @@ inline void ValidateLogitsShape(const std::vector<size_t> &shape, size_t seq_len
 }
 
 /**
- * Basic word splitting used by the hand-written WordPiece tokenizer: split on
- * ASCII whitespace and keep ASCII punctuation as separate single-char tokens.
- *
- * Documented limitation (issue #56): classification is per byte via
- * std::isspace/std::ispunct, so only ASCII separators are recognized. UTF-8
- * multibyte sequences are never split apart (continuation bytes are neither
- * space nor punctuation), but non-ASCII punctuation/whitespace does NOT act
- * as a word boundary. The bundled DistilBERT model is English-only, so the
- * tokenizer is intentionally ASCII-focused.
+ * Character class of one code point for BasicWordSplit, following the BERT
+ * pre-tokenizer (BertPreTokenizer / BasicTokenizer of the reference
+ * implementation).
+ */
+enum class NERCharClass { WORD, SPACE, PUNCT, IDEOGRAPH };
+
+/**
+ * Classify a Unicode code point the way the BERT pre-tokenizer does: ASCII
+ * punctuation and the Unicode punctuation blocks used by European and the
+ * other supported languages ("„", "“", "«", "–", "…", "¿", "、") are
+ * punctuation; Unicode spaces (no-break, thin, ideographic) and format
+ * characters (zero-width space, soft hyphen) separate words; CJK ideographs
+ * are words of their own.
+ */
+inline NERCharClass ClassifyNERCodePoint(uint32_t cp) {
+    if (cp < 0x80) {
+        const auto c = static_cast<unsigned char>(cp);
+        if (std::isspace(c) || std::iscntrl(c)) {
+            return NERCharClass::SPACE;
+        }
+        return std::ispunct(c) ? NERCharClass::PUNCT : NERCharClass::WORD;
+    }
+    // Spaces (Zs) and format characters (Cf)
+    if (cp == 0x00A0 || cp == 0x00AD || cp == 0x1680 || (cp >= 0x2000 && cp <= 0x200F) ||
+        (cp >= 0x2028 && cp <= 0x202F) || cp == 0x205F || (cp >= 0x2060 && cp <= 0x2064) ||
+        cp == 0x3000 || cp == 0xFEFF) {
+        return NERCharClass::SPACE;
+    }
+    // Punctuation (P*): Latin-1, Greek, Armenian, Hebrew, Arabic, General
+    // Punctuation (without the math symbols U+2044 and U+2052), CJK and
+    // fullwidth forms
+    if (cp == 0x00A1 || cp == 0x00A7 || cp == 0x00AB || cp == 0x00B6 || cp == 0x00B7 || cp == 0x00BB ||
+        cp == 0x00BF || cp == 0x037E || cp == 0x0387 || (cp >= 0x055A && cp <= 0x055F) || cp == 0x0589 ||
+        cp == 0x058A || cp == 0x05BE || cp == 0x05C0 || cp == 0x05C3 || cp == 0x05C6 || cp == 0x05F3 ||
+        cp == 0x05F4 || cp == 0x060C || cp == 0x060D || cp == 0x061B || cp == 0x061F ||
+        (cp >= 0x066A && cp <= 0x066D) || cp == 0x06D4 || (cp >= 0x2010 && cp <= 0x2027) ||
+        (cp >= 0x2030 && cp <= 0x2043) || (cp >= 0x2045 && cp <= 0x2051) || (cp >= 0x2053 && cp <= 0x205E) ||
+        (cp >= 0x2E00 && cp <= 0x2E4F) || (cp >= 0x3001 && cp <= 0x3003) || (cp >= 0x3008 && cp <= 0x3011) ||
+        (cp >= 0x3014 && cp <= 0x301F) || cp == 0x3030 || cp == 0x303D || cp == 0x30FB ||
+        (cp >= 0xFE10 && cp <= 0xFE19) || (cp >= 0xFE30 && cp <= 0xFE4F) || (cp >= 0xFE50 && cp <= 0xFE6B) ||
+        (cp >= 0xFF01 && cp <= 0xFF03) || (cp >= 0xFF05 && cp <= 0xFF0A) || (cp >= 0xFF0C && cp <= 0xFF0F) ||
+        cp == 0xFF1A || cp == 0xFF1B || cp == 0xFF1F || cp == 0xFF20 || (cp >= 0xFF3B && cp <= 0xFF3D) ||
+        cp == 0xFF3F || cp == 0xFF5B || cp == 0xFF5D || (cp >= 0xFF5F && cp <= 0xFF65)) {
+        return NERCharClass::PUNCT;
+    }
+    // CJK ideographs (the ranges of the reference _is_chinese_char)
+    if ((cp >= 0x4E00 && cp <= 0x9FFF) || (cp >= 0x3400 && cp <= 0x4DBF) || (cp >= 0x20000 && cp <= 0x2A6DF) ||
+        (cp >= 0x2A700 && cp <= 0x2B73F) || (cp >= 0x2B740 && cp <= 0x2B81F) || (cp >= 0x2B820 && cp <= 0x2CEAF) ||
+        (cp >= 0xF900 && cp <= 0xFAFF) || (cp >= 0x2F800 && cp <= 0x2FA1F)) {
+        return NERCharClass::IDEOGRAPH;
+    }
+    return NERCharClass::WORD;
+}
+
+/**
+ * Length in bytes of the UTF-8 sequence starting at text[i] and its code
+ * point. An invalid or truncated sequence is one byte, classified as a word
+ * character, so no input byte is ever dropped.
+ */
+inline size_t DecodeUTF8CodePoint(const std::string &text, size_t i, uint32_t &cp) {
+    const auto lead = static_cast<unsigned char>(text[i]);
+    size_t length = 1;
+    if (lead >= 0xF0 && lead <= 0xF4) {
+        length = 4;
+        cp = lead & 0x07;
+    } else if (lead >= 0xE0) {
+        length = 3;
+        cp = lead & 0x0F;
+    } else if (lead >= 0xC2 && lead <= 0xDF) {
+        length = 2;
+        cp = lead & 0x1F;
+    } else {
+        cp = lead < 0x80 ? lead : 0xFFFD;
+        return 1;
+    }
+    if (lead > 0xF4 || i + length > text.size()) {
+        cp = 0xFFFD;
+        return 1;
+    }
+    for (size_t k = 1; k < length; ++k) {
+        const auto c = static_cast<unsigned char>(text[i + k]);
+        if ((c & 0xC0) != 0x80) {
+            cp = 0xFFFD;
+            return 1;
+        }
+        cp = (cp << 6) | (c & 0x3F);
+    }
+    return length;
+}
+
+/**
+ * Word splitting used by the hand-written WordPiece tokenizer, following the
+ * BERT pre-tokenizer: split on whitespace (ASCII and Unicode spaces), keep
+ * every punctuation character (ASCII and Unicode, see ClassifyNERCodePoint)
+ * and every CJK ideograph as a word of its own. UTF-8 sequences are never
+ * split apart. The multilingual models need the Unicode punctuation: German
+ * quotes („Sabine Weiß“) would otherwise glue to the name.
  */
 inline std::vector<std::string> BasicWordSplit(const std::string &text) {
     std::vector<std::string> words;
     std::string current_word;
 
-    for (size_t i = 0; i < text.size(); ++i) {
-        char c = text[i];
-        if (std::isspace(static_cast<unsigned char>(c))) {
-            if (!current_word.empty()) {
-                words.push_back(current_word);
-                current_word.clear();
-            }
-        } else if (std::ispunct(static_cast<unsigned char>(c))) {
-            if (!current_word.empty()) {
-                words.push_back(current_word);
-                current_word.clear();
-            }
-            words.push_back(std::string(1, c));
+    size_t i = 0;
+    while (i < text.size()) {
+        uint32_t cp = 0;
+        const size_t length = DecodeUTF8CodePoint(text, i, cp);
+        const auto char_class = ClassifyNERCodePoint(cp);
+        if (char_class == NERCharClass::WORD) {
+            current_word.append(text, i, length);
         } else {
-            current_word += c;
+            if (!current_word.empty()) {
+                words.push_back(current_word);
+                current_word.clear();
+            }
+            if (char_class != NERCharClass::SPACE) {
+                words.push_back(text.substr(i, length));
+            }
         }
+        i += length;
     }
     if (!current_word.empty()) {
         words.push_back(current_word);
