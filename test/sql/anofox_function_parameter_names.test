@@ -8,11 +8,14 @@ require anofox_tabular
 statement ok
 LOAD anofox_tabular;
 
-# No anofox function (canonical name or short alias) has a generated colN parameter name
+# No anofox function (canonical name or short alias) has a generated colN parameter name.
+# DuckDB v1.5 lists a table function's named parameters after the positional ones under
+# generated names (col5, ...); there the check covers scalar functions only.
 query I
 SELECT count(*)
 FROM duckdb_functions()
 WHERE (function_name LIKE 'anofox\_%' ESCAPE '\' OR alias_of LIKE 'anofox\_%' ESCAPE '\')
+  AND (function_type <> 'table' OR NOT starts_with(version(), 'v1.'))
   AND len(list_filter(parameters, lambda p: regexp_matches(p, '^col[0-9]+$'))) > 0;
 ----
 0

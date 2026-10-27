@@ -117,7 +117,9 @@ static void ValidateParamsKeys(const CheckSpec &spec, const vector<string> &keys
 // becomes an 'error' row of this check instead of a conversion error aborting the suite.
 static string DateParamLiteral(const CheckSpec &spec, const string &key, const string &text) {
 	Value date;
-	if (!duckdb_compat::TryCastValue(Value(text), LogicalType(LogicalTypeId::DATE), date)) {
+	// A NULL result is a failure too: DuckDB v1.5 reports some unparseable strings
+	// ('yesterday') as a successful cast to NULL
+	if (!duckdb_compat::TryCastValue(Value(text), LogicalType(LogicalTypeId::DATE), date) || date.IsNull()) {
 		throw BinderException("run_checks: check '" + spec.check_name + "': params." + key + " '" + text +
 		                      "' is not a valid date (expected YYYY-MM-DD)");
 	}
@@ -131,7 +133,8 @@ static string UtcTimestampParamLiteral(const CheckSpec &spec, const string &key,
 	Value with_zone;
 	Value utc;
 	if (!duckdb_compat::TryCastValue(Value(text), LogicalType(LogicalTypeId::TIMESTAMP_TZ), with_zone) ||
-	    !duckdb_compat::TryCastValue(with_zone, LogicalType(LogicalTypeId::TIMESTAMP), utc)) {
+	    with_zone.IsNull() || !duckdb_compat::TryCastValue(with_zone, LogicalType(LogicalTypeId::TIMESTAMP), utc) ||
+	    utc.IsNull()) {
 		throw BinderException("run_checks: check '" + spec.check_name + "': params." + key + " '" + text +
 		                      "' is not a valid timestamp (expected YYYY-MM-DD[ HH:MM[:SS]][+HH[:MM]])");
 	}
