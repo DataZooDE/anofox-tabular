@@ -475,6 +475,54 @@ class TestCheckSuite:
             quality.define_checks(conn, [{"check_type": "volume", "table_name": "_suite_orders"}])
 
 
+class TestQualifiedCheckTables:
+    """Schema-qualified checks and result tables land in that schema, not main."dq.checks"."""
+
+    @pytest.fixture(autouse=True)
+    def _schema(self, conn):
+        conn.execute("CREATE SCHEMA IF NOT EXISTS dq")
+        conn.execute("CREATE SCHEMA IF NOT EXISTS sales")
+        conn.execute(
+            "CREATE OR REPLACE TABLE sales.invoices AS SELECT * FROM (VALUES "
+            "('INV-2026-0001', 'ACME GmbH', 1250.00), ('INV-2026-0002', 'Globex AG', NULL), "
+            "('INV-2026-0003', 'Initech SE', 980.50)) t(invoice_no, customer, net_amount)"
+        )
+        yield
+        conn.execute("DROP SCHEMA dq CASCADE")
+        conn.execute("DROP SCHEMA sales CASCADE")
+        conn.execute('DROP TABLE IF EXISTS main."dq.checks"')
+        conn.execute('DROP TABLE IF EXISTS main."dq.results"')
+
+    CHECKS = [
+        {"check_name": "invoice_volume", "check_type": "volume", "table_name": "sales.invoices",
+         "lower_threshold": 1},
+        {"check_name": "net_amount_nulls", "check_type": "null_rate", "table_name": "sales.invoices",
+         "column_name": "net_amount", "upper_threshold": 0.0},
+    ]
+
+    def _tables(self, conn):
+        return sorted(conn.execute(
+            "SELECT schema_name || '.' || table_name FROM duckdb_tables() "
+            "WHERE table_name IN ('checks', 'results', 'dq.checks', 'dq.results')"
+        ).fetchall())
+
+    def test_define_and_run_in_schema(self, conn):
+        from anofox import quality
+        assert quality.define_checks(conn, self.CHECKS, "dq.checks") == "dq.checks"
+        assert self._tables(conn) == [("dq.checks",)]
+        results = {r["check_name"]: r["status"] for r in quality.run_checks(conn, "dq.checks")}
+        assert results == {"invoice_volume": "pass", "net_amount_nulls": "fail"}
+
+    def test_result_table_in_schema(self, conn):
+        from anofox import quality
+        quality.define_checks(conn, self.CHECKS, "dq.checks")
+        quality.run_checks(conn, "dq.checks", result_table="dq.results")
+        rows = quality.run_checks(conn, "dq.checks", result_table="dq.results")
+        assert len(rows) == 2
+        assert self._tables(conn) == [("dq.checks",), ("dq.results",)]
+        assert conn.execute("SELECT count(*) FROM dq.results").fetchone()[0] == 4
+
+
 class TestNamedResultFields:
     """Result dicts carry every result column by name, with floats instead of Decimal."""
 

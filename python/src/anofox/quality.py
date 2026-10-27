@@ -20,7 +20,7 @@ import json
 from decimal import Decimal
 from typing import Any, Optional, Union
 
-from ._sql import quote_ident, run
+from ._sql import quote_table_name, run
 from ._table import TableLike, accepts_dataframes, without_temp_names
 
 
@@ -806,9 +806,10 @@ def define_checks(conn: Any, checks: list[dict], checks_table: str = "dq_checks"
         uncommitted changes to it are used; it may be a TEMP table. DataFrame *targets* must
         be registered as real tables (see :func:`anofox._utils.register_df_as_table`).
 
-    Returns the checks table name.
+    *checks_table* may be qualified (``"dq.checks"``, ``"db.dq.checks"``): the table is
+    created in that schema, which must exist. Returns the checks table name.
     """
-    checks_sql = quote_ident(checks_table)
+    checks_sql = quote_table_name(checks_table)
     run(
         conn,
         f"CREATE OR REPLACE TABLE {checks_sql} ("
@@ -869,6 +870,7 @@ def run_checks(
     result_table:
         When given, results are also appended to this table (created on first use),
         building a metric history that e.g. :func:`metric_anomaly_iqr` can analyze.
+        Both names may be schema-qualified (``"dq.checks"``, ``"dq.check_results"``).
 
     Returns
     -------
@@ -878,7 +880,7 @@ def run_checks(
         ``lower_threshold``, ``upper_threshold``, ``status``, ``message``).
     """
     if result_table is not None:
-        result_sql = quote_ident(result_table)
+        result_sql = quote_table_name(result_table)
         run(
             conn,
             f"CREATE TABLE IF NOT EXISTS {result_sql} AS "

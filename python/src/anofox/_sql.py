@@ -18,6 +18,23 @@ def quote_ident(name: str) -> str:
     return '"' + name.replace('"', '""') + '"'
 
 
+def quote_table_name(name: str) -> str:
+    """
+    Quote a table name that may be qualified: ``"dq.checks"`` becomes ``"dq"."checks"``.
+
+    *name* is split at each dot into one to three parts (``table``,
+    ``schema.table``, ``catalog.schema.table``), each quoted with
+    :func:`quote_ident`, so the table is created in or read from that schema
+    instead of a table literally named ``dq.checks`` in the default schema. A
+    name with an empty part or more than three parts is quoted as one
+    identifier.
+    """
+    parts = quote_ident(name)[1:-1].split(".")
+    if not 1 <= len(parts) <= 3 or not all(parts):
+        return quote_ident(name)
+    return ".".join(f'"{part}"' for part in parts)
+
+
 def finish(conn: Any) -> None:
     """
     Run the pending result of ``execute()`` on *conn* to its end.
