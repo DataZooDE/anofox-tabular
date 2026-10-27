@@ -283,6 +283,85 @@ scored (an empty DataFrame, or only missing values), the `isolation_forest` summ
 `total_count` 0 and `avg_value` `None`. A DataFrame column that holds only `None` has no type;
 the numeric detectors raise `ValueError: column 'amount' has no non-null values` for it.
 
+### Join scores back to the rows
+
+The per-row output of every detector, also of `isolation_forest_mv` and `dbscan_mv`, has one
+row per analyzed row. It holds the scores, not the input columns. To see the flagged rows, join
+it back on the identifier you pass as `id_column`:
+
+```python
+orders = pd.DataFrame({
+    "order_id": [f"SO-{1001 + i}" for i in range(12)],
+    "amount": [42.5, 39.9, 45.0, 41.2, 44.8, 40.1, 43.3, 38.7, 46.2, 41.9, 39.5, 980.0],
+    "items": [2, 2, 3, 2, 3, 2, 3, 2, 3, 2, 2, 3],
+})
+scores = anomaly.isolation_forest_mv(
+    conn, orders, ["amount", "items"], output_mode="scores",
+    sample_size=12, contamination=0.05, id_column="order_id", seed=42,
+)
+print(scores.columns.tolist())
+flagged = scores.loc[scores["is_anomaly"], ["order_id", "anomaly_score"]]
+print(orders.merge(flagged, on="order_id").to_string(index=False))
+```
+
+```text
+['row_id', 'order_id', 'anomaly_score', 'is_anomaly']
+order_id  amount  items  anomaly_score
+ SO-1012   980.0      3       0.745399
+```
+
+Without an identifier column, use `row_id`: the 1-based row number in the input (rows with a
+`NULL` are left out but keep their number), so `orders.iloc[scores["row_id"] - 1]` gives the
+scored rows of a DataFrame.
+
+### Scale the features for DBSCAN
+
+`epsilon` is a distance in the units of the data. With amounts in euros and item counts in one
+call, a radius of 0.5 is far too small for the amounts, and almost every order is noise. Put the
+columns on one scale first, for example as z-scores, and then choose `epsilon` on that scale:
+
+```python
+raw = anomaly.dbscan_mv(conn, orders, ["amount", "items"], epsilon=0.5, min_points=3)
+print(raw["cluster_count"], raw["noise_count"])
+
+features = ["amount", "items"]
+scaled = orders.copy()
+scaled[features] = (orders[features] - orders[features].mean()) / orders[features].std()
+clusters = anomaly.dbscan_mv(conn, scaled, features, output_mode="clusters",
+                             epsilon=0.5, min_points=3, id_column="order_id")
+print(clusters.loc[clusters["is_anomaly"], ["order_id", "cluster_id"]].to_string(index=False))
+```
+
+```text
+1 9
+order_id  cluster_id
+ SO-1012          -1
+```
+
+### Read the OutlierTree conditions
+
+`outlier_tree(..., output_mode="outliers")` explains each outlier with the conditions that define
+its group. The `conditions` column holds a list of dicts (a `List(Struct)` column in polars) with
+the keys `column`, `type`, `operator`, `value` (numeric threshold, else `None`) and `values`
+(categories, else `None`). The SQL function returns the same conditions as JSON text.
+
+```python
+staff = pd.DataFrame({
+    "staff_id": [f"E{i:04d}" for i in range(1, 201)],
+    "level": ["junior" if i <= 100 else "senior" for i in range(1, 201)],
+    "salary": [92000 if i == 7 else (48000 + i % 10 * 500 if i <= 100 else 88000 + i % 10 * 600)
+               for i in range(1, 201)],
+})
+out = anomaly.outlier_tree(conn, staff, ["level", "salary"], output_mode="outliers",
+                           id_column="staff_id")
+salary = out[out["column_name"] == "salary"].iloc[0]
+print(salary["staff_id"], salary["outlier_value"], salary["conditions"])
+```
+
+```text
+E0007 92000 [{'column': 'level', 'type': 'categorical', 'operator': 'in', 'value': None, 'values': ['junior']}]
+```
+
 ## Diff two DataFrames
 
 ```python
@@ -329,6 +408,27 @@ print(summary[["row_count", "column_count", "total_nulls"]].to_string(index=Fals
 ```text
  row_count  column_count  total_nulls
          4             3            1
+```
+
+There are two ways to profile from Python:
+
+- `anofox.profile.profile_table`, `profile_summary` and `profile_correlations` call the SQL
+  functions of the same name and return all their columns (29 per column for `profile_table`:
+  quantiles, top values, patterns, NaN/Inf counts and more). See
+  [Profiling](../api/10-profiling.md) for the columns.
+- `conn.profile(df_or_table)` is a short overview: per column only `type`, `row_count`,
+  `null_count`, `null_rate`, `distinct_count` and `distinct_rate`, computed with plain SQL
+  counts (exact, no sampling).
+
+```python
+print(conn.profile(customers)[["column", "null_count", "distinct_count"]].to_string(index=False))
+```
+
+```text
+column  null_count  distinct_count
+    id           0               4
+ email           1               3
+  note           0               4
 ```
 
 ## Missing values: NaN and NULL
