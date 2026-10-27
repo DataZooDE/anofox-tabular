@@ -8,6 +8,7 @@
 #include "duckdb/parser/tableref/subqueryref.hpp"
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/error_data.hpp"
+#include "duckdb/common/string_util.hpp"
 #include "duckdb/planner/binder.hpp"
 #include "duckdb_compat.hpp"
 #include "anofox_tabular_banner.hpp"
@@ -489,6 +490,23 @@ static string GenerateAggCheckSQL(const string &table_ref, const string &column_
 		" AS overflow FROM " + source + ")";
 }
 
+string SampleAggregateSQL(const string &value_sql, const string &condition_sql) {
+	return "min(DISTINCT " + value_sql + ", " + std::to_string(SAMPLE_LIMIT) + ") FILTER (WHERE " + condition_sql +
+	       ")";
+}
+
+string KeyTextSQL(const vector<string> &key_exprs) {
+	if (key_exprs.size() == 1) {
+		return "COALESCE(CAST(" + key_exprs[0] + " AS VARCHAR), 'NULL')";
+	}
+	return "CAST(row(" + StringUtil::Join(key_exprs, ", ") + ") AS VARCHAR)";
+}
+
+string SamplesSuffixSQL(const string &samples_sql) {
+	return "CASE WHEN len(" + samples_sql + ") > 0 THEN '; samples: ''' || array_to_string(" + samples_sql +
+	       ", ''', ''') || '''' ELSE '' END";
+}
+
 string BuildDuplicateCountExpr(const vector<string> &column_names) {
 	if (column_names.size() == 1) {
 		// COUNT(DISTINCT) skips NULL: the NULL keys form one extra group when present
@@ -513,6 +531,14 @@ string BuildDuplicateCountExpr(const vector<string> &column_names) {
 static string GenerateDuplicateCountSQL(const string &table_ref, const vector<string> &column_names,
                                         const Value &max_duplicates) {
 	string max_val = BigintThresholdSQL(max_duplicates, "0");
+	vector<string> key_exprs;
+	for (auto &column : column_names) {
+		key_exprs.push_back(QuoteSqlIdentifier(column));
+	}
+	// Up to SAMPLE_LIMIT duplicated keys for the message of a failing check (as run_checks shows)
+	string samples = "(SELECT min(k, " + std::to_string(SAMPLE_LIMIT) + ") FROM (SELECT " + KeyTextSQL(key_exprs) +
+	                 " AS k FROM " + table_ref + " GROUP BY " + StringUtil::Join(key_exprs, ", ") +
+	                 " HAVING COUNT(*) > 1))";
 
 	return "SELECT "
 		"CASE WHEN duplicate_count <= " + max_val + " THEN 'pass' ELSE 'fail' END AS status, "
@@ -526,7 +552,7 @@ static string GenerateDuplicateCountSQL(const string &table_ref, const vector<st
 		"    ' rows is acceptable' "
 		"  ELSE "
 		"    CAST(duplicate_count AS VARCHAR) || ' duplicate(s) in ' || CAST(total_count AS VARCHAR) || "
-		"    ' rows exceeds maximum ' || CAST(" + max_val + " AS VARCHAR) "
+		"    ' rows exceeds maximum ' || CAST(" + max_val + " AS VARCHAR) || " + SamplesSuffixSQL(samples) + " "
 		"END AS message "
 		"FROM (SELECT "
 		"  " + BuildDuplicateCountExpr(column_names) + " AS duplicate_count, "
@@ -597,8 +623,10 @@ static string GenerateMatchRateSQL(const string &left_ref, const string &right_r
 	// A row with a NULL key column matches nothing: it is left out of the rate (null_rate
 	// reports it) and counted in null_key_count
 	string any_key_null;
+	vector<string> key_aliases;
 	for (size_t i = 0; i < left_keys.size(); i++) {
 		string alias = "k" + std::to_string(i);
+		key_aliases.push_back(alias);
 		any_key_null += (i > 0 ? " OR " : "") + alias + " IS NULL";
 		if (i > 0) {
 			left_cols += ", ";
@@ -618,14 +646,15 @@ static string GenerateMatchRateSQL(const string &left_ref, const string &right_r
 		"SELECT DISTINCT " + right_cols + ", 1 AS matched FROM " + right_ref +
 		"), "
 		"joined AS ("
-		"SELECT r.matched FROM l LEFT JOIN r ON " + join_cond +
+		"SELECT l.*, r.matched FROM l LEFT JOIN r ON " + join_cond +
 		"), "
 		"stats AS ("
 		"SELECT "
 		"  (SELECT COUNT(*) FROM l_all WHERE " + any_key_null + ") AS null_key_count, "
 		"  COUNT(*) AS total_count, "
 		"  COALESCE(CAST(COUNT(matched) AS BIGINT), 0) AS matched_count, "
-		"  COALESCE(CAST(COUNT(matched) AS DOUBLE) / NULLIF(COUNT(*), 0), 0.0) AS match_rate "
+		"  COALESCE(CAST(COUNT(matched) AS DOUBLE) / NULLIF(COUNT(*), 0), 0.0) AS match_rate, "
+		"  " + SampleAggregateSQL(KeyTextSQL(key_aliases), "matched IS NULL") + " AS samples "
 		"FROM joined"
 		") "
 		"SELECT "
@@ -647,7 +676,8 @@ static string GenerateMatchRateSQL(const string &left_ref, const string &right_r
 		"    CAST(total_count AS VARCHAR) || ') is acceptable' "
 		"  ELSE "
 		"    'Match rate ' || " + RoundedNumberSQL("match_rate") + " || ' (' || CAST(matched_count AS VARCHAR) || '/' || "
-		"    CAST(total_count AS VARCHAR) || ') is below minimum ' || CAST(" + min_val + " AS VARCHAR) "
+		"    CAST(total_count AS VARCHAR) || ') is below minimum ' || CAST(" + min_val + " AS VARCHAR) || " +
+		SamplesSuffixSQL("samples") + " "
 		"END || CASE WHEN total_count > 0 AND null_key_count > 0 THEN '; ' || CAST(null_key_count AS VARCHAR) || "
 		"  ' row(s) with a NULL key excluded' ELSE '' END AS message "
 		"FROM stats";

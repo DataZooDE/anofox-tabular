@@ -49,8 +49,9 @@ The arguments are checked when the query is bound:
   `metric_anomaly_iqr` need a numeric (or `BOOLEAN`) column, for example
   `zscore: column 'supplier' must be numeric, got VARCHAR`.
 
-Rates in the messages are rounded to three decimals (`Null rate 0.333 (2/6) ...`); the rate
-columns keep the full precision.
+Rates in the messages are rounded to three decimals (`Null rate 0.333 (2/6) ...`), and so are
+the bounds in the `iqr` message (`1 outlier(s) detected outside bounds [-0.217, 5.75]`); the
+result columns keep the full precision.
 
 NaN and `±Inf` values in numeric columns do not break a check. The outlier checks `zscore` and
 `iqr` ignore them: they leave them out of the statistics and of `total_count`, and the message
@@ -427,6 +428,10 @@ SELECT status, lower_bound, upper_bound, outlier_count FROM iqr('orders', 'amoun
 └─────────┴─────────────┴─────────────┴───────────────┘
 ```
 
+The message names the bounds rounded to three decimals, for example
+`1 outlier(s) detected outside bounds [-0.217, 5.75]`; `lower_bound` and `upper_bound` keep the
+full precision.
+
 `iqr` cannot run inside a [`run_checks`](#run_checks) suite.
 
 ---
@@ -592,6 +597,10 @@ duplicate_count(table_name VARCHAR, column_names VARCHAR | VARCHAR[] [, max_dupl
 | `column_names` | `VARCHAR` or `VARCHAR[]` | required | One column, or a compound key as a comma-separated string (`'customer_id, status'`) or a list (`['customer_id', 'status']`) |
 | `max_duplicates` | `BIGINT` | `0` (also for `NULL`) | Highest allowed number of duplicates |
 
+The message of a failing check lists up to 5 duplicated keys, sorted, as
+[`run_checks`](#run_checks) does: `2 duplicate(s) in 8 rows exceeds maximum 0; samples: 'T-5002', 'T-5004'`.
+A compound key is shown as its row, `'(T-5002, C-1002)'`, and a NULL key as `'NULL'`.
+
 ```sql
 SELECT 'order_id' AS key, status, duplicate_count FROM duplicate_count('orders', 'order_id')
 UNION ALL
@@ -677,6 +686,9 @@ match_rate(left_table VARCHAR, right_table VARCHAR, left_keys VARCHAR, right_key
 | `left_keys` | `VARCHAR` | required | Comma-separated key columns of `left_table` |
 | `right_keys` | `VARCHAR` | required | Comma-separated key columns of `right_table`, same number as `left_keys` |
 | `min_rate` | `DOUBLE` | `1.0` (also for `NULL`) | Lowest allowed match rate |
+
+The message of a failing check lists up to 5 left keys without a partner, sorted:
+`Match rate 0.75 (6/8) is below minimum 0.9; samples: 'C-1009', 'C-2000'`.
 
 An empty left table passes with `total_count = 0`, and so does a left table whose keys are all
 NULL (message `No left rows with a non-NULL key (2 row(s) with a NULL key excluded); match rate
@@ -1118,7 +1130,7 @@ ignored. A checks table without a required column is an error that names it, for
 | Column | Type | Required | Description |
 |--------|------|----------|-------------|
 | `check_name` | `VARCHAR` | yes | Label of the check, unique in the table; results are ordered by it, then by `identifier` |
-| `check_type` | `VARCHAR` | yes | One of the types below |
+| `check_type` | `VARCHAR` | yes | One of the types below; case and surrounding spaces do not matter (`' Volume '` is `volume`) |
 | `table_name` | `VARCHAR` | yes | The table or view to check |
 | `column_name` | `VARCHAR` | no | The column; `NULL` where the type needs none. For the key of `duplicate_count` and `match_rate` a comma-separated list (`'order_id, customer_id'`) or a JSON array (`'["order_id", "customer_id"]'`) |
 | `params` | `VARCHAR` | no | A JSON object with type-specific parameters, or `NULL` |
@@ -1271,8 +1283,8 @@ are, for example:
 - an `agg` check on a column that is not numeric
 - an unknown `check_type` or one that exists only as a direct function, invalid `params` JSON, a missing required `params` key, a `params`
   key the type does not accept, or a malformed typed `params` value (see above)
-- a NULL `check_name` (the row's `check_name` is NULL and the message
-  `check without check_name (volume) cannot run: every check needs a check_name`), or a
+- a NULL or empty `check_name` (the row's `check_name` is NULL or `''` as configured, and the
+  message `check without check_name (volume) cannot run: every check needs a check_name`), or a
   `check_name` that several checks share: each of them is an `error` row
   (`check_name 'orders_volume' is used by 2 checks; check names must be unique`), since their
   results could not be told apart

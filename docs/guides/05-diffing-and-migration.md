@@ -213,13 +213,13 @@ FROM match_rate('orders_new', 'customers', 'customer_id', 'id', 1.0);
 ```
 
 ```text
-┌─────────────┬─────────┬────────────────────────────────────────────┐
-│ check_name  │ status  │                  message                   │
-│   varchar   │ varchar │                  varchar                   │
-├─────────────┼─────────┼────────────────────────────────────────────┤
-│ volume      │ pass    │ Row count 10 is within acceptable range    │
-│ customer_fk │ fail    │ Match rate 0.9 (9/10) is below minimum 1.0 │
-└─────────────┴─────────┴────────────────────────────────────────────┘
+┌─────────────┬─────────┬────────────────────────────────────────────────────────────┐
+│ check_name  │ status  │                          message                           │
+│   varchar   │ varchar │                          varchar                           │
+├─────────────┼─────────┼────────────────────────────────────────────────────────────┤
+│ volume      │ pass    │ Row count 10 is within acceptable range                    │
+│ customer_fk │ fail    │ Match rate 0.9 (9/10) is below minimum 1.0; samples: '999' │
+└─────────────┴─────────┴────────────────────────────────────────────────────────────┘
 ```
 
 The row count passes: the migration dropped one order and created one, so the total is still

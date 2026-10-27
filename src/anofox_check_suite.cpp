@@ -42,6 +42,8 @@ const char *const UTC_NOW_SQL = "make_timestamp(epoch_us(now()))";
 // One row of the checks table, with params already extracted from JSON at read time
 struct CheckSpec {
 	string check_name;
+	// check_name is NULL (an empty check_name is reported as '')
+	bool check_name_is_null = false;
 	string check_type;
 	string table_name;
 	string column_name;
@@ -625,7 +627,10 @@ static vector<CheckSpec> ReadCheckSpecs(ClientContext &context, const string &ch
 	for (idx_t row = 0; row < rows.size(); row++) {
 		CheckSpec spec;
 		spec.check_name = str_at(row, 0);
+		spec.check_name_is_null = value_at(row, 0).IsNull();
+		// ' volume ' is the volume check type
 		spec.check_type = str_at(row, 1);
+		StringUtil::Trim(spec.check_type);
 		std::transform(spec.check_type.begin(), spec.check_type.end(), spec.check_type.begin(), ::tolower);
 		spec.table_name = str_at(row, 2);
 		spec.column_name = str_at(row, 3);
@@ -1042,23 +1047,6 @@ struct CheckBranch {
 	string overflow_message_sql;
 };
 
-// How many offending values a failing values_in_set / duplicate_count / match_rate message shows
-constexpr int SAMPLE_LIMIT = 5;
-
-// The SAMPLE_LIMIT smallest distinct values of the VARCHAR expression `value_sql` on the rows
-// where `condition_sql` holds (an aggregate)
-static string SampleAggregateSQL(const string &value_sql, const string &condition_sql) {
-	return "min(DISTINCT " + value_sql + ", " + std::to_string(SAMPLE_LIMIT) + ") FILTER (WHERE " + condition_sql +
-	       ")";
-}
-
-// The VARCHAR text of a key: the value itself for one column, the ROW text '(a, b)' for several
-static string KeyTextSQL(const vector<string> &key_exprs) {
-	if (key_exprs.size() == 1) {
-		return "COALESCE(CAST(" + key_exprs[0] + " AS VARCHAR), 'NULL')";
-	}
-	return "CAST(row(" + StringUtil::Join(key_exprs, ", ") + ") AS VARCHAR)";
-}
 
 static string ThresholdLiteral(const Value &threshold) {
 	return DoubleThresholdSQL(threshold);
@@ -1501,9 +1489,9 @@ static CheckBranch BuildCheckBranch(ClientContext &context, const CheckSpec &spe
 	return branch;
 }
 
-// The check_name of a result row as SQL: NULL for a check without one
+// The check_name of a result row as SQL: NULL for a check without one, '' for an empty one
 static string CheckNameSQL(const CheckSpec &spec) {
-	return spec.check_name.empty() ? "CAST(NULL AS VARCHAR)" : "'" + EscapeSqlStringLiteral(spec.check_name) + "'";
+	return spec.check_name_is_null ? "CAST(NULL AS VARCHAR)" : "'" + EscapeSqlStringLiteral(spec.check_name) + "'";
 }
 
 // Build a constant single-row error result for a check that cannot run
@@ -1591,9 +1579,7 @@ static string BuildBranchSQL(const CheckSpec &spec, const CheckBranch &branch, c
 	    exact ? ThresholdTextSQL(spec.upper_threshold, branch.agg) : RoundedNumberSQL(upper_expr) + unit;
 	string value_prefix = "'" + type_lit + " value ' || " + value_text;
 	// "; samples: 'a', 'b'" when the check lists offending values and found some
-	string samples_suffix = branch.has_samples ? " || CASE WHEN len(__c.samples) > 0 THEN '; samples: ''' || "
-	                                             "array_to_string(__c.samples, ''', ''') || '''' ELSE '' END"
-	                                           : "";
+	string samples_suffix = branch.has_samples ? " || " + SamplesSuffixSQL("__c.samples") : "";
 	string within_message = no_thresholds ? value_prefix + " || ': no thresholds configured (monitor)'"
 	                                      : value_prefix + " || ' is within thresholds'";
 

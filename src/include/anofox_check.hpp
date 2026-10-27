@@ -95,6 +95,18 @@ string SumOverflowRiskSQL(const string &column_sql, const string &bound_sql, con
 // days of the window from the first day with data on count, a day without rows as 0.
 string BuildRelCountBaselineSQL(const string &ref_expr, int64_t window_days, bool fill_missing_days);
 
+// How many offending values a failing values_in_set / duplicate_count / match_rate message shows
+constexpr int SAMPLE_LIMIT = 5;
+// The SAMPLE_LIMIT smallest distinct values of the VARCHAR expression `value_sql` on the rows
+// where `condition_sql` holds (an aggregate)
+string SampleAggregateSQL(const string &value_sql, const string &condition_sql);
+// The VARCHAR text of a key: the value itself ('NULL' for NULL) for one column, the ROW text
+// '(a, b)' for several
+string KeyTextSQL(const vector<string> &key_exprs);
+// The message suffix "; samples: 'a', 'b'" for the VARCHAR[] expression `samples_sql`; '' when
+// it is empty or NULL
+string SamplesSuffixSQL(const string &samples_sql);
+
 // Build a ['a', 'b', ...]::VARCHAR[] literal from a LIST value.
 string BuildVarcharArrayLiteral(const Value &list_value);
 

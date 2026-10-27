@@ -261,9 +261,9 @@ static string GenerateIQRSQL(const string &table_ref, const string &column_name,
 		"  WHEN total_count = 0 THEN "
 		"    'No rows to evaluate (column is empty or all NULL)' "
 		"  WHEN outlier_count = 0 THEN "
-		"    'No outliers detected by IQR method (bounds: [' || CAST(lower_bound AS VARCHAR) || ', ' || CAST(upper_bound AS VARCHAR) || ']' || " + nonfinite_note + " || ')' "
+		"    'No outliers detected by IQR method (bounds: [' || " + RoundedNumberSQL("lower_bound") + " || ', ' || " + RoundedNumberSQL("upper_bound") + " || ']' || " + nonfinite_note + " || ')' "
 		"  ELSE "
-		"    CAST(outlier_count AS VARCHAR) || ' outlier(s) detected outside bounds [' || CAST(lower_bound AS VARCHAR) || ', ' || CAST(upper_bound AS VARCHAR) || ']' || " + nonfinite_note + " "
+		"    CAST(outlier_count AS VARCHAR) || ' outlier(s) detected outside bounds [' || " + RoundedNumberSQL("lower_bound") + " || ', ' || " + RoundedNumberSQL("upper_bound") + " || ']' || " + nonfinite_note + " "
 		"END AS message "
 		"FROM summary";
 }
