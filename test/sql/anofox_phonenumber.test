@@ -181,17 +181,17 @@ SELECT phonenumber_match('2025550179', '(202) 555-0179', NULL);
 ----
 EXACT_MATCH
 
-# Invalid first number should return NO_MATCH
+# A first string that is no phone number gives NOT_A_NUMBER
 query T
 SELECT phonenumber_match('invalid', '6502530000', 'US');
 ----
-NO_MATCH
+NOT_A_NUMBER
 
-# Invalid second number should return NO_MATCH
+# A second string that is no phone number gives NOT_A_NUMBER
 query T
 SELECT phonenumber_match('6502530000', 'invalid', 'US');
 ----
-NO_MATCH
+NOT_A_NUMBER
 
 # Test phonenumber_example function
 # Get example number for US

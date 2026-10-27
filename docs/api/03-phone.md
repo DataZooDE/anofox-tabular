@@ -469,21 +469,28 @@ Compares two numbers.
 phonenumber_match(phone1 VARCHAR, phone2 VARCHAR, region VARCHAR) -> VARCHAR
 ```
 
-Returns one of `EXACT_MATCH`, `NSN_MATCH` (same national number), `SHORT_NSN_MATCH` or
-`NO_MATCH`.
+Returns one of `EXACT_MATCH`, `NSN_MATCH` (same national number), `SHORT_NSN_MATCH`,
+`NO_MATCH` or `NOT_A_NUMBER`. As in libphonenumber, `NOT_A_NUMBER` means that one of the two
+strings cannot be read as a phone number: a blank value, a placeholder such as `-` or `n/a`,
+letters, fewer than two digits, or an unknown country code or region. Two identical blank or
+placeholder values are therefore no match, so a dedup join on `phonenumber_match` never pairs
+customers on a missing phone. A short number that can be read but has an invalid length
+(`411`) is compared as written: identical strings are an `EXACT_MATCH`.
 
 ```sql
 SELECT phonenumber_match('+1 650-253-0000', '(650) 253-0000', 'US') AS same,
-       phonenumber_match('+1 650-253-0000', '+44 20 8366 1177', NULL) AS different;
+       phonenumber_match('+1 650-253-0000', '+44 20 8366 1177', NULL) AS different,
+       phonenumber_match('', '', 'US') AS both_blank,
+       phonenumber_match('n/a', '+1 650-253-0000', 'US') AS placeholder;
 ```
 
 ```text
-┌─────────────┬───────────┐
-│    same     │ different │
-│   varchar   │  varchar  │
-├─────────────┼───────────┤
-│ EXACT_MATCH │ NO_MATCH  │
-└─────────────┴───────────┘
+┌─────────────┬───────────┬──────────────┬──────────────┐
+│    same     │ different │  both_blank  │ placeholder  │
+│   varchar   │  varchar  │   varchar    │   varchar    │
+├─────────────┼───────────┼──────────────┼──────────────┤
+│ EXACT_MATCH │ NO_MATCH  │ NOT_A_NUMBER │ NOT_A_NUMBER │
+└─────────────┴───────────┴──────────────┴──────────────┘
 ```
 
 ---

@@ -423,6 +423,7 @@ PhoneNumberParts PhoneNumberManager::Parse(const std::string& raw_number, const 
 		           "PhoneNumber parse failed: invalid length=" + std::to_string(national_number.size()) +
 		           " for region=" + region_code);
 		parts.reason = PhoneNumberInvalidReason::INVALID_LENGTH;
+		parts.national_number = national_number;
 		return parts;
 	}
 
@@ -606,16 +607,28 @@ std::string PhoneNumberManager::Match(const std::string& number1, const std::str
 	auto parts1 = Parse(number1, region_hint, default_region);
 	auto parts2 = Parse(number2, region_hint, default_region);
 
-	// If either parse failed, check if raw strings match exactly
+	// As in libphonenumber, a side that cannot be read as a phone number (blank,
+	// letters, a placeholder such as "-" or "n/a", fewer than two digits, an
+	// unknown country code or region) makes the comparison NOT_A_NUMBER, so
+	// two empty or placeholder fields never count as the same number.
+	auto is_number = [](const PhoneNumberParts& parts) {
+		return parts.national_number.size() >= 2;
+	};
+	if (!is_number(parts1) || !is_number(parts2)) {
+		AnofoxTrace(AnofoxLogLevel::Debug, "PhoneNumber Match result=NOT_A_NUMBER reason1=" + parts1.reason +
+		                                       " reason2=" + parts2.reason);
+		return "NOT_A_NUMBER";
+	}
+
+	// A number of invalid length (a short code such as 411) is compared as written
 	if (!parts1.valid || !parts2.valid) {
-		// For short numbers or invalid formats, if both strings are identical, it's an exact match
 		if (number1 == number2) {
 			AnofoxTrace(AnofoxLogLevel::Debug,
-			           "PhoneNumber Match result=EXACT_MATCH (raw string match, parse failed) number1=" + number1 + " number2=" + number2);
+			           "PhoneNumber Match result=EXACT_MATCH (raw string match, invalid length) number1=" + number1 + " number2=" + number2);
 			return "EXACT_MATCH";
 		}
 		AnofoxTrace(AnofoxLogLevel::Debug,
-		           "PhoneNumber Match result=NO_MATCH (parse failed) number1=" + number1 + " number2=" + number2);
+		           "PhoneNumber Match result=NO_MATCH (invalid length) number1=" + number1 + " number2=" + number2);
 		return "NO_MATCH";
 	}
 
@@ -1417,7 +1430,7 @@ void RegisterPhonenumberFunctions(ExtensionLoader& loader) {
 	// Register phonenumber_match
 	{
 		FunctionDescription desc;
-		desc.description = "Compares two phone number strings and returns the match type: 'EXACT_MATCH', 'NSN_MATCH', 'SHORT_NSN_MATCH' or 'NO_MATCH'.";
+		desc.description = "Compares two phone number strings and returns the match type: 'EXACT_MATCH', 'NSN_MATCH', 'SHORT_NSN_MATCH', 'NO_MATCH', or 'NOT_A_NUMBER' when either string cannot be read as a phone number (blank, placeholder, letters).";
 		desc.parameter_names = {"phone1", "phone2", "region"};
 		desc.parameter_types = {LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR};
 		desc.examples = {"SELECT phonenumber_match('+14155552671', '(415) 555-2671', 'US');"};

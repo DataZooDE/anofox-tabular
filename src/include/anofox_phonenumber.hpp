@@ -18,6 +18,9 @@ namespace phonenumber {
 struct PhoneNumberParts {
 	bool valid = false;
 	int country_code = 0;
+	//! The national significant number; set for a valid number and also for one
+	//! that failed only the length check (phonenumber_parse still reports NULL
+	//! then). Empty when the input could not be read as a number at all.
 	std::string national_number;
 	//! The region the number was read in: the region argument or the default
 	//! region for a national number, the country code's region otherwise. Set
