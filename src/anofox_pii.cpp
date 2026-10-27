@@ -1538,7 +1538,7 @@ URLRecognizer::URLRecognizer()
     : RegexRecognizer(
         PIIType::URL,
         "URL",
-        R"(\bhttps?://[^\s<>\"\{\}\|\\\^\[\]`]+\b)"
+        R"(\b(?:https?|ftps?)://[^\s<>\"\{\}\|\\\^\[\]`]+\b)"
     ) {}
 
 URLRecognizer::~URLRecognizer() {}
@@ -3060,8 +3060,11 @@ std::vector<PIIMatch> PIIEngine::ResolveOverlaps(std::vector<PIIMatch> matches) 
     // is the personal data of that URL: the URL yields to the EMAIL, so the address is
     // reported, hashed and masked like the same address in a CRM column, and redaction keeps
     // scheme, host and path. Without EMAIL among the types the URL is matched as a whole.
-    // An address right after "://" is the userinfo of the URL ("https://user@host/path"),
-    // not an email address, and the URL stays one match.
+    // The authority of a URL (between "://" and the first '/', '?' or '#') may start with
+    // userinfo closed by '@' ("https://user:password@host/path"). An email-shaped span there
+    // ("password@host") is the userinfo, not an email address: a URL with userinfo never
+    // yields, so the whole URL is one match and neither user name nor password stays
+    // readable, even when its query also holds an address.
     std::vector<std::pair<size_t, size_t>> email_spans;
     for (const auto &match : matches) {
         if (match.type == PIIType::EMAIL) {
@@ -3070,13 +3073,24 @@ std::vector<PIIMatch> PIIEngine::ResolveOverlaps(std::vector<PIIMatch> matches) 
     }
     if (!email_spans.empty()) {
         const auto url_contains_email = [&email_spans](const PIIMatch &url) {
-            return url.type == PIIType::URL &&
-                   std::any_of(email_spans.begin(), email_spans.end(), [&url](const std::pair<size_t, size_t> &span) {
-                       const auto scheme_end = url.matched_text.find("://");
-                       const bool userinfo = scheme_end != std::string::npos &&
-                                             span.first == url.start_pos + scheme_end + 3;
-                       return !userinfo && span.first >= url.start_pos && span.second <= url.end_pos;
-                   });
+            if (url.type != PIIType::URL) {
+                return false;
+            }
+            const auto scheme_end = url.matched_text.find("://");
+            if (scheme_end != std::string::npos) {
+                const size_t authority_start = scheme_end + 3;
+                const size_t authority_end = url.matched_text.find_first_of("/?#", authority_start);
+                const auto authority = std::string_view(url.matched_text)
+                                           .substr(authority_start, authority_end == std::string::npos
+                                                                        ? std::string_view::npos
+                                                                        : authority_end - authority_start);
+                if (authority.find('@') != std::string_view::npos) {
+                    return false;
+                }
+            }
+            return std::any_of(email_spans.begin(), email_spans.end(), [&url](const std::pair<size_t, size_t> &span) {
+                return span.first >= url.start_pos && span.second <= url.end_pos;
+            });
         };
         const auto first_url = std::remove_if(matches.begin(), matches.end(), url_contains_email);
         if (first_url != matches.end()) {
@@ -3876,7 +3890,7 @@ void PIIStatusFunction(ClientContext &, TableFunctionInput &input, DataChunk &ou
         {PIIType::IP_ADDRESS, "IPv4 and IPv6 formats"},
         {PIIType::IBAN, "ISO 13616: registered country, its length and MOD-97 checksum"},
         {PIIType::DE_TAX_ID, "11-digit Steueridentifikationsnummer"},
-        {PIIType::URL, "HTTP/HTTPS URLs"},
+        {PIIType::URL, "HTTP, HTTPS, FTP and FTPS URLs"},
 #if HAVE_OPENVINO
         {PIIType::NAME, "OpenVINO NER model (anofox_ner_model), PER entities; name dictionary fallback"},
         {PIIType::ORGANIZATION, "OpenVINO NER model (anofox_ner_model), ORG entities (companies, institutions)"},

@@ -29,7 +29,7 @@ enum class PIIType {
     DE_SVNR,         // German pension insurance number (Rentenversicherungsnummer)
     DE_KVNR,         // German health insurance number (Krankenversichertennummer)
     DE_ID_CARD,      // German Personalausweis / Reisepass document number
-    URL,             // HTTP/HTTPS URLs
+    URL,             // HTTP(S) and FTP(S) URLs
     NAME,            // Person names (NER-based detection, PER entities)
     ORGANIZATION,    // Organization/company names (NER-based, ORG entities)
     LOCATION,        // Geographic locations (NER-based, LOC entities)
