@@ -296,3 +296,36 @@ class TestMakeMoneyApi:
         from anofox import money
         with pytest.raises(TypeError, match=r"Series.*to_frame"):
             money.make_money(conn, pd.Series([12.5], name="total"), "EUR")
+
+
+class TestMakeMoneyBadRows:
+    """On a DataFrame, a row the extension rejects gives a missing value (python/README.md)."""
+
+    def test_unknown_currency_code_gives_none(self, conn):
+        import pandas as pd
+        from anofox import money
+        df = pd.DataFrame({
+            "invoice_no": ["INV-2026-0201", "INV-2026-0202", "INV-2026-0203"],
+            "total": [99.5, 12.0, 450.25],
+            "currency": ["EUR", "EUR?", "chf"],
+        })
+        out = money.make_money(conn, df, column="total", currency_column="currency")
+        values = out["make_money"].tolist()
+        assert values[0] == {"amount": Decimal("99.500"), "currency": "EUR"}
+        assert pd.isna(values[1])
+        assert values[2] == {"amount": Decimal("450.250"), "currency": "CHF"}
+
+    def test_polars_nan_amount_gives_none(self, conn):
+        pl = pytest.importorskip("polars")
+        from anofox import money
+        df = pl.DataFrame({"total": [12.5, float("nan"), None]})
+        out = money.make_money(conn, df, "USD", column="total")
+        assert out["make_money"].to_list() == [
+            {"amount": Decimal("12.500"), "currency": "USD"}, None, None,
+        ]
+
+    def test_scalar_unknown_currency_still_raises(self, conn):
+        import duckdb
+        from anofox import money
+        with pytest.raises(duckdb.Error, match="currency"):
+            money.make_money(conn, 10.0, "EUR?")

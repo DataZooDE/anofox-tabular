@@ -32,18 +32,20 @@ def make_money(
     conn:
         An :class:`~anofox.AnofoxConnection`.
     amount:
-        Monetary amount, or a pandas/polars DataFrame (with *column*). Must be
-        finite (NaN/Inf raise) and within the DECIMAL(18,3) range; it is
+        Monetary amount, or a pandas/polars DataFrame (with *column*). A single
+        amount must be finite (NaN/Inf raise) and within the DECIMAL(18,3) range; it is
         rounded half away from zero to 3 decimals. A :class:`decimal.Decimal`
         is kept exact; a ``float`` holds about 15 significant digits. ``None``
         gives ``None``.
     currency:
         ISO 4217 currency code for every value, e.g. ``"USD"`` or ``"EUR"``
         (case-insensitive; stored uppercase). Required for a single amount.
-        An unknown code raises a DuckDB error.
+        For a single amount an unknown code raises a DuckDB error.
     column:
         DataFrame only: column holding the amounts. A missing amount (``None``
-        or NaN) gives a missing money value.
+        or NaN) gives a missing money value, and so does a row the extension
+        rejects (unknown currency code, infinite or out-of-range amount):
+        a DataFrame never raises for a bad row.
     currency_column:
         DataFrame only: column holding the currency code of each row. Cannot
         be combined with *currency*.
@@ -75,7 +77,10 @@ def make_money(
         raise ValueError("pass 'currency' or 'currency_column' with a DataFrame.")
     return apply_scalar(
         conn, amount, df_type,
-        f"anofox_tab_money({quote_ident(column)}, {currency_sql})", params, "make_money",
+        # TRY: a row the extension rejects (unknown currency code, NaN/Inf or
+        # out-of-range amount) becomes a missing value instead of failing the
+        # whole DataFrame, like every other row-wise wrapper.
+        f"TRY(anofox_tab_money({quote_ident(column)}, {currency_sql}))", params, "make_money",
     )
 
 
