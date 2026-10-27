@@ -982,6 +982,11 @@ struct CheckBranch {
 	string unevaluated_expr;
 	// SQL expressions over __c appended to the message (e.g. "; 2 row(s) skipped ...")
 	vector<string> message_suffixes;
+	// agg: the aggregate; when it is exact the inner query also exposes it as __exact, which
+	// the thresholds are compared with and the message prints
+	AggregateSQL agg;
+	// Further columns of the simple aggregate path's inner query ("<expr> AS <name>")
+	vector<string> extra_columns;
 };
 
 // How many offending values a failing values_in_set / duplicate_count / match_rate message shows
@@ -1151,9 +1156,14 @@ static CheckBranch BuildCheckBranch(ClientContext &context, const CheckSpec &spe
 		}
 		string agg_upper = agg;
 		std::transform(agg_upper.begin(), agg_upper.end(), agg_upper.begin(), ::toupper);
-		string double_expr = "CAST(" + QuoteSqlIdentifier(spec.column_name) + " AS DOUBLE)";
-		value_expr = BuildFiniteAggregateExpr(agg_upper, double_expr);
-		branch.nonfinite_count_expr = BuildNonFiniteCountExpr(double_expr);
+		string col = QuoteSqlIdentifier(spec.column_name);
+		auto probe = BindProbe(context, "SELECT " + col + " FROM " + table_ref + " LIMIT 0");
+		branch.agg = BuildAggregateSQL(agg_upper, col, probe.types[0]);
+		value_expr = branch.agg.value_expr;
+		branch.nonfinite_count_expr = branch.agg.nonfinite_count_expr;
+		if (branch.agg.IsExact()) {
+			branch.extra_columns.push_back(branch.agg.exact_expr + " AS __exact");
+		}
 	} else if (spec.check_type == "duplicate_count") {
 		auto key_columns = DuplicateKeyColumns(spec);
 		vector<string> key_exprs;
@@ -1373,6 +1383,9 @@ static CheckBranch BuildCheckBranch(ClientContext &context, const CheckSpec &spe
 	if (!branch.unevaluated_expr.empty()) {
 		select_list += ", " + branch.unevaluated_expr + " AS __unevaluated";
 	}
+	for (auto &column : branch.extra_columns) {
+		select_list += ", " + column;
+	}
 	if (grouped) {
 		branch.inner_sql = "SELECT " + branch.identifier_sql + " AS identifier, " + select_list + " FROM " +
 		                   source_sql + " GROUP BY 1";
@@ -1437,6 +1450,12 @@ static string BuildBranchSQL(const CheckSpec &spec, const CheckBranch &branch, c
 	string fail_status = spec.monitor_only ? "warn" : "fail";
 	string below_lower = "(" + lower_expr + " IS NOT NULL AND __c.value < " + lower_expr + ")";
 	string above_upper = "(" + upper_expr + " IS NOT NULL AND __c.value > " + upper_expr + ")";
+	// An exact aggregate is compared and printed in its exact type
+	const bool exact = branch.agg.IsExact();
+	if (exact) {
+		below_lower = BoundViolationSQL("__c.__exact", spec.lower_threshold, branch.agg, true);
+		above_upper = BoundViolationSQL("__c.__exact", spec.upper_threshold, branch.agg, false);
+	}
 	string fail_cond = below_lower + " OR " + above_upper;
 	// Neither threshold configured: the row only records the value
 	const bool no_thresholds =
@@ -1453,7 +1472,11 @@ static string BuildBranchSQL(const CheckSpec &spec, const CheckBranch &branch, c
 	}
 	// freshness measures an age in seconds (the direct freshness() takes an INTERVAL instead)
 	string unit = spec.check_type == "freshness" ? " || ' seconds'" : "";
-	string value_text = RoundedNumberSQL("__c.value") + unit;
+	string value_text = exact ? "CAST(__c.__exact AS VARCHAR)" : RoundedNumberSQL("__c.value") + unit;
+	string lower_text =
+	    exact ? ThresholdTextSQL(spec.lower_threshold, branch.agg) : RoundedNumberSQL(lower_expr) + unit;
+	string upper_text =
+	    exact ? ThresholdTextSQL(spec.upper_threshold, branch.agg) : RoundedNumberSQL(upper_expr) + unit;
 	string value_prefix = "'" + type_lit + " value ' || " + value_text;
 	// "; samples: 'a', 'b'" when the check lists offending values and found some
 	string samples_suffix = branch.has_samples ? " || CASE WHEN len(__c.samples) > 0 THEN '; samples: ''' || "
@@ -1469,10 +1492,10 @@ static string BuildBranchSQL(const CheckSpec &spec, const CheckBranch &branch, c
 	string message_sql = "(CASE WHEN __c.value IS NULL THEN '" + null_message + "' "
 	                     "     WHEN isnan(__c.value) THEN " + nan_message + " "
 	                     "     WHEN " + below_lower + " THEN " + value_prefix + " || ' violates thresholds (' || " +
-	                     value_text + " || ' < lower ' || " + RoundedNumberSQL(lower_expr) + unit + " || ')'" +
+	                     value_text + " || ' < lower ' || " + lower_text + " || ')'" +
 	                     samples_suffix + " "
 	                     "     WHEN " + above_upper + " THEN " + value_prefix + " || ' violates thresholds (' || " +
-	                     value_text + " || ' > upper ' || " + RoundedNumberSQL(upper_expr) + unit + " || ')'" +
+	                     value_text + " || ' > upper ' || " + upper_text + " || ')'" +
 	                     samples_suffix + " "
 	                     "     ELSE " + within_message + " END)";
 	if (!branch.unevaluated_expr.empty()) {

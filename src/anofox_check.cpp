@@ -169,24 +169,173 @@ string BuildNonFiniteCountExpr(const string &double_expr) {
 	return "COUNT(*) FILTER (WHERE NOT isfinite(" + double_expr + "))";
 }
 
+AggregateSQL BuildAggregateSQL(const string &agg_upper, const string &column_sql, const LogicalType &column_type) {
+	AggregateSQL result;
+	bool is_integer = false;
+	switch (column_type.id()) {
+	case LogicalTypeId::TINYINT:
+	case LogicalTypeId::SMALLINT:
+	case LogicalTypeId::INTEGER:
+	case LogicalTypeId::BIGINT:
+	case LogicalTypeId::HUGEINT:
+	case LogicalTypeId::UTINYINT:
+	case LogicalTypeId::USMALLINT:
+	case LogicalTypeId::UINTEGER:
+	case LogicalTypeId::UBIGINT:
+		is_integer = true;
+		break;
+	default:
+		break;
+	}
+	const bool is_decimal = column_type.id() == LogicalTypeId::DECIMAL;
+	if (is_integer || is_decimal) {
+		// MEDIAN of an integer column interpolates (a DOUBLE); of a DECIMAL column it stays DECIMAL
+		const bool exact =
+		    agg_upper == "MIN" || agg_upper == "MAX" || agg_upper == "SUM" || (agg_upper == "MEDIAN" && is_decimal);
+		if (exact) {
+			result.exact_scale = is_decimal ? DecimalType::GetScale(column_type) : 0;
+			result.exact_type =
+			    is_decimal ? "DECIMAL(38," + std::to_string(result.exact_scale) + ")" : string("HUGEINT");
+			result.exact_expr = "CAST(" + agg_upper + "(" + column_sql + ") AS " + result.exact_type + ")";
+			result.value_expr = "CAST(" + result.exact_expr + " AS DOUBLE)";
+		} else {
+			// AVG and STDDEV of an exact column: DuckDB's own DOUBLE result (AVG sums exactly)
+			result.value_expr = "CAST(" + agg_upper + "(" + column_sql + ") AS DOUBLE)";
+		}
+		return result;
+	}
+	string double_expr = "CAST(" + column_sql + " AS DOUBLE)";
+	result.value_expr = BuildFiniteAggregateExpr(agg_upper, double_expr);
+	result.nonfinite_count_expr = BuildNonFiniteCountExpr(double_expr);
+	return result;
+}
+
+namespace {
+
+// A finite DOUBLE as the decimal it is written as (its shortest round-trip text), without an
+// exponent: 918624.95 is {false, "918624", "95"}, 1e-07 is {false, "0", "0000001"}
+struct PlainDecimal {
+	bool negative = false;
+	string integer_digits;  // no leading zeros; "0" for none
+	string fraction_digits; // no trailing zeros
+
+	string Text(const string &fraction) const {
+		return (negative ? "-" : "") + integer_digits + (fraction.empty() ? "" : "." + fraction);
+	}
+};
+
+PlainDecimal ToPlainDecimal(double number) {
+	string text = Value::DOUBLE(number).ToString();
+	PlainDecimal result;
+	size_t pos = 0;
+	if (!text.empty() && (text[0] == '-' || text[0] == '+')) {
+		result.negative = text[0] == '-';
+		pos = 1;
+	}
+	auto exponent_pos = text.find_first_of("eE", pos);
+	int64_t exponent = 0;
+	if (exponent_pos != string::npos) {
+		exponent = std::stoll(text.substr(exponent_pos + 1));
+	}
+	string mantissa = text.substr(pos, exponent_pos == string::npos ? string::npos : exponent_pos - pos);
+	auto point = mantissa.find('.');
+	string digits = mantissa;
+	int64_t point_index = static_cast<int64_t>(mantissa.size());
+	if (point != string::npos) {
+		digits = mantissa.substr(0, point) + mantissa.substr(point + 1);
+		point_index = static_cast<int64_t>(point);
+	}
+	point_index += exponent;
+	const auto digit_count = static_cast<int64_t>(digits.size());
+	if (point_index <= 0) {
+		result.integer_digits = "0";
+		result.fraction_digits = string(static_cast<size_t>(-point_index), '0') + digits;
+	} else if (point_index >= digit_count) {
+		result.integer_digits = digits + string(static_cast<size_t>(point_index - digit_count), '0');
+	} else {
+		result.integer_digits = digits.substr(0, static_cast<size_t>(point_index));
+		result.fraction_digits = digits.substr(static_cast<size_t>(point_index));
+	}
+	auto first_nonzero = result.integer_digits.find_first_not_of('0');
+	result.integer_digits = first_nonzero == string::npos ? "0" : result.integer_digits.substr(first_nonzero);
+	auto last_nonzero = result.fraction_digits.find_last_not_of('0');
+	result.fraction_digits = last_nonzero == string::npos ? "" : result.fraction_digits.substr(0, last_nonzero + 1);
+	if (result.integer_digits == "0" && result.fraction_digits.empty()) {
+		result.negative = false;
+	}
+	return result;
+}
+
+} // anonymous namespace
+
+string BoundViolationSQL(const string &value_sql, const Value &threshold, const AggregateSQL &agg, bool is_lower) {
+	if (threshold.IsNull()) {
+		return "FALSE";
+	}
+	if (!agg.IsExact()) {
+		return "(" + value_sql + (is_lower ? " < " : " > ") + DoubleThresholdSQL(threshold) + ")";
+	}
+	auto decimal = ToPlainDecimal(threshold.GetValue<double>());
+	const idx_t integral_digits = decimal.integer_digits == "0" ? 0 : decimal.integer_digits.size();
+	if (integral_digits + agg.exact_scale > 38) {
+		// Beyond every value of the exact type: a lower bound above them all is always
+		// violated, an upper bound above them all never (mirrored for a negative bound)
+		return (is_lower != decimal.negative) ? "TRUE" : "FALSE";
+	}
+	string op = is_lower ? "<" : ">";
+	string fraction = decimal.fraction_digits;
+	if (fraction.size() > agg.exact_scale) {
+		// The value has exact_scale decimals: for such a value, v < 0.949 <=> v <= 0.94 and
+		// v > -0.005 <=> v >= -0.00, comparing with the threshold truncated to that scale
+		fraction = fraction.substr(0, agg.exact_scale);
+		if (is_lower && !decimal.negative) {
+			op = "<=";
+		} else if (!is_lower && decimal.negative) {
+			op = ">=";
+		}
+	}
+	return "(" + value_sql + " " + op + " CAST('" + decimal.Text(fraction) + "' AS " + agg.exact_type + "))";
+}
+
+string ThresholdTextSQL(const Value &threshold, const AggregateSQL &agg) {
+	if (threshold.IsNull()) {
+		return "CAST(NULL AS VARCHAR)";
+	}
+	auto decimal = ToPlainDecimal(threshold.GetValue<double>());
+	// At least the value's scale, as DuckDB prints the value: 310.50 > upper 200.00
+	string fraction = decimal.fraction_digits;
+	if (fraction.size() < agg.exact_scale) {
+		fraction += string(agg.exact_scale - fraction.size(), '0');
+	}
+	return "'" + decimal.Text(fraction) + "'";
+}
+
 // Helper: Generate SQL for aggregate assertions (avg/min/max/sum/median/stddev vs thresholds).
-// agg_keyword must come from the bind-time whitelist, never from raw user input.
+// agg_keyword must come from the bind-time whitelist, never from raw user input. min, max, sum
+// (and median of a DECIMAL) of an exact column compare exactly (BuildAggregateSQL).
 // Empty-input semantics: an empty table or all-NULL column yields value = NULL and
 // passes trivially with an explicit message.
-static string GenerateAggCheckSQL(const string &table_ref, const string &column_name, const string &agg_keyword,
-                                  const Value &lower, const Value &upper) {
+static string GenerateAggCheckSQL(const string &table_ref, const string &column_name, const LogicalType &column_type,
+                                  const string &agg_keyword, const Value &lower, const Value &upper) {
 	string lower_val = DoubleThresholdSQL(lower);
 	string upper_val = DoubleThresholdSQL(upper);
 	string col_id = QuoteSqlIdentifier(column_name);
 	string agg_upper = agg_keyword;
 	std::transform(agg_upper.begin(), agg_upper.end(), agg_upper.begin(), ::toupper);
+	auto agg = BuildAggregateSQL(agg_upper, col_id, column_type);
+	string compared = agg.IsExact() ? "exact_value" : "value";
+	string below = BoundViolationSQL(compared, lower, agg, true);
+	string above = BoundViolationSQL(compared, upper, agg, false);
+	string value_text = "CAST(" + compared + " AS VARCHAR)";
+	string lower_text = agg.IsExact() ? ThresholdTextSQL(lower, agg) : "CAST(" + lower_val + " AS VARCHAR)";
+	string upper_text = agg.IsExact() ? ThresholdTextSQL(upper, agg) : "CAST(" + upper_val + " AS VARCHAR)";
+	string nonfinite = agg.nonfinite_count_expr.empty() ? "0" : agg.nonfinite_count_expr;
 
 	return "SELECT "
 		"CASE "
 		"  WHEN value IS NULL THEN 'pass' "
 		"  WHEN isnan(value) THEN 'fail' "
-		"  WHEN (" + lower_val + " IS NOT NULL AND value < " + lower_val + ") OR "
-		"       (" + upper_val + " IS NOT NULL AND value > " + upper_val + ") THEN 'fail' "
+		"  WHEN " + below + " OR " + above + " THEN 'fail' "
 		"  ELSE 'pass' "
 		"END AS status, "
 		"'" + agg_keyword + "' AS agg, "
@@ -197,14 +346,15 @@ static string GenerateAggCheckSQL(const string &table_ref, const string &column_
 		"  WHEN value IS NULL THEN 'No non-NULL values to evaluate; " + agg_keyword + " check passed trivially' "
 		"  WHEN isnan(value) THEN '" + agg_keyword + " value is NaN: the column contains ' || "
 		"    CAST(nonfinite_count AS VARCHAR) || ' NaN/Inf value(s)' "
-		"  WHEN (" + lower_val + " IS NOT NULL AND value < " + lower_val + ") THEN "
-		"    '" + agg_keyword + " value ' || CAST(value AS VARCHAR) || ' is below minimum ' || CAST(" + lower_val + " AS VARCHAR) "
-		"  WHEN (" + upper_val + " IS NOT NULL AND value > " + upper_val + ") THEN "
-		"    '" + agg_keyword + " value ' || CAST(value AS VARCHAR) || ' exceeds maximum ' || CAST(" + upper_val + " AS VARCHAR) "
-		"  ELSE '" + agg_keyword + " value ' || CAST(value AS VARCHAR) || ' is within acceptable range' "
+		"  WHEN " + below + " THEN "
+		"    '" + agg_keyword + " value ' || " + value_text + " || ' is below minimum ' || " + lower_text + " "
+		"  WHEN " + above + " THEN "
+		"    '" + agg_keyword + " value ' || " + value_text + " || ' exceeds maximum ' || " + upper_text + " "
+		"  ELSE '" + agg_keyword + " value ' || " + value_text + " || ' is within acceptable range' "
 		"END AS message "
-		"FROM (SELECT " + BuildFiniteAggregateExpr(agg_upper, "CAST(" + col_id + " AS DOUBLE)") + " AS value, " +
-		BuildNonFiniteCountExpr("CAST(" + col_id + " AS DOUBLE)") + " AS nonfinite_count FROM " + table_ref + ")";
+		"FROM (SELECT " + agg.value_expr + " AS value, " +
+		(agg.IsExact() ? agg.exact_expr : string("CAST(NULL AS DOUBLE)")) + " AS exact_value, " + nonfinite +
+		" AS nonfinite_count FROM " + table_ref + ")";
 }
 
 string BuildDuplicateCountExpr(const vector<string> &column_names) {
@@ -806,12 +956,14 @@ static unique_ptr<TableRef> CheckAggBindReplace(ClientContext &context, TableFun
 	}
 	ValidateFiniteDouble(input.inputs[3], "agg_check", "lower_threshold");
 	ValidateFiniteDouble(input.inputs[4], "agg_check", "upper_threshold");
-	ValidateThresholdOrder(input.inputs[3], input.inputs[4], "agg_check", "lower_threshold", "upper_threshold");
-	RequireRelationColumns(context, "agg_check", table_name, {column_name});
+	auto &lower = input.inputs[3];
+	auto &upper = input.inputs[4];
+	ValidateThresholdOrder(lower, upper, "agg_check", "lower_threshold", "upper_threshold");
+	auto column = RequireRelationColumns(context, "agg_check", table_name, {column_name})[0];
 	RequireNumericColumn(context, "agg_check", table_name, column_name);
 
 	string table_ref = BuildQueryTableRef(table_name);
-	string sql = GenerateAggCheckSQL(table_ref, column_name, agg, input.inputs[3], input.inputs[4]);
+	string sql = GenerateAggCheckSQL(table_ref, column.name, column.type, agg, lower, upper);
 	return ParseSubquery(sql, context, "Failed to parse aggregate check query");
 }
 

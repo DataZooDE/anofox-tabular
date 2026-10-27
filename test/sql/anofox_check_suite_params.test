@@ -121,7 +121,7 @@ INSERT INTO nightly_checks VALUES
 query TTT
 SELECT check_name, status, message FROM run_checks('nightly_checks') ORDER BY check_name
 ----
-big_basket	warn	agg value 310.5 violates thresholds (310.5 > upper 200.0)
+big_basket	warn	agg value 310.50 violates thresholds (310.50 > upper 200.00)
 customer_fk	fail	match_rate value 0.75 violates thresholds (0.75 < lower 1.0); samples: '12', '9'
 customers_seen	pass	distinct_count value 7.0: no thresholds configured (monitor)
 order_id_dupes	fail	duplicate_count value 1.0 violates thresholds (1.0 > upper 0.0); samples: '5005'

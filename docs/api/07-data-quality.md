@@ -501,10 +501,19 @@ agg_check(table_name VARCHAR, column_name VARCHAR, agg VARCHAR, lower_threshold 
 | `upper_threshold` | `DOUBLE` | required | Upper bound; `NULL` = unbounded |
 
 The column must be numeric (or `BOOLEAN`); another type is a binder error. An empty table or an
-all-NULL column gives `value = NULL` and passes. When the column contains
+all-NULL column gives `value = NULL` and passes. When a `FLOAT` or `DOUBLE` column contains
 NaN or `±Inf` values, `value` is `NaN` and the check fails with the message
 `<agg> value is NaN: the column contains <n> NaN/Inf value(s)`; an average or a sum over such a
 column has no meaningful value.
+
+`min`, `max` and `sum` of an integer or `DECIMAL` column, and `median` of a `DECIMAL` column,
+are computed and compared exactly, in the column's type: the sum of a `DECIMAL(10,2)` ledger
+is `918624.95`, not the `918624.9499999994` a `DOUBLE` sum gives, so `lower_threshold =
+upper_threshold = 918624.95` passes, and a `BIGINT` maximum of `9007199254740993` exceeds an
+upper bound of `9007199254740992`. A threshold is compared as the decimal it is written as;
+the message prints the exact value (`sum value 918624.95 is within acceptable range`). The
+`value` column stays `DOUBLE`. `avg` and `stddev`, and every aggregate of a `FLOAT` or
+`DOUBLE` column, are `DOUBLE`.
 
 ```sql
 SELECT status, agg, round(value, 2) AS value, message
@@ -1071,7 +1080,7 @@ The `value` column holds the measure of each type:
 | `distinct_count` | distinct values | none | yes |
 | `regex_match` | match rate | `pattern` (required) | yes |
 | `values_in_set` | share in set | `allowed_values` (JSON array of strings) | yes |
-| `agg` | the aggregate | `agg` (required): `avg`, `min`, `max`, `sum`, `median`, `stddev` | yes |
+| `agg` | the aggregate (`min`, `max`, `sum` of an integer or `DECIMAL` column and `median` of a `DECIMAL` column are compared exactly, as in [`agg_check`](#agg_check)) | `agg` (required): `avg`, `min`, `max`, `sum`, `median`, `stddev` | yes |
 | `duplicate_count` | duplicates | none | yes |
 | `compliance` | compliance rate | `expression` (required) | yes |
 | `freshness` | age in seconds (the thresholds are seconds too) | `reference_time` (default: the current UTC time, no ICU needed) | yes |
@@ -1199,7 +1208,8 @@ DuckDB cannot wrap an expression that contains a subquery or a volatile function
 tolerated: the error aborts the whole `run_checks` call, as it would in a plain query.
 `compliance` expressions and `filter_expr` are validated like the
 [`compliance`](#compliance) expression and run with your privileges. Messages print values
-rounded to three decimals; the `value` column keeps the full precision.
+rounded to three decimals (an exact `agg` value and its thresholds in full:
+`agg value 918624.95 is within thresholds`); the `value` column keeps the full precision.
 
 ### Time zone
 
