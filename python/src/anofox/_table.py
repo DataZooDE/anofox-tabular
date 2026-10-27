@@ -69,19 +69,34 @@ def without_temp_names(text: str, labels: Optional[dict] = None) -> str:
     return _TEMP_NAME.sub(lambda m: _temp_name_label(m, labels or {}), text)
 
 
+#: The "LINE n: <query>" excerpt (and its caret line) DuckDB appends to an error.
+_QUERY_EXCERPT = re.compile(r"\n*^LINE \d+:[^\n]*(?:\n[ \t]*\^+)?[ \t]*$", re.MULTILINE)
+
+
+def without_query_excerpt(text: str) -> str:
+    """*text* without DuckDB's ``LINE n:`` excerpt of the query that failed."""
+    if "LINE " not in text:
+        return text
+    return _QUERY_EXCERPT.sub("", text).rstrip()
+
+
 def hide_temp_names(error: BaseException, labels: Optional[dict] = None) -> None:
     """
-    Replace generated temporary table names in *error*'s message, in place.
+    Make *error*'s message about the caller's input, not the wrapper's SQL, in place.
 
-    A name found in *labels* becomes its label (e.g. ``"the source DataFrame"``),
-    any other generated name ``"the DataFrame"``; a preceding "table",
-    "source (table)" or "target (table)" is dropped (``"in table '_anofox_...'"`` becomes
-    ``"in the DataFrame"``). The exception keeps its type and traceback.
+    A generated temporary table name found in *labels* becomes its label (e.g.
+    ``"the source DataFrame"``), any other generated name ``"the DataFrame"``;
+    a preceding "table", "source (table)" or "target (table)" is dropped
+    (``"in table '_anofox_...'"`` becomes ``"in the DataFrame"``). DuckDB's
+    ``LINE n:`` excerpt of the wrapper's internal query is removed. The
+    exception keeps its type and traceback.
     """
     args = getattr(error, "args", ())
-    if not args or not isinstance(args[0], str) or "_anofox_" not in args[0]:
+    if not args or not isinstance(args[0], str):
         return
-    message = without_temp_names(args[0], labels)
+    if "_anofox_" not in args[0] and "LINE " not in args[0]:
+        return
+    message = without_query_excerpt(without_temp_names(args[0], labels))
     try:
         error.args = (message, *args[1:])
     except (AttributeError, TypeError):  # pragma: no cover - exotic exception types
@@ -258,13 +273,17 @@ def apply_scalar(
     its index, so the new column can be assigned back to the input.
     """
     with registered_view(conn.native, df) as (view, position):
-        result = fetch_frame(
-            conn,
-            f"SELECT {expression} AS {quote_ident(result_name)} "
-            f"FROM {quote_ident(view)} ORDER BY {quote_ident(position)}",
-            params,
-            df_type,
-        )
+        try:
+            result = fetch_frame(
+                conn,
+                f"SELECT {expression} AS {quote_ident(result_name)} "
+                f"FROM {quote_ident(view)} ORDER BY {quote_ident(position)}",
+                params,
+                df_type,
+            )
+        except Exception as error:
+            hide_temp_names(error)
+            raise
         if df_type == "pandas":
             values = result[result_name]
             values.index = df.index

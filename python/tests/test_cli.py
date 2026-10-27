@@ -119,6 +119,22 @@ class TestQualityArgValidation:
 # Tests that DO require the extension
 # ---------------------------------------------------------------------------
 
+class TestQualityErrorNamesTheFile:
+    def test_unknown_column_names_file_not_internal_table(self, ext_path, tmp_path):
+        if ext_path is None:
+            pytest.skip("No extension binary")
+        rows = [{"customer_id": "C-1", "email": "ana@example.com"},
+                {"customer_id": "C-2", "email": ""}]
+        csv_path = _make_csv(tmp_path, rows)
+        code, out = _run_cli("quality", csv_path, "--null-max", "0.1",
+                             "--column", "e_mail", "--ext", ext_path)
+        assert code == 2
+        assert "_cli_quality" not in out
+        assert "sample.csv" in out
+        assert "e_mail" in out
+        assert "LINE" not in out
+
+
 class TestProfileCommand:
     def test_profile_produces_output(self, ext_path, tmp_path):
         if ext_path is None:

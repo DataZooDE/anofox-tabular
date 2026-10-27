@@ -19,6 +19,7 @@ import argparse
 import datetime
 import json
 import os
+import re
 import sys
 from decimal import Decimal
 from pathlib import Path
@@ -165,6 +166,18 @@ def _json_value(value):
     return str(value)
 
 
+#: The CLI's internal copy of the file, as an error message names it.
+_CLI_TABLE = re.compile(r"""(?:\btable\s+)?(['"]?)_cli_quality\1""")
+
+
+def _about_file(message: str, file_path: str) -> str:
+    """*message* naming *file_path* instead of the internal table, without the query excerpt."""
+    from ._table import without_query_excerpt
+
+    message = _CLI_TABLE.sub(lambda _: f"file '{file_path}'", message)
+    return without_query_excerpt(message)
+
+
 def _run_quality(args, console=None) -> int:
     """Run ``anofox quality``: 0 = all checks pass, 1 = a check fails, 2 = an error."""
     try:
@@ -174,7 +187,7 @@ def _run_quality(args, console=None) -> int:
             raise
         error = exc.code
     except Exception as exc:  # noqa: BLE001 - any failure to run the checks is exit code 2
-        error = f"{type(exc).__name__}: {exc}"
+        error = _about_file(f"{type(exc).__name__}: {exc}", args.file)
     print(f"anofox quality: error: {error}", file=sys.stderr)
     return 2
 

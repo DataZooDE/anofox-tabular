@@ -183,11 +183,44 @@ class TestIdColumn:
         result = anomaly.outlier_tree(conn, id_table, ["x", "y"], output_mode="outliers", id_column="key")
         self._assert_id_after_row_id(result)
 
-    def test_rejected_in_summary_mode(self, conn, id_table):
+    @pytest.mark.parametrize("func,columns,mode", [
+        ("isolation_forest", "x", "scores"),
+        ("isolation_forest_mv", ["x", "y"], "scores"),
+        ("dbscan", "x", "scores"),
+        ("dbscan_mv", ["x", "y"], "scores"),
+        ("outlier_tree", ["x", "y"], "outliers"),
+    ])
+    def test_rejected_in_summary_mode(self, conn, id_table, func, columns, mode):
+        """A clear ValueError, not a BinderException quoting the internal SQL."""
+        from anofox import anomaly
+        with pytest.raises(ValueError, match=f"id_column needs output_mode='{mode}'") as exc:
+            getattr(anomaly, func)(conn, id_table, columns, id_column="key")
+        assert "anofox_tab_" not in str(exc.value)
+
+
+class TestErrorsWithoutQueryExcerpt:
+    """Errors the wrappers re-raise carry no 'LINE n:' excerpt of the internal query."""
+
+    def test_anomaly_parameter_error(self, conn, id_table):
         import duckdb
         from anofox import anomaly
-        with pytest.raises(duckdb.Error, match="id_column requires output_mode"):
-            anomaly.isolation_forest(conn, id_table, "x", output_mode="summary", id_column="key")
+        with pytest.raises(duckdb.BinderException) as exc:
+            anomaly.isolation_forest(conn, id_table, "x", contamination=0.9)
+        message = str(exc.value)
+        assert "contamination must be between 0.0 and 0.5" in message
+        assert "LINE" not in message and "anofox_tab_isolation_forest(?" not in message
+        assert "^^^" not in message
+
+    def test_quality_unknown_column(self, conn):
+        import duckdb
+        import pandas as pd
+        from anofox import quality
+        tickets = pd.DataFrame({"ticket_id": [101, 102, 103], "priority": ["high", None, "low"]})
+        with pytest.raises(duckdb.BinderException) as exc:
+            quality.null_rate(conn, tickets, "prio")
+        message = str(exc.value)
+        assert "column 'prio' not found in the DataFrame" in message
+        assert "LINE" not in message
 
 
 class TestOutputModes:

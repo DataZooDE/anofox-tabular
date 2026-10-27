@@ -337,6 +337,9 @@ order_id  amount  items  anomaly_score
  SO-1012   980.0      3       0.745399
 ```
 
+`id_column` works only with a per-row `output_mode`; with the default `"summary"` it raises
+`ValueError: isolation_forest_mv: id_column needs output_mode='scores'`.
+
 ### Scale the features for DBSCAN
 
 `epsilon` is a distance in the units of the data. With amounts in euros and item counts in one

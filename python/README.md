@@ -194,6 +194,10 @@ print(checks.checks["null_rate"]["null_rate"])
   the input's index labels, so `df["is_anomaly"] = scores["is_anomaly"]` aligns; rows with a
   `NULL` feature are not in the output and get `NaN`. `row_id` is the 1-based row number in
   the input. A polars output keeps the input's row order and `row_id`.
+- `id_column=` adds an input column to the per-row output; with `output_mode="summary"` it
+  raises `ValueError` (`id_column needs output_mode='scores'`, `'outliers'` for
+  `outlier_tree`). Errors raised by DuckDB keep their type, without the `LINE 1:` excerpt
+  of the wrapper's internal query. `anofox quality` names the input file in its errors.
 - `outlier_tree(..., output_mode="outliers")` returns `conditions` as a list of dicts per
   outlier (polars: `List(Struct)`), each with the keys `column`, `type` (`"numeric"` or
   `"categorical"`), `operator`, `value` (numeric threshold, else `None`) and `values`

@@ -62,6 +62,7 @@ def isolation_forest(
         ValueError.
     """
     _check_output_mode("isolation_forest", output_mode)
+    _check_id_column("isolation_forest", output_mode, id_column)
     with table_inputs(conn, table_or_df) as (table_name,):
         _check_has_values(conn, table_or_df, table_name, [column])
         params = [table_name, column, n_trees, sample_size, contamination, output_mode, seed]
@@ -117,6 +118,7 @@ def isolation_forest_mv(
         Forest).
     """
     _check_output_mode("isolation_forest_mv", output_mode)
+    _check_id_column("isolation_forest_mv", output_mode, id_column)
     cols_csv = _columns_csv(columns)
     with table_inputs(conn, table_or_df) as (table_name,):
         _check_has_values(conn, table_or_df, table_name, cols_csv.split(","))
@@ -163,6 +165,7 @@ def dbscan(
         ``output_mode="scores"``/``"clusters"``.
     """
     _check_output_mode("dbscan", output_mode)
+    _check_id_column("dbscan", output_mode, id_column)
     # The extension's per-row DBSCAN mode is named 'clusters'; keep the
     # package-level "scores" naming consistent with the other detectors.
     sql_mode = "clusters" if output_mode == "scores" else output_mode
@@ -211,6 +214,7 @@ def dbscan_mv(
         ``output_mode="scores"``/``"clusters"``.
     """
     _check_output_mode("dbscan_mv", output_mode)
+    _check_id_column("dbscan_mv", output_mode, id_column)
     cols_csv = _columns_csv(columns)
     sql_mode = "clusters" if output_mode == "scores" else output_mode
     with table_inputs(conn, table_or_df) as (table_name,):
@@ -284,6 +288,7 @@ def outlier_tree(
     dict or DataFrame
     """
     _check_output_mode("outlier_tree", output_mode)
+    _check_id_column("outlier_tree", output_mode, id_column)
     cols_csv = _columns_csv(columns)
     with table_inputs(conn, table_or_df) as (table_name,):
         params = [table_name, cols_csv, output_mode, max_depth, max_perc_outliers,
@@ -407,6 +412,21 @@ def _check_output_mode(function: str, output_mode: str) -> None:
         raise ValueError(
             f"{function}: output_mode must be one of {', '.join(map(repr, allowed))}, "
             f"got {output_mode!r}"
+        )
+
+
+def _check_id_column(function: str, output_mode: str, id_column: Optional[str]) -> None:
+    """
+    Raise ValueError for an *id_column* with the summary output.
+
+    The extension rejects it as well, but with a BinderException that quotes
+    the wrapper's internal query.
+    """
+    if id_column is not None and output_mode == "summary":
+        per_row = "outliers" if function == "outlier_tree" else "scores"
+        raise ValueError(
+            f"{function}: id_column needs output_mode='{per_row}'; the summary has "
+            "no per-row output to add it to"
         )
 
 
