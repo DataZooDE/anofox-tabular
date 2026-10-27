@@ -86,7 +86,9 @@ Behavior:
   (`CAST(... AS VARCHAR)`), unless both types are numeric: `7` and `'007'` differ, `8001` and
   `'n/a'` differ instead of aborting the diff with a conversion error. Numeric type changes
   (`INTEGER` to `BIGINT`, `DECIMAL` to `DOUBLE`) compare by value, so `5000.00` equals `5000.0`.
-  The trace log names each column with both types.
+  The trace log names each column with both types: as a warning, except for a change that only
+  widens the type (`DECIMAL(10,2)` to `DECIMAL(12,2)`, `INTEGER` to `BIGINT`), which is logged
+  at `debug` level.
 - A `TIMESTAMP WITH TIME ZONE` column whose type changed is compared on its UTC instant, whatever
   the session `TimeZone`. Against a `VARCHAR` column it is rendered as UTC text with a `+00`
   suffix (`2026-03-01 08:30:00+00`, the text DuckDB prints under `TimeZone = 'UTC'`); against a
@@ -94,6 +96,14 @@ Behavior:
   key column of that pair is returned as a `TIMESTAMP`.
 - The key and compare columns are checked against both tables at bind time. A missing column or
   table is a binder error.
+- `JSON` columns are compared as text: `{"a":1}` and `{"a": 1}` differ. Compare a normalized
+  form through views (`json(col)::VARCHAR`, or the extracted fields) when only the content
+  matters.
+- The names `diff_type` and `changed_columns` (any case) are reserved for the output. A target
+  column with one of these names, key or not, compared or not, is a binder error that names the
+  column and suggests a view that renames it (see
+  [Columns named like an output column](#columns-named-like-an-output-column)). A source column
+  of that name that the target lacks is not in the output and does not matter.
 - The primary key must be unique in both tables. A repeated key value would join every source row
   of that key with every target row and report false changes, so the diff raises an error naming
   the table and one repeated key instead (see below). Two `NULL` keys count as repeated, matching
@@ -236,6 +246,48 @@ FROM diff_joindiff('tickets_v1', 'tickets_v2', 'ticket_id');
 └───────────┴───────────┴────────────────────────┴─────────────────┘
 ```
 
+### Columns named like an output column
+
+A ticket export with its own `diff_type` column cannot be diffed as it is, because the diff adds
+a column of that name:
+
+```sql
+CREATE TABLE helpdesk_v1 (ticket_id INTEGER, diff_type VARCHAR, priority VARCHAR);
+INSERT INTO helpdesk_v1 VALUES (7001, 'edit', 'high'), (7002, 'create', 'low');
+CREATE TABLE helpdesk_v2 (ticket_id INTEGER, diff_type VARCHAR, priority VARCHAR);
+INSERT INTO helpdesk_v2 VALUES (7001, 'edit', 'urgent'), (7002, 'create', 'low');
+
+SELECT * FROM diff_joindiff('helpdesk_v1', 'helpdesk_v2', 'ticket_id');
+```
+
+```text
+Binder Error: diff_joindiff: column 'diff_type' of target table 'helpdesk_v2' has the name of a diff output column (diff_type, changed_columns); rename it in a view and diff the views, e.g. CREATE VIEW helpdesk_v2_renamed AS SELECT * RENAME (diff_type AS src_diff_type) FROM helpdesk_v2
+-> Unexpected? Please report it: https://github.com/DataZooDE/anofox-tabular/issues
+
+LINE 1: SELECT * FROM diff_joindiff('helpdesk_v1', 'helpdesk_v2', 'ticket_id');
+                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+```
+
+Diff two views that rename it:
+
+```sql
+CREATE VIEW helpdesk_v1_r AS SELECT * RENAME (diff_type AS change_kind) FROM helpdesk_v1;
+CREATE VIEW helpdesk_v2_r AS SELECT * RENAME (diff_type AS change_kind) FROM helpdesk_v2;
+
+SELECT * FROM diff_joindiff('helpdesk_v1_r', 'helpdesk_v2_r', 'ticket_id');
+```
+
+```text
+┌───────────┬───────────┬─────────────┬──────────┬─────────────────┐
+│ diff_type │ ticket_id │ change_kind │ priority │ changed_columns │
+│  varchar  │   int32   │   varchar   │ varchar  │    varchar[]    │
+├───────────┼───────────┼─────────────┼──────────┼─────────────────┤
+│ changed   │      7001 │ edit        │ urgent   │ [priority]      │
+└───────────┴───────────┴─────────────┴──────────┴─────────────────┘
+```
+
+`compare_columns` does not help here: the output shows every target column, compared or not.
+
 ### Compare a subset of columns
 
 With `compare_columns`, only those columns decide whether a row is `changed`. Here the score
@@ -282,7 +334,9 @@ ORDER BY diff_type;
 ### Named parameters
 
 Every parameter can be passed by name, and positional and named arguments can be mixed. A named
-value overrides the positional value of the same parameter:
+value overrides the positional value of the same parameter. Because every overload accepts every
+parameter by name, `duckdb_functions()` lists an overload's positional parameters followed by all
+named ones, so names such as `source_table` appear twice in its `parameters` column:
 
 ```sql
 SELECT diff_type, id

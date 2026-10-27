@@ -7,6 +7,7 @@
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/common/types/value.hpp"
 #include "duckdb/function/table_function.hpp"
+#include "duckdb/parser/keyword_helper.hpp"
 #include "duckdb/parser/parser.hpp"
 #include "duckdb/parser/tableref/subqueryref.hpp"
 #include "duckdb/parser/parsed_data/create_table_function_info.hpp"
@@ -32,6 +33,9 @@ namespace {
 // when primary key values themselves are NULL.
 constexpr const char *SOURCE_PRESENT_MARKER = "__anofox_diff_s_present";
 constexpr const char *TARGET_PRESENT_MARKER = "__anofox_diff_t_present";
+// Output columns the diff adds next to the target columns
+constexpr const char *DIFF_TYPE_COLUMN = "diff_type";
+constexpr const char *CHANGED_COLUMNS_COLUMN = "changed_columns";
 
 vector<string> ParseColumnList(const Value &column_value) {
 	vector<string> result;
@@ -109,6 +113,81 @@ void ValidateCompareColumns(const string &function_name, const vector<string> &c
 	}
 }
 
+// The diff output is diff_type, the key columns, the other target columns and changed_columns,
+// and each side of the join carries a presence marker. A target column named diff_type or
+// changed_columns (any case) would collide with the added column: an ambiguous reference or a
+// silently renamed changed_columns_1. A column named like a marker would collide inside the
+// join. Both are rejected at bind time with a way out (a renaming view).
+void RejectReservedColumnNames(const string &function_name, const vector<ResolvedColumn> &columns,
+                               const string &side, const string &table_name, bool output_side) {
+	for (auto &column : columns) {
+		bool reserved = StringUtil::CIEquals(column.name, SOURCE_PRESENT_MARKER) ||
+		                StringUtil::CIEquals(column.name, TARGET_PRESENT_MARKER);
+		if (output_side) {
+			reserved = reserved || StringUtil::CIEquals(column.name, DIFF_TYPE_COLUMN) ||
+			           StringUtil::CIEquals(column.name, CHANGED_COLUMNS_COLUMN);
+		}
+		if (!reserved) {
+			continue;
+		}
+		AnofoxTrace(AnofoxLogLevel::Warn, function_name + ": rejecting column '" + column.name + "' of " + side +
+		                                      " table '" + table_name + "' (reserved diff output name)");
+		// A suggested view name from the unqualified table name
+		auto view_name = table_name.substr(table_name.find_last_of('.') == string::npos ? 0
+		                                                                               : table_name.find_last_of('.') + 1) +
+		                 "_renamed";
+		throw BinderException(
+		    "%s: column '%s' of %s table '%s' has the name of a diff output column (diff_type, changed_columns); "
+		    "rename it in a view and diff the views, e.g. CREATE VIEW %s AS SELECT * RENAME (%s AS %s) FROM %s",
+		    function_name, column.name, side, table_name, KeywordHelper::WriteOptionallyQuoted(view_name),
+		    KeywordHelper::WriteOptionallyQuoted(column.name),
+		    KeywordHelper::WriteOptionallyQuoted("src_" + StringUtil::Lower(column.name)), table_name);
+	}
+}
+
+// Whether a numeric type change only widens the type, so every source value is represented
+// exactly in the target type: a DECIMAL with at least as many integer and fraction digits, or a
+// wider signed or unsigned integer of the same signedness. Those changes are logged at debug
+// level instead of as a warning.
+bool IsLosslessNumericWidening(const LogicalType &source_type, const LogicalType &target_type) {
+	if (source_type.id() == LogicalTypeId::DECIMAL && target_type.id() == LogicalTypeId::DECIMAL) {
+		auto source_scale = DecimalType::GetScale(source_type);
+		auto target_scale = DecimalType::GetScale(target_type);
+		auto source_integer_digits = DecimalType::GetWidth(source_type) - source_scale;
+		auto target_integer_digits = DecimalType::GetWidth(target_type) - target_scale;
+		return target_scale >= source_scale && target_integer_digits >= source_integer_digits;
+	}
+	auto integer_rank = [](LogicalTypeId id) {
+		switch (id) {
+		case LogicalTypeId::TINYINT:
+		case LogicalTypeId::UTINYINT:
+			return 1;
+		case LogicalTypeId::SMALLINT:
+		case LogicalTypeId::USMALLINT:
+			return 2;
+		case LogicalTypeId::INTEGER:
+		case LogicalTypeId::UINTEGER:
+			return 3;
+		case LogicalTypeId::BIGINT:
+		case LogicalTypeId::UBIGINT:
+			return 4;
+		case LogicalTypeId::HUGEINT:
+		case LogicalTypeId::UHUGEINT:
+			return 5;
+		default:
+			return 0;
+		}
+	};
+	auto is_unsigned = [](LogicalTypeId id) {
+		return id == LogicalTypeId::UTINYINT || id == LogicalTypeId::USMALLINT || id == LogicalTypeId::UINTEGER ||
+		       id == LogicalTypeId::UBIGINT || id == LogicalTypeId::UHUGEINT;
+	};
+	auto source_rank = integer_rank(source_type.id());
+	auto target_rank = integer_rank(target_type.id());
+	return source_rank > 0 && target_rank > 0 && is_unsigned(source_type.id()) == is_unsigned(target_type.id()) &&
+	       target_rank >= source_rank;
+}
+
 // The type of `name` (case-insensitive) in `columns`; the column was validated before
 const LogicalType &ColumnType(const vector<ResolvedColumn> &columns, const string &name) {
 	for (auto &column : columns) {
@@ -179,10 +258,13 @@ void PlanTypeChanges(const string &function_name, const vector<string> &names, c
 		}
 		auto form = ChooseComparisonForm(source_type, target_type);
 		plan.retyped_columns[StringUtil::Lower(name)] = {form, source_type, target_type};
+		auto level = form == ComparisonForm::RAW && IsLosslessNumericWidening(source_type, target_type)
+		                 ? AnofoxLogLevel::Debug
+		                 : AnofoxLogLevel::Warn;
 		const char *how = form == ComparisonForm::TEXT            ? "; compared as VARCHAR"
 		                  : form == ComparisonForm::UTC_TIMESTAMP ? "; compared as UTC TIMESTAMP"
 		                                                          : "; compared by numeric value";
-		AnofoxTrace(AnofoxLogLevel::Warn, function_name + ": " + role + " column '" + name + "' changed type " +
+		AnofoxTrace(level, function_name + ": " + role + " column '" + name + "' changed type " +
 		                                      source_type.ToString() + " -> " + target_type.ToString() + how);
 	}
 }
@@ -196,6 +278,10 @@ DiffColumnPlan ResolveCompareColumns(ClientContext &context, const string &funct
 	auto target_columns = GetRelationColumns(context, function_name, target_table);
 	auto source_set = MakeColumnSet(ColumnNames(source_columns));
 	auto target_set = MakeColumnSet(ColumnNames(target_columns));
+
+	// Every target column is in the output (keys, compared or not); source columns are not
+	RejectReservedColumnNames(function_name, source_columns, "source", source_table, false);
+	RejectReservedColumnNames(function_name, target_columns, "target", target_table, true);
 
 	ValidatePrimaryKeys(function_name, primary_keys, source_set, "source", source_table);
 	ValidatePrimaryKeys(function_name, primary_keys, target_set, "target", target_table);
@@ -319,7 +405,8 @@ static string BuildRepeatedKeyMessages(const string &function_name, const string
 	string key_cols;
 	string key_desc = "''";
 	for (size_t i = 0; i < primary_keys.size(); i++) {
-		auto col = QuoteSqlIdentifier(primary_keys[i]);
+		// Qualified, so a key named like the select aliases side/msg still means the key column
+		auto col = "__anofox_keys." + QuoteSqlIdentifier(primary_keys[i]);
 		key_cols += (i > 0 ? ", " : "") + col;
 		key_desc += " || '" + string(i > 0 ? ", " : "") + EscapeSqlStringLiteral(primary_keys[i]) +
 		            " = ' || COALESCE(CAST(" + col + " AS VARCHAR), 'NULL')";
@@ -327,7 +414,7 @@ static string BuildRepeatedKeyMessages(const string &function_name, const string
 	string prefix = function_name + ": primary key is not unique in " + side + " table '" + table_name + "' (";
 	return "(SELECT " + std::to_string(side_order) + " AS side, '" + EscapeSqlStringLiteral(prefix) + "' || " +
 	       key_desc + " || ' appears ' || CAST(COUNT(*) AS VARCHAR) || ' times)' AS msg FROM " +
-	       BuildQueryTableRef(table_name) + " GROUP BY " + key_cols + " HAVING COUNT(*) > 1 ORDER BY " + key_cols +
+	       BuildQueryTableRef(table_name) + " AS __anofox_keys GROUP BY " + key_cols + " HAVING COUNT(*) > 1 ORDER BY " + key_cols +
 	       " LIMIT 1)";
 }
 
@@ -440,7 +527,9 @@ static string GenerateJoinDiffSQL(const string &function_name, const string &sou
 	sql += "ON " + pk_join_condition;
 
 	if (!include_all) {
-		sql += " WHERE diff_type != 'unchanged'";
+		// Filter on the qualified output column: in the join's WHERE an unqualified diff_type
+		// would bind to a source column of that name instead of the computed classification
+		sql = "SELECT * FROM (" + sql + ") AS __anofox_diff WHERE __anofox_diff.diff_type != 'unchanged'";
 	}
 
 	return sql;
