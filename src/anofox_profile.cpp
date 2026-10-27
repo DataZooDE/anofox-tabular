@@ -95,9 +95,12 @@ static ColumnCategory ClassifyColumn(const string &data_type) {
 	return ColumnCategory::OTHER;
 }
 
-// A correlation coefficient clamped to [-1, 1] (NULL stays NULL)
+// A correlation coefficient clamped to [-1, 1]. An undefined coefficient (CORR is NaN for a
+// single pair or a constant column) is NULL: NaN must be tested first, since NaN > 1 is true
+// in DuckDB and would clamp it to 1.0. NULL stays NULL.
 static string ClampUnitSQL(const string &expr) {
-	return "CASE WHEN " + expr + " > 1 THEN 1.0 WHEN " + expr + " < -1 THEN -1.0 ELSE " + expr + " END";
+	return "CASE WHEN isnan(" + expr + ") THEN NULL WHEN " + expr + " > 1 THEN 1.0 WHEN " + expr +
+	       " < -1 THEN -1.0 ELSE " + expr + " END";
 }
 
 static bool IsComplexCategory(ColumnCategory cat) {

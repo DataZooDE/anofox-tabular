@@ -246,7 +246,10 @@ Canonical name: `anofox_tab_profile_correlations`. Table function.
 Computes the Pearson and Spearman correlation of every pair of numeric columns. Each pair appears
 once. Rows where either value is `NULL`, NaN or `±Inf` are left out of the pair. Only numeric
 columns take part: `INTERVAL`, date and string columns are skipped. Both coefficients are
-clamped to [-1, 1], so floating-point rounding never reports `1.0000000000000002`.
+clamped to [-1, 1], so floating-point rounding never reports `1.0000000000000002`. A
+coefficient that is undefined is `NULL`: for fewer than two pairs (`n` 0 or 1) and when one of
+the columns is constant over the pairs. Two pairs with varying values give exactly `1.0` or
+`-1.0`.
 
 ```text
 profile_correlations(table_name VARCHAR [, columns VARCHAR[]])
@@ -262,8 +265,8 @@ profile_correlations(table_name VARCHAR [, columns VARCHAR[]])
 |--------|------|-------------|
 | `column_a` | `VARCHAR` | First column of the pair |
 | `column_b` | `VARCHAR` | Second column of the pair |
-| `pearson` | `DOUBLE` | Pearson correlation, -1 to 1 |
-| `spearman` | `DOUBLE` | Spearman rank correlation, -1 to 1 |
+| `pearson` | `DOUBLE` | Pearson correlation, -1 to 1; `NULL` when undefined |
+| `spearman` | `DOUBLE` | Spearman rank correlation, -1 to 1; `NULL` when undefined |
 | `n` | `BIGINT` | Rows where both values are finite (not `NULL`, NaN or `±Inf`) |
 
 The function is tagged as a `matrix` producer of the
