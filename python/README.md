@@ -117,6 +117,10 @@ print(result.failures)    # DataFrame: column, row_id, value, rule
   or a table name gives pandas. A value the extension cannot parse comes back as `None`
   (a missing value in a DataFrame), like SQL `NULL`. A Series is not a DataFrame and raises `TypeError`: pass
   `series.to_frame()` (with `column=series.name` for the row-wise helpers).
+- **One type per column.** A pandas `object` column that mixes value types, such as `str`
+  and `int` (`["+49 30 1234567", 4930765432]`), cannot be copied into DuckDB and raises
+  `TypeError` naming the column and its types. Convert it first:
+  `df["phone"] = df["phone"].astype("string")` (missing values stay `NULL`).
 - **NaN and NULL.** In a pandas DataFrame `NaN` and `None` both become SQL `NULL`. In a polars
   DataFrame only `null` does; a float `NaN` stays a NaN value, so `null_rate` and `conn.profile`
   do not count it as missing. Use `df.fill_nan(None)` to treat it as missing (see
@@ -138,8 +142,11 @@ print(result.failures)    # DataFrame: column, row_id, value, rule
 - **`conn.validate(df, schema)`** returns `ValidationResult(passed, failures)`. `failures` has
   one row per failing value with the columns `column`, `row_id`, `value` and `rule`. `row_id`
   is the index label of the failing row for a pandas DataFrame and its 0-based row position
-  for a polars DataFrame. Each rule is an `EmailRule(mode=...)` or a `PhoneRule(region=...)`
-  from `anofox.validate`; any other rule, such as the string `"email"`, raises `TypeError`.
+  for a polars DataFrame. Each rule is an `EmailRule(mode=...)` or a `PhoneRule` from
+  `anofox.validate`; any other rule, such as the string `"email"`, raises `TypeError`.
+  `PhoneRule(region="DE")` uses one region for all rows, `PhoneRule(region_column="country")`
+  the region code in each row's `country` column (passing both raises `ValueError`), and
+  `PhoneRule()` the setting `anofox_tab_phonenumber_default_region`.
 - **`conn.quality_check(df, rules)`** supports the rules `volume`, `null_rate` and
   `distinct_count`; any other rule name raises `ValueError`.
 

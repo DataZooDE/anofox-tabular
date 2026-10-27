@@ -217,6 +217,50 @@ class TestPhoneRuleDefaultRegion:
             conn.execute("RESET anofox_tab_phonenumber_default_region").fetchall()
 
 
+class TestPhoneRuleRegionColumn:
+    """PhoneRule(region_column=...) takes each row's region from a column,
+    like validate.phone_is_valid(region_column=...)."""
+
+    @staticmethod
+    def _customers():
+        import pandas as pd
+        return pd.DataFrame({
+            "customer_id": [2001, 2002, 2003, 2004],
+            "country": ["DE", "US", "GB", "DE"],
+            "phone": ["030 12345678", "(650) 253-0000", "020 7946 0018", "12"],
+        }, index=[10, 11, 12, 13])
+
+    def test_region_per_row(self, conn):
+        from anofox.validate import PhoneRule
+        result = conn.validate(self._customers(), {"phone": PhoneRule(region_column="country")})
+        assert result.passed is False
+        assert result.failures["row_id"].tolist() == [13]
+        assert result.failures["value"].tolist() == ["12"]
+        assert result.failures["rule"].tolist() == ["phone(region_column=country)"]
+
+    def test_one_region_fails_the_foreign_numbers(self, conn):
+        from anofox.validate import PhoneRule
+        result = conn.validate(self._customers(), {"phone": PhoneRule(region="US")})
+        assert result.failures["row_id"].tolist() == [10, 12, 13]
+
+    def test_polars(self, conn):
+        pl = pytest.importorskip("polars")
+        from anofox.validate import PhoneRule
+        result = conn.validate(pl.from_pandas(self._customers()),
+                               {"phone": PhoneRule(region_column="country")})
+        assert result.failures["row_id"].to_list() == [3]
+
+    def test_region_and_region_column_are_exclusive(self):
+        from anofox.validate import PhoneRule
+        with pytest.raises(ValueError, match="region.*region_column"):
+            PhoneRule(region="DE", region_column="country")
+
+    def test_missing_region_column_is_named(self, conn):
+        from anofox.validate import PhoneRule
+        with pytest.raises(Exception, match="country_code"):
+            conn.validate(self._customers(), {"phone": PhoneRule(region_column="country_code")})
+
+
 class TestProfileSchemas:
     """conn.profile('t') profiles the table the name resolves to, not every table named 't'."""
 

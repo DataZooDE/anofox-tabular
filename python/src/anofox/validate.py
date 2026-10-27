@@ -29,10 +29,15 @@ class PhoneRule:
 
     ``region`` is the region hint for numbers without ``+``; ``None`` (the
     default) uses the ``anofox_tab_phonenumber_default_region`` setting, like
-    the phone helpers.
+    the phone helpers. ``region_column`` instead names a column of the
+    DataFrame that holds each row's region code, like
+    :func:`phone_is_valid` with ``region_column=``. Pass at most one of the two.
     """
-    def __init__(self, region: Optional[str] = None) -> None:
+    def __init__(self, region: Optional[str] = None, region_column: Optional[str] = None) -> None:
+        if region is not None and region_column is not None:
+            raise ValueError("PhoneRule: pass either 'region' or 'region_column', not both.")
         self.region = region
+        self.region_column = region_column
 
 
 # ---------------------------------------------------------------------------

@@ -111,3 +111,52 @@ class TestSeriesOnDataFrameMethods:
         from anofox import quality
         with pytest.raises(TypeError, match=r"Series.*to_frame"):
             quality.volume(conn, self._emails(), min_rows=1)
+
+
+class TestMixedTypeColumn:
+    """A pandas object column holding str and int fails in Arrow; the error names it."""
+
+    @pytest.fixture
+    def contacts(self):
+        return pd.DataFrame({
+            "customer": ["Ada Lovelace", "Bob Builder", "Cy Twombly"],
+            "phone": ["+49 30 1234567", 4930765432, None],
+            "zip": ["10115", "80331", "20095"],
+        })
+
+    def _assert_names_column(self, excinfo):
+        message = str(excinfo.value)
+        assert type(excinfo.value) is TypeError  # not pyarrow's ArrowTypeError
+        assert "'phone'" in message
+        assert "int" in message and "str" in message
+        assert 'astype("string")' in message
+
+    def test_row_wise_function(self, conn, contacts):
+        from anofox import validate
+        with pytest.raises(TypeError) as excinfo:
+            validate.phone_is_valid(conn, contacts, column="phone")
+        self._assert_names_column(excinfo)
+
+    def test_table_function(self, conn, contacts):
+        from anofox import profile
+        with pytest.raises(TypeError) as excinfo:
+            profile.profile_summary(conn, contacts)
+        self._assert_names_column(excinfo)
+
+    def test_validate_method(self, conn, contacts):
+        from anofox.validate import EmailRule
+        with pytest.raises(TypeError) as excinfo:
+            conn.validate(contacts, {"customer": EmailRule()})
+        self._assert_names_column(excinfo)
+
+    def test_str_and_float_column(self, conn):
+        from anofox import validate
+        orders = pd.DataFrame({"order_ref": ["A-100", 2.5, "A-102"]})
+        with pytest.raises(TypeError, match=r"'order_ref'.*float.*str"):
+            validate.email_is_valid(conn, orders, column="order_ref")
+
+    def test_fix_from_hint_works(self, conn, contacts):
+        from anofox import validate
+        contacts["phone"] = contacts["phone"].astype("string")
+        result = validate.phone_is_valid(conn, contacts, column="phone")
+        assert len(result) == 3

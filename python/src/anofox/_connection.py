@@ -206,8 +206,10 @@ class AnofoxConnection:
         schema:
             Mapping of ``{column_name: rule}`` where each rule is an
             :class:`~anofox.validate.EmailRule` or
-            :class:`~anofox.validate.PhoneRule`. Any other rule (including a
-            plain string such as ``"email"``) raises :class:`TypeError`.
+            :class:`~anofox.validate.PhoneRule`
+            (``PhoneRule(region_column="country")`` reads each row's region
+            from a column of *df*). Any other rule (including a plain string
+            such as ``"email"``) raises :class:`TypeError`.
 
         Returns
         -------
@@ -230,10 +232,12 @@ class AnofoxConnection:
         for col, rule in schema.items():
             if isinstance(rule, EmailRule):
                 mode = rule.mode
-                checks.append((col, "anofox_tab_email_is_valid", mode, f"email({mode})"))
+                checks.append((col, "anofox_tab_email_is_valid", mode, f"email({mode})", None))
             elif isinstance(rule, PhoneRule):
-                region = rule.region
-                checks.append((col, "anofox_tab_phonenumber_is_valid", region, f"phone({region or 'default region'})"))
+                region, region_column = rule.region, rule.region_column
+                rule_name = (f"phone(region_column={region_column})" if region_column
+                             else f"phone({region or 'default region'})")
+                checks.append((col, "anofox_tab_phonenumber_is_valid", region, rule_name, region_column))
             else:
                 raise TypeError(
                     f"unsupported rule for column {col!r}: got {rule!r}; "
@@ -243,12 +247,14 @@ class AnofoxConnection:
 
         failure_rows = []
         with registered_view(self._conn, df) as (view, position_column):
-            for col, check_sql, param, rule_name in checks:
+            for col, check_sql, param, rule_name, param_column in checks:
+                # The second argument is a bound value, or a column of the row.
+                argument, params = (quote_ident(param_column), []) if param_column else ("?", [param])
                 results = self._conn.execute(
                     f"SELECT {quote_ident(position_column)}, {quote_ident(col)}, "
-                    f"{check_sql}({quote_ident(col)}, ?) AS valid "
+                    f"{check_sql}({quote_ident(col)}, {argument}) AS valid "
                     f"FROM {quote_ident(view)} ORDER BY 1",
-                    [param],
+                    params,
                 ).fetchall()
                 for position, value, valid in results:
                     if not valid:

@@ -109,6 +109,27 @@ print(out.to_string(index=False))
             12      DE             NaN
 ```
 
+`conn.validate` checks several columns at once. Its `PhoneRule` takes the same `region=` or
+`region_column=` (not both):
+
+```python
+from anofox.validate import PhoneRule
+
+result = conn.validate(phones, {"phone": PhoneRule(region_column="country")})
+print(result.passed)
+print(result.failures.to_string(index=False))
+```
+
+```text
+False
+column  row_id value                         rule
+ phone       2    12 phone(region_column=country)
+```
+
+A pandas `object` column must hold one type of value. A column that mixes, for example, `str`
+and `int` raises `TypeError` with the column name and its types. Convert it first with
+`df["phone"] = df["phone"].astype("string")`.
+
 ## Check VAT numbers and amounts
 
 The `anofox.vat` functions and `money.make_money` take a single value or a DataFrame column

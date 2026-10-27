@@ -71,10 +71,36 @@ def _registrable(df: Any) -> Any:
         # otherwise become an extra "__index_level_0__" column.
         try:
             import pyarrow as pa
-            return pa.Table.from_pandas(df, preserve_index=False)
         except ImportError:
             return df
+        try:
+            return pa.Table.from_pandas(df, preserve_index=False)
+        except (pa.ArrowTypeError, pa.ArrowInvalid) as exc:
+            raise _mixed_type_error(df, exc) from exc
     return df
+
+
+def _mixed_type_error(df: Any, exc: Exception) -> Exception:
+    """
+    Return a :class:`TypeError` naming the pandas column Arrow cannot convert.
+
+    The usual cause is an ``object`` column that mixes value types, e.g. ``str``
+    and ``int``; Arrow (and DuckDB) need one type per column.
+    """
+    import pyarrow as pa
+
+    for column in df.columns:
+        try:
+            pa.array(df[column], from_pandas=True)
+        except (pa.ArrowTypeError, pa.ArrowInvalid):
+            types = sorted({type(v).__name__ for v in df[column].dropna()})
+            return TypeError(
+                f"Column {str(column)!r} mixes value types ({', '.join(types)}); "
+                "a column needs one type to be copied into DuckDB. Convert it first, "
+                f"e.g. df[{str(column)!r}] = df[{str(column)!r}].astype(\"string\") "
+                "(keeps missing values as NULL)."
+            )
+    return TypeError(f"Cannot convert the DataFrame to Arrow: {exc}")
 
 
 def with_position(df: Any, name: str) -> Any:
