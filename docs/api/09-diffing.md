@@ -87,6 +87,11 @@ Behavior:
   `'n/a'` differ instead of aborting the diff with a conversion error. Numeric type changes
   (`INTEGER` to `BIGINT`, `DECIMAL` to `DOUBLE`) compare by value, so `5000.00` equals `5000.0`.
   The trace log names each column with both types.
+- A `TIMESTAMP WITH TIME ZONE` column whose type changed is compared on its UTC instant, whatever
+  the session `TimeZone`. Against a `VARCHAR` column it is rendered as UTC text with a `+00`
+  suffix (`2026-03-01 08:30:00+00`, the text DuckDB prints under `TimeZone = 'UTC'`); against a
+  plain `TIMESTAMP` both sides compare as UTC timestamps, reading the `TIMESTAMP` as UTC, and a
+  key column of that pair is returned as a `TIMESTAMP`.
 - The key and compare columns are checked against both tables at bind time. A missing column or
   table is a binder error.
 - The primary key must be unique in both tables. A repeated key value would join every source row
@@ -206,6 +211,30 @@ ORDER BY customer_id;
 
 `zip` is compared as text, so `7` -> `'007'` and `8001` -> `'n/a'` are changes. The credit
 limits and the keys compare by value. The output shows the target's types.
+
+A `TIMESTAMPTZ` column that became UTC text or a plain `TIMESTAMP` compares on its UTC instant, so
+the result is the same in every session time zone:
+
+```sql
+SET TimeZone = 'Europe/Berlin';
+CREATE TABLE tickets_v1 (ticket_id INTEGER, opened_at TIMESTAMPTZ);
+INSERT INTO tickets_v1 VALUES (5001, '2026-03-01 08:30:00+00'), (5002, '2026-03-02 00:15:00+00');
+
+CREATE TABLE tickets_v2 (ticket_id INTEGER, opened_at VARCHAR);
+INSERT INTO tickets_v2 VALUES (5001, '2026-03-01 08:30:00+00'), (5002, '2026-03-02 00:20:00+00');
+
+SELECT diff_type, ticket_id, opened_at, changed_columns
+FROM diff_joindiff('tickets_v1', 'tickets_v2', 'ticket_id');
+```
+
+```text
+┌───────────┬───────────┬────────────────────────┬─────────────────┐
+│ diff_type │ ticket_id │       opened_at        │ changed_columns │
+│  varchar  │   int32   │        varchar         │    varchar[]    │
+├───────────┼───────────┼────────────────────────┼─────────────────┤
+│ changed   │      5002 │ 2026-03-02 00:20:00+00 │ [opened_at]     │
+└───────────┴───────────┴────────────────────────┴─────────────────┘
+```
 
 ### Compare a subset of columns
 

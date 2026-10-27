@@ -1,0 +1,99 @@
+# name: test/sql/anofox_diff_timestamptz_utc.test
+# description: diff_joindiff / diff_hashdiff compare a TIMESTAMP WITH TIME ZONE column whose type
+#              changed in a migration on its UTC instant. Against a VARCHAR column the
+#              TIMESTAMPTZ side is rendered as UTC text ('2026-03-01 08:30:00+00'); against a
+#              TIMESTAMP column the TIMESTAMP is read as UTC. Runs without ICU (session time
+#              zone UTC); anofox_diff_timestamptz_utc_icu.test repeats it in other time zones.
+# group: [anofox_tabular]
+
+require anofox_tabular
+
+statement ok
+LOAD anofox_tabular
+
+statement ok
+SET anofox_tab_trace_enabled = false
+
+# Support tickets before the helpdesk migration: opened_at was a TIMESTAMPTZ
+statement ok
+CREATE TABLE tickets_v1 (ticket_id INTEGER, opened_at TIMESTAMPTZ, status VARCHAR)
+
+statement ok
+INSERT INTO tickets_v1 VALUES
+    (5001, TIMESTAMPTZ '2026-03-01 08:30:00+00',    'open'),
+    (5002, TIMESTAMPTZ '2026-03-01 23:30:00.25+00', 'closed'),
+    (5003, TIMESTAMPTZ '2026-03-02 00:15:00+00',    'open')
+
+# The new helpdesk stores opened_at as ISO text in UTC; ticket 5003 got a corrected time
+statement ok
+CREATE TABLE tickets_text (ticket_id INTEGER, opened_at VARCHAR, status VARCHAR)
+
+statement ok
+INSERT INTO tickets_text VALUES
+    (5001, '2026-03-01 08:30:00+00',    'open'),
+    (5002, '2026-03-01 23:30:00.25+00', 'closed'),
+    (5003, '2026-03-02 00:20:00+00',    'open')
+
+query TIT rowsort
+SELECT diff_type, ticket_id, opened_at FROM diff_joindiff('tickets_v1', 'tickets_text', 'ticket_id')
+----
+changed	5003	2026-03-02 00:20:00+00
+
+query TI rowsort
+SELECT diff_type, ticket_id FROM diff_hashdiff('tickets_v1', 'tickets_text', 'ticket_id')
+----
+changed	5003
+
+# A warehouse copy stores opened_at as a plain TIMESTAMP in UTC
+statement ok
+CREATE TABLE tickets_naive (ticket_id INTEGER, opened_at TIMESTAMP, status VARCHAR)
+
+statement ok
+INSERT INTO tickets_naive VALUES
+    (5001, TIMESTAMP '2026-03-01 08:30:00',    'open'),
+    (5002, TIMESTAMP '2026-03-01 23:30:00.25', 'closed'),
+    (5003, TIMESTAMP '2026-03-02 00:15:00',    'pending')
+
+query TIT rowsort
+SELECT diff_type, ticket_id, status FROM diff_joindiff('tickets_v1', 'tickets_naive', 'ticket_id')
+----
+changed	5003	pending
+
+# Both directions
+query TI rowsort
+SELECT diff_type, ticket_id FROM diff_joindiff('tickets_naive', 'tickets_v1', 'ticket_id')
+----
+changed	5003
+
+# A TIMESTAMPTZ primary key matched against a VARCHAR key in UTC text form
+statement ok
+CREATE TABLE logins_v1 (login_at TIMESTAMPTZ, user_name VARCHAR)
+
+statement ok
+INSERT INTO logins_v1 VALUES
+    (TIMESTAMPTZ '2026-05-04 07:00:00+00', 'mkeller'),
+    (TIMESTAMPTZ '2026-05-04 22:45:10+00', 'aschmidt')
+
+statement ok
+CREATE TABLE logins_v2 (login_at VARCHAR, user_name VARCHAR)
+
+statement ok
+INSERT INTO logins_v2 VALUES
+    ('2026-05-04 07:00:00+00', 'mkeller'),
+    ('2026-05-04 22:45:10+00', 'aschmidt')
+
+query I
+SELECT count(*) FROM diff_joindiff('logins_v1', 'logins_v2', 'login_at')
+----
+0
+
+# A TIMESTAMPTZ primary key matched against a TIMESTAMP key read as UTC
+statement ok
+CREATE TABLE logins_naive AS SELECT CAST(login_at AS TIMESTAMP) AS login_at, user_name
+FROM (VALUES (TIMESTAMP '2026-05-04 07:00:00', 'mkeller'), (TIMESTAMP '2026-05-04 22:45:10', 'aschmidt')) t(login_at, user_name)
+
+query TTT rowsort
+SELECT diff_type, login_at, user_name FROM diff_joindiff('logins_v1', 'logins_naive', 'login_at', include_all := true)
+----
+unchanged	2026-05-04 07:00:00	mkeller
+unchanged	2026-05-04 22:45:10	aschmidt

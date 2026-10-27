@@ -14,6 +14,7 @@
 #include "duckdb_compat.hpp"
 
 #include <string>
+#include <unordered_map>
 #include <unordered_set>
 #include "anofox_tabular_banner.hpp"
 
@@ -118,22 +119,52 @@ const LogicalType &ColumnType(const vector<ResolvedColumn> &columns, const strin
 	throw InternalException("diff: column '%s' was not resolved", name);
 }
 
-// Columns whose type differs between source and target are compared on their text form
-// (CAST AS VARCHAR) when the types are not both numeric: an implicit cast would abort the diff
-// on a value like 'n/a' (INTEGER -> VARCHAR) or hide a change like 7 -> '007'. Numeric type
-// changes (INTEGER -> BIGINT, DECIMAL -> DOUBLE) compare by value: 5000.00 equals 5000.0.
-bool NeedsTextComparison(const LogicalType &source_type, const LogicalType &target_type) {
-	if (source_type == target_type) {
+// How a key or compare column whose type differs between source and target is compared.
+// TEXT: on the text form (CAST AS VARCHAR) when the types are not both numeric: an implicit
+// cast would abort the diff on a value like 'n/a' (INTEGER -> VARCHAR) or hide a change like
+// 7 -> '007'. Numeric type changes (INTEGER -> BIGINT, DECIMAL -> DOUBLE) compare by value
+// (RAW): 5000.00 equals 5000.0. A TIMESTAMP WITH TIME ZONE never depends on the session
+// TimeZone: against a plain TIMESTAMP both sides compare as UTC TIMESTAMPs (UTC_TIMESTAMP, the
+// TIMESTAMP is read as UTC), and in the text form it is rendered as its UTC instant with a
+// '+00' suffix, the text DuckDB prints for it under TimeZone UTC.
+enum class ComparisonForm { RAW, TEXT, UTC_TIMESTAMP };
+
+bool IsPlainTimestamp(const LogicalType &type) {
+	switch (type.id()) {
+	case LogicalTypeId::TIMESTAMP:
+	case LogicalTypeId::TIMESTAMP_SEC:
+	case LogicalTypeId::TIMESTAMP_MS:
+	case LogicalTypeId::TIMESTAMP_NS:
+		return true;
+	default:
 		return false;
 	}
-	return !(source_type.IsNumeric() && target_type.IsNumeric());
 }
 
-// The resolved column plan of a diff: the effective compare set and the (lower-case) names
-// of the key and compare columns that are compared on their text form.
+ComparisonForm ChooseComparisonForm(const LogicalType &source_type, const LogicalType &target_type) {
+	if (source_type == target_type || (source_type.IsNumeric() && target_type.IsNumeric())) {
+		return ComparisonForm::RAW;
+	}
+	bool source_tz = source_type.id() == LogicalTypeId::TIMESTAMP_TZ;
+	bool target_tz = target_type.id() == LogicalTypeId::TIMESTAMP_TZ;
+	if ((source_tz && IsPlainTimestamp(target_type)) || (target_tz && IsPlainTimestamp(source_type))) {
+		return ComparisonForm::UTC_TIMESTAMP;
+	}
+	return ComparisonForm::TEXT;
+}
+
+// A retyped key or compare column: how it is compared and its type on each side.
+struct RetypedColumn {
+	ComparisonForm form;
+	LogicalType source_type;
+	LogicalType target_type;
+};
+
+// The resolved column plan of a diff: the effective compare set and the retyped key and
+// compare columns (by lower-case name).
 struct DiffColumnPlan {
 	vector<string> compare_columns;
-	std::unordered_set<string> text_columns;
+	std::unordered_map<string, RetypedColumn> retyped_columns;
 };
 
 // Note the columns of `names` whose type differs between the two tables, with a trace warning.
@@ -146,13 +177,13 @@ void PlanTypeChanges(const string &function_name, const vector<string> &names, c
 		if (source_type == target_type) {
 			continue;
 		}
-		bool as_text = NeedsTextComparison(source_type, target_type);
-		if (as_text) {
-			plan.text_columns.insert(StringUtil::Lower(name));
-		}
+		auto form = ChooseComparisonForm(source_type, target_type);
+		plan.retyped_columns[StringUtil::Lower(name)] = {form, source_type, target_type};
+		const char *how = form == ComparisonForm::TEXT            ? "; compared as VARCHAR"
+		                  : form == ComparisonForm::UTC_TIMESTAMP ? "; compared as UTC TIMESTAMP"
+		                                                          : "; compared by numeric value";
 		AnofoxTrace(AnofoxLogLevel::Warn, function_name + ": " + role + " column '" + name + "' changed type " +
-		                                      source_type.ToString() + " -> " + target_type.ToString() +
-		                                      (as_text ? "; compared as VARCHAR" : "; compared by numeric value"));
+		                                      source_type.ToString() + " -> " + target_type.ToString() + how);
 	}
 }
 
@@ -308,13 +339,21 @@ static string BuildUniqueKeyGuard(const string &function_name, const string &sou
 	       ") ORDER BY side LIMIT 1)) IS NULL";
 }
 
-// `side`.`column`, on its text form when the column's type changed between the tables
+// `side`.`column` ("s" source, "t" target) in the form it is compared in (see ComparisonForm)
 static string SideColumnSQL(const string &side, const string &column, const DiffColumnPlan &plan) {
 	string ref = side + "." + QuoteSqlIdentifier(column);
-	if (plan.text_columns.count(StringUtil::Lower(column))) {
-		return "CAST(" + ref + " AS VARCHAR)";
+	auto entry = plan.retyped_columns.find(StringUtil::Lower(column));
+	if (entry == plan.retyped_columns.end() || entry->second.form == ComparisonForm::RAW) {
+		return ref;
 	}
-	return ref;
+	auto &type = side == "s" ? entry->second.source_type : entry->second.target_type;
+	if (entry->second.form == ComparisonForm::UTC_TIMESTAMP) {
+		return UtcTimestampSQL(ref, type);
+	}
+	if (type.id() == LogicalTypeId::TIMESTAMP_TZ) {
+		return "(CAST(" + UtcTimestampSQL(ref, type) + " AS VARCHAR) || '+00')";
+	}
+	return "CAST(" + ref + " AS VARCHAR)";
 }
 
 // The changed_columns output column: for a 'changed' row the compare columns that differ, in

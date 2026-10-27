@@ -273,7 +273,9 @@ it anyway, diff a view that renames it back.
 Columns whose type changed are still compared. When the old and the new type are not both
 numeric, the diff compares the values as text, so `7` and `'007'` differ and `'n/a'` does not
 abort the diff with a conversion error. Numeric type changes compare by value: `5000.00` and
-`5000.0` are equal.
+`5000.0` are equal. A `TIMESTAMPTZ` column that became text or a plain `TIMESTAMP` compares on
+its UTC instant, so the result does not depend on the session `TimeZone`; a plain `TIMESTAMP` is
+read as UTC.
 
 ```sql
 SELECT diff_type, customer_id, zip, credit_limit
