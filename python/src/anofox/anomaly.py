@@ -311,8 +311,10 @@ def outlier_tree(
         Column names as a list, or as one comma-separated string. A name
         containing a comma raises ValueError.
     output_mode:
-        ``"summary"`` → dict with counts; ``"outliers"`` → DataFrame with
-        per-row explanations. Its ``conditions`` column holds, per outlier,
+        ``"summary"`` → dict with counts; ``"outliers"`` → DataFrame with one
+        row per outlier value (a row with outlying values in two columns gives
+        two rows, one per ``column_name``) and its explanation. Its
+        ``conditions`` column holds, per outlier,
         the list of conditions that define the group, each a dict with the
         keys ``column``, ``type`` (``"numeric"`` or ``"categorical"``),
         ``operator`` (``"<="``, ``">"``, ``"in"``), ``value`` (the numeric
@@ -501,7 +503,10 @@ def _warn_few_rows(function: str, result: Any) -> None:
     warnings.warn(
         f"{function}: only {scored} rows were scored; an Isolation Forest needs at least "
         f"{MIN_ISOLATION_FOREST_ROWS} to tell an unusual value from a typical one, so the "
-        "scores are not meaningful (rows tend to score alike and none is flagged)",
+        "scores are not meaningful (rows tend to score alike and none is flagged). "
+        f"Pass at least {MIN_ISOLATION_FOREST_ROWS} rows with values (rows with a NULL or NaN "
+        "do not count), or check so few values against a fixed range or a business rule "
+        "instead (e.g. quality.compliance); anomaly.MIN_ISOLATION_FOREST_ROWS holds the limit",
         UserWarning,
         stacklevel=3,
     )

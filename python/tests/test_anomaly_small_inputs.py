@@ -46,6 +46,15 @@ class TestIsolationForestWarnsOnFewRows:
         with pytest.warns(UserWarning, match=r"isolation_forest: only 2 rows were scored.*at least 10"):
             anomaly.isolation_forest(conn, _invoices(2), "amount", output_mode=output_mode, seed=3)
 
+    def test_warning_says_what_to_do(self, conn):
+        from anofox import anomaly
+        with pytest.warns(UserWarning) as record:
+            anomaly.isolation_forest(conn, _invoices(4), "amount", seed=3)
+        message = str(record[0].message)
+        assert "Pass at least 10 rows" in message
+        assert "fixed range or a business rule" in message
+        assert "anomaly.MIN_ISOLATION_FOREST_ROWS" in message
+
     def test_multivariate_warns(self, conn):
         from anofox import anomaly
         with pytest.warns(UserWarning, match=r"isolation_forest_mv: only 5 rows were scored"):

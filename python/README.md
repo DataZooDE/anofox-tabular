@@ -226,7 +226,8 @@ print(checks.checks["null_rate"]["null_rate"])
   for a DataFrame input, `pandas.DataFrame | polars.DataFrame`.
 - `isolation_forest` and `isolation_forest_mv` warn (`UserWarning`) when 1 to 9 rows were
   scored (`anomaly.MIN_ISOLATION_FOREST_ROWS` is 10): so few rows score alike, and usually
-  none is flagged.
+  none is flagged. Pass at least 10 rows with values, or check so few values against a fixed
+  range or a business rule (`quality.compliance`) instead.
 - The PII wrappers `pii_detect`, `pii_mask`, `pii_contains`, `pii_scan_table` and
   `pii_audit_table` take `types=` (a list or a comma-separated string) to detect only those
   types in the call; it sets `anofox_pii_enabled_types` and restores it afterwards

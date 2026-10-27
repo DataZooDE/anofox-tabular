@@ -449,7 +449,8 @@ With `output_mode="summary"` the function returns a dict with the summary row in
 `seed` for scores that are the same on every run; without it the trees are random. The
 Python defaults are the SQL defaults: a parameter you leave out is passed as `NULL`, so the
 extension applies its own default. `dbscan` returns one row per analyzed row with
-`output_mode="clusters"`, `outlier_tree` one row per outlier with `output_mode="outliers"`. Rows
+`output_mode="clusters"`, `outlier_tree` one row per outlier value with `output_mode="outliers"`
+(a row with outlying values in two columns gives two rows, one per `column_name`). Rows
 with a `NULL` in a selected column are left out; `row_id` is still the 1-based row number in
 the input, so the remaining rows keep their numbers. A `NaN` is left out like a `NULL`, also in
 a polars DataFrame; see [Missing values](#missing-values-nan-and-null). When no row is
@@ -457,7 +458,10 @@ scored (an empty DataFrame, or only missing values), the `isolation_forest` summ
 `total_count` 0 and `avg_value` `None`, and a per-row output has no rows but the same columns
 and dtypes as one with rows. With 1 to 9 scored rows `isolation_forest` and
 `isolation_forest_mv` give a `UserWarning`: so few rows score alike and usually none is flagged
-(`anomaly.MIN_ISOLATION_FOREST_ROWS` is 10). A DataFrame column that holds only `None` has no type;
+(`anomaly.MIN_ISOLATION_FOREST_ROWS` is 10). Pass at least 10 rows with values, or check so few
+values against a fixed range or a business rule instead (for example with
+`quality.compliance(conn, df, "amount BETWEEN 0 AND 5000")`). A DataFrame column that holds
+only `None` has no type;
 the numeric detectors raise `ValueError: column 'amount' has no non-null values` for it.
 
 ### Join scores back to the rows
