@@ -70,10 +70,37 @@ void ValidateBooleanExpression(ClientContext &context, const string &expr, const
 	try {
 		statements = ParseWithContextSettings(context, "SELECT (" + expr + ")");
 	} catch (const std::exception &ex) {
-		throw BinderException(function_name + ": failed to parse expression '" + expr + "': " + ex.what());
+		// RawMessage: what() of a DuckDB 2.0 exception is a JSON object
+		auto cause = ErrorData(ex).RawMessage();
+		auto newline = cause.find('\n');
+		if (newline != string::npos) {
+			cause = cause.substr(0, newline);
+		}
+		throw BinderException(function_name + ": failed to parse expression '" + expr + "': " + cause);
 	}
 	if (statements.size() != 1 || statements[0]->type != StatementType::SELECT_STATEMENT) {
 		throw BinderException(function_name + ": expression must be a single SQL boolean expression");
+	}
+}
+
+void ValidateRegexPattern(ClientContext &context, const string &pattern, const string &prefix) {
+	try {
+		auto statements =
+		    ParseWithContextSettings(context, "SELECT regexp_matches('', '" + EscapeSqlStringLiteral(pattern) + "')");
+		auto binder = Binder::CreateBinder(context);
+		binder->Bind(*statements[0]);
+	} catch (const std::exception &ex) {
+		ErrorData error(ex);
+		if (error.Type() == ExceptionType::INTERRUPT || error.Type() == ExceptionType::FATAL ||
+		    error.Type() == ExceptionType::INTERNAL) {
+			throw;
+		}
+		auto cause = error.RawMessage();
+		auto newline = cause.find('\n');
+		if (newline != string::npos) {
+			cause = cause.substr(0, newline);
+		}
+		throw BinderException(prefix + " '" + pattern + "' is not a valid regular expression: " + cause);
 	}
 }
 
@@ -860,6 +887,10 @@ static int64_t ReadWindowDays(TableFunctionBindInput &input, idx_t index, int64_
 	if (window_days < 1) {
 		throw BinderException(function_name + ": window_days must be >= 1");
 	}
+	if (window_days > MAX_WINDOW_DAYS) {
+		throw BinderException("%s: window_days must be at most %d (got %d)", function_name, MAX_WINDOW_DAYS,
+		                      window_days);
+	}
 	return window_days;
 }
 
@@ -967,6 +998,7 @@ static unique_ptr<TableRef> CheckRegexMatchBindReplace(ClientContext &context, T
 	string table_name = RequireNameArgument(input, 0, "regex_match", "table_name");
 	string column_name = RequireNameArgument(input, 1, "regex_match", "column_name");
 	string pattern = RequireNonNullArgument(input, 2, "regex_match", "pattern");
+	ValidateRegexPattern(context, pattern, "regex_match: pattern");
 	ValidateRate(input.inputs[3], "regex_match", "min_match_rate");
 	Value max_rate = (input.inputs.size() > 4) ? input.inputs[4] : Value();
 	ValidateRate(max_rate, "regex_match", "max_match_rate");

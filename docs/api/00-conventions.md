@@ -121,8 +121,15 @@ messages but marks the position with a single `^` and lists the accepted named p
 
 ## Table and column arguments
 
-Table functions take the table name as a string: `null_rate('orders', 'email', 0.05)`. Pass the
-plain name; the extension quotes it, so names with spaces or quotes work as they are.
+Table functions take the table name as a string: `null_rate('orders', 'email', 0.05)`. The
+string is read like a table name in a query, except that spaces need no quoting: `'q4 orders'`
+works as it is. A name that contains a dot or a double quote must be passed as a quoted
+identifier, the way you would write it in SQL: the table `orders.archive` is
+`'"orders.archive"'` (unquoted, `'orders.archive'` is the table `archive` of the schema
+`orders`), and the table `partner "EU" orders` is `'"partner ""EU"" orders"'`. A single quote
+in a name is doubled as in every SQL string: `'o''brien_orders'`. When such a name is not
+found, the error says how to quote it:
+`volume: table 'orders.archive' does not exist (a table whose name contains a dot or a double quote is passed as a quoted identifier: "orders.archive")`.
 
 A qualified name resolves as in a DuckDB query: `'sales.orders'` is the table `orders` of the
 schema `sales` and, when no such schema exists, the table `orders` of the attached database

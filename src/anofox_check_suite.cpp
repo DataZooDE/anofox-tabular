@@ -711,11 +711,19 @@ static int64_t ParseWindowDays(const CheckSpec &spec, int64_t default_days) {
 		if (days < 1) {
 			throw std::invalid_argument("not positive");
 		}
-		return days;
+		if (days <= MAX_WINDOW_DAYS) {
+			return days;
+		}
 	} catch (const std::exception &) {
-		throw BinderException("run_checks: check '" + spec.check_name + "': params.window_days '" + spec.window_days +
-		                      "' is not a positive integer");
+		// std::stoll throws out_of_range for a number beyond BIGINT
+		if (spec.window_days.find_first_not_of("0123456789") != string::npos ||
+		    spec.window_days.find_first_not_of('0') == string::npos) {
+			throw BinderException("run_checks: check '" + spec.check_name + "': params.window_days '" +
+			                      spec.window_days + "' is not a positive integer");
+		}
 	}
+	throw BinderException("run_checks: check '" + spec.check_name + "': params.window_days '" + spec.window_days +
+	                      "' must be at most " + std::to_string(MAX_WINDOW_DAYS));
 }
 
 static void RequireColumn(const CheckSpec &spec) {
@@ -751,9 +759,44 @@ static string BuildAllowedArrayFromJson(const CheckSpec &spec) {
 	return literal;
 }
 
-// The key columns of a duplicate_count check (column_name is a comma-separated list)
+// A column list of the checks table's column_name: a comma-separated string ('order_id,
+// customer_id') or a JSON array of names ('["order_id", "customer_id"]'), as params.left_keys
+static vector<string> ParseColumnList(const CheckSpec &spec, const string &text) {
+	using namespace duckdb_yyjson;
+	auto start = text.find_first_not_of(" \t\n\r");
+	if (start == string::npos || text[start] != '[') {
+		return ParseCommaSeparatedColumns(text);
+	}
+	struct YyjsonDocFree {
+		void operator()(yyjson_doc *doc_handle) const {
+			yyjson_doc_free(doc_handle);
+		}
+	};
+	std::unique_ptr<yyjson_doc, YyjsonDocFree> doc(yyjson_read(text.c_str(), text.size(), 0));
+	yyjson_val *root = doc ? yyjson_doc_get_root(doc.get()) : nullptr;
+	vector<string> columns;
+	bool valid = root && yyjson_is_arr(root);
+	if (valid) {
+		size_t idx, max;
+		yyjson_val *element;
+		yyjson_arr_foreach(root, idx, max, element) {
+			if (!yyjson_is_str(element)) {
+				valid = false;
+				break;
+			}
+			columns.push_back(yyjson_get_str(element));
+		}
+	}
+	if (!valid) {
+		throw BinderException("run_checks: check '" + spec.check_name + "': column_name '" + text +
+		                      "' must be a comma-separated list or a JSON array of column names");
+	}
+	return columns;
+}
+
+// The key columns of a duplicate_count check (column_name is a column list)
 static vector<string> DuplicateKeyColumns(const CheckSpec &spec) {
-	auto columns = ParseCommaSeparatedColumns(spec.column_name);
+	auto columns = ParseColumnList(spec, spec.column_name);
 	if (columns.empty()) {
 		throw BinderException("run_checks: check '" + spec.check_name + "' (duplicate_count) requires a column_name");
 	}
@@ -1141,6 +1184,7 @@ static CheckBranch BuildCheckBranch(ClientContext &context, const CheckSpec &spe
 	} else if (spec.check_type == "regex_match") {
 		RequireColumn(spec);
 		RequireParam(spec, spec.pattern, "pattern");
+		ValidateRegexPattern(context, spec.pattern, "params.pattern");
 		string col = QuoteSqlIdentifier(spec.column_name);
 		string pattern_lit = "'" + EscapeSqlStringLiteral(spec.pattern) + "'";
 		value_expr = "CAST(SUM(CASE WHEN " + col + " IS NOT NULL AND regexp_matches(CAST(" + col +
@@ -1262,9 +1306,9 @@ static CheckBranch BuildCheckBranch(ClientContext &context, const CheckSpec &spe
 			RequireColumn(spec);
 		}
 		RequireParam(spec, spec.right_table, "right_table");
-		string left_keys_str = spec.left_keys.empty() ? spec.column_name : spec.left_keys;
 		RequireParam(spec, spec.right_keys, "right_keys");
-		auto left_keys = ParseCommaSeparatedColumns(left_keys_str);
+		auto left_keys = spec.left_keys.empty() ? ParseColumnList(spec, spec.column_name)
+		                                        : ParseCommaSeparatedColumns(spec.left_keys);
 		auto right_keys = ParseCommaSeparatedColumns(spec.right_keys);
 		if (left_keys.empty() || left_keys.size() != right_keys.size()) {
 			throw BinderException("run_checks: check '" + spec.check_name +
@@ -1592,11 +1636,12 @@ static vector<string> ReferencedColumns(const CheckSpec &spec) {
 	};
 	const auto &type = spec.check_type;
 	if (type == "duplicate_count") {
-		for (auto &column : ParseCommaSeparatedColumns(spec.column_name)) {
+		for (auto &column : ParseColumnList(spec, spec.column_name)) {
 			add(column);
 		}
 	} else if (type == "match_rate") {
-		for (auto &column : ParseCommaSeparatedColumns(spec.left_keys.empty() ? spec.column_name : spec.left_keys)) {
+		for (auto &column : spec.left_keys.empty() ? ParseColumnList(spec, spec.column_name)
+		                                           : ParseCommaSeparatedColumns(spec.left_keys)) {
 			add(column);
 		}
 	} else if (type != "volume" && type != "compliance" && type != "rel_count_change") {
@@ -1612,7 +1657,22 @@ static vector<string> ReferencedColumns(const CheckSpec &spec) {
 // Resolve every configured column against the target table (case-insensitively, like
 // DuckDB identifiers) so a missing column names the column and the table's columns.
 static void ValidateCheckColumns(ClientContext &context, const CheckSpec &spec) {
-	auto bound = BindProbe(context, "SELECT * FROM " + BuildQueryTableRef(spec.table_name) + " LIMIT 0");
+	BoundStatement bound;
+	try {
+		bound = BindProbe(context, "SELECT * FROM " + BuildQueryTableRef(spec.table_name) + " LIMIT 0");
+	} catch (const std::exception &ex) {
+		ErrorData error(ex);
+		auto hint = QuotedTableNameHint(spec.table_name);
+		if (hint.empty() || error.Type() == ExceptionType::INTERRUPT || error.Type() == ExceptionType::FATAL ||
+		    error.Type() == ExceptionType::INTERNAL) {
+			throw;
+		}
+		if (error.Type() == ExceptionType::CATALOG) {
+			throw BinderException("target table '%s' does not exist%s", spec.table_name, hint);
+		}
+		throw BinderException("cannot read target table '%s': %s%s", spec.table_name, FirstLine(error.RawMessage()),
+		                      hint);
+	}
 	vector<string> available = duckdb_compat::Strs(bound.names);
 	MatchColumnNames("run_checks", spec.table_name, available, ReferencedColumns(spec));
 	if (spec.check_type == "agg" && !spec.column_name.empty()) {
@@ -1661,7 +1721,8 @@ static string BuildValidatedCheckSQL(ClientContext &context, CheckSpec spec) {
 		throw BinderException(spec.config_error);
 	}
 	if (!TargetTableExists(context, spec.table_name)) {
-		throw BinderException("target table '%s' does not exist", spec.table_name);
+		throw BinderException("target table '%s' does not exist%s", spec.table_name,
+		                      QuotedTableNameHint(spec.table_name));
 	}
 	ValidateCheckColumns(context, spec);
 	if (!spec.identifier_column.empty() && !SupportsIdentifier(spec.check_type)) {

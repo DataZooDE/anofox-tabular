@@ -435,7 +435,7 @@ regex_match(table_name VARCHAR, column_name VARCHAR, pattern VARCHAR, min_match_
 |-----------|------|---------|-------------|
 | `table_name` | `VARCHAR` | required | Table or view |
 | `column_name` | `VARCHAR` | required | Column to check; values are cast to `VARCHAR` |
-| `pattern` | `VARCHAR` | required | RE2 pattern, as for `regexp_matches` |
+| `pattern` | `VARCHAR` | required | RE2 pattern, as for `regexp_matches`; an invalid one is a binder error such as `regex_match: pattern '[a-z' is not a valid regular expression: missing ]: [a-z` |
 | `min_match_rate` | `DOUBLE` | required | Lower bound; `NULL` = unbounded |
 | `max_match_rate` | `DOUBLE` | `NULL` (unbounded) | Upper bound |
 
@@ -721,7 +721,7 @@ SELECT * FROM compliance('orders', 'amount > 0; DROP TABLE orders');
 ```
 
 ```text
-Binder Error: compliance: failed to parse expression 'amount > 0; DROP TABLE orders': {"exception_type":"Parser","exception_message":"syntax error at or near \";\"","location":"[18,1]","position":"18","error_subtype":"SYNTAX_ERROR"}
+Binder Error: compliance: failed to parse expression 'amount > 0; DROP TABLE orders': syntax error at or near ";"
 -> Unexpected? Please report it: https://github.com/DataZooDE/anofox-tabular/issues
 
 LINE 1: SELECT * FROM compliance('orders', 'amount > 0; DROP TABLE orders');
@@ -747,7 +747,9 @@ dimension) is no day of data either: such rows are left out, so the default refe
 the latest finite date, and the message ends with how many rows were, for example
 `Count 6 on 2026-10-24 deviates by 2.0 from baseline average 2.0; 5 row(s) with an infinite date ignored`.
 A `reference_date`, `start_date` or `end_date` of `infinity` is a binder error
-(`rel_count_change: reference_date must be a finite date`).
+(`rel_count_change: reference_date must be a finite date`). `window_days` must be between 1
+and 36500 (100 years); a larger value is a binder error
+(`rel_count_change: window_days must be at most 36500 (got 999999999999)`).
 
 All three also accept the named parameters `start_date := DATE` and `end_date := DATE`. With
 them, the check evaluates every day of the inclusive range and returns one row per date,
@@ -795,7 +797,7 @@ rel_count_change(table_name VARCHAR, date_column VARCHAR
 | `table_name` | `VARCHAR` | required | Table or view |
 | `date_column` | `VARCHAR` | required | Date or timestamp column; cast to `DATE` (a `TIMESTAMP WITH TIME ZONE` by its UTC date) |
 | `count_column` | `VARCHAR` | `NULL` | Column counted with `COUNT(DISTINCT ...)` per day; `NULL` = daily row count |
-| `window_days` | `BIGINT` | `7` | Baseline length: the days strictly before the reference date |
+| `window_days` | `BIGINT` | `7` | Baseline length: the days strictly before the reference date (1 to 36500) |
 | `lower_threshold` | `DOUBLE` | `-0.5` | Lowest allowed relative change; `NULL` or `-inf` = unbounded |
 | `upper_threshold` | `DOUBLE` | `0.5` | Highest allowed relative change; `NULL` or `+inf` = unbounded |
 | `reference_date` | `DATE` | `NULL` = latest date in the data | The date to evaluate |
@@ -1083,7 +1085,7 @@ ignored. A checks table without a required column is an error that names it, for
 | `check_name` | `VARCHAR` | yes | Label of the check, unique in the table; results are ordered by it |
 | `check_type` | `VARCHAR` | yes | One of the types below |
 | `table_name` | `VARCHAR` | yes | The table or view to check |
-| `column_name` | `VARCHAR` | no | The column; `NULL` where the type needs none. Comma-separated for `duplicate_count` |
+| `column_name` | `VARCHAR` | no | The column; `NULL` where the type needs none. For the key of `duplicate_count` and `match_rate` a comma-separated list (`'order_id, customer_id'`) or a JSON array (`'["order_id", "customer_id"]'`) |
 | `params` | `VARCHAR` | no | A JSON object with type-specific parameters, or `NULL` |
 | `lower_threshold` | `DOUBLE` | no | Fail when `value` is below it; `NULL` or `-inf` = unbounded |
 | `upper_threshold` | `DOUBLE` | no | Fail when `value` is above it; `NULL` or `+inf` = unbounded |
@@ -1107,7 +1109,7 @@ The `value` column holds the measure of each type:
 | `regex_match` | match rate | `pattern` (required) | yes |
 | `values_in_set` | share in set | `allowed_values` (JSON array of strings) | yes |
 | `agg` | the aggregate (`min`, `max`, `sum` of an integer or `DECIMAL` column and `median` of a `DECIMAL` column are compared exactly, as in [`agg_check`](#agg_check)) | `agg` (required): `avg`, `min`, `max`, `sum`, `median`, `stddev` | yes |
-| `duplicate_count` | duplicates | none | yes |
+| `duplicate_count` | duplicates | none (the key is `column_name`: a comma-separated list or a JSON array) | yes |
 | `compliance` | compliance rate | `expression` (required) | yes |
 | `freshness` | age in seconds (the thresholds are seconds too) | `reference_time` (default: the current UTC time, no ICU needed) | yes |
 | `occurrence` | frequency of the extreme value | `mode`: `max` (default) or `min` | no |
@@ -1157,7 +1159,7 @@ example a misspelled `refernce_date`, is an `error` row that lists the valid key
 Typed values are checked when the suite is built: `reference_date` must be a date
 (`YYYY-MM-DD`) or a date token, `reference_time` a timestamp (`YYYY-MM-DD[ HH:MM[:SS]]`,
 optionally with a UTC offset such as `+02:00`) or a date token, `window_days` a positive
-integer, `k` a finite number and
+integer up to 36500 (100 years), `k` a finite number and
 `fill_missing_days` `true` or `false`. A malformed
 value is an `error` row of that check that names the key, the value and the expected format,
 for example `params.reference_date '21/10/2026' is not a valid date (expected YYYY-MM-DD)`; the
@@ -1225,6 +1227,9 @@ are, for example:
   results could not be told apart
 - a `date_column` that is not a date, timestamp or text column (see above)
 - a `compliance` expression or `filter_expr` that does not parse or references an unknown column
+  (`params.expression: failed to parse expression 'amount >': syntax error at or near ")"`)
+- a `regex_match` pattern that is not a valid regular expression
+  (`params.pattern '[a-z' is not a valid regular expression: missing ]: [a-z`)
 - a `match_rate` `right_table` that does not exist
 - a `NaN` threshold, a `+inf` lower or a `-inf` upper threshold (see above)
 - `lower_threshold` greater than `upper_threshold`, or a rate threshold outside 0 to 1 for

@@ -16,6 +16,9 @@ namespace anofox {
 string EscapeSqlStringLiteral(const string &value);
 string QuoteSqlIdentifier(const string &identifier);
 string BuildQueryTableRef(const string &table_name);
+// " (a table whose name contains a dot or a double quote is passed as a quoted identifier: "a.b")"
+// for such an unquoted table name, else empty: appended to a "does not exist" error
+string QuotedTableNameHint(const string &table_name);
 
 // The statements of `sql`, parsed with the context's parser settings on every
 // DuckDB line: 2.0 builds a Parser from the ClientContext (GetParserOptions is

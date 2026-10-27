@@ -15,6 +15,13 @@ void RegisterCheckFunctions(ExtensionLoader &loader);
 // caller's privileges (same trust model as running SQL directly).
 void ValidateBooleanExpression(ClientContext &context, const string &expr, const string &function_name);
 
+// window_days of the time-aware checks: 1 to MAX_WINDOW_DAYS (100 years)
+constexpr int64_t MAX_WINDOW_DAYS = 36500;
+
+// Throw "<prefix> '<pattern>' is not a valid regular expression: <cause>" when DuckDB's
+// regexp functions reject `pattern`
+void ValidateRegexPattern(ClientContext &context, const string &pattern, const string &prefix);
+
 // SQL expression counting duplicate keys over the current group: rows beyond the first of
 // each distinct key; NULL keys are duplicates of each other only. A compound key compares
 // NULL components as equal.

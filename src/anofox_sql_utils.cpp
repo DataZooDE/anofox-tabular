@@ -51,6 +51,27 @@ string BuildQueryTableRef(const string &table_name) {
 	return "query_table('" + EscapeSqlStringLiteral(table_name) + "')";
 }
 
+string QuotedTableNameHint(const string &table_name) {
+	if (table_name.empty() || table_name[0] == '"' ||
+	    (table_name.find('.') == string::npos && table_name.find('"') == string::npos)) {
+		return string();
+	}
+	// A file ('orders.csv', 'data/orders.parquet') is no table name
+	static const char *const FILE_EXTENSIONS[] = {".csv",   ".tsv",    ".parquet", ".json",
+	                                              ".jsonl", ".ndjson", ".gz",      ".zst"};
+	auto lower = StringUtil::Lower(table_name);
+	if (lower.find('/') != string::npos || lower.find('\\') != string::npos) {
+		return string();
+	}
+	for (auto extension : FILE_EXTENSIONS) {
+		if (StringUtil::EndsWith(lower, extension)) {
+			return string();
+		}
+	}
+	return " (a table whose name contains a dot or a double quote is passed as a quoted identifier: " +
+	       QuoteSqlIdentifier(table_name) + ")";
+}
+
 namespace {
 // 2.0: Parser(ClientContext &)
 template <class P = Parser, class CONTEXT>
@@ -409,13 +430,15 @@ vector<ResolvedColumn> RequireRelationColumns(ClientContext &context, const stri
 		// A catalog error for a relation the catalog does not know is a missing table; a view
 		// that exists but no longer binds (e.g. its base table was dropped) is reported as is
 		if (error.Type() == ExceptionType::CATALOG && !LookupRelation(context, table_name).found) {
-			throw BinderException("%s: table '%s' does not exist", function_name, table_name);
+			throw BinderException("%s: table '%s' does not exist%s", function_name, table_name,
+			                      QuotedTableNameHint(table_name));
 		}
 		auto newline = cause.find('\n');
 		if (newline != string::npos) {
 			cause = cause.substr(0, newline);
 		}
-		throw BinderException("%s: cannot read table '%s': %s", function_name, table_name, cause);
+		throw BinderException("%s: cannot read table '%s': %s%s", function_name, table_name, cause,
+		                      QuotedTableNameHint(table_name));
 	}
 	vector<ResolvedColumn> result;
 	for (auto idx : MatchColumnNames(function_name, table_name, names, columns)) {
