@@ -1206,11 +1206,24 @@ rounded to three decimals; the `value` column keeps the full precision.
 `run_checks` works in UTC, with or without the ICU extension and whatever `SET TimeZone` says:
 
 - `run_ts` is the current time in UTC.
-- `${today}`, `${yesterday}` and their `+N`/`-N` forms are UTC dates.
+- `${today}`, `${yesterday}` and their `+N`/`-N` forms are UTC dates. Compared with a
+  `TIMESTAMP WITH TIME ZONE` column they are midnight UTC: `received_at >= ${yesterday}` keeps
+  the same rows under `SET TimeZone = 'America/Los_Angeles'` as under `'UTC'`. That holds for
+  a token in a comparison, `BETWEEN` or `IN` with the column, also with arithmetic such as
+  `received_at >= ${today} - INTERVAL 6 HOUR`. Against a `DATE` or `TIMESTAMP` column the
+  token is a plain date. Your own casts follow the session time zone as usual: compare
+  `CAST(received_at AS DATE) = ${yesterday}` only under `TimeZone 'UTC'`, or compare
+  `received_at` itself.
 - `freshness` compares UTC timestamps. Its default reference is the current UTC time; a
   `reference_time` with an offset (`2026-10-29 08:00:00+02:00`) is converted to UTC, one without
   an offset is taken as UTC. A `TIMESTAMP WITH TIME ZONE` column is compared as its UTC
-  instant; a `TIMESTAMP`, `DATE` or text column is taken as UTC.
+  instant; a `TIMESTAMP` or `DATE` column is taken as UTC. A text column with an offset
+  (`'2026-10-29 04:00:00+02'`, `'...Z'`) is the instant it names; text without one is UTC.
+- The time-aware checks bucket rows by their UTC date (see
+  [Time-aware checks](#time-aware-checks)); text with an offset counts on its UTC date.
+- An `identifier_column` of type `TIMESTAMP WITH TIME ZONE` is reported as its UTC instant
+  with a `+00` suffix (`2026-10-26 22:00:00+00`), so results stored from sessions in different
+  time zones join on `identifier`.
 
 ### Example
 

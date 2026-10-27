@@ -17,12 +17,18 @@
 #include "duckdb/main/connection.hpp"
 #include "duckdb/common/error_data.hpp"
 #include "duckdb/planner/binder.hpp"
+#include "duckdb/parser/parsed_expression_iterator.hpp"
+#include "duckdb/parser/query_node/select_node.hpp"
+#include "duckdb/parser/statement/select_statement.hpp"
+#include "duckdb/parser/tableref.hpp"
 #include "duckdb_compat.hpp"
 #include "anofox_tabular_banner.hpp"
 #include "yyjson.hpp"
 
 #include <algorithm>
+#include <functional>
 #include <unordered_map>
+#include <unordered_set>
 
 namespace duckdb {
 namespace anofox {
@@ -161,10 +167,25 @@ static void ValidateParamsKeys(const CheckSpec &spec, const vector<string> &keys
 	throw BinderException("run_checks: check '" + spec.check_name + "': " + message);
 }
 
+// The UTC date `day_offset` days from the run's date, as SQL. Not current_date/today(): with
+// ICU loaded they follow the session time zone, without it they do not resolve.
+static string UtcDateTokenSQL(int64_t day_offset) {
+	const string today_expr = string("CAST(") + UTC_NOW_SQL + " AS DATE)";
+	if (day_offset == 0) {
+		return today_expr;
+	}
+	if (day_offset > 0) {
+		return "(" + today_expr + " + " + std::to_string(day_offset) + ")";
+	}
+	return "(" + today_expr + " - " + std::to_string(-day_offset) + ")";
+}
+
 // Substitute ${today}, ${yesterday}, ${today+N}, ${today-N}, ${yesterday+N}, ${yesterday-N}
-// tokens in `expr` with UTC date arithmetic. `location` names where the tokens come from in
-// error messages (e.g. "filter_expr of check 'x'", "params.reference_date").
-static string SubstituteDateTokens(const string &expr, const string &location) {
+// tokens in `expr` with `render(day offset)`, by default the UTC date arithmetic
+// (UtcDateTokenSQL). `location` names where the tokens come from in error messages (e.g.
+// "filter_expr of check 'x'", "params.reference_date").
+static string SubstituteDateTokens(const string &expr, const string &location,
+                                   const std::function<string(int64_t)> &render = UtcDateTokenSQL) {
 	const string supported = " (supported: today, yesterday, today+N, today-N, yesterday-N)";
 	string out;
 	size_t pos = 0;
@@ -200,16 +221,7 @@ static string SubstituteDateTokens(const string &expr, const string &location) {
 			int64_t n = std::stoll(rest.substr(1));
 			day_offset += (rest[0] == '+') ? n : -n;
 		}
-		// The UTC date. Not current_date/today(): with ICU loaded they follow the session
-		// time zone, without it they do not resolve.
-		const string today_expr = string("CAST(") + UTC_NOW_SQL + " AS DATE)";
-		if (day_offset == 0) {
-			out += today_expr;
-		} else if (day_offset > 0) {
-			out += "(" + today_expr + " + " + std::to_string(day_offset) + ")";
-		} else {
-			out += "(" + today_expr + " - " + std::to_string(-day_offset) + ")";
-		}
+		out += render(day_offset);
 		pos = end + 1;
 	}
 	return out;
@@ -760,6 +772,190 @@ static BoundStatement BindProbe(ClientContext &context, const string &sql) {
 	return binder->Bind(*statements[0]);
 }
 
+// filter_expr date tokens against a TIMESTAMP WITH TIME ZONE column. A token is a UTC DATE;
+// compared with a TIMESTAMPTZ column it would be cast to the session time zone's midnight
+// once ICU is loaded (ts >= ${yesterday} keeps other rows under 'America/Los_Angeles' than
+// under 'UTC'). So in a comparison, BETWEEN or IN whose other operand is a TIMESTAMPTZ, the
+// operand holding the token (a DATE or TIMESTAMP, e.g. ${today} - INTERVAL 6 HOUR) is turned
+// into the instant it denotes in UTC. Against DATE and TIMESTAMP columns the token stays a
+// DATE (a plain TIMESTAMP is UTC already).
+namespace filter_tokens {
+
+constexpr const char *TOKEN_PLACEHOLDER = "__anofox_date_token_";
+constexpr const char *OPERAND_PLACEHOLDER = "__anofox_token_operand";
+// The operand as a UTC instant: its text with a +00 offset, which both the core and the ICU
+// casts read as UTC (to_timestamp(epoch(...)) would round through a DOUBLE)
+constexpr const char *UTC_INSTANT_TEMPLATE =
+    "CAST(strftime(CAST(__anofox_token_operand AS TIMESTAMP), '%Y-%m-%d %H:%M:%S.%f+00') AS TIMESTAMPTZ)";
+
+using TokenSet = std::unordered_set<const ParsedExpression *>;
+
+// One SQL expression parsed with the session's parser settings; nullptr when it does not parse
+// as exactly one plain expression
+static unique_ptr<ParsedExpression> ParseExpression(ClientContext &context, const string &sql) {
+	vector<unique_ptr<SQLStatement>> statements;
+	try {
+		statements = ParseWithContextSettings(context, "SELECT (" + sql + ")");
+	} catch (std::exception &) {
+		return nullptr;
+	}
+	if (statements.size() != 1 || statements[0]->type != StatementType::SELECT_STATEMENT) {
+		return nullptr;
+	}
+	auto &select = statements[0]->Cast<SelectStatement>();
+	if (!select.node || select.node->type != QueryNodeType::SELECT_NODE) {
+		return nullptr;
+	}
+	auto &node = select.node->Cast<SelectNode>();
+	if (node.select_list.size() != 1 || node.where_clause ||
+	    (node.from_table && node.from_table->type != TableReferenceType::EMPTY_FROM)) {
+		return nullptr;
+	}
+	return std::move(node.select_list[0]);
+}
+
+// Whether `expr` is the column reference `name` (a placeholder)
+static bool IsPlaceholder(const ParsedExpression &expr, const string &name) {
+	if (expr.GetExpressionClass() != ExpressionClass::COLUMN_REF) {
+		return false;
+	}
+	auto text = expr.ToString();
+	return text == name || text == "\"" + name + "\"";
+}
+
+// Replace the token placeholders by the UTC date SQL of their offset; `tokens` collects them
+static void ReplaceTokenPlaceholders(ClientContext &context, unique_ptr<ParsedExpression> &expr,
+                                     const vector<int64_t> &offsets, TokenSet &tokens) {
+	for (idx_t i = 0; i < offsets.size(); i++) {
+		if (IsPlaceholder(*expr, TOKEN_PLACEHOLDER + std::to_string(i))) {
+			auto date = ParseExpression(context, UtcDateTokenSQL(offsets[i]));
+			if (!date) {
+				throw InternalException("run_checks: cannot parse the date token SQL");
+			}
+			expr = std::move(date);
+			tokens.insert(expr.get());
+			return;
+		}
+	}
+	ParsedExpressionIterator::EnumerateChildren(
+	    *expr, [&](unique_ptr<ParsedExpression> &child) { ReplaceTokenPlaceholders(context, child, offsets, tokens); });
+}
+
+static bool ContainsToken(const ParsedExpression &expr, const TokenSet &tokens) {
+	if (tokens.count(&expr)) {
+		return true;
+	}
+	bool found = false;
+	ParsedExpressionIterator::EnumerateChildren(expr, [&](const ParsedExpression &child) {
+		found = found || ContainsToken(child, tokens);
+	});
+	return found;
+}
+
+// The type `expr` binds to over the check's table; INVALID when it does not bind (the filter's
+// own validation reports that)
+static LogicalType ProbeType(ClientContext &context, const string &table_ref, const ParsedExpression &expr) {
+	try {
+		return BindProbe(context, "SELECT (" + expr.ToString() + ") FROM " + table_ref + " LIMIT 0").types[0];
+	} catch (std::exception &) {
+		return LogicalType(LogicalTypeId::INVALID);
+	}
+}
+
+static bool IsDateOrPlainTimestamp(const LogicalType &type) {
+	switch (type.id()) {
+	case LogicalTypeId::DATE:
+	case LogicalTypeId::TIMESTAMP:
+	case LogicalTypeId::TIMESTAMP_SEC:
+	case LogicalTypeId::TIMESTAMP_MS:
+	case LogicalTypeId::TIMESTAMP_NS:
+		return true;
+	default:
+		return false;
+	}
+}
+
+// Replace the OPERAND_PLACEHOLDER in `wrapper` by `operand`
+static void InsertOperand(unique_ptr<ParsedExpression> &wrapper, unique_ptr<ParsedExpression> &operand) {
+	if (IsPlaceholder(*wrapper, OPERAND_PLACEHOLDER)) {
+		wrapper = std::move(operand);
+		return;
+	}
+	ParsedExpressionIterator::EnumerateChildren(
+	    *wrapper, [&](unique_ptr<ParsedExpression> &child) { InsertOperand(child, operand); });
+}
+
+static void PinTokenComparisons(ClientContext &context, const string &table_ref, const TokenSet &tokens,
+                                unique_ptr<ParsedExpression> &expr) {
+	ParsedExpressionIterator::EnumerateChildren(*expr, [&](unique_ptr<ParsedExpression> &child) {
+		PinTokenComparisons(context, table_ref, tokens, child);
+	});
+	auto expression_type = expr->GetExpressionType();
+	bool compares = expr->GetExpressionClass() == ExpressionClass::COMPARISON ||
+	                expr->GetExpressionClass() == ExpressionClass::BETWEEN ||
+	                expression_type == ExpressionType::COMPARE_IN || expression_type == ExpressionType::COMPARE_NOT_IN;
+	if (!compares) {
+		return;
+	}
+	vector<unique_ptr<ParsedExpression> *> token_operands;
+	bool against_timestamptz = false;
+	ParsedExpressionIterator::EnumerateChildren(*expr, [&](unique_ptr<ParsedExpression> &operand) {
+		if (ContainsToken(*operand, tokens)) {
+			token_operands.push_back(&operand);
+		} else if (!against_timestamptz &&
+		           ProbeType(context, table_ref, *operand).id() == LogicalTypeId::TIMESTAMP_TZ) {
+			against_timestamptz = true;
+		}
+	});
+	if (!against_timestamptz) {
+		return;
+	}
+	for (auto operand : token_operands) {
+		if (!IsDateOrPlainTimestamp(ProbeType(context, table_ref, **operand))) {
+			continue;
+		}
+		auto wrapper = ParseExpression(context, UTC_INSTANT_TEMPLATE);
+		if (!wrapper) {
+			throw InternalException("run_checks: cannot parse the UTC instant template");
+		}
+		InsertOperand(wrapper, *operand);
+		*operand = std::move(wrapper);
+	}
+}
+
+} // namespace filter_tokens
+
+// filter_expr with its date tokens expanded (see namespace filter_tokens). An expression the
+// rewrite cannot handle keeps the plain token substitution.
+static string ExpandFilterDateTokens(ClientContext &context, const CheckSpec &spec) {
+	using namespace filter_tokens;
+	const string location = "filter_expr of check '" + spec.check_name + "'";
+	const string textual = SubstituteDateTokens(spec.filter_expr, location);
+	vector<int64_t> offsets;
+	auto with_placeholders = SubstituteDateTokens(spec.filter_expr, location, [&](int64_t day_offset) {
+		offsets.push_back(day_offset);
+		return string(TOKEN_PLACEHOLDER) + std::to_string(offsets.size() - 1);
+	});
+	if (offsets.empty()) {
+		return textual;
+	}
+	auto root = ParseExpression(context, with_placeholders);
+	if (!root) {
+		return textual;
+	}
+	TokenSet tokens;
+	ReplaceTokenPlaceholders(context, root, offsets, tokens);
+	PinTokenComparisons(context, BuildQueryTableRef(spec.table_name), tokens, root);
+	auto result = root->ToString();
+	if (result.find(TOKEN_PLACEHOLDER) != string::npos) {
+		// a token where the expression iterator does not reach (e.g. inside a subquery)
+		AnofoxTrace(AnofoxLogLevel::Debug, "check_suite: " + location + ": date tokens substituted as text");
+		return textual;
+	}
+	AnofoxTrace(AnofoxLogLevel::Debug, "check_suite: " + location + " expanded to " + result);
+	return result;
+}
+
 // The per-branch pieces the outer uniform template is assembled from. A check either
 // provides literal thresholds (from the checks table) or computes them in the inner
 // query (metric_anomaly_iqr exposes its IQR bounds as lower/upper threshold columns).
@@ -767,6 +963,9 @@ struct CheckBranch {
 	string inner_sql;            // derived table producing: [identifier,] value [, lower_threshold, upper_threshold]
 	bool computed_thresholds = false;
 	bool has_identifier = false;
+	// The identifier_column as text (UtcTextSQL: a TIMESTAMPTZ is rendered as its UTC instant,
+	// so the identifier and a stored history keyed by it do not depend on the session TimeZone)
+	string identifier_sql;
 	// A NULL value fails the check (with this message) instead of passing trivially.
 	// freshness: without a timestamp the data cannot be shown to be fresh, the same
 	// outcome as the standalone freshness check.
@@ -902,6 +1101,11 @@ static CheckBranch BuildCheckBranch(ClientContext &context, const CheckSpec &spe
 	const string where_clause = filter_sql.empty() ? "" : " WHERE (" + filter_sql + ")";
 	const bool grouped = !spec.identifier_column.empty();
 	branch.has_identifier = grouped;
+	if (grouped) {
+		const string id_ref = QuoteSqlIdentifier(spec.identifier_column);
+		auto probe = BindProbe(context, "SELECT " + id_ref + " FROM " + table_ref + " LIMIT 0");
+		branch.identifier_sql = UtcTextSQL(id_ref, probe.types[0]);
+	}
 
 	// Simple aggregate value expressions computed directly over the (filtered) target
 	string value_expr;
@@ -963,9 +1167,6 @@ static CheckBranch BuildCheckBranch(ClientContext &context, const CheckSpec &spe
 		if (grouped) {
 			const string &id_col = branch.identifier_sql;
 			dup_keys = "SELECT " + id_col + " AS identifier, " + KeyTextSQL(key_exprs) + " AS k FROM __base GROUP BY " +
-	// The identifier_column as text (UtcTextSQL: a TIMESTAMPTZ is rendered as its UTC instant,
-	// so the identifier and a stored history keyed by it do not depend on the session TimeZone)
-	string identifier_sql;
 			           id_col + ", " + key_group + " HAVING COUNT(*) > 1";
 			branch.inner_sql = "WITH __base AS (SELECT * FROM " + table_ref + where_clause + "), "
 			                   "__dup AS (" + dup_keys + "), "
@@ -1101,11 +1302,6 @@ static CheckBranch BuildCheckBranch(ClientContext &context, const CheckSpec &spe
 			throw BinderException("run_checks: check '" + spec.check_name + "': column_name '" + spec.column_name +
 			                      "' and params.metric_column '" + spec.metric_column +
 			                      "' name different columns; set only one");
-	if (grouped) {
-		const string id_ref = QuoteSqlIdentifier(spec.identifier_column);
-		auto probe = BindProbe(context, "SELECT " + id_ref + " FROM " + table_ref + " LIMIT 0");
-		branch.identifier_sql = UtcTextSQL(id_ref, probe.types[0]);
-	}
 		}
 		const string &metric_column = spec.metric_column.empty() ? spec.column_name : spec.metric_column;
 		string metric_expr = metric_column.empty() ? "CAST(COUNT(*) AS DOUBLE)"
@@ -1431,7 +1627,7 @@ static string BuildValidatedCheckSQL(ClientContext &context, const CheckSpec &sp
 
 	string filter_sql;
 	if (!spec.filter_expr.empty()) {
-		filter_sql = SubstituteDateTokens(spec.filter_expr, "filter_expr of check '" + spec.check_name + "'");
+		filter_sql = ExpandFilterDateTokens(context, spec);
 		ValidateBooleanExpression(context, filter_sql, "filter_expr");
 		// A row on which the filter fails at runtime is filtered out instead of
 		// aborting the suite

@@ -482,7 +482,11 @@ In production, anchor the checks to the run date with a date token instead of a 
 the checks table needs no daily `UPDATE`: `"reference_date": "${yesterday}"` evaluates the
 previous day on every run, and `"reference_time": "${today}"` is midnight of the run date.
 `run_checks` works in UTC (`run_ts`, the tokens, the default `freshness` reference), so the
-tokens are UTC dates whatever the session time zone:
+tokens are UTC dates whatever the session time zone. In a `filter_expr` such as
+`created_at >= ${yesterday}` on a `TIMESTAMP WITH TIME ZONE` column the token is midnight UTC,
+and a `TIMESTAMP WITH TIME ZONE` `identifier_column` is reported in UTC
+(`2026-03-15 06:00:00+00`): the suite gives the same rows under every `SET TimeZone`, so stored
+results of several sessions line up:
 
 ```sql no-run
 INSERT INTO nightly_checks VALUES
