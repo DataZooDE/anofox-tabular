@@ -1526,13 +1526,18 @@ std::string BuildEmailPattern() {
     return local + "@" + label + R"((?:\.)" + label + ")*";
 }
 
-// Bytes that can be part of a local part: the ASCII characters of the pattern
-// and the bytes of the non-ASCII letters it accepts.
+// Bytes that can be part of a local part when scanning back from the '@': the
+// ASCII characters of the pattern and the bytes of the non-ASCII letters it
+// accepts. The URL delimiters '/', '?', '#', '&' and '=' end the local part
+// although RFC 5322 allows them: in practice they separate an address from
+// the path or query before it ("/users/anna@corp.com",
+// "?email=max@web.de&id=7"), and an address that absorbed them would be
+// reported, hashed and masked as "email=max@web.de".
 bool IsEmailLocalByte(unsigned char c) {
     if (c >= 0x80) {
         return c <= 0xBF || (c >= 0xC3 && c <= 0xDF) || c == 0xE1 || (c >= 0xE3 && c <= 0xEF);
     }
-    return std::isalnum(c) || std::strchr(".!#$%&'*+/=?^_`{|}~-", c) != nullptr;
+    return std::isalnum(c) || std::strchr(".!$%'*+^_`{|}~-", c) != nullptr;
 }
 
 // A byte that can start the local part: an ASCII letter or digit, or the lead
@@ -2910,6 +2915,35 @@ std::vector<PIIMatch> PIIEngine::Detect(
 }
 
 std::vector<PIIMatch> PIIEngine::ResolveOverlaps(std::vector<PIIMatch> matches) {
+    // An email address inside a URL ("https://shop.example.com/unsubscribe?email=max@web.de")
+    // is the personal data of that URL: the URL yields to the EMAIL, so the address is
+    // reported, hashed and masked like the same address in a CRM column, and redaction keeps
+    // scheme, host and path. Without EMAIL among the types the URL is matched as a whole.
+    // An address right after "://" is the userinfo of the URL ("https://user@host/path"),
+    // not an email address, and the URL stays one match.
+    std::vector<std::pair<size_t, size_t>> email_spans;
+    for (const auto &match : matches) {
+        if (match.type == PIIType::EMAIL) {
+            email_spans.emplace_back(match.start_pos, match.end_pos);
+        }
+    }
+    if (!email_spans.empty()) {
+        const auto url_contains_email = [&email_spans](const PIIMatch &url) {
+            return url.type == PIIType::URL &&
+                   std::any_of(email_spans.begin(), email_spans.end(), [&url](const std::pair<size_t, size_t> &span) {
+                       const auto scheme_end = url.matched_text.find("://");
+                       const bool userinfo = scheme_end != std::string::npos &&
+                                             span.first == url.start_pos + scheme_end + 3;
+                       return !userinfo && span.first >= url.start_pos && span.second <= url.end_pos;
+                   });
+        };
+        const auto first_url = std::remove_if(matches.begin(), matches.end(), url_contains_email);
+        if (first_url != matches.end()) {
+            AnofoxTrace(AnofoxLogLevel::Trace, "pii: a URL with an email address inside yields to the EMAIL match");
+            matches.erase(first_url, matches.end());
+        }
+    }
+
     // Deterministic priority: earlier start wins; on ties prefer the longer
     // match, then the higher confidence, then the lower PIIType enumeration
     // value (more specific, checksum-validated types come first).
