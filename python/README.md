@@ -177,6 +177,10 @@ print(result.failures)    # DataFrame: column, row_id, value, rule
   `"outliers"` (outlier tree); an unknown `output_mode` raises `ValueError`. Column lists
   can be a list or a comma-separated string (`"amount, items"`). A column whose name contains
   a comma cannot be selected and raises `ValueError`.
+- The per-row output (`"scores"`, `"clusters"`, `"outliers"`) of a pandas DataFrame carries
+  the input's index labels, so `df["is_anomaly"] = scores["is_anomaly"]` aligns; rows with a
+  `NULL` feature are not in the output and get `NaN`. `row_id` is the 1-based row number in
+  the input. A polars output keeps the input's row order and `row_id`.
 - `outlier_tree(..., output_mode="outliers")` returns `conditions` as a list of dicts per
   outlier (polars: `List(Struct)`), each with the keys `column`, `type` (`"numeric"` or
   `"categorical"`), `operator`, `value` (numeric threshold, else `None`) and `values`

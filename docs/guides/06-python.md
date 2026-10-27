@@ -286,8 +286,10 @@ the numeric detectors raise `ValueError: column 'amount' has no non-null values`
 ### Join scores back to the rows
 
 The per-row output of every detector, also of `isolation_forest_mv` and `dbscan_mv`, has one
-row per analyzed row. It holds the scores, not the input columns. To see the flagged rows, join
-it back on the identifier you pass as `id_column`:
+row per analyzed row. It holds the scores, not the input columns. For a pandas DataFrame it
+carries the input's index labels, so a score column can be assigned straight back to the input.
+A row with a `NULL` in a selected column is left out of the output, and it gets `NaN` in the
+assigned column:
 
 ```python
 orders = pd.DataFrame({
@@ -295,6 +297,31 @@ orders = pd.DataFrame({
     "amount": [42.5, 39.9, 45.0, 41.2, 44.8, 40.1, 43.3, 38.7, 46.2, 41.9, 39.5, 980.0],
     "items": [2, 2, 3, 2, 3, 2, 3, 2, 3, 2, 2, 3],
 })
+open_orders = orders.set_index("order_id")
+open_orders.loc["SO-1003", "amount"] = None   # not settled yet
+scores = anomaly.isolation_forest(
+    conn, open_orders, "amount", output_mode="scores",
+    sample_size=11, contamination=0.05, seed=42,
+)
+open_orders["is_anomaly"] = scores["is_anomaly"]
+print(open_orders.loc[["SO-1002", "SO-1003", "SO-1012"]])
+```
+
+```text
+          amount  items is_anomaly
+order_id
+SO-1002     39.9      2      False
+SO-1003      NaN      3        NaN
+SO-1012    980.0      3       True
+```
+
+The index labels are those of the scored rows, also after a filter (`df[df["amount"] > 0]`)
+or on a custom index. `row_id` is the 1-based row number in the input (rows with a `NULL` are
+left out but keep their number). A polars DataFrame has no index: its output keeps the input's
+row order and `row_id`. To join on a key instead, pass it as `id_column`; its value is added
+to the output directly after `row_id`:
+
+```python
 scores = anomaly.isolation_forest_mv(
     conn, orders, ["amount", "items"], output_mode="scores",
     sample_size=12, contamination=0.05, id_column="order_id", seed=42,
@@ -309,10 +336,6 @@ print(orders.merge(flagged, on="order_id").to_string(index=False))
 order_id  amount  items  anomaly_score
  SO-1012   980.0      3       0.745399
 ```
-
-Without an identifier column, use `row_id`: the 1-based row number in the input (rows with a
-`NULL` are left out but keep their number), so `orders.iloc[scores["row_id"] - 1]` gives the
-scored rows of a DataFrame.
 
 ### Scale the features for DBSCAN
 

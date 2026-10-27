@@ -110,3 +110,98 @@ class TestPositionColumnCollision:
         result = conn.validate(df, {"__anofox_pos": EmailRule(mode="regex")})
         assert result.failures["row_id"].tolist() == [3]
         assert result.failures["value"].tolist() == ["bob(at)example.com"]
+
+
+def _orders_with_gap():
+    """
+    60 card payments with one NULL amount, one extreme amount and a
+    non-default index (the order number), as after a filter on a bigger frame.
+    """
+    import numpy as np
+    import pandas as pd
+    rng = np.random.default_rng(7)
+    amount = rng.normal(80.0, 12.0, 60).round(2).tolist()
+    items = rng.integers(1, 6, 60).tolist()
+    amount[4] = None          # payment not settled yet
+    amount[57] = 2450.00      # the one suspicious order
+    items[57] = 40
+    index = pd.Index([100_000 + 3 * i for i in range(60)], name="order_no")
+    return pd.DataFrame(
+        {"customer": [f"C{1000 + i}" for i in range(60)], "amount": amount, "items": items},
+        index=index,
+    )
+
+
+class TestAnomalyScoresKeepIndex:
+    """
+    Per-row anomaly output carries the input's index labels for a pandas input,
+    without the rows left out (a NULL feature), so `df[col] = scores[col]` aligns.
+    """
+
+    CASES = [
+        ("isolation_forest", "amount", {"output_mode": "scores", "seed": 3}),
+        ("isolation_forest_mv", ["amount", "items"], {"output_mode": "scores", "seed": 3}),
+        ("dbscan", "amount", {"output_mode": "scores", "epsilon": 15.0, "min_points": 3}),
+        ("dbscan_mv", ["amount", "items"], {"output_mode": "clusters", "epsilon": 15.0, "min_points": 3}),
+    ]
+
+    @pytest.mark.parametrize("func,columns,kwargs", CASES)
+    def test_scores_keep_input_labels(self, conn, func, columns, kwargs):
+        from anofox import anomaly
+        df = _orders_with_gap()
+        scores = getattr(anomaly, func)(conn, df, columns, **kwargs)
+        assert len(scores) == 59
+        expected = df.index.delete(4)
+        assert scores.index.tolist() == expected.tolist()
+        assert scores.index.name == "order_no"
+        # row_id still is the 1-based row number of the input
+        assert scores.loc[100_000 + 3 * 57, "row_id"] == 58
+
+    @pytest.mark.parametrize("func,columns,kwargs", CASES)
+    def test_assign_back_aligns(self, conn, func, columns, kwargs):
+        from anofox import anomaly
+        df = _orders_with_gap()
+        scores = getattr(anomaly, func)(conn, df, columns, **kwargs)
+        df["is_anomaly"] = scores["is_anomaly"]
+        assert df["is_anomaly"].isna().sum() == 1            # only the NULL amount
+        assert pd.isna(df["is_anomaly"].iloc[4])
+        assert bool(df["is_anomaly"].iloc[57]) is True        # the 2450.00 order
+
+    def test_filtered_frame_assign_back(self, conn):
+        from anofox import anomaly
+        df = _orders_with_gap()
+        recent = df[df.index >= 100_060].copy()                # a filtered frame
+        scores = anomaly.isolation_forest(conn, recent, "amount", output_mode="scores", seed=1)
+        recent["score"] = scores["anomaly_score"]
+        assert recent["score"].notna().sum() == len(recent) - recent["amount"].isna().sum()
+
+    def test_outlier_tree_keeps_labels(self, conn):
+        from anofox import anomaly
+        df = _orders_with_gap()
+        out = anomaly.outlier_tree(
+            conn, df, ["amount", "items"], output_mode="outliers",
+            min_size_numeric=5, z_outlier=3.0,
+        )
+        assert len(out) >= 1
+        for label, row_id in zip(out.index, out["row_id"]):
+            assert df.index[row_id - 1] == label
+        assert 100_000 + 3 * 57 in out.index
+
+    def test_table_name_input_keeps_default_index(self, conn):
+        from anofox import anomaly
+        df = _orders_with_gap()
+        conn.register("_idx_orders_v", df)
+        conn.execute("CREATE OR REPLACE TABLE _idx_orders AS SELECT * FROM _idx_orders_v")
+        conn.unregister("_idx_orders_v")
+        try:
+            scores = anomaly.isolation_forest(conn, "_idx_orders", "amount", output_mode="scores", seed=3)
+            assert scores.index.tolist() == list(range(59))
+        finally:
+            conn.execute("DROP TABLE _idx_orders")
+
+    def test_polars_keeps_row_order_and_row_id(self, conn):
+        pl = pytest.importorskip("polars")
+        from anofox import anomaly
+        df = pl.from_pandas(_orders_with_gap().reset_index())
+        scores = anomaly.isolation_forest(conn, df, "amount", output_mode="scores", seed=3)
+        assert scores["row_id"].to_list() == [i for i in range(1, 61) if i != 5]

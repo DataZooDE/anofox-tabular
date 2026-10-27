@@ -69,7 +69,7 @@ def isolation_forest(
             "SELECT * FROM anofox_tab_isolation_forest(?, ?, ?::BIGINT, ?::BIGINT, ?::DOUBLE, ?, ?::BIGINT"
             f"{id_column_arg(id_column, params)})"
         )
-        return _execute_anomaly(conn, query, params, output_mode, output_df_type(table_or_df))
+        return _execute_anomaly(conn, query, params, output_mode, table_or_df)
 
 
 def isolation_forest_mv(
@@ -126,7 +126,7 @@ def isolation_forest_mv(
             "?, ?, ?::BIGINT, ?::BIGINT, ?::DOUBLE, ?, ?::BIGINT, ?::BIGINT"
             f"{id_column_arg(id_column, params)})"
         )
-        return _execute_anomaly(conn, query, params, output_mode, output_df_type(table_or_df))
+        return _execute_anomaly(conn, query, params, output_mode, table_or_df)
 
 
 def dbscan(
@@ -173,7 +173,7 @@ def dbscan(
             "SELECT * FROM anofox_tab_dbscan(?, ?, ?::DOUBLE, ?::BIGINT, ?"
             f"{id_column_arg(id_column, params)})"
         )
-        return _execute_anomaly(conn, query, params, output_mode, output_df_type(table_or_df))
+        return _execute_anomaly(conn, query, params, output_mode, table_or_df)
 
 
 def dbscan_mv(
@@ -220,7 +220,7 @@ def dbscan_mv(
             "SELECT * FROM anofox_tab_dbscan_mv(?, ?, ?::DOUBLE, ?::BIGINT, ?"
             f"{id_column_arg(id_column, params)})"
         )
-        return _execute_anomaly(conn, query, params, output_mode, output_df_type(table_or_df))
+        return _execute_anomaly(conn, query, params, output_mode, table_or_df)
 
 
 def outlier_tree(
@@ -302,9 +302,8 @@ def outlier_tree(
                 f"SELECT * REPLACE (from_json(conditions, '{_CONDITIONS_SCHEMA}') AS conditions) "
                 f"FROM {source}"
             )
-        df_type = output_df_type(table_or_df)
-        result = _execute_anomaly(conn, query, params, output_mode, df_type)
-        if output_mode != "summary" and df_type == "pandas":
+        result = _execute_anomaly(conn, query, params, output_mode, table_or_df)
+        if output_mode != "summary" and output_df_type(table_or_df) == "pandas":
             # DuckDB hands a LIST to pandas as a numpy array; give plain lists.
             result["conditions"] = [list(c) if c is not None else None for c in result["conditions"]]
         return result
@@ -373,6 +372,24 @@ def _is_untyped_all_missing(series: Any) -> bool:
     return series.dtype == object and bool(series.isna().all())
 
 
+def _with_input_index(result: Any, table_or_df: Any) -> Any:
+    """
+    Give the per-row *result* of a pandas DataFrame input that input's index labels.
+
+    ``row_id`` is the 1-based row number of the input, and rows with a NULL
+    feature are left out of the result, so a fresh 0..k-1 index would assign
+    scores to the wrong rows on ``df[col] = result[col]``. With the input's
+    labels the assignment aligns, and the rows left out become missing. A
+    polars result keeps ``row_id`` (polars has no index); a table name input
+    keeps the default index.
+    """
+    if isinstance(table_or_df, str) or output_df_type(table_or_df) != "pandas":
+        return result
+    positions = result["row_id"].to_numpy(dtype="int64") - 1
+    result.index = table_or_df.index.take(positions)
+    return result
+
+
 _OUTPUT_MODES = {
     "isolation_forest": ("summary", "scores"),
     "isolation_forest_mv": ("summary", "scores"),
@@ -394,11 +411,15 @@ def _check_output_mode(function: str, output_mode: str) -> None:
 
 
 def _execute_anomaly(
-    conn: Any, query: str, params: list, output_mode: str, df_type: str
+    conn: Any, query: str, params: list, output_mode: str, table_or_df: Any
 ) -> Union[dict, Any]:
-    """Execute the query: a dict for 'summary', else a DataFrame of *df_type* (one row per row)."""
+    """
+    Execute the query: a dict for 'summary', else a DataFrame with one row per
+    analysed row (polars for a polars input, else pandas).
+    """
     if output_mode != "summary":
-        return fetch_frame(conn, query, params, df_type)
+        result = fetch_frame(conn, query, params, output_df_type(table_or_df))
+        return _with_input_index(result, table_or_df)
 
     # summary — convert first row to dict using column names from description
     cursor = conn.execute(query, params)
