@@ -81,6 +81,12 @@ SELECT phonenumber_format('020 7946 0958', 'UK', 'E164') AS uk,
 └───────────────┴───────────────┴─────────────┘
 ```
 
+A number without `+` may start with the region's national (trunk) prefix, which the parser
+drops: `030 12345678` in `DE`, `020 7946 0018` in `GB`, and `1-212-555-0123`,
+`1 (212) 555-0123` or `12125550123` in `US` and `CA` (the NANP trunk digit `1`; the bare
+10-digit form `212-555-0123` works as well). The national prefix is `0` in most regions, `1` in
+US and CA and `8` in RU; IT, ES, NO and DK have none (an Italian number keeps its leading `0`).
+
 The parser also understands two common ways of writing international numbers:
 
 - **International dialling prefix.** A number that starts with the region's international
@@ -94,16 +100,17 @@ The parser also understands two common ways of writing international numbers:
 ```sql
 SELECT phonenumber_format('0049 30 12345678', 'DE', 'E164') AS idd,
        phonenumber_format('+49 (0)30 12345678', NULL, 'E164') AS trunk,
+       phonenumber_format('1-212-555-0123', 'US', 'E164') AS us_trunk,
        phonenumber_is_valid('089 123456', 'DE') AS short_de;
 ```
 
 ```text
-┌───────────────┬───────────────┬──────────┐
-│      idd      │     trunk     │ short_de │
-│    varchar    │    varchar    │ boolean  │
-├───────────────┼───────────────┼──────────┤
-│ +493012345678 │ +493012345678 │ true     │
-└───────────────┴───────────────┴──────────┘
+┌───────────────┬───────────────┬──────────────┬──────────┐
+│      idd      │     trunk     │   us_trunk   │ short_de │
+│    varchar    │    varchar    │   varchar    │ boolean  │
+├───────────────┼───────────────┼──────────────┼──────────┤
+│ +493012345678 │ +493012345678 │ +12125550123 │ true     │
+└───────────────┴───────────────┴──────────────┴──────────┘
 ```
 
 ### Labels, extensions and letters

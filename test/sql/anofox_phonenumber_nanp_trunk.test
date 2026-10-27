@@ -1,0 +1,123 @@
+# name: test/sql/anofox_phonenumber_nanp_trunk.test
+# description: US and Canadian numbers written with the NANP trunk prefix 1
+#              (1-212-555-0123, 1 (212) 555-0123, 12125550123) parse, validate,
+#              format, match and hash like the +1 and bare 10-digit forms.
+# group: [anofox_tabular]
+
+require anofox_tabular
+
+statement ok
+LOAD anofox_tabular;
+
+# A North American CRM export: the same kinds of numbers typed by sales reps in
+# every common way, with and without the leading 1, plus a few broken ones.
+statement ok
+CREATE TABLE na_contacts AS SELECT * FROM (VALUES
+    (2001, 'Acme Corp, New York',      '1-212-555-0123',      'US'),
+    (2002, 'Acme Corp, New York',      '1 (212) 555-0123',    'US'),
+    (2003, 'Acme Corp, New York',      '12125550123',         'US'),
+    (2004, 'Acme Corp, New York',      '(212) 555-0123',      'US'),
+    (2005, 'Acme Corp, New York',      '+1 212 555 0123',     'US'),
+    (2006, 'Acme Corp, New York',      '1.212.555.0123',      'US'),
+    (2007, 'Maple Leaf Ltd, Toronto',  '1-416-555-0199',      'CA'),
+    (2008, 'Maple Leaf Ltd, Toronto',  '416-555-0199',        'CA'),
+    (2009, 'Tollfree Support Line',    '1-800-555-0175',      'US'),
+    (2010, 'Typo, one digit missing',  '1-212-555-012',       'US'),
+    (2011, 'Typo, one digit too many', '1-212-555-01234',     'US'),
+    (2012, 'Extension after number',   '212-555-0123 x 15',   'US'),
+    (2013, 'Trunk 1 after +1',         '+1 1 212 555 0123',   'US')
+) t(contact_id, account, phone, region);
+
+query ITTTTT
+SELECT contact_id, (p).valid, (p).country_code, (p).national_number, (p).region, (p).reason
+FROM (SELECT contact_id, phonenumber_parse(phone, region) AS p FROM na_contacts)
+ORDER BY contact_id;
+----
+2001	true	1	2125550123	US	NULL
+2002	true	1	2125550123	US	NULL
+2003	true	1	2125550123	US	NULL
+2004	true	1	2125550123	US	NULL
+2005	true	1	2125550123	US	NULL
+2006	true	1	2125550123	US	NULL
+2007	true	1	4165550199	CA	NULL
+2008	true	1	4165550199	CA	NULL
+2009	true	1	8005550175	US	NULL
+2010	false	NULL	NULL	US	invalid_length
+2011	false	NULL	NULL	US	invalid_length
+2012	true	1	2125550123	US	NULL
+2013	true	1	2125550123	US	NULL
+
+# Formatting: the trunk 1 never shows up in the national number
+query ITTTT
+SELECT contact_id,
+       phonenumber_format(phone, region, 'E164'),
+       phonenumber_format(phone, region, 'INTERNATIONAL'),
+       phonenumber_format(phone, region, 'NATIONAL'),
+       phonenumber_format(phone, region, 'RFC3966')
+FROM na_contacts WHERE contact_id IN (2001, 2003, 2007, 2009, 2010)
+ORDER BY contact_id;
+----
+2001	+12125550123	+1 212 555 0123	(212) 555-0123	tel:+1-212-555-0123
+2003	+12125550123	+1 212 555 0123	(212) 555-0123	tel:+1-212-555-0123
+2007	+14165550199	+1 416 555 0199	(416) 555-0199	tel:+1-416-555-0199
+2009	+18005550175	+1 800 555 0175	(800) 555-0175	tel:+1-800-555-0175
+2010	NULL	NULL	NULL	NULL
+
+# Dedup: all New York spellings collapse to one E.164 key, Toronto to another
+query TI
+SELECT phonenumber_format(phone, region, 'E164') AS e164, count(*)
+FROM na_contacts WHERE phonenumber_is_valid(phone, region)
+GROUP BY ALL ORDER BY e164;
+----
++12125550123	8
++14165550199	2
++18005550175	1
+
+# Matching across spellings
+query TTT
+SELECT phonenumber_match('1-212-555-0123', '+1 (212) 555-0123', 'US'),
+       phonenumber_match('12125550123', '2125550123', 'US'),
+       phonenumber_match('1-416-555-0199', '+1 416 555 0199', 'CA');
+----
+EXACT_MATCH	EXACT_MATCH	EXACT_MATCH
+
+# Region of a trunk-prefixed Canadian number read with the CA hint
+query TT
+SELECT phonenumber_region('1-416-555-0199', 'CA'), phonenumber_region('1-212-555-0123', NULL);
+----
+CA	US
+
+# The default region US reads the trunk 1 as well
+statement ok
+SET anofox_tab_phonenumber_default_region = 'US';
+
+query TT
+SELECT phonenumber_is_valid('1-212-555-0123', NULL), (phonenumber_parse('1 (212) 555-0123', NULL)).national_number;
+----
+true	2125550123
+
+# A 10-digit number starting with 1 is no NANP number (area codes start with 2-9)
+query TT
+SELECT phonenumber_is_valid('1125550123', 'US'), (phonenumber_parse('1125550123', 'US')).reason;
+----
+false	invalid_length
+
+# Other regions keep their own trunk prefix: a German number is unaffected
+query T
+SELECT phonenumber_format('030 12345678', 'DE', 'E164');
+----
++493012345678
+
+# PII hashing still canonicalises US numbers to one E.164 value
+query T
+SELECT pii_mask_column('(212) 555-0123', 'PHONE', 'hash') = pii_mask_column('+1 212 555 0123', 'PHONE', 'hash');
+----
+true
+
+query T
+SELECT pii_mask_column('+1 212 555 0123', 'PHONE', 'hash') = left(sha256('+12125550123'), 16);
+----
+true
+
+statement ok
+RESET anofox_tab_phonenumber_default_region;

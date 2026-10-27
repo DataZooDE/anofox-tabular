@@ -39,7 +39,7 @@ const std::unordered_map<std::string, CountryMetadata> REGION_METADATA = {
 		1,                                    // country_code
 		"US",                                 // region_code
 		{10},                                 // valid_lengths (10-digit national numbers)
-		"",                                   // national_prefix (empty for US)
+		"1",                                  // national_prefix (NANP trunk prefix: 1-212-555-0123)
 		"011",                                // international_prefix
 		"2015550123",                         // example_number
 		// Pattern for US phone numbers: Area code 2-9, next digit 0-8, then 7 more digits
@@ -56,7 +56,7 @@ const std::unordered_map<std::string, CountryMetadata> REGION_METADATA = {
 		1,                                    // country_code
 		"CA",                                 // region_code
 		{10},                                 // valid_lengths
-		"",                                   // national_prefix
+		"1",                                  // national_prefix (NANP trunk prefix: 1-416-555-0199)
 		"011",                                // international_prefix
 		"5062345678",                         // example_number
 		"[2-9]\\d{2}[2-9]\\d{6}",            // fixed_line_pattern

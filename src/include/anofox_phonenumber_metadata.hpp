@@ -42,7 +42,7 @@ struct CountryMetadata {
 	int country_code;
 	std::string region_code;
 	std::vector<int> valid_lengths;          // Possible national significant number lengths
-	std::string national_prefix;             // E.g., "0" for GB, empty for US
+	std::string national_prefix;             // E.g., "0" for GB, "1" for US, empty for IT
 	std::string international_prefix;        // E.g., "011" for US, "00" for GB
 	std::string example_number;              // Example national number
 
