@@ -172,10 +172,15 @@ print(result.failures)    # DataFrame: column, row_id, value, rule
 anofox profile data.parquet
 anofox profile data.csv --format json
 
-# Quality checks (exit 0 = pass, exit 1 = fail)
+# Quality checks
 anofox quality data.parquet --volume-min 1000
-anofox quality data.csv --null-max 0.05 --column email
+anofox quality data.csv --null-max 0.05 --column email --format json
 ```
+
+`anofox quality` exits with `0` when every check passes, `1` when a check fails and `2` when
+the checks cannot run (invalid arguments, an unreadable file, an unknown column, a missing
+extension binary); the error goes to stderr. With `--format json`, `DECIMAL` values are
+written as JSON numbers and dates as ISO 8601 strings.
 
 Supported formats: `.parquet`, `.csv`, `.tsv`, `.json`, `.ndjson`
 
