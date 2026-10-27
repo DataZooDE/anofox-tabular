@@ -325,7 +325,8 @@ CREATE TABLE crm_import AS SELECT * FROM (VALUES
   ('C-1003', NULL, 'info@example.fr',        '01 23 45 67 89',  'FR40303265045',  '410',     'EUR'),
   ('C-1004', 'AT', 'eva@@example.at',        '01 5321234',      'ATU13585626',    '99.90',   'EURO'),
   ('C-1005', 'NL', 'piet@example.nl',        '+31 20 123 4567', '004495445B01',   '1.250,00', 'EUR'),
-  ('C-1006', 'DE', NULL,                     NULL,              NULL,             '75.00',   'EUR')
+  ('C-1006', 'DE', NULL,                     NULL,              NULL,             '75.00',   'EUR'),
+  ('C-1007', 'DE', '',                       '   ',             '',               '320,00',  'EUR')
 ) t(customer_ref, country, email, phone, vat_id, amount, currency);
 
 WITH checked AS (
@@ -334,7 +335,10 @@ WITH checked AS (
          phonenumber_parse(phone, country) AS p,
          phonenumber_format(phone, country, 'E164') AS phone_e164,
          vat_validate(vat_id) AS v,
-         TRY(money(TRY_CAST(amount AS DECIMAL(18, 2)), currency)) AS amount_money
+         -- German '1.250,00' / '320,00' to '1250.00' / '320.00'; other values as they are
+         TRY(money(TRY_CAST(CASE WHEN regexp_full_match(amount, '\d{1,3}(\.\d{3})*,\d+|\d+,\d+')
+                                 THEN replace(replace(amount, '.', ''), ',', '.')
+                                 ELSE amount END AS DECIMAL(18, 2)), currency)) AS amount_money
   FROM crm_import
 )
 SELECT customer_ref,
@@ -343,7 +347,8 @@ SELECT customer_ref,
        p.reason AS phone_reason,
        v.reason AS vat_reason,
        amount_money,
-       CASE WHEN e.valid IS NULL OR p.valid IS NULL OR v.valid IS NULL OR amount IS NULL THEN 'missing'
+       CASE WHEN e.valid IS NULL OR p.valid IS NULL OR v.valid IS NULL OR amount IS NULL
+                 OR 'empty' IN (e.reason, p.reason, v.reason) THEN 'missing'
             WHEN e.valid AND p.valid AND v.valid AND amount_money IS NOT NULL THEN 'clean'
             ELSE 'review' END AS route
 FROM checked
@@ -359,8 +364,9 @@ ORDER BY customer_ref;
 │ C-1002       │ NULL           │ +447400123456 │ NULL               │ NULL              │ {'amount': 880.500, 'currency': GBP}           │ clean   │
 │ C-1003       │ NULL           │ NULL          │ region_missing     │ NULL              │ {'amount': 410.000, 'currency': EUR}           │ review  │
 │ C-1004       │ invalid_format │ NULL          │ unsupported_region │ checksum_mismatch │ NULL                                           │ review  │
-│ C-1005       │ NULL           │ +31201234567  │ NULL               │ missing_prefix    │ NULL                                           │ review  │
+│ C-1005       │ NULL           │ +31201234567  │ NULL               │ missing_prefix    │ {'amount': 1250.000, 'currency': EUR}          │ review  │
 │ C-1006       │ NULL           │ NULL          │ NULL               │ NULL              │ {'amount': 75.000, 'currency': EUR}            │ missing │
+│ C-1007       │ empty          │ NULL          │ empty              │ empty             │ {'amount': 320.000, 'currency': EUR}           │ missing │
 └──────────────┴────────────────┴───────────────┴────────────────────┴───────────────────┴────────────────────────────────────────────────┴─────────┘
 ```
 
@@ -369,7 +375,9 @@ How each field is checked, and how the route is chosen:
 - **Route on `valid`, not on `reason` alone**: `reason` is `NULL` for a valid value and also for
   a `NULL` input, so a row without email, phone or VAT number (`C-1006`) would look clean.
   `valid` tells the two apart: `true` for a valid value, `false` with a `reason` for an invalid
-  one, `NULL` when there was nothing to check. The query routes `valid IS NULL` to `missing`; in
+  one, `NULL` when there was nothing to check. A blank value (an empty quoted CSV cell, or only
+  spaces) is no `NULL`: it is `valid = false` with the reason `empty` (`C-1007`). The query
+  routes both `valid IS NULL` and the reason `empty` to `missing`; in
   `dns` or `smtp` mode an email's `valid` is also `NULL` when a lookup cannot finish, so such a
   row is re-checked later rather than loaded.
 - **Email**: `(email_validate(email)).reason` is `NULL` for a valid address and names the rule
@@ -384,12 +392,14 @@ How each field is checked, and how the route is chosen:
 - **VAT**: `(vat_validate(vat_id)).reason` says why a number fails: `checksum_mismatch`,
   `invalid_format`, `missing_prefix` (`C-1005`, add the country as in [section 4](#4-vat-numbers))
   or `unsupported_country`.
-- **Money**: cast the text amount to a `DECIMAL` with `TRY_CAST`, so an amount in another format
-  (`'1.250,00'`, `C-1005`) becomes `NULL` instead of failing the query, and wrap `money` in
-  `TRY()` for unknown currency codes (`EURO`, `C-1004`). Do not pass the text itself:
+- **Money**: cast the text amount to a `DECIMAL` with `TRY_CAST`, so an amount in a format it
+  cannot read becomes `NULL` instead of failing the query, and wrap `money` in `TRY()` for
+  unknown currency codes (`EURO`, `C-1004`). Do not pass the text itself:
   `money('1250.00', 'EUR')` is a binder error (a string fits both the `DOUBLE` and the
-  `DECIMAL` variant), and `TRY()` cannot catch binder errors. Convert German-formatted amounts
-  first, e.g. `replace(replace(amount, '.', ''), ',', '.')`.
+  `DECIMAL` variant), and `TRY()` cannot catch binder errors.
+- **German amounts**: the query rewrites only the values written the German way (`1.250,00`,
+  `C-1005`; `320,00`, `C-1007`) and casts all others as they are, see
+  [German amounts in a mixed column](#german-amounts-in-a-mixed-column).
 - **Addresses**: set the libpostal data directory before the first postal call of the process
   and check that the data is there before an import parses addresses (no network needed once
   the data is present):
@@ -398,6 +408,39 @@ How each field is checked, and how the route is chosen:
   SET anofox_tab_postal_data_path = '/srv/libpostal';
   SELECT data_present, data_dir FROM postal_status();
   ```
+
+### German amounts in a mixed column
+
+An amount column exported from several systems mixes `1250.00` and `1.250,00`. Rewrite only
+the values that are written the German way (a decimal comma, optionally `.` as thousands
+separator: `1.250,00`, `320,00`) and cast all others as they are. Removing every `.` and turning
+every `,` into `.` is wrong on a mixed column: it turns `1250.00` into `125000.00` and
+`1,250.00` into `1.25` without an error:
+
+```sql
+SELECT amount,
+       TRY_CAST(replace(replace(amount, '.', ''), ',', '.') AS DECIMAL(18, 2)) AS replace_all,
+       TRY_CAST(CASE WHEN regexp_full_match(amount, '\d{1,3}(\.\d{3})*,\d+|\d+,\d+')
+                     THEN replace(replace(amount, '.', ''), ',', '.')
+                     ELSE amount END AS DECIMAL(18, 2)) AS safe
+FROM (VALUES ('1250.00'), ('1.250,00'), ('320,00'), ('410'), ('1,250.00')) t(amount);
+```
+
+```text
+┌──────────┬───────────────┬───────────────┐
+│  amount  │  replace_all  │     safe      │
+│ varchar  │ decimal(18,2) │ decimal(18,2) │
+├──────────┼───────────────┼───────────────┤
+│ 1250.00  │     125000.00 │       1250.00 │
+│ 1.250,00 │       1250.00 │       1250.00 │
+│ 320,00   │        320.00 │        320.00 │
+│ 410      │        410.00 │        410.00 │
+│ 1,250.00 │          1.25 │          NULL │
+└──────────┴───────────────┴───────────────┘
+```
+
+The safe recipe leaves `1,250.00` (an English thousands separator) `NULL`, so the row goes to
+review instead of being loaded with a wrong amount.
 
 ## Next steps
 
