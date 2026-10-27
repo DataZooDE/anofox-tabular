@@ -115,11 +115,19 @@ static void ValidateParamsKeys(const CheckSpec &spec, const vector<string> &keys
 
 // params.<key> as a DATE literal. Validated here, with DuckDB's own cast, so a malformed date
 // becomes an 'error' row of this check instead of a conversion error aborting the suite.
+// A cast that fails, throws (DuckDB v1.5 throws a conversion error for some strings, e.g.
+// 'yesterday') or yields NULL counts as invalid
+static bool TryCastParam(const string &text, const LogicalType &type, Value &result) {
+	try {
+		return duckdb_compat::TryCastValue(Value(text), type, result) && !result.IsNull();
+	} catch (std::exception &) {
+		return false;
+	}
+}
+
 static string DateParamLiteral(const CheckSpec &spec, const string &key, const string &text) {
 	Value date;
-	// A NULL result is a failure too: DuckDB v1.5 reports some unparseable strings
-	// ('yesterday') as a successful cast to NULL
-	if (!duckdb_compat::TryCastValue(Value(text), LogicalType(LogicalTypeId::DATE), date) || date.IsNull()) {
+	if (!TryCastParam(text, LogicalType(LogicalTypeId::DATE), date)) {
 		throw BinderException("run_checks: check '" + spec.check_name + "': params." + key + " '" + text +
 		                      "' is not a valid date (expected YYYY-MM-DD)");
 	}
@@ -132,9 +140,15 @@ static string DateParamLiteral(const CheckSpec &spec, const string &key, const s
 static string UtcTimestampParamLiteral(const CheckSpec &spec, const string &key, const string &text) {
 	Value with_zone;
 	Value utc;
-	if (!duckdb_compat::TryCastValue(Value(text), LogicalType(LogicalTypeId::TIMESTAMP_TZ), with_zone) ||
-	    with_zone.IsNull() || !duckdb_compat::TryCastValue(with_zone, LogicalType(LogicalTypeId::TIMESTAMP), utc) ||
-	    utc.IsNull()) {
+	bool ok = TryCastParam(text, LogicalType(LogicalTypeId::TIMESTAMP_TZ), with_zone);
+	if (ok) {
+		try {
+			ok = duckdb_compat::TryCastValue(with_zone, LogicalType(LogicalTypeId::TIMESTAMP), utc) && !utc.IsNull();
+		} catch (std::exception &) {
+			ok = false;
+		}
+	}
+	if (!ok) {
 		throw BinderException("run_checks: check '" + spec.check_name + "': params." + key + " '" + text +
 		                      "' is not a valid timestamp (expected YYYY-MM-DD[ HH:MM[:SS]][+HH[:MM]])");
 	}
