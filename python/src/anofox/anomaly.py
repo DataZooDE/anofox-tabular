@@ -12,7 +12,7 @@ from __future__ import annotations
 from typing import Any, Optional, Sequence, Union
 
 from ._sql import fetch_frame, id_column_arg
-from ._table import cleanup_table, output_df_type, resolve_table
+from ._table import output_df_type, table_inputs
 
 
 def isolation_forest(
@@ -59,16 +59,13 @@ def isolation_forest(
     dict or DataFrame
     """
     _check_output_mode("isolation_forest", output_mode)
-    table_name, registered = resolve_table(conn, table_or_df)
-    try:
+    with table_inputs(conn, table_or_df) as (table_name,):
         params = [table_name, column, n_trees, sample_size, contamination, output_mode, seed]
         query = (
             "SELECT * FROM anofox_tab_isolation_forest(?, ?, ?::BIGINT, ?::BIGINT, ?::DOUBLE, ?, ?::BIGINT"
             f"{id_column_arg(id_column, params)})"
         )
         return _execute_anomaly(conn, query, params, output_mode, output_df_type(table_or_df))
-    finally:
-        cleanup_table(conn, table_name, registered)
 
 
 def isolation_forest_mv(
@@ -117,8 +114,7 @@ def isolation_forest_mv(
     """
     _check_output_mode("isolation_forest_mv", output_mode)
     cols_csv = _columns_csv(columns)
-    table_name, registered = resolve_table(conn, table_or_df)
-    try:
+    with table_inputs(conn, table_or_df) as (table_name,):
         params = [table_name, cols_csv, n_trees, sample_size, contamination, output_mode, seed, ndim]
         query = (
             "SELECT * FROM anofox_tab_isolation_forest_mv("
@@ -126,8 +122,6 @@ def isolation_forest_mv(
             f"{id_column_arg(id_column, params)})"
         )
         return _execute_anomaly(conn, query, params, output_mode, output_df_type(table_or_df))
-    finally:
-        cleanup_table(conn, table_name, registered)
 
 
 def dbscan(
@@ -164,19 +158,16 @@ def dbscan(
         ``output_mode="scores"``/``"clusters"``.
     """
     _check_output_mode("dbscan", output_mode)
-    table_name, registered = resolve_table(conn, table_or_df)
     # The extension's per-row DBSCAN mode is named 'clusters'; keep the
     # package-level "scores" naming consistent with the other detectors.
     sql_mode = "clusters" if output_mode == "scores" else output_mode
-    try:
+    with table_inputs(conn, table_or_df) as (table_name,):
         params = [table_name, column, epsilon, min_points, sql_mode]
         query = (
             "SELECT * FROM anofox_tab_dbscan(?, ?, ?::DOUBLE, ?::BIGINT, ?"
             f"{id_column_arg(id_column, params)})"
         )
         return _execute_anomaly(conn, query, params, output_mode, output_df_type(table_or_df))
-    finally:
-        cleanup_table(conn, table_name, registered)
 
 
 def dbscan_mv(
@@ -215,17 +206,14 @@ def dbscan_mv(
     """
     _check_output_mode("dbscan_mv", output_mode)
     cols_csv = _columns_csv(columns)
-    table_name, registered = resolve_table(conn, table_or_df)
     sql_mode = "clusters" if output_mode == "scores" else output_mode
-    try:
+    with table_inputs(conn, table_or_df) as (table_name,):
         params = [table_name, cols_csv, epsilon, min_points, sql_mode]
         query = (
             "SELECT * FROM anofox_tab_dbscan_mv(?, ?, ?::DOUBLE, ?::BIGINT, ?"
             f"{id_column_arg(id_column, params)})"
         )
         return _execute_anomaly(conn, query, params, output_mode, output_df_type(table_or_df))
-    finally:
-        cleanup_table(conn, table_name, registered)
 
 
 def outlier_tree(
@@ -284,8 +272,7 @@ def outlier_tree(
     """
     _check_output_mode("outlier_tree", output_mode)
     cols_csv = _columns_csv(columns)
-    table_name, registered = resolve_table(conn, table_or_df)
-    try:
+    with table_inputs(conn, table_or_df) as (table_name,):
         params = [table_name, cols_csv, output_mode, max_depth, max_perc_outliers,
                   min_size_numeric, min_size_categ, z_norm, z_outlier]
         query = (
@@ -294,8 +281,6 @@ def outlier_tree(
             f"{id_column_arg(id_column, params)})"
         )
         return _execute_anomaly(conn, query, params, output_mode, output_df_type(table_or_df))
-    finally:
-        cleanup_table(conn, table_name, registered)
 
 
 def _columns_csv(columns: Union[str, Sequence[str]]) -> str:

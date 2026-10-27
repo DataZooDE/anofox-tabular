@@ -21,7 +21,7 @@ from decimal import Decimal
 from typing import Any, Optional, Union
 
 from ._sql import quote_ident, run
-from ._table import TableLike, accepts_dataframes
+from ._table import TableLike, accepts_dataframes, without_temp_names
 
 
 
@@ -930,7 +930,12 @@ def _fetch_dicts(conn: Any, sql: str, params: list) -> list[dict]:
 
 
 def _to_python(value: Any) -> Any:
-    """Plain Python value for a result dict: DECIMAL thresholds become float."""
+    """
+    Plain Python value for a result dict: DECIMAL thresholds become float, and a
+    message names a DataFrame input "the DataFrame", not its temporary table.
+    """
+    if isinstance(value, str):
+        return without_temp_names(value)
     return float(value) if isinstance(value, Decimal) else value
 
 

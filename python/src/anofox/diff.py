@@ -7,7 +7,7 @@ from __future__ import annotations
 from typing import Any, Optional, Union
 
 from ._sql import fetch_frame
-from ._table import cleanup_table, output_df_type, resolve_table
+from ._table import output_df_type, table_inputs
 
 
 def joindiff(
@@ -44,11 +44,9 @@ def joindiff(
     DataFrame (pandas, or polars when a polars DataFrame is passed)
         Rows with ``diff_type`` column indicating change type.
     """
-    src_name, src_registered = resolve_table(conn, src)
-    tgt_name, tgt_registered = resolve_table(conn, tgt)
     pk_sql, pk_value = _format_pk(primary_keys)
-
-    try:
+    labels = ["the source DataFrame", "the target DataFrame"]
+    with table_inputs(conn, src, tgt, labels=labels) as (src_name, tgt_name):
         params: list = [src_name, tgt_name, pk_value]
         query = f"SELECT * FROM anofox_tab_diff_joindiff(?, ?, {pk_sql}"
         if compare_columns is not None:
@@ -59,9 +57,6 @@ def joindiff(
         query += ")"
 
         result = fetch_frame(conn, query, params, output_df_type(src, tgt))
-    finally:
-        cleanup_table(conn, src_name, src_registered)
-        cleanup_table(conn, tgt_name, tgt_registered)
     return result
 
 
@@ -98,11 +93,9 @@ def hashdiff(
     DataFrame (pandas, or polars when a polars DataFrame is passed)
         Rows where hashes differ, with ``diff_type`` column.
     """
-    src_name, src_registered = resolve_table(conn, src)
-    tgt_name, tgt_registered = resolve_table(conn, tgt)
     pk_sql, pk_value = _format_pk(primary_keys)
-
-    try:
+    labels = ["the source DataFrame", "the target DataFrame"]
+    with table_inputs(conn, src, tgt, labels=labels) as (src_name, tgt_name):
         params: list = [src_name, tgt_name, pk_value]
         query = f"SELECT * FROM anofox_tab_diff_hashdiff(?, ?, {pk_sql}"
         if bisection_threshold is not None:
@@ -114,9 +107,6 @@ def hashdiff(
         query += ")"
 
         result = fetch_frame(conn, query, params, output_df_type(src, tgt))
-    finally:
-        cleanup_table(conn, src_name, src_registered)
-        cleanup_table(conn, tgt_name, tgt_registered)
     return result
 
 

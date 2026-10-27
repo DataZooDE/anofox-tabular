@@ -11,7 +11,7 @@ from __future__ import annotations
 from typing import Any, Optional, Union
 
 from ._sql import fetch_frame
-from ._table import cleanup_table, output_df_type, resolve_table
+from ._table import output_df_type, table_inputs
 
 
 def profile_table(
@@ -50,16 +50,13 @@ def profile_table(
         use the finite values only; NaN and Inf values are counted in
         nan_count / inf_count.
     """
-    table_name, registered = resolve_table(conn, table_or_df)
-    try:
+    with table_inputs(conn, table_or_df) as (table_name,):
         return fetch_frame(
             conn,
             "SELECT * FROM anofox_tab_profile_table(?, ?::VARCHAR[], ?::BIGINT, ?::BOOLEAN)",
             [table_name, list(columns or []), sample_size, bool(exact)],
             output_df_type(table_or_df),
         )
-    finally:
-        cleanup_table(conn, table_name, registered)
 
 
 def profile_summary(
@@ -77,14 +74,11 @@ def profile_summary(
         complex_columns, total_nulls, total_null_rate,
         duplicate_row_count.
     """
-    table_name, registered = resolve_table(conn, table_or_df)
-    try:
+    with table_inputs(conn, table_or_df) as (table_name,):
         return fetch_frame(
             conn, "SELECT * FROM anofox_tab_profile_summary(?)", [table_name],
             output_df_type(table_or_df),
         )
-    finally:
-        cleanup_table(conn, table_name, registered)
 
 
 def profile_correlations(
@@ -100,13 +94,10 @@ def profile_correlations(
     DataFrame (pandas, or polars for a polars input)
         Columns: column_a, column_b, pearson, spearman, n.
     """
-    table_name, registered = resolve_table(conn, table_or_df)
-    try:
+    with table_inputs(conn, table_or_df) as (table_name,):
         return fetch_frame(
             conn,
             "SELECT * FROM anofox_tab_profile_correlations(?, ?::VARCHAR[])",
             [table_name, list(columns or [])],
             output_df_type(table_or_df),
         )
-    finally:
-        cleanup_table(conn, table_name, registered)

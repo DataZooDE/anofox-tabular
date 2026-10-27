@@ -12,9 +12,8 @@ from ._table import (
     TableLike,
     apply_scalar,
     check_row_input,
-    cleanup_table,
     output_df_type,
-    resolve_table,
+    table_inputs,
 )
 
 
@@ -179,8 +178,7 @@ def pii_scan_table(
         Specific columns to scan, as a list or a comma-separated string. When
         *None* all text columns are scanned (extension default behaviour).
     """
-    resolved, registered = resolve_table(conn, table_name)
-    try:
+    with table_inputs(conn, table_name) as (resolved,):
         params: list = [resolved]
         if columns is not None:
             params.append(columns if isinstance(columns, str) else ",".join(columns))
@@ -189,8 +187,6 @@ def pii_scan_table(
             conn, f"SELECT * FROM anofox_tab_pii_scan_table({placeholders})", params,
             output_df_type(table_name),
         )
-    finally:
-        cleanup_table(conn, resolved, registered)
 
 
 def pii_audit_table(
@@ -221,8 +217,7 @@ def pii_audit_table(
         Row-level PII audit with original/masked values (polars for a polars
         input, else pandas).
     """
-    resolved, registered = resolve_table(conn, table_name)
-    try:
+    with table_inputs(conn, table_name) as (resolved,):
         params: list = [resolved]
         if columns is not None:
             params.append(columns if isinstance(columns, str) else ",".join(columns))
@@ -232,8 +227,6 @@ def pii_audit_table(
             conn, f"SELECT * FROM anofox_tab_pii_audit_table({placeholders}{id_arg})", params,
             output_df_type(table_name),
         )
-    finally:
-        cleanup_table(conn, resolved, registered)
 
 
 # ---------------------------------------------------------------------------

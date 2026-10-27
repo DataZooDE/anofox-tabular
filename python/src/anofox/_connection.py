@@ -156,18 +156,9 @@ class AnofoxConnection:
             tables in different schemas); ``"schema.table"`` names a table in
             another schema. An unknown table raises ``duckdb.CatalogException``.
         """
-        from ._utils import detect_df_type, drop_df_table, register_df_as_table
+        from ._table import output_df_type, table_inputs
 
-        if isinstance(df_or_table, str):
-            table_name = df_or_table
-            registered = False
-            df_type = "pandas"
-        else:
-            df_type = detect_df_type(df_or_table)
-            table_name = register_df_as_table(self._conn, df_or_table)
-            registered = True
-
-        try:
+        with table_inputs(self, df_or_table) as (table_name,):
             # DESCRIBE resolves the name like any query does (search path,
             # "schema.table"), so a same-named table in another schema is not
             # mixed in, as it would be with a lookup in information_schema.
@@ -201,11 +192,8 @@ class AnofoxConnection:
                 rows,
                 ["column", "type", "row_count", "null_count", "null_rate",
                  "distinct_count", "distinct_rate"],
-                df_type,
+                output_df_type(df_or_table),
             )
-        finally:
-            if registered:
-                drop_df_table(self._conn, table_name)
 
     def validate(self, df: Any, schema: dict) -> "ValidationResult":
         """
@@ -292,7 +280,8 @@ class AnofoxConnection:
         dict
             ``{"status": "pass"|"fail", "checks": {check_name: result_dict}}``.
         """
-        from ._utils import detect_df_type, drop_df_table, register_df_as_table
+        from ._table import table_inputs
+        from ._utils import detect_df_type
         from . import quality as q
 
         detect_df_type(df)  # validate type
@@ -303,10 +292,8 @@ class AnofoxConnection:
                 f"supported: {', '.join(map(repr, _QUALITY_CHECK_RULES))}. "
                 "Use anofox.quality for the other checks."
             )
-        table_name = register_df_as_table(self._conn, df)
-
         results = {}
-        try:
+        with table_inputs(self, df) as (table_name,):
             for check_name, params in rules.items():
                 if check_name == "volume":
                     results[check_name] = q.volume(
@@ -327,8 +314,6 @@ class AnofoxConnection:
                         min_distinct=params.get("min_distinct", 1),
                         max_distinct=params.get("max_distinct"),
                     )
-        finally:
-            drop_df_table(self._conn, table_name)
 
         overall_passed = all(r.get("status") == "pass" for r in results.values())
         return QualityResult(

@@ -260,38 +260,32 @@ class _DummyConn:
 class TestProfileSqlBinding:
     """Table and column names travel as bound parameters, never inside the SQL text."""
 
-    def test_profile_table_binds_table_and_columns(self, monkeypatch):
+    def test_profile_table_binds_table_and_columns(self):
         from anofox import profile
 
         conn = _DummyConn()
-        monkeypatch.setattr(profile, "resolve_table", lambda _c, _t: ("bad'table", False))
-        monkeypatch.setattr(profile, "cleanup_table", lambda _c, _t, _r: None)
 
-        profile.profile_table(conn, "ignored", columns=["a'b"])
+        profile.profile_table(conn, "bad'table", columns=["a'b"])
 
         assert "bad'table" not in conn.native.last_query
         assert conn.native.last_params[:2] == ["bad'table", ["a'b"]]
 
-    def test_profile_summary_binds_table(self, monkeypatch):
+    def test_profile_summary_binds_table(self):
         from anofox import profile
 
         conn = _DummyConn()
-        monkeypatch.setattr(profile, "resolve_table", lambda _c, _t: ("bad'table", False))
-        monkeypatch.setattr(profile, "cleanup_table", lambda _c, _t, _r: None)
 
-        profile.profile_summary(conn, "ignored")
+        profile.profile_summary(conn, "bad'table")
 
         assert "bad'table" not in conn.native.last_query
         assert conn.native.last_params == ["bad'table"]
 
-    def test_profile_correlations_binds_table_and_columns(self, monkeypatch):
+    def test_profile_correlations_binds_table_and_columns(self):
         from anofox import profile
 
         conn = _DummyConn()
-        monkeypatch.setattr(profile, "resolve_table", lambda _c, _t: ("bad'table", False))
-        monkeypatch.setattr(profile, "cleanup_table", lambda _c, _t, _r: None)
 
-        profile.profile_correlations(conn, "ignored", columns=["a'b"])
+        profile.profile_correlations(conn, "bad'table", columns=["a'b"])
 
         assert "bad'table" not in conn.native.last_query
         assert conn.native.last_params == ["bad'table", ["a'b"]]

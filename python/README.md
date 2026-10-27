@@ -126,6 +126,8 @@ print(result.failures)    # DataFrame: column, row_id, value, rule
   or a DataFrame. A DataFrame is copied into a temporary table for the call and dropped
   afterwards. On a connection to a database file (`anofox.connect("my.db")`) that copy is
   written to the file while the call runs. Any other object raises `TypeError`.
+  Error messages and result messages name such a copy "the DataFrame" (`joindiff` /
+  `hashdiff`: "the source DataFrame", "the target DataFrame"), not its temporary table name.
 - **`conn.profile(name)`** resolves a table name like a query does: with tables of the same
   name in several schemas it profiles the one the search path finds. Pass `"schema.table"`
   for another schema; an unknown table raises `duckdb.CatalogException`.

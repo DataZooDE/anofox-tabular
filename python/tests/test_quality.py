@@ -588,3 +588,72 @@ class TestDefineChecksDates:
         assert results["fresh"]["status"] == "pass", results["fresh"]["message"]
         assert results["fresh"]["value"] == 21600.0
 
+
+class TestTempTableNamesHidden:
+    """Errors for a DataFrame input do not show the generated temporary table name."""
+
+    def _orders(self):
+        import pandas as pd
+        return pd.DataFrame({"order_id": [1, 2, 3], "amount": [19.99, 5.0, 120.0]})
+
+    def test_table_function_error(self, conn):
+        from anofox import profile
+        with pytest.raises(Exception) as info:
+            profile.profile_table(conn, self._orders(), columns=["amout"])
+        assert "_anofox_" not in str(info.value)
+        assert "the DataFrame" in str(info.value)
+        assert "amout" in str(info.value)
+
+    def test_anomaly_error(self, conn):
+        from anofox import anomaly
+        with pytest.raises(Exception) as info:
+            anomaly.isolation_forest(conn, self._orders(), "amout")
+        assert "_anofox_" not in str(info.value)
+        assert "the DataFrame" in str(info.value)
+
+    def test_error_type_kept(self, conn):
+        import duckdb
+        from anofox import anomaly
+        with pytest.raises(duckdb.BinderException):
+            anomaly.isolation_forest(conn, self._orders(), "amout")
+
+    def test_table_name_unchanged(self, conn):
+        from anofox import anomaly
+        conn.execute("CREATE OR REPLACE TABLE _named_orders AS SELECT 1.0 AS amount")
+        try:
+            with pytest.raises(Exception, match="_named_orders"):
+                anomaly.isolation_forest(conn, "_named_orders", "amout")
+        finally:
+            conn.execute("DROP TABLE IF EXISTS _named_orders")
+
+    def test_result_message(self, conn):
+        from anofox import quality
+        result = quality.schema_check(conn, self._orders(), ["order_id", "customer_id"])
+        assert result["status"] == "fail"
+        assert result["message"] == "The DataFrame is missing 1 column(s)"
+
+    def test_diff_names_source_and_target(self, conn):
+        import pandas as pd
+        from anofox import diff
+        before = pd.DataFrame({"sku": ["A-100", "B-200"], "price": [9.99, 24.5]})
+        after = pd.DataFrame({"article": ["A-100", "B-200"], "price": [9.99, 26.0]})
+        with pytest.raises(Exception) as info:
+            diff.joindiff(conn, before, after, primary_keys="sku")
+        assert "not found in the target DataFrame" in str(info.value)
+        assert "_anofox_" not in str(info.value)
+
+    def test_quality_check_error(self, conn):
+        with pytest.raises(Exception) as info:
+            conn.quality_check(self._orders(), {"null_rate": {"column": "amout"}})
+        assert "_anofox_" not in str(info.value)
+
+    def test_no_temp_table_left_behind(self, conn):
+        from anofox import diff
+        import pandas as pd
+        before = pd.DataFrame({"sku": ["A-100"], "price": [9.99]})
+        with pytest.raises(TypeError):
+            diff.joindiff(conn, before, ["not", "a", "frame"], primary_keys="sku")
+        leftover = conn.execute(
+            "SELECT count(*) FROM duckdb_tables() WHERE table_name LIKE '\\_anofox\\_%' ESCAPE '\\'"
+        ).fetchall()[0][0]
+        assert leftover == 0
