@@ -210,7 +210,8 @@ A DataFrame is copied into a temporary table for the call and dropped afterwards
 connection to a database file (`anofox.connect("my.db")`) that copy is written to the file
 while the call runs. The functions that read through a second connection (anomaly detection,
 profiling, PII table scans) need a regular table: pass a DataFrame, or a table you created,
-not a view you registered with `conn.register()`.
+not a view you registered with `conn.register()`. Such a view passed by name raises
+`ValueError` with the hint to pass the DataFrame itself.
 
 ## Mask PII
 

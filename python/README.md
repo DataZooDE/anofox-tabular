@@ -139,7 +139,10 @@ print(result.failures)    # DataFrame: column, row_id, value, rule
   `pii_scan_table`, `pii_audit_table`, `conn.profile`, `conn.quality_check`) take a table name
   or a DataFrame. A DataFrame is copied into a temporary table for the call and dropped
   afterwards. On a connection to a database file (`anofox.connect("my.db")`) that copy is
-  written to the file while the call runs. Any other object raises `TypeError`.
+  written to the file while the call runs. Any other object raises `TypeError`. The
+  functions that read through their own connection (anomaly detection, profiling, PII table
+  scans) cannot see a temporary view, such as a DataFrame registered with `conn.register()`:
+  its name raises `ValueError` with the hint to pass the DataFrame itself.
   Error messages and result messages name such a copy "the DataFrame" (`joindiff` /
   `hashdiff` / `diff_schema`: "the source DataFrame", "the target DataFrame"), not its
   temporary table name.

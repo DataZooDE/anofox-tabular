@@ -10,7 +10,7 @@ import re
 from contextlib import contextmanager
 from typing import Any, Callable, Iterator, Optional, TypeVar, Union
 
-from ._sql import fetch_frame, quote_ident
+from ._sql import fetch_frame, fetch_one, quote_ident
 from ._utils import (
     detect_df_type,
     drop_df_table,
@@ -109,10 +109,47 @@ def table_inputs(conn: Any, *inputs: Union[str, Any], labels: Optional[list] = N
         yield resolved
     except Exception as error:
         hide_temp_names(error, created)
+        view_error = _registered_view_error(conn, error, inputs)
+        if view_error is not None:
+            raise view_error from error
         raise
     finally:
         for name in created:
             cleanup_table(conn, name, True)
+
+
+def _registered_view_error(conn: Any, error: BaseException, inputs: tuple) -> Optional[ValueError]:
+    """
+    A ValueError for a "TEMP table(s) ... not supported" error caused by a
+    temporary view passed by name, else None.
+
+    The table functions that read through their own connection (anomaly
+    detection, PII table scans, profiling) cannot see a connection's temporary
+    views, which include every DataFrame registered with ``conn.register()``.
+    The DataFrame itself can be passed instead.
+    """
+    message = str(error)
+    if "TEMP table" not in message or "not supported" not in message:
+        return None
+    for value in inputs:
+        if not isinstance(value, str):
+            continue
+        try:
+            is_temp_view = fetch_one(
+                getattr(conn, "native", conn),
+                "SELECT count(*) > 0 FROM duckdb_views() WHERE temporary AND view_name = ?",
+                [value],
+            )
+        except Exception:
+            return None
+        if is_temp_view:
+            return ValueError(
+                f"{value!r} is a temporary view (a DataFrame registered with conn.register() "
+                "is one); this function reads the table through its own connection and "
+                "cannot see it: pass the DataFrame itself instead, or create a regular "
+                f"table with CREATE TABLE ... AS SELECT * FROM {quote_ident(value)}"
+            )
+    return None
 
 
 def check_row_input(value: Any, column: Optional[str]) -> str:

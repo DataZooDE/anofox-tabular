@@ -487,3 +487,46 @@ class TestOutlierTreeConditions:
         assert len(out) == 0
         assert "conditions" in out.columns
 
+
+class TestRegisteredViewName:
+    """A view registered with conn.register() and passed by name gets a hint to
+    pass the DataFrame itself (the detectors read through their own connection)."""
+
+    def test_registered_view_name_suggests_dataframe(self, conn):
+        from anofox import anomaly
+        conn.register("staff_view", _staff_frame())
+        try:
+            with pytest.raises(ValueError) as info:
+                anomaly.isolation_forest(conn, "staff_view", "salary")
+        finally:
+            conn.unregister("staff_view")
+        message = str(info.value)
+        assert "'staff_view' is a temporary view" in message
+        assert "pass the DataFrame itself" in message
+
+    def test_pii_scan_of_registered_view(self, conn):
+        from anofox import pii
+        conn.register("tickets_view", pandas.DataFrame({
+            "ticket_id": ["T-501", "T-502"],
+            "body": ["Please call me at +49 30 901820", "Order arrived damaged"],
+        }))
+        try:
+            with pytest.raises(ValueError, match=r"'tickets_view' is a temporary view.*pass the DataFrame itself"):
+                pii.pii_scan_table(conn, "tickets_view")
+        finally:
+            conn.unregister("tickets_view")
+
+    def test_temp_table_keeps_sql_error(self, conn):
+        import duckdb
+        from anofox import anomaly
+        conn.execute("CREATE TEMP TABLE staff_tmp AS SELECT 1.0 AS salary").fetchall()
+        try:
+            with pytest.raises(duckdb.BinderException, match="TEMP tables are not supported"):
+                anomaly.isolation_forest(conn, "staff_tmp", "salary")
+        finally:
+            conn.execute("DROP TABLE staff_tmp").fetchall()
+
+    def test_dataframe_itself_works(self, conn):
+        from anofox import anomaly
+        result = anomaly.isolation_forest(conn, _staff_frame(), "salary", seed=3)
+        assert result["total_count"] == 200
