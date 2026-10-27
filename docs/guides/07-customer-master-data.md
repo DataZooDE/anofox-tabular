@@ -190,11 +190,13 @@ See [VAT](../api/05-vat.md).
 ## 5. Money
 
 `money` raises an error for a currency code it does not know, which would stop the whole query.
-Wrap it in `TRY()` to get `NULL` for those rows instead; surrounding spaces and lower case are
-accepted:
+Find those codes first with `is_valid_currency`, which returns `false` instead of raising, or
+wrap `money` in `TRY()` to get `NULL` for those rows; surrounding spaces and lower case are
+accepted by both:
 
 ```sql
 SELECT id, currency,
+       is_valid_currency(currency) AS known_code,
        TRY(money(amount, currency)) AS amount_money,
        TRY(money(amount, currency)) IS NULL AS needs_review
 FROM customers
@@ -202,17 +204,17 @@ ORDER BY id;
 ```
 
 ```text
-┌───────┬──────────┬────────────────────────────────────────────────┬──────────────┐
-│  id   │ currency │                  amount_money                  │ needs_review │
-│ int32 │ varchar  │ struct(amount decimal(18,3), currency varchar) │   boolean    │
-├───────┼──────────┼────────────────────────────────────────────────┼──────────────┤
-│     1 │ EUR      │ {'amount': 1250.000, 'currency': EUR}          │ false        │
-│     2 │ gbp      │ {'amount': 880.500, 'currency': GBP}           │ false        │
-│     3 │  EUR     │ {'amount': 410.000, 'currency': EUR}           │ false        │
-│     4 │ CHF      │ {'amount': 99.900, 'currency': CHF}            │ false        │
-│     5 │ EURO     │ NULL                                           │ true         │
-│     6 │ EUR      │ {'amount': 720.000, 'currency': EUR}           │ false        │
-└───────┴──────────┴────────────────────────────────────────────────┴──────────────┘
+┌───────┬──────────┬────────────┬────────────────────────────────────────────────┬──────────────┐
+│  id   │ currency │ known_code │                  amount_money                  │ needs_review │
+│ int32 │ varchar  │  boolean   │ struct(amount decimal(18,3), currency varchar) │   boolean    │
+├───────┼──────────┼────────────┼────────────────────────────────────────────────┼──────────────┤
+│     1 │ EUR      │ true       │ {'amount': 1250.000, 'currency': EUR}          │ false        │
+│     2 │ gbp      │ true       │ {'amount': 880.500, 'currency': GBP}           │ false        │
+│     3 │  EUR     │ true       │ {'amount': 410.000, 'currency': EUR}           │ false        │
+│     4 │ CHF      │ true       │ {'amount': 99.900, 'currency': CHF}            │ false        │
+│     5 │ EURO     │ false      │ NULL                                           │ true         │
+│     6 │ EUR      │ true       │ {'amount': 720.000, 'currency': EUR}           │ false        │
+└───────┴──────────┴────────────┴────────────────────────────────────────────────┴──────────────┘
 ```
 
 When the amount is a string, for example from a CSV file read as text, cast it to
