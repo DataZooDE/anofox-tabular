@@ -3889,15 +3889,15 @@ TableFunction CreateNERStatusFunction() {
 
 struct PIIAuditTableBindData : public TableFunctionData {
     std::string table_name;
-    std::vector<std::string> column_filter;  // Empty = all VARCHAR columns
+    std::vector<std::string> column_filter;  // Empty = all columns that hold text
     IdColumn id_column;                      // Optional pass-through identifier (#108)
 
     PIIAuditTableBindData(const std::string &table, const std::vector<std::string> &cols)
         : table_name(table), column_filter(cols) {}
 };
 
-// Resolve the columns to scan of a table or view. Without a filter: every VARCHAR column
-// (JSON included). With a filter: exactly the named columns, matched case-insensitively and of
+// Resolve the columns to scan of a table or view. Without a filter: every column that holds
+// text (VARCHAR, JSON, and STRUCT/LIST/MAP/UNION values with text inside). With a filter: exactly the named columns, matched case-insensitively and of
 // any type (the scan queries cast them to VARCHAR); an unknown name is an error.
 // Shared by pii_audit_table and pii_scan_table. The relation is bound with a sibling
 // connection (LIMIT 0 reads no rows), the same way the scan itself reads it; a catalog
@@ -3936,9 +3936,36 @@ static bool IsTempRelation(ClientContext &context, const std::string &table_name
     }
 }
 
-// The columns pii_scan_table reports, in table order. Without a filter: every column, VARCHAR
-// columns scanned and the others marked as skipped. With a filter: exactly the named columns,
-// all scanned.
+// Whether a column of this type holds text: VARCHAR (JSON included) or a nested type (STRUCT,
+// LIST, ARRAY, MAP, UNION, in any combination) with a VARCHAR somewhere inside. Such a column
+// is scanned as its VARCHAR rendering ({'email': max@web.de}, [a@x.de, b@y.de]); numbers,
+// dates, BLOBs and nested types of only those hold no free text and are skipped.
+static bool ContainsText(const LogicalType &type) {
+    switch (type.id()) {
+    case LogicalTypeId::VARCHAR:
+        return true;
+    case LogicalTypeId::LIST:
+        return ContainsText(ListType::GetChildType(type));
+    case LogicalTypeId::ARRAY:
+        return ContainsText(ArrayType::GetChildType(type));
+    case LogicalTypeId::MAP:
+        return ContainsText(MapType::KeyType(type)) || ContainsText(MapType::ValueType(type));
+    case LogicalTypeId::STRUCT:
+    case LogicalTypeId::UNION:
+        for (const auto &child : StructType::GetChildTypes(type)) {
+            if (ContainsText(child.second)) {
+                return true;
+            }
+        }
+        return false;
+    default:
+        return false;
+    }
+}
+
+// The columns pii_scan_table reports, in table order. Without a filter: every column, columns
+// that hold text (ContainsText) scanned and the others marked as skipped. With a filter: exactly
+// the named columns, all scanned.
 static std::vector<PIIScanColumn> ResolvePIIScanPlan(ClientContext &context, const std::string &function_name,
                                                      const std::string &table_name,
                                                      const std::vector<std::string> &column_filter) {
@@ -3961,7 +3988,7 @@ static std::vector<PIIScanColumn> ResolvePIIScanPlan(ClientContext &context, con
     std::vector<bool> selected(available_names.size(), false);
     if (column_filter.empty()) {
         for (idx_t i = 0; i < available_names.size(); i++) {
-            selected[i] = result_types[i].id() == LogicalTypeId::VARCHAR;
+            selected[i] = ContainsText(result_types[i]);
         }
     } else {
         for (auto idx : MatchColumnNames(function_name, table_name, available_names,
@@ -4110,7 +4137,7 @@ void PIIAuditTableFunction(ClientContext &context, TableFunctionInput &input, Da
     try {
         if (!state.initialized) {
             state.initialized = true;
-            // Resolve the VARCHAR columns to audit and snapshot the
+            // Resolve the text columns to audit and snapshot the
             // configuration once for the whole scan; enabled_types and
             // min_confidence are applied centrally by PIIEngine::Detect
             state.columns_to_scan = ResolvePIIScanColumns(context, "pii_audit_table", bind_data.table_name, bind_data.column_filter);
@@ -4282,7 +4309,7 @@ TableFunctionSet CreatePIIAuditTableFunctionSet() {
 
 struct PIIScanTableBindData : public TableFunctionData {
     std::string table_name;
-    std::vector<std::string> column_filter;  // Empty = all VARCHAR columns
+    std::vector<std::string> column_filter;  // Empty = all columns that hold text
 
     PIIScanTableBindData(const std::string &table, const std::vector<std::string> &cols)
         : table_name(table), column_filter(cols) {}
@@ -4404,7 +4431,7 @@ void PIIScanTableFunction(ClientContext &context, TableFunctionInput &input, Dat
     try {
         if (!state.initialized) {
             state.initialized = true;
-            // Resolve the VARCHAR columns to scan and snapshot the
+            // Resolve the text columns to scan and snapshot the
             // configuration once for the whole scan
             state.columns_to_scan = ResolvePIIScanPlan(context, "pii_scan_table", bind_data.table_name, bind_data.column_filter);
             state.config = PIIConfig::Get().Snapshot();

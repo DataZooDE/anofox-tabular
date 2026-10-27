@@ -33,7 +33,8 @@ SELECT * FROM (VALUES
 
 ## 2. Find the PII columns
 
-`pii_scan_table` checks every `VARCHAR` column and returns one row per column and PII type:
+`pii_scan_table` checks every column that holds text (`VARCHAR`, `JSON`, and `STRUCT`, `LIST` or
+`MAP` values with text inside) and returns one row per column and PII type:
 
 ```sql
 SELECT column_name, pii_type, match_count
@@ -68,7 +69,7 @@ keep the scan result as protected as the table.
 
 Without the `WHERE` clause the scan accounts for every column: `status` says whether a column was
 scanned and found to hold PII (`scanned`), scanned without a match (`no_match`) or not scanned
-because it is not `VARCHAR` (`skipped (INTEGER)`, `skipped (DATE)`). `values_scanned` counts the
+because it holds no text (`skipped (INTEGER)`, `skipped (DATE)`). `values_scanned` counts the
 non-`NULL` values that were checked:
 
 ```sql

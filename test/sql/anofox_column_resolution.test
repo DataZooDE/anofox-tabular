@@ -86,12 +86,14 @@ statement ok
 INSERT INTO cr_crm VALUES
     (1, 'anna@example.com', 4111111111111111, 4111111111111111, '{"mail":"x@example.org"}', {'mail': 's@example.net'}, ['l@example.de'])
 
-# Default (no filter): VARCHAR columns, JSON included
+# Default (no filter): columns that hold text: VARCHAR, JSON and nested types with a VARCHAR inside
 query TTI
 SELECT column_name, pii_type, match_count FROM pii_scan_table('cr_crm') WHERE status = 'scanned' ORDER BY column_name
 ----
 Email	EMAIL	1
 doc	EMAIL	1
+l	EMAIL	1
+s	EMAIL	1
 
 # Case-insensitive match; the output uses the table's spelling
 query TTI
