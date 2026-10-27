@@ -126,12 +126,13 @@ Column lists come in two forms. Check the signature of each function:
 | Form | Example | Used by |
 |------|---------|---------|
 | comma-separated `VARCHAR` | `'amount, quantity'` | `isolation_forest_mv`, `dbscan_mv`, `outlier_tree`, `duplicate_count`, `match_rate`, `pii_scan_table`, `pii_audit_table` |
-| `VARCHAR[]` list | `['id', 'created_at']` | `schema_check`, `values_in_set`, `rolling_values_in_set`, `profile_table`, `profile_correlations`, `diff_joindiff` |
+| `VARCHAR[]` list | `['id', 'created_at']` | `schema_check`, `values_in_set`, `rolling_values_in_set`, `profile_table`, `profile_correlations`, `diff_joindiff`, `duplicate_count` |
 
 Column names match case-insensitively, like DuckDB identifiers: `'EMAIL'` finds a column
 `Email`. In `profile_table`, `profile_correlations`, `pii_scan_table`, `pii_audit_table`,
-`isolation_forest`, `isolation_forest_mv`, `dbscan` and `dbscan_mv` an unknown column name is an
-error naming the column and the table; `run_checks` reports it in an `error` row of that check;
+`isolation_forest`, `isolation_forest_mv`, `dbscan`, `dbscan_mv`, `zscore`, `iqr`, `agg_check`
+and `metric_anomaly_iqr` (its `metric_column`) an unknown column name is an error naming the
+column and the table; `run_checks` reports it in an `error` row of that check;
 `schema_check` reports it as missing.
 
 The table, column and key arguments of a table function are required: a `NULL` there is a
@@ -152,7 +153,8 @@ LINE 1: SELECT * FROM null_rate(NULL, 'v', 0.1);
 ```
 
 Some functions read the table through a second connection. That connection cannot see TEMP
-tables of your session:
+tables of your session, so these functions reject a TEMP table when the query is bound, with
+`TEMP tables are not supported by <function>; use a regular table`:
 
 | Functions | Accept |
 |-----------|--------|
@@ -167,8 +169,14 @@ The signatures use DuckDB's own type names: `VARCHAR`, `BIGINT`, `DOUBLE`, `BOOL
 values are `STRUCT(amount DECIMAL(18,3), currency VARCHAR)`. A table function's result is
 written as `TABLE(column TYPE, ...)`.
 
-The check functions return the thresholds you passed in their output. Those columns take the
-type of the value you pass, so `0.05` comes back as `DECIMAL(3,2)`, not `DOUBLE`.
+The check functions return the thresholds you passed in their output with a fixed type,
+whatever literal you pass: `DOUBLE` for rates, multipliers and value bounds, `BIGINT` for count
+bounds. `null_rate(..., 0.05)` returns `threshold` as the `DOUBLE` `0.05`.
+
+Date and time values are evaluated in UTC. A `TIMESTAMP WITH TIME ZONE` column is read as its UTC
+instant and bucketed by its UTC date, with or without the ICU extension and whatever the session
+`TimeZone`; a plain `TIMESTAMP` is taken as UTC as it is. The default reference time of
+`freshness` is the current time in UTC.
 
 ## NULL and empty input
 
@@ -179,8 +187,9 @@ type of the value you pass, so `0.05` comes back as `DECIMAL(3,2)`, not `DOUBLE`
   summary row or one row per input row. The module pages list both shapes. `output_mode` and
   the other option strings (`agg`, `mode`) are case-insensitive: `'SCORES'` works like `'scores'`.
 - NaN and `±Inf` values in numeric columns are counted, not averaged: `profile_table` reports
-  them in `nan_count` / `inf_count` and computes its statistics over the finite values,
-  `zscore` and `profile_correlations` leave them out, and `agg_check` fails with a `NaN` value.
+  them in `nan_count` / `inf_count` and computes its statistics over the finite values, the
+  statistical checks `zscore` and `iqr` and `profile_correlations` leave them out (the checks
+  name how many in the message), and `agg_check` fails with a `NaN` value.
 
 ## Errors and `TRY()`
 

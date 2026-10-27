@@ -1,0 +1,159 @@
+# name: test/sql/anofox_check_statistical.test
+# description: Statistical checks share one set of rules. zscore, iqr, agg_check and the
+#              metric column of metric_anomaly_iqr require a numeric column (a clean bind
+#              error like isolation_forest, not a conversion error at run time); zscore and
+#              iqr ignore NaN/Inf values and state how many they ignored; the IQR events label
+#              shows rounded numbers; profile_correlations reports numeric columns only
+#              (no INTERVAL) with coefficients clamped to [-1, 1]; duplicate_count takes its
+#              columns as a comma-separated string or a VARCHAR[].
+# group: [anofox_tabular]
+
+require anofox_tabular
+
+statement ok
+LOAD anofox_tabular
+
+statement ok
+SET anofox_tab_trace_enabled = false
+
+# Delivery lead times of a parts supplier; one ERP export row has a NaN lead time
+statement ok
+CREATE TABLE deliveries (
+    delivery_no  VARCHAR,
+    supplier     VARCHAR,
+    ordered_on   DATE,
+    lead_days    DOUBLE,
+    transit      INTERVAL,
+    pallets      INTEGER,
+    weight_kg    DOUBLE,
+    express      BOOLEAN
+)
+
+statement ok
+INSERT INTO deliveries VALUES
+    ('DL-1001', 'Schrauben Meier',  DATE '2026-09-01',  4.0, INTERVAL 4 DAY, 2, 410.0,  false),
+    ('DL-1002', 'Schrauben Meier',  DATE '2026-09-02',  5.0, INTERVAL 5 DAY, 3, 610.0,  false),
+    ('DL-1003', 'Hydraulik Nord',   DATE '2026-09-03',  6.0, INTERVAL 6 DAY, 4, 810.0,  false),
+    ('DL-1004', 'Hydraulik Nord',   DATE '2026-09-04',  5.0, INTERVAL 5 DAY, 5, 1010.0, true),
+    ('DL-1005', 'Lager Sued',       DATE '2026-09-05', 'nan', INTERVAL 7 DAY, 6, 1210.0, false),
+    ('DL-1006', 'Lager Sued',       DATE '2026-09-06', 30.0, INTERVAL 30 DAY, 7, 1410.0, false)
+
+# ===--------------------------------------------------------------------===
+# numeric column required at bind time
+# ===--------------------------------------------------------------------===
+
+statement error
+SELECT * FROM zscore('deliveries', 'supplier', 3)
+----
+zscore: column 'supplier' must be numeric, got VARCHAR
+
+statement error
+SELECT * FROM zscore('deliveries', 'ordered_on', 3)
+----
+zscore: column 'ordered_on' must be numeric, got DATE
+
+statement error
+SELECT * FROM iqr('deliveries', 'transit', 1.5)
+----
+iqr: column 'transit' must be numeric, got INTERVAL
+
+statement error
+SELECT * FROM agg_check('deliveries', 'supplier', 'avg', NULL, 10)
+----
+agg_check: column 'supplier' must be numeric, got VARCHAR
+
+statement error
+SELECT * FROM metric_anomaly_iqr('deliveries', 'ordered_on', 'supplier')
+----
+metric_anomaly_iqr: column 'supplier' must be numeric, got VARCHAR
+
+# an unknown column names the available ones
+statement error
+SELECT * FROM zscore('deliveries', 'lead_time', 3)
+----
+zscore: column 'lead_time' not found in table 'deliveries'
+
+# BOOLEAN counts as 0/1 like in the anomaly functions; the name matches case-insensitively
+query TI
+SELECT status, total_count FROM zscore('deliveries', 'EXPRESS', 3)
+----
+pass	6
+
+# ===--------------------------------------------------------------------===
+# zscore and iqr ignore NaN/Inf and say so
+# ===--------------------------------------------------------------------===
+
+query TIIT
+SELECT status, outlier_count, total_count, message FROM iqr('deliveries', 'lead_days', 1.5)
+----
+fail	1	5	1 outlier(s) detected outside bounds [3.5, 7.5]; 1 NaN/Inf value(s) ignored
+
+query TIIT
+SELECT status, outlier_count, total_count, message FROM iqr('deliveries', 'pallets', 1.5)
+----
+pass	0	6	No outliers detected by IQR method (bounds: [-0.5, 9.5])
+
+query TII
+SELECT status, outlier_count, total_count FROM zscore('deliveries', 'lead_days', 1.5)
+----
+fail	1	5
+
+# ===--------------------------------------------------------------------===
+# metric_anomaly_iqr: rounded numbers in the message / events label
+# ===--------------------------------------------------------------------===
+
+statement ok
+CREATE TABLE daily_weights AS
+SELECT DATE '2026-09-01' + INTERVAL (d) DAY AS shipped_on, 100.0 / 3 + d % 3 AS weight_t
+FROM range(0, 10) t(d)
+
+statement ok
+INSERT INTO daily_weights VALUES (DATE '2026-09-11', 1000.0 / 7)
+
+query TT
+SELECT ds, label FROM metric_anomaly_iqr_events('daily_weights', 'shipped_on', 'weight_t', 30)
+----
+2026-09-11	Metric 142.857 on 2026-09-11 is outside IQR bounds [30.708, 37.708] (mode: both)
+
+# ===--------------------------------------------------------------------===
+# profile_correlations: numeric columns only, clamped to [-1, 1]
+# ===--------------------------------------------------------------------===
+
+query TTR
+SELECT column_a, column_b, pearson FROM profile_correlations('deliveries', ['pallets', 'weight_kg', 'transit'])
+----
+pallets	weight_kg	1.0
+
+query I
+SELECT COUNT(*) FROM profile_correlations('deliveries') WHERE column_a = 'transit' OR column_b = 'transit'
+----
+0
+
+query I
+SELECT COUNT(*) FROM profile_correlations('deliveries') WHERE pearson > 1 OR pearson < -1 OR spearman > 1 OR spearman < -1
+----
+0
+
+# ===--------------------------------------------------------------------===
+# duplicate_count: a VARCHAR[] of columns as well as a comma-separated string
+# ===--------------------------------------------------------------------===
+
+query TII
+SELECT status, duplicate_count, total_count FROM duplicate_count('deliveries', ['supplier'], 3)
+----
+pass	3	6
+
+query TI
+SELECT status, duplicate_count FROM duplicate_count('deliveries', ['supplier', 'express'])
+----
+fail	2
+
+query TI
+SELECT status, duplicate_count FROM duplicate_count('deliveries', 'supplier, express')
+----
+fail	2
+
+statement error
+SELECT * FROM duplicate_count('deliveries', []::VARCHAR[])
+----
+duplicate_count: column_names must contain at least one column

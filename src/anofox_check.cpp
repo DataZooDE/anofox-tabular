@@ -83,8 +83,8 @@ void ValidateBooleanExpression(ClientContext &context, const string &expr, const
 // total_count = 0 and passes trivially with an explicit message.
 static string GenerateRegexMatchSQL(const string &table_ref, const string &column_name, const string &pattern,
                                     const Value &min_rate, const Value &max_rate) {
-	string min_val = min_rate.IsNull() ? "NULL" : min_rate.ToString();
-	string max_val = max_rate.IsNull() ? "NULL" : max_rate.ToString();
+	string min_val = DoubleThresholdSQL(min_rate);
+	string max_val = DoubleThresholdSQL(max_rate);
 	string col_id = QuoteSqlIdentifier(column_name);
 	string pattern_lit = "'" + EscapeSqlStringLiteral(pattern) + "'";
 
@@ -123,7 +123,7 @@ static string GenerateRegexMatchSQL(const string &table_ref, const string &colum
 // total_count = 0 and passes trivially with an explicit message.
 static string GenerateValuesInSetSQL(const string &table_ref, const string &column_name, const string &allowed_array,
                                      const Value &min_rate) {
-	string min_val = min_rate.IsNull() ? "1.0" : min_rate.ToString();
+	string min_val = DoubleThresholdSQL(min_rate, "1.0");
 	string col_id = QuoteSqlIdentifier(column_name);
 	string col_str = "CAST(" + col_id + " AS VARCHAR)";
 
@@ -175,8 +175,8 @@ string BuildNonFiniteCountExpr(const string &double_expr) {
 // passes trivially with an explicit message.
 static string GenerateAggCheckSQL(const string &table_ref, const string &column_name, const string &agg_keyword,
                                   const Value &lower, const Value &upper) {
-	string lower_val = lower.IsNull() ? "NULL" : lower.ToString();
-	string upper_val = upper.IsNull() ? "NULL" : upper.ToString();
+	string lower_val = DoubleThresholdSQL(lower);
+	string upper_val = DoubleThresholdSQL(upper);
 	string col_id = QuoteSqlIdentifier(column_name);
 	string agg_upper = agg_keyword;
 	std::transform(agg_upper.begin(), agg_upper.end(), agg_upper.begin(), ::toupper);
@@ -230,7 +230,7 @@ string BuildDuplicateCountExpr(const vector<string> &column_names) {
 // each other only: one NULL key is no duplicate, two are one (see BuildDuplicateCountExpr).
 static string GenerateDuplicateCountSQL(const string &table_ref, const vector<string> &column_names,
                                         const Value &max_duplicates) {
-	string max_val = max_duplicates.IsNull() ? "0" : max_duplicates.ToString();
+	string max_val = BigintThresholdSQL(max_duplicates, "0");
 
 	return "SELECT "
 		"CASE WHEN duplicate_count <= " + max_val + " THEN 'pass' ELSE 'fail' END AS status, "
@@ -258,8 +258,8 @@ static string GenerateDuplicateCountSQL(const string &table_ref, const vector<st
 // passes trivially with an explicit message.
 static string GenerateOccurrenceSQL(const string &table_ref, const string &column_name, const string &mode_keyword,
                                     const Value &lower, const Value &upper) {
-	string lower_val = lower.IsNull() ? "NULL" : lower.ToString();
-	string upper_val = upper.IsNull() ? "NULL" : upper.ToString();
+	string lower_val = BigintThresholdSQL(lower);
+	string upper_val = BigintThresholdSQL(upper);
 	string col_id = QuoteSqlIdentifier(column_name);
 	bool is_max = mode_keyword == "max";
 	string extreme_agg = is_max ? "MAX(c)" : "MIN(c)";
@@ -307,7 +307,7 @@ static string GenerateOccurrenceSQL(const string &table_ref, const string &colum
 static string GenerateMatchRateSQL(const string &left_ref, const string &right_ref,
                                    const vector<string> &left_keys, const vector<string> &right_keys,
                                    const Value &min_rate) {
-	string min_val = min_rate.IsNull() ? "1.0" : min_rate.ToString();
+	string min_val = DoubleThresholdSQL(min_rate, "1.0");
 
 	string left_cols;
 	string right_cols;
@@ -368,7 +368,7 @@ static string GenerateMatchRateSQL(const string &left_ref, const string &right_r
 // Empty-input semantics: an empty table yields compliance_rate = 0.0, total_count = 0 and
 // passes trivially with an explicit message.
 static string GenerateComplianceSQL(const string &table_ref, const string &expression, const Value &min_rate) {
-	string min_val = min_rate.IsNull() ? "1.0" : min_rate.ToString();
+	string min_val = DoubleThresholdSQL(min_rate, "1.0");
 	string predicate = "COALESCE((" + expression + "), FALSE)";
 
 	return "SELECT "
@@ -438,16 +438,17 @@ static string BuildReferenceDatesSQL(const ReferenceDates &dates, const string &
 // Trivial-pass semantics: empty input, missing baseline days or a zero baseline pass
 // with an explicit message (not enough history is not a failure).
 static string GenerateRelCountChangeSQL(const string &table_ref, const string &date_column,
-                                        const string &count_column, int64_t window_days,
-                                        const Value &lower, const Value &upper, const ReferenceDates &dates) {
-	string lower_val = lower.IsNull() ? "NULL" : lower.ToString();
-	string upper_val = upper.IsNull() ? "NULL" : upper.ToString();
+                                        const LogicalType &date_type, const string &count_column,
+                                        int64_t window_days, const Value &lower, const Value &upper,
+                                        const ReferenceDates &dates) {
+	string lower_val = DoubleThresholdSQL(lower);
+	string upper_val = DoubleThresholdSQL(upper);
 	string date_id = QuoteSqlIdentifier(date_column);
 	string window_val = std::to_string(window_days);
 	string cnt_expr = count_column.empty() ? "COUNT(*)" : "COUNT(DISTINCT " + QuoteSqlIdentifier(count_column) + ")";
 
 	return "WITH daily AS ("
-		"SELECT CAST(" + date_id + " AS DATE) AS d, " + cnt_expr + " AS c "
+		"SELECT " + UtcDateSQL(date_id, date_type) + " AS d, " + cnt_expr + " AS c "
 		"FROM " + table_ref + " WHERE " + date_id + " IS NOT NULL GROUP BY 1"
 		"), "
 		"ref AS (" + BuildReferenceDatesSQL(dates, "MAX(d)", "daily") + "), "
@@ -499,9 +500,10 @@ static string GenerateRelCountChangeSQL(const string &table_ref, const string &d
 // the reference day when it falls outside the bounds selected by mode.
 // Trivial-pass semantics: empty input or an empty baseline window pass with a message.
 static string GenerateMetricAnomalyIQRSQL(const string &table_ref, const string &date_column,
-                                          const string &metric_column, int64_t window_days, const Value &k,
-                                          const string &mode, const ReferenceDates &dates) {
-	string k_val = k.IsNull() ? "1.5" : k.ToString();
+                                          const LogicalType &date_type, const string &metric_column,
+                                          int64_t window_days, const Value &k, const string &mode,
+                                          const ReferenceDates &dates) {
+	string k_val = DoubleThresholdSQL(k, "1.5");
 	string date_id = QuoteSqlIdentifier(date_column);
 	string window_val = std::to_string(window_days);
 	string metric_expr =
@@ -519,7 +521,7 @@ static string GenerateMetricAnomalyIQRSQL(const string &table_ref, const string 
 	}
 
 	return "WITH daily AS ("
-		"SELECT CAST(" + date_id + " AS DATE) AS d, " + metric_expr + " AS m "
+		"SELECT " + UtcDateSQL(date_id, date_type) + " AS d, " + metric_expr + " AS m "
 		"FROM " + table_ref + " WHERE " + date_id + " IS NOT NULL GROUP BY 1"
 		"), "
 		"ref AS (" + BuildReferenceDatesSQL(dates, "MAX(d)", "daily") + "), "
@@ -553,11 +555,11 @@ static string GenerateMetricAnomalyIQRSQL(const string &table_ref, const string 
 		"  WHEN metric_value IS NULL THEN 'No metric value on ' || CAST(reference_date AS VARCHAR) || '; check passed trivially' "
 		"  WHEN baseline_days = 0 THEN 'No baseline window before ' || CAST(reference_date AS VARCHAR) || '; check passed trivially' "
 		"  WHEN " + fail_check + " THEN "
-		"    'Metric ' || CAST(metric_value AS VARCHAR) || ' on ' || CAST(reference_date AS VARCHAR) || "
-		"    ' is outside IQR bounds [' || CAST(lower_bound AS VARCHAR) || ', ' || CAST(upper_bound AS VARCHAR) || '] (mode: " + mode + ")' "
+		"    'Metric ' || " + RoundedNumberSQL("metric_value") + " || ' on ' || CAST(reference_date AS VARCHAR) || "
+		"    ' is outside IQR bounds [' || " + RoundedNumberSQL("lower_bound") + " || ', ' || " + RoundedNumberSQL("upper_bound") + " || '] (mode: " + mode + ")' "
 		"  ELSE "
-		"    'Metric ' || CAST(metric_value AS VARCHAR) || ' on ' || CAST(reference_date AS VARCHAR) || "
-		"    ' is within IQR bounds [' || CAST(lower_bound AS VARCHAR) || ', ' || CAST(upper_bound AS VARCHAR) || ']' "
+		"    'Metric ' || " + RoundedNumberSQL("metric_value") + " || ' on ' || CAST(reference_date AS VARCHAR) || "
+		"    ' is within IQR bounds [' || " + RoundedNumberSQL("lower_bound") + " || ', ' || " + RoundedNumberSQL("upper_bound") + " || ']' "
 		"END AS message "
 		"FROM summary ORDER BY reference_date";
 }
@@ -568,16 +570,16 @@ static string GenerateMetricAnomalyIQRSQL(const string &table_ref, const string 
 // counts, so a date range does not re-scan it per reference date.
 static string GenerateRollingValuesInSetSQL(const string &table_ref, const string &column_name,
                                             const string &allowed_array, const string &date_column,
-                                            int64_t window_days, const Value &min_rate,
-                                            const ReferenceDates &dates) {
-	string min_val = min_rate.IsNull() ? "1.0" : min_rate.ToString();
+                                            const LogicalType &date_type, int64_t window_days,
+                                            const Value &min_rate, const ReferenceDates &dates) {
+	string min_val = DoubleThresholdSQL(min_rate, "1.0");
 	string col_id = QuoteSqlIdentifier(column_name);
 	string col_str = "CAST(" + col_id + " AS VARCHAR)";
 	string date_id = QuoteSqlIdentifier(date_column);
 	string window_val = std::to_string(window_days);
 
 	return "WITH dv AS ("
-		"SELECT CAST(" + date_id + " AS DATE) AS d, " + col_str + " AS v, COUNT(*) AS n FROM " + table_ref +
+		"SELECT " + UtcDateSQL(date_id, date_type) + " AS d, " + col_str + " AS v, COUNT(*) AS n FROM " + table_ref +
 		" WHERE " + date_id + " IS NOT NULL GROUP BY 1, 2"
 		"), "
 		"ref AS (" + BuildReferenceDatesSQL(dates, "MAX(d)", "dv") + "), "
@@ -614,6 +616,18 @@ static string GenerateRollingValuesInSetSQL(const string &table_ref, const strin
 		"    CAST(total_count AS VARCHAR) || ') over the trailing " + window_val + " day(s) is below minimum ' || CAST(" + min_val + " AS VARCHAR) "
 		"END AS message "
 		"FROM rates ORDER BY reference_date";
+}
+
+// Helper: the type of the date column of a time-aware check, so a TIMESTAMP WITH TIME ZONE
+// column is bucketed by its UTC date (UtcDateSQL) whatever the session TimeZone
+static LogicalType TimeColumnType(ClientContext &context, const string &function_name, const string &table_name,
+                                  const string &date_column) {
+	auto type = LookupColumnType(context, table_name, date_column);
+	if (type.id() == LogicalTypeId::TIMESTAMP_TZ) {
+		AnofoxTrace(AnofoxLogLevel::Debug, function_name + ": '" + date_column +
+		                                       "' is TIMESTAMP WITH TIME ZONE; bucketing by its UTC date");
+	}
+	return type;
 }
 
 // Helper: read an optional positive window_days argument with a default
@@ -759,6 +773,7 @@ static unique_ptr<TableRef> CheckAggBindReplace(ClientContext &context, TableFun
 	ValidateFiniteDouble(input.inputs[3], "agg_check", "lower_threshold");
 	ValidateFiniteDouble(input.inputs[4], "agg_check", "upper_threshold");
 	ValidateThresholdOrder(input.inputs[3], input.inputs[4], "agg_check", "lower_threshold", "upper_threshold");
+	RequireNumericColumn(context, "agg_check", table_name, column_name);
 
 	string table_ref = BuildQueryTableRef(table_name);
 	string sql = GenerateAggCheckSQL(table_ref, column_name, agg, input.inputs[3], input.inputs[4]);
@@ -773,7 +788,18 @@ static unique_ptr<TableRef> CheckDuplicateCountBindReplace(ClientContext &contex
 	}
 
 	string table_name = RequireNonNullArgument(input, 0, "duplicate_count", "table_name");
-	auto column_names = ParseCommaSeparatedColumns(RequireNonNullArgument(input, 1, "duplicate_count", "column_names"));
+	RequireNonNullArgument(input, 1, "duplicate_count", "column_names");
+	// column_names: a comma-separated string or a VARCHAR[] (like diff and schema_check)
+	vector<string> column_names;
+	if (input.inputs[1].type().id() == LogicalTypeId::LIST) {
+		for (auto &child : ListValue::GetChildren(input.inputs[1])) {
+			if (!child.IsNull() && !child.ToString().empty()) {
+				column_names.push_back(child.ToString());
+			}
+		}
+	} else {
+		column_names = ParseCommaSeparatedColumns(input.inputs[1].ToString());
+	}
 	if (column_names.empty()) {
 		throw BinderException("duplicate_count: column_names must contain at least one column");
 	}
@@ -858,7 +884,7 @@ static unique_ptr<TableRef> CheckComplianceBindReplace(ClientContext &context, T
 }
 
 // Builds the rel_count_change SQL from the bind input; fills the events mapping when asked
-static string BuildRelCountChangeSQL(TableFunctionBindInput &input, EventsMapping *events) {
+static string BuildRelCountChangeSQL(ClientContext &context, TableFunctionBindInput &input, EventsMapping *events) {
 	if (input.inputs.size() < 2) {
 		throw BinderException(
 		    "anofox_tab_rel_count_change requires at least 2 arguments: table_name, date_column");
@@ -889,12 +915,14 @@ static string BuildRelCountChangeSQL(TableFunctionBindInput &input, EventsMappin
 		    "ELSE upper_threshold END";
 	}
 	string table_ref = BuildQueryTableRef(table_name);
-	return GenerateRelCountChangeSQL(table_ref, date_column, count_column, window_days, lower, upper, dates);
+	auto date_type = TimeColumnType(context, function_name, table_name, date_column);
+	return GenerateRelCountChangeSQL(table_ref, date_column, date_type, count_column, window_days, lower, upper,
+	                                 dates);
 }
 
 static unique_ptr<TableRef> CheckRelCountChangeBindReplace(ClientContext &context, TableFunctionBindInput &input) {
 	PostHogTelemetry::Instance().RecordFunctionCall("check_rel_count_change");
-	string sql = BuildRelCountChangeSQL(input, nullptr);
+	string sql = BuildRelCountChangeSQL(context, input, nullptr);
 	return ParseSubquery(sql, context, "Failed to parse relative count change check query");
 }
 
@@ -902,12 +930,12 @@ static unique_ptr<TableRef> CheckRelCountChangeEventsBindReplace(ClientContext &
                                                                  TableFunctionBindInput &input) {
 	PostHogTelemetry::Instance().RecordFunctionCall("check_rel_count_change_events");
 	EventsMapping events;
-	string sql = WrapAsEventsSQL(BuildRelCountChangeSQL(input, &events), events);
+	string sql = WrapAsEventsSQL(BuildRelCountChangeSQL(context, input, &events), events);
 	return ParseSubquery(sql, context, "Failed to parse relative count change events query");
 }
 
 // Builds the metric_anomaly_iqr SQL from the bind input; fills the events mapping when asked
-static string BuildMetricAnomalyIQRSQL(TableFunctionBindInput &input, EventsMapping *events) {
+static string BuildMetricAnomalyIQRSQL(ClientContext &context, TableFunctionBindInput &input, EventsMapping *events) {
 	if (input.inputs.size() < 2) {
 		throw BinderException(
 		    "anofox_tab_metric_anomaly_iqr requires at least 2 arguments: table_name, date_column");
@@ -941,12 +969,17 @@ static string BuildMetricAnomalyIQRSQL(TableFunctionBindInput &input, EventsMapp
 		events->threshold_expr = "CASE WHEN metric_value < lower_bound THEN lower_bound ELSE upper_bound END";
 	}
 	string table_ref = BuildQueryTableRef(table_name);
-	return GenerateMetricAnomalyIQRSQL(table_ref, date_column, metric_column, window_days, k, mode, dates);
+	if (!metric_column.empty()) {
+		RequireNumericColumn(context, function_name, table_name, metric_column);
+	}
+	auto date_type = TimeColumnType(context, function_name, table_name, date_column);
+	return GenerateMetricAnomalyIQRSQL(table_ref, date_column, date_type, metric_column, window_days, k, mode,
+	                                   dates);
 }
 
 static unique_ptr<TableRef> CheckMetricAnomalyIQRBindReplace(ClientContext &context, TableFunctionBindInput &input) {
 	PostHogTelemetry::Instance().RecordFunctionCall("check_metric_anomaly_iqr");
-	string sql = BuildMetricAnomalyIQRSQL(input, nullptr);
+	string sql = BuildMetricAnomalyIQRSQL(context, input, nullptr);
 	return ParseSubquery(sql, context, "Failed to parse metric anomaly IQR check query");
 }
 
@@ -954,12 +987,12 @@ static unique_ptr<TableRef> CheckMetricAnomalyIQREventsBindReplace(ClientContext
                                                                    TableFunctionBindInput &input) {
 	PostHogTelemetry::Instance().RecordFunctionCall("check_metric_anomaly_iqr_events");
 	EventsMapping events;
-	string sql = WrapAsEventsSQL(BuildMetricAnomalyIQRSQL(input, &events), events);
+	string sql = WrapAsEventsSQL(BuildMetricAnomalyIQRSQL(context, input, &events), events);
 	return ParseSubquery(sql, context, "Failed to parse metric anomaly IQR events query");
 }
 
 // Builds the rolling_values_in_set SQL from the bind input; fills the events mapping when asked
-static string BuildRollingValuesInSetSQL(TableFunctionBindInput &input, EventsMapping *events) {
+static string BuildRollingValuesInSetSQL(ClientContext &context, TableFunctionBindInput &input, EventsMapping *events) {
 	if (input.inputs.size() < 4) {
 		throw BinderException("anofox_tab_rolling_values_in_set requires at least 4 arguments: "
 		                      "table_name, column_name, allowed_values, date_column");
@@ -983,13 +1016,14 @@ static string BuildRollingValuesInSetSQL(TableFunctionBindInput &input, EventsMa
 		events->threshold_expr = "threshold";
 	}
 	string table_ref = BuildQueryTableRef(table_name);
-	return GenerateRollingValuesInSetSQL(table_ref, column_name, allowed_array, date_column, window_days, min_rate,
-	                                     dates);
+	auto date_type = TimeColumnType(context, function_name, table_name, date_column);
+	return GenerateRollingValuesInSetSQL(table_ref, column_name, allowed_array, date_column, date_type, window_days,
+	                                     min_rate, dates);
 }
 
 static unique_ptr<TableRef> CheckRollingValuesInSetBindReplace(ClientContext &context, TableFunctionBindInput &input) {
 	PostHogTelemetry::Instance().RecordFunctionCall("check_rolling_values_in_set");
-	string sql = BuildRollingValuesInSetSQL(input, nullptr);
+	string sql = BuildRollingValuesInSetSQL(context, input, nullptr);
 	return ParseSubquery(sql, context, "Failed to parse rolling values-in-set check query");
 }
 
@@ -997,7 +1031,7 @@ static unique_ptr<TableRef> CheckRollingValuesInSetEventsBindReplace(ClientConte
                                                                      TableFunctionBindInput &input) {
 	PostHogTelemetry::Instance().RecordFunctionCall("check_rolling_values_in_set_events");
 	EventsMapping events;
-	string sql = WrapAsEventsSQL(BuildRollingValuesInSetSQL(input, &events), events);
+	string sql = WrapAsEventsSQL(BuildRollingValuesInSetSQL(context, input, &events), events);
 	return ParseSubquery(sql, context, "Failed to parse rolling values-in-set events query");
 }
 
@@ -1068,17 +1102,23 @@ void RegisterCheckFunctions(ExtensionLoader &loader) {
 	// anofox_tab_duplicate_count(table_name, column_names [, max_duplicates=0]) (alias: duplicate_count)
 	const vector<LogicalType> dup_args = {LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::VARCHAR),
 	                                      LogicalType(LogicalTypeId::BIGINT)};
+	const vector<LogicalType> dup_list_args = {LogicalType(LogicalTypeId::VARCHAR),
+	                                           LogicalType::LIST(LogicalType(LogicalTypeId::VARCHAR)),
+	                                           LogicalType(LogicalTypeId::BIGINT)};
 	TableFunctionSet dup_set("anofox_tab_duplicate_count");
 	AddPrefixAritiesBindReplace(dup_set, "anofox_tab_duplicate_count", dup_args, 2,
+	                            DATAZOO_GUARD(ANOFOX_TABULAR_BANNER, CheckDuplicateCountBindReplace));
+	AddPrefixAritiesBindReplace(dup_set, "anofox_tab_duplicate_count", dup_list_args, 2,
 	                            DATAZOO_GUARD(ANOFOX_TABULAR_BANNER, CheckDuplicateCountBindReplace));
 	{
 		FunctionDescription desc;
 		desc.description =
-		    "Asserts that the number of duplicate values in a column (or comma-separated column combination) does not "
-		    "exceed max_duplicates (default 0).";
+		    "Asserts that the number of duplicate values in a column (or column combination, as a comma-separated "
+		    "string or a VARCHAR[]) does not exceed max_duplicates (default 0).";
 		desc.parameter_names = {"table_name", "column_names", "max_duplicates"};
 		desc.examples = {"SELECT * FROM duplicate_count('orders', 'order_id');",
-		                 "SELECT * FROM duplicate_count('orders', 'customer_id,order_date', 10);"};
+		                 "SELECT * FROM duplicate_count('orders', 'customer_id,order_date', 10);",
+		                 "SELECT * FROM duplicate_count('orders', ['customer_id', 'order_date'], 10);"};
 		desc.categories = {"metric", "data-quality"};
 		RegisterTableFunctionSetWithAlias(loader, dup_set, "duplicate_count", {std::move(desc)});
 	}

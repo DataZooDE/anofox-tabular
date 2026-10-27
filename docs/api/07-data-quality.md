@@ -14,8 +14,11 @@ name as a string. Each call returns one summary row with a `status` (`'pass'` or
 `message`, also for an empty table. The three time-aware checks return one row per date when
 you pass a date range.
 
-All checks run locally. The thresholds you pass come back in the output with the type of the
-literal you passed (see [Conventions](00-conventions.md#types)).
+All checks run locally. The thresholds you pass come back in the output with a fixed type,
+whatever literal you passed: `DOUBLE` for rates, multipliers and value bounds, `BIGINT` for
+count bounds (`min_rows`, `max_distinct`, `max_duplicates`, the `occurrence` bounds). So
+`null_rate(..., 0.015)` returns `threshold` as `DOUBLE` `0.015`, not as `DECIMAL(4,3)`, and the
+results of several checks combine with `UNION ALL`.
 
 The arguments are checked when the query is bound:
 
@@ -28,14 +31,25 @@ The arguments are checked when the query is bound:
   `zscore` threshold must be positive.
 - Rates (`max_null_rate`, `min_match_rate`, `min_rate`, ...) must be between 0 and 1, for
   example `null_rate: max_null_rate must be between 0 and 1 (got 1.5)`.
+- The statistical checks `zscore`, `iqr`, `agg_check` and the `metric_column` of
+  `metric_anomaly_iqr` need a numeric (or `BOOLEAN`) column, for example
+  `zscore: column 'supplier' must be numeric, got VARCHAR`. An unknown column is an error that
+  lists the table's columns.
 
 Rates in the messages are rounded to three decimals (`Null rate 0.333 (2/6) ...`); the rate
 columns keep the full precision.
 
-NaN and `±Inf` values in numeric columns do not break a check. `zscore` leaves them out of the
-statistics and names how many it ignored. `agg_check`, and an `agg` check in `run_checks`,
-report a `NaN` value and fail when the column contains NaN or `±Inf` values, with the message
+NaN and `±Inf` values in numeric columns do not break a check. The outlier checks `zscore` and
+`iqr` ignore them: they leave them out of the statistics and of `total_count`, and the message
+ends with `; <n> NaN/Inf value(s) ignored`. `agg_check`, and an `agg` check in `run_checks`,
+assert one aggregate value instead: they report a `NaN` value and fail when the column contains
+NaN or `±Inf` values, with the message
 `<agg> value is NaN: the column contains <n> NaN/Inf value(s)`.
+
+Timestamps are compared in UTC. A `TIMESTAMP WITH TIME ZONE` column is read as its UTC instant
+(in `freshness`) and bucketed by its UTC date (in the time-aware checks), whatever the session
+`TimeZone` and with or without the ICU extension. A plain `TIMESTAMP` column is taken as UTC as
+it is.
 
 ## Functions
 
@@ -99,7 +113,7 @@ Passes when the row count is between `min_rows` and `max_rows`.
 
 ```text
 volume(table_name VARCHAR, min_rows BIGINT, max_rows BIGINT)
-  -> TABLE(status VARCHAR, row_count BIGINT, min_threshold, max_threshold, message VARCHAR)
+  -> TABLE(status VARCHAR, row_count BIGINT, min_threshold BIGINT, max_threshold BIGINT, message VARCHAR)
 ```
 
 | Parameter | Type | Default | Description |
@@ -132,7 +146,7 @@ Passes when the share of NULL values in a column is at most `max_null_rate`.
 ```text
 null_rate(table_name VARCHAR, column_name VARCHAR, max_null_rate DOUBLE)
   -> TABLE(status VARCHAR, null_count BIGINT, total_count BIGINT, null_rate DOUBLE,
-           threshold, message VARCHAR)
+           threshold DOUBLE, message VARCHAR)
 ```
 
 | Parameter | Type | Default | Description |
@@ -165,7 +179,7 @@ Passes when the number of distinct non-NULL values is between the bounds.
 
 ```text
 distinct_count(table_name VARCHAR, column_name VARCHAR, min_distinct BIGINT, max_distinct BIGINT)
-  -> TABLE(status VARCHAR, distinct_count BIGINT, min_threshold, max_threshold, message VARCHAR)
+  -> TABLE(status VARCHAR, distinct_count BIGINT, min_threshold BIGINT, max_threshold BIGINT, message VARCHAR)
 ```
 
 | Parameter | Type | Default | Description |
@@ -262,11 +276,17 @@ FROM freshness('orders', 'created_at', INTERVAL '1 day', TIMESTAMP '2026-01-31 0
 └─────────┴─────────────────────┴─────────────┘
 ```
 
-Without `reference_time` the check compares against the current time, `CAST(now() AS TIMESTAMP)`
-(UTC unless the ICU extension is loaded, then the session time zone). It does not need ICU.
-A `TIMESTAMP WITH TIME ZONE` column is compared as its UTC `TIMESTAMP`, so it works without ICU
-too, and `metric_value` is then the newest value in UTC. A `DATE` column is compared as
-midnight of that day.
+All times are UTC. Without `reference_time` the check compares against the current time in UTC,
+also when the ICU extension is loaded and the session `TimeZone` is set. A
+`TIMESTAMP WITH TIME ZONE` column is compared as its UTC instant, and `metric_value` is then the
+newest value in UTC, the same in every session time zone. A plain `TIMESTAMP` column and
+`reference_time` are taken as UTC as they are. A `DATE` column is compared as midnight of that
+day. The check does not need ICU.
+
+A newest timestamp after `reference_time` (clock skew, or timestamps loaded in the wrong time
+zone) still passes, but `age_seconds` is negative and the message warns about it:
+`Data is fresh. Latest update: 2026-10-05 23:30:00 (age: -3600s). Warning: the latest timestamp
+is 3600s after the reference time; check for clock skew or a time zone mismatch`.
 
 An empty table, or a column that is all `NULL`, fails with `metric_value` and `age_seconds`
 `NULL` and the message `No timestamp values found (table is empty or column is all NULL)`.
@@ -283,7 +303,7 @@ assumes roughly normal data. For skewed data use [`iqr`](#iqr).
 ```text
 zscore(table_name VARCHAR, column_name VARCHAR, threshold DOUBLE)
   -> TABLE(status VARCHAR, mean DOUBLE, stddev DOUBLE, outlier_count BIGINT, total_count BIGINT,
-           outlier_rate DOUBLE, threshold, message VARCHAR)
+           outlier_rate DOUBLE, threshold DOUBLE, message VARCHAR)
 ```
 
 | Parameter | Type | Default | Description |
@@ -292,8 +312,9 @@ zscore(table_name VARCHAR, column_name VARCHAR, threshold DOUBLE)
 | `column_name` | `VARCHAR` | required | Numeric column |
 | `threshold` | `DOUBLE` | required | Z-score limit, typically `3.0`; must be positive |
 
-The mean, the standard deviation and the outliers use the finite values only. NaN and `±Inf`
-values are left out (`total_count` does not count them) and the message ends with
+The column must be numeric (or `BOOLEAN`, read as 0/1); a `VARCHAR` or `DATE` column is a
+binder error. The mean, the standard deviation and the outliers use the finite values only. NaN
+and `±Inf` values are left out (`total_count` does not count them) and the message ends with
 `; <n> NaN/Inf value(s) ignored`.
 
 ```sql
@@ -325,7 +346,7 @@ This is a row-level outlier check; for a daily metric use
 ```text
 iqr(table_name VARCHAR, column_name VARCHAR, iqr_multiplier DOUBLE)
   -> TABLE(status VARCHAR, q1 DOUBLE, q3 DOUBLE, iqr DOUBLE, lower_bound DOUBLE, upper_bound DOUBLE,
-           outlier_count BIGINT, total_count BIGINT, multiplier, message VARCHAR)
+           outlier_count BIGINT, total_count BIGINT, multiplier DOUBLE, message VARCHAR)
 ```
 
 | Parameter | Type | Default | Description |
@@ -333,6 +354,10 @@ iqr(table_name VARCHAR, column_name VARCHAR, iqr_multiplier DOUBLE)
 | `table_name` | `VARCHAR` | required | Table or view |
 | `column_name` | `VARCHAR` | required | Numeric column |
 | `iqr_multiplier` | `DOUBLE` | required | Fence multiplier `k`, typically `1.5` |
+
+The quartiles and the outliers use the finite values only. NaN and `±Inf` values are left out
+(`total_count` does not count them) and the message ends with `; <n> NaN/Inf value(s) ignored`,
+as in [`zscore`](#zscore). The column must be numeric (or `BOOLEAN`).
 
 ```sql
 SELECT status, lower_bound, upper_bound, outlier_count FROM iqr('orders', 'amount', 1.5);
@@ -361,7 +386,7 @@ Passes when the share of non-NULL values that match a regular expression is with
 regex_match(table_name VARCHAR, column_name VARCHAR, pattern VARCHAR, min_match_rate DOUBLE
             [, max_match_rate DOUBLE])
   -> TABLE(status VARCHAR, match_rate DOUBLE, matched_count BIGINT, total_count BIGINT,
-           min_threshold, max_threshold, message VARCHAR)
+           min_threshold DOUBLE, max_threshold DOUBLE, message VARCHAR)
 ```
 
 | Parameter | Type | Default | Description |
@@ -400,7 +425,7 @@ Values are compared as strings.
 ```text
 values_in_set(table_name VARCHAR, column_name VARCHAR, allowed_values VARCHAR[] [, min_rate DOUBLE])
   -> TABLE(status VARCHAR, in_set_rate DOUBLE, in_set_count BIGINT, total_count BIGINT,
-           threshold, sample_violations VARCHAR[], message VARCHAR)
+           threshold DOUBLE, sample_violations VARCHAR[], message VARCHAR)
 ```
 
 | Parameter | Type | Default | Description |
@@ -436,7 +461,8 @@ Passes when an aggregate of a numeric column is within bounds.
 
 ```text
 agg_check(table_name VARCHAR, column_name VARCHAR, agg VARCHAR, lower_threshold DOUBLE, upper_threshold DOUBLE)
-  -> TABLE(status VARCHAR, agg VARCHAR, value DOUBLE, lower_threshold, upper_threshold, message VARCHAR)
+  -> TABLE(status VARCHAR, agg VARCHAR, value DOUBLE, lower_threshold DOUBLE, upper_threshold DOUBLE,
+           message VARCHAR)
 ```
 
 | Parameter | Type | Default | Description |
@@ -447,7 +473,8 @@ agg_check(table_name VARCHAR, column_name VARCHAR, agg VARCHAR, lower_threshold 
 | `lower_threshold` | `DOUBLE` | required | Lower bound; `NULL` = unbounded |
 | `upper_threshold` | `DOUBLE` | required | Upper bound; `NULL` = unbounded |
 
-An empty table or an all-NULL column gives `value = NULL` and passes. When the column contains
+The column must be numeric (or `BOOLEAN`); another type is a binder error. An empty table or an
+all-NULL column gives `value = NULL` and passes. When the column contains
 NaN or `±Inf` values, `value` is `NaN` and the check fails with the message
 `<agg> value is NaN: the column contains <n> NaN/Inf value(s)`; an average or a sum over such a
 column has no meaningful value.
@@ -480,14 +507,14 @@ a NULL key is no duplicate, two such rows are one duplicate. A compound key comp
 components as equal, so `('x', NULL)` twice is one duplicate and once is none.
 
 ```text
-duplicate_count(table_name VARCHAR, column_names VARCHAR [, max_duplicates BIGINT])
-  -> TABLE(status VARCHAR, duplicate_count BIGINT, total_count BIGINT, threshold, message VARCHAR)
+duplicate_count(table_name VARCHAR, column_names VARCHAR | VARCHAR[] [, max_duplicates BIGINT])
+  -> TABLE(status VARCHAR, duplicate_count BIGINT, total_count BIGINT, threshold BIGINT, message VARCHAR)
 ```
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `table_name` | `VARCHAR` | required | Table or view |
-| `column_names` | `VARCHAR` | required | One column, or a comma-separated list for a compound key |
+| `column_names` | `VARCHAR` or `VARCHAR[]` | required | One column, or a compound key as a comma-separated string (`'customer_id, status'`) or a list (`['customer_id', 'status']`) |
 | `max_duplicates` | `BIGINT` | `0` | Highest allowed number of duplicates |
 
 ```sql
@@ -518,7 +545,7 @@ bounds. NULL values are not counted.
 ```text
 occurrence(table_name VARCHAR, column_name VARCHAR, mode VARCHAR, lower_threshold BIGINT, upper_threshold BIGINT)
   -> TABLE(status VARCHAR, mode VARCHAR, occurrence BIGINT, extreme_value VARCHAR,
-           distinct_values BIGINT, lower_threshold, upper_threshold, message VARCHAR)
+           distinct_values BIGINT, lower_threshold BIGINT, upper_threshold BIGINT, message VARCHAR)
 ```
 
 | Parameter | Type | Default | Description |
@@ -559,7 +586,8 @@ duplicate right rows do not raise the rate.
 
 ```text
 match_rate(left_table VARCHAR, right_table VARCHAR, left_keys VARCHAR, right_keys VARCHAR [, min_rate DOUBLE])
-  -> TABLE(status VARCHAR, match_rate DOUBLE, matched_count BIGINT, total_count BIGINT, threshold, message VARCHAR)
+  -> TABLE(status VARCHAR, match_rate DOUBLE, matched_count BIGINT, total_count BIGINT, threshold DOUBLE,
+           message VARCHAR)
 ```
 
 | Parameter | Type | Default | Description |
@@ -598,7 +626,7 @@ Passes when the share of rows for which a SQL boolean expression is true is at l
 ```text
 compliance(table_name VARCHAR, expression VARCHAR [, min_rate DOUBLE])
   -> TABLE(status VARCHAR, compliance_rate DOUBLE, compliant_count BIGINT, total_count BIGINT,
-           threshold, message VARCHAR)
+           threshold DOUBLE, message VARCHAR)
 ```
 
 | Parameter | Type | Default | Description |
@@ -683,13 +711,14 @@ rel_count_change(table_name VARCHAR, date_column VARCHAR
                  [, upper_threshold DOUBLE [, reference_date DATE]]]]]
                  [, start_date := DATE, end_date := DATE])
   -> TABLE(status VARCHAR, reference_date DATE, reference_count DOUBLE, baseline_avg DOUBLE,
-           baseline_days BIGINT, rel_change DOUBLE, lower_threshold, upper_threshold, message VARCHAR)
+           baseline_days BIGINT, rel_change DOUBLE, lower_threshold DOUBLE, upper_threshold DOUBLE,
+           message VARCHAR)
 ```
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `table_name` | `VARCHAR` | required | Table or view |
-| `date_column` | `VARCHAR` | required | Date or timestamp column; cast to `DATE` |
+| `date_column` | `VARCHAR` | required | Date or timestamp column; cast to `DATE` (a `TIMESTAMP WITH TIME ZONE` by its UTC date) |
 | `count_column` | `VARCHAR` | `NULL` | Column counted with `COUNT(DISTINCT ...)` per day; `NULL` = daily row count |
 | `window_days` | `BIGINT` | `7` | Baseline length: the days strictly before the reference date |
 | `lower_threshold` | `DOUBLE` | `-0.5` | Lowest allowed relative change |
@@ -755,15 +784,19 @@ metric_anomaly_iqr(table_name VARCHAR, date_column VARCHAR
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `table_name` | `VARCHAR` | required | Table or view |
-| `date_column` | `VARCHAR` | required | Date or timestamp column; cast to `DATE` |
-| `metric_column` | `VARCHAR` | `NULL` | Column averaged per day; `NULL` = daily row count |
+| `date_column` | `VARCHAR` | required | Date or timestamp column; cast to `DATE` (a `TIMESTAMP WITH TIME ZONE` by its UTC date) |
+| `metric_column` | `VARCHAR` | `NULL` | Numeric column averaged per day; `NULL` = daily row count |
 | `window_days` | `BIGINT` | `30` | Baseline length: the days strictly before the reference date |
 | `k` | `DOUBLE` | `1.5` | IQR multiplier |
 | `mode` | `VARCHAR` | `'both'` | `'both'`, `'upper'` or `'lower'`: which bound to enforce |
 | `reference_date` | `DATE` | `NULL` = latest date in the data | The date to evaluate |
 | `start_date`, `end_date` | `DATE`, named | none | Evaluate every day of this range |
 
-Empty input or an empty baseline window pass with a message that says so.
+Empty input or an empty baseline window pass with a message that says so. A `metric_column`
+must be numeric (or `BOOLEAN`). The numbers in the message (and in the `label` of
+`metric_anomaly_iqr_events`) are rounded to three decimals, for example
+`Metric 142.857 on 2026-09-11 is outside IQR bounds [30.708, 37.708] (mode: both)`; the
+columns keep the full precision.
 
 ```sql
 SELECT status, reference_date, metric_value, lower_bound, upper_bound, baseline_days
@@ -816,7 +849,7 @@ rolling_values_in_set(table_name VARCHAR, column_name VARCHAR, allowed_values VA
                       [, window_days BIGINT [, min_rate DOUBLE [, reference_date DATE]]]
                       [, start_date := DATE, end_date := DATE])
   -> TABLE(status VARCHAR, reference_date DATE, in_set_rate DOUBLE, in_set_count BIGINT, total_count BIGINT,
-           threshold, sample_violations VARCHAR[], message VARCHAR)
+           threshold DOUBLE, sample_violations VARCHAR[], message VARCHAR)
 ```
 
 | Parameter | Type | Default | Description |
@@ -824,7 +857,7 @@ rolling_values_in_set(table_name VARCHAR, column_name VARCHAR, allowed_values VA
 | `table_name` | `VARCHAR` | required | Table or view |
 | `column_name` | `VARCHAR` | required | Column to check |
 | `allowed_values` | `VARCHAR[]` | required | The allowed values |
-| `date_column` | `VARCHAR` | required | Date or timestamp column; cast to `DATE` |
+| `date_column` | `VARCHAR` | required | Date or timestamp column; cast to `DATE` (a `TIMESTAMP WITH TIME ZONE` by its UTC date) |
 | `window_days` | `BIGINT` | `7` | Window length, ending on the reference date |
 | `min_rate` | `DOUBLE` | `1.0` | Lowest allowed share of values in the set |
 | `reference_date` | `DATE` | `NULL` = latest date in the data | The last day of the window |

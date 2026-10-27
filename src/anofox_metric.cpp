@@ -31,8 +31,8 @@ namespace {
 
 // Helper: Generate SQL for volume metrics
 static string GenerateVolumeSQL(const string &table_ref, const Value &min_rows, const Value &max_rows) {
-	string min_val = min_rows.IsNull() ? "NULL" : min_rows.ToString();
-	string max_val = max_rows.IsNull() ? "NULL" : max_rows.ToString();
+	string min_val = BigintThresholdSQL(min_rows);
+	string max_val = BigintThresholdSQL(max_rows);
 
 	return "SELECT "
 		"CASE "
@@ -57,7 +57,7 @@ static string GenerateVolumeSQL(const string &table_ref, const Value &min_rows, 
 // Empty-input semantics: an empty table yields null_count = 0, total_count = 0, null_rate = 0.0
 // and passes trivially with an explicit message (instead of NULL rate and message).
 static string GenerateNullRateSQL(const string &table_ref, const string &column_name, const Value &max_null_rate) {
-	string max_rate_val = max_null_rate.IsNull() ? "1.0" : max_null_rate.ToString();
+	string max_rate_val = DoubleThresholdSQL(max_null_rate, "1.0");
 	string col_id = QuoteSqlIdentifier(column_name);
 
 	return "SELECT "
@@ -84,8 +84,8 @@ static string GenerateNullRateSQL(const string &table_ref, const string &column_
 
 // Helper: Generate SQL for distinct count metrics
 static string GenerateDistinctCountSQL(const string &table_ref, const string &column_name, const Value &min_distinct, const Value &max_distinct) {
-	string min_val = min_distinct.IsNull() ? "NULL" : min_distinct.ToString();
-	string max_val = max_distinct.IsNull() ? "NULL" : max_distinct.ToString();
+	string min_val = BigintThresholdSQL(min_distinct);
+	string max_val = BigintThresholdSQL(max_distinct);
 	string col_id = QuoteSqlIdentifier(column_name);
 
 	return "SELECT "
@@ -109,7 +109,7 @@ static string GenerateDistinctCountSQL(const string &table_ref, const string &co
 
 // Helper: Generate SQL for zscore metrics using CTE to avoid nested aggregates
 static string GenerateZscoreSQL(const string &table_ref, const string &column_name, const Value &threshold) {
-	string thresh_val = threshold.IsNull() ? "3.0" : threshold.ToString();
+	string thresh_val = DoubleThresholdSQL(threshold, "3.0");
 	string col_id = QuoteSqlIdentifier(column_name);
 
 	// Use CTEs to avoid nested aggregate error:
@@ -169,27 +169,35 @@ static string GenerateZscoreSQL(const string &table_ref, const string &column_na
 
 // Helper: Generate SQL for IQR metrics using CTE to avoid nested aggregates
 static string GenerateIQRSQL(const string &table_ref, const string &column_name, const Value &iqr_multiplier) {
-	string mult_val = iqr_multiplier.IsNull() ? "1.5" : iqr_multiplier.ToString();
+	string mult_val = DoubleThresholdSQL(iqr_multiplier, "1.5");
 	string col_id = QuoteSqlIdentifier(column_name);
 
 	// Use CTEs to avoid nested aggregate error:
-	// 1. vals: the non-NULL values cast to DOUBLE
+	// 1. vals: the finite non-NULL values cast to DOUBLE
 	// 2. stats: compute Q1 and Q3 quantiles (always exactly one row)
 	// 3. bounds: derive the outlier bounds from the quantiles
 	// 4. summary: driven by bounds so exactly one row is returned even for empty input
 	// Empty-input semantics: empty/all-NULL input yields one row with total_count = 0,
 	// outlier_count = 0, NULL quantiles/bounds, status 'pass' and an explicit message.
-	return "WITH vals AS ("
+	// NaN/Inf values are left out like in zscore (a NaN would become Q3 and every value an
+	// "outlier") and counted for the message.
+	const string nonfinite_note =
+	    "CASE WHEN nonfinite_count > 0 THEN '; ' || CAST(nonfinite_count AS VARCHAR) || ' NaN/Inf value(s) ignored' "
+	    "ELSE '' END";
+	return "WITH all_vals AS ("
 		"SELECT CAST(" + col_id + " AS DOUBLE) AS val FROM " + table_ref + " WHERE " + col_id + " IS NOT NULL"
 		"), "
+		"vals AS (SELECT val FROM all_vals WHERE isfinite(val)), "
 		"stats AS ("
-		"SELECT QUANTILE_CONT(val, 0.25) AS q1, QUANTILE_CONT(val, 0.75) AS q3, COUNT(*) AS total_count FROM vals"
+		"SELECT QUANTILE_CONT(val, 0.25) AS q1, QUANTILE_CONT(val, 0.75) AS q3, COUNT(*) AS total_count, "
+		"(SELECT COUNT(*) FROM all_vals WHERE NOT isfinite(val)) AS nonfinite_count FROM vals"
 		"), "
 		"bounds AS ("
 		"SELECT "
 		"  q1, "
 		"  q3, "
 		"  total_count, "
+		"  nonfinite_count, "
 		"  q1 - " + mult_val + " * (q3 - q1) AS lower_bound, "
 		"  q3 + " + mult_val + " * (q3 - q1) AS upper_bound "
 		"FROM stats"
@@ -199,6 +207,7 @@ static string GenerateIQRSQL(const string &table_ref, const string &column_name,
 		"  b.q1, "
 		"  b.q3, "
 		"  b.total_count, "
+		"  b.nonfinite_count, "
 		"  b.lower_bound, "
 		"  b.upper_bound, "
 		"  (SELECT COUNT(*) FROM vals v, bounds b2 WHERE v.val < b2.lower_bound OR v.val > b2.upper_bound) AS outlier_count "
@@ -218,9 +227,9 @@ static string GenerateIQRSQL(const string &table_ref, const string &column_name,
 		"  WHEN total_count = 0 THEN "
 		"    'No rows to evaluate (column is empty or all NULL)' "
 		"  WHEN outlier_count = 0 THEN "
-		"    'No outliers detected by IQR method (bounds: [' || CAST(lower_bound AS VARCHAR) || ', ' || CAST(upper_bound AS VARCHAR) || '])' "
+		"    'No outliers detected by IQR method (bounds: [' || CAST(lower_bound AS VARCHAR) || ', ' || CAST(upper_bound AS VARCHAR) || ']' || " + nonfinite_note + " || ')' "
 		"  ELSE "
-		"    CAST(outlier_count AS VARCHAR) || ' outlier(s) detected outside bounds [' || CAST(lower_bound AS VARCHAR) || ', ' || CAST(upper_bound AS VARCHAR) || ']' "
+		"    CAST(outlier_count AS VARCHAR) || ' outlier(s) detected outside bounds [' || CAST(lower_bound AS VARCHAR) || ', ' || CAST(upper_bound AS VARCHAR) || ']' || " + nonfinite_note + " "
 		"END AS message "
 		"FROM summary";
 }
@@ -264,14 +273,24 @@ static string GenerateSchemaSQL(const string &table_name, const vector<string> &
 }
 
 // Helper: Generate SQL for freshness metrics
-static string GenerateFreshnessSQL(const string &table_ref, const string &timestamp_column, const Value &max_age, const Value &reference_time) {
+// All timestamps are compared in UTC: the reference time defaults to now() in UTC (UtcNowSQL),
+// and a TIMESTAMP WITH TIME ZONE column is read as its UTC instant (UtcTimestampSQL), with and
+// without the ICU extension and whatever the session TimeZone. A plain TIMESTAMP column and an
+// explicit reference_time are taken as UTC as they are.
+static string GenerateFreshnessSQL(const string &table_ref, const string &timestamp_column,
+                                   const LogicalType &column_type, const Value &max_age,
+                                   const Value &reference_time) {
 	string max_age_interval =
 	    max_age.IsNull() ? "INTERVAL '1 day'" : "'" + EscapeSqlStringLiteral(max_age.ToString()) + "'::INTERVAL";
-	// CAST(now() AS TIMESTAMP): now() is a TIMESTAMP WITH TIME ZONE, and mixing it with plain
-	// TIMESTAMP/INTERVAL arithmetic needs the ICU extension
 	string ref_time =
-	    reference_time.IsNull() ? "CAST(now() AS TIMESTAMP)" : "'" + EscapeSqlStringLiteral(reference_time.ToString()) + "'::TIMESTAMP";
+	    reference_time.IsNull() ? UtcNowSQL() : "'" + EscapeSqlStringLiteral(reference_time.ToString()) + "'::TIMESTAMP";
 	string col_id = QuoteSqlIdentifier(timestamp_column);
+	string age_sql = "EXTRACT(EPOCH FROM (" + ref_time + " - latest_timestamp))::BIGINT";
+	// A latest timestamp after the reference time passes (the data is not stale) but is
+	// called out: it usually means clock skew or timestamps loaded in the wrong time zone
+	string future_note = "CASE WHEN " + age_sql + " < 0 THEN '. Warning: the latest timestamp is ' || "
+	                     "CAST(-" + age_sql + " AS VARCHAR) || 's after the reference time; check for clock skew or "
+	                     "a time zone mismatch' ELSE '' END";
 
 	// Empty-input semantics: an empty table or all-NULL timestamp column yields one row with
 	// status 'fail', NULL metric_value/age_seconds and an explicit message (freshness cannot
@@ -284,19 +303,17 @@ static string GenerateFreshnessSQL(const string &table_ref, const string &timest
 		"END AS status, "
 		"latest_timestamp AS metric_value, "
 		"threshold_timestamp AS threshold, "
-		"EXTRACT(EPOCH FROM (" + ref_time + " - latest_timestamp))::BIGINT AS age_seconds, "
+		+ age_sql + " AS age_seconds, "
 		"CASE "
 		"  WHEN latest_timestamp IS NULL THEN "
 		"    'No timestamp values found (table is empty or column is all NULL)' "
 		"  WHEN latest_timestamp >= threshold_timestamp THEN "
-		"    'Data is fresh. Latest update: ' || CAST(latest_timestamp AS VARCHAR) || ' (age: ' || CAST(EXTRACT(EPOCH FROM (" + ref_time + " - latest_timestamp))::BIGINT AS VARCHAR) || 's)' "
+		"    'Data is fresh. Latest update: ' || CAST(latest_timestamp AS VARCHAR) || ' (age: ' || CAST(" + age_sql + " AS VARCHAR) || 's)' || " + future_note + " "
 		"  ELSE "
-		"    'Data is stale. Latest update: ' || CAST(latest_timestamp AS VARCHAR) || ' (age: ' || CAST(EXTRACT(EPOCH FROM (" + ref_time + " - latest_timestamp))::BIGINT AS VARCHAR) || 's, max allowed: ' || CAST(EXTRACT(EPOCH FROM " + max_age_interval + ")::BIGINT AS VARCHAR) || 's)' "
+		"    'Data is stale. Latest update: ' || CAST(latest_timestamp AS VARCHAR) || ' (age: ' || CAST(" + age_sql + " AS VARCHAR) || 's, max allowed: ' || CAST(EXTRACT(EPOCH FROM " + max_age_interval + ")::BIGINT AS VARCHAR) || 's)' "
 		"END AS message "
 		"FROM (SELECT "
-		// CAST(... AS TIMESTAMP): a TIMESTAMP WITH TIME ZONE column is compared as its UTC
-		// TIMESTAMP, like run_checks does; TIMESTAMPTZ - TIMESTAMP arithmetic needs ICU
-		"  MAX(CAST(" + col_id + " AS TIMESTAMP)) AS latest_timestamp, "
+		"  MAX(" + UtcTimestampSQL(col_id, column_type) + ") AS latest_timestamp, "
 		+ ref_time + " - " + max_age_interval + " AS threshold_timestamp "
 		"FROM " + table_ref + ")";
 }
@@ -364,6 +381,7 @@ static unique_ptr<TableRef> MetricZscoreBindReplace(ClientContext &context, Tabl
 	if (!input.inputs[2].IsNull() && input.inputs[2].GetValue<double>() <= 0) {
 		throw BinderException("zscore: threshold must be positive (got %s)", input.inputs[2].ToString());
 	}
+	RequireNumericColumn(context, "zscore", table_name, column_name);
 	string table_ref = BuildQueryTableRef(table_name);
 	string sql = GenerateZscoreSQL(table_ref, column_name, input.inputs[2]);
 	return ParseSubquery(sql, context, "Failed to parse zscore metric query");
@@ -379,6 +397,7 @@ static unique_ptr<TableRef> MetricIQRBindReplace(ClientContext &context, TableFu
 	string column_name = RequireNonNullArgument(input, 1, "iqr", "column_name");
 	ValidateFiniteDouble(input.inputs[2], "iqr", "iqr_multiplier");
 	ValidateNonNegative(input.inputs[2], "iqr", "iqr_multiplier");
+	RequireNumericColumn(context, "iqr", table_name, column_name);
 	string table_ref = BuildQueryTableRef(table_name);
 	string sql = GenerateIQRSQL(table_ref, column_name, input.inputs[2]);
 	return ParseSubquery(sql, context, "Failed to parse IQR metric query");
@@ -419,7 +438,8 @@ static unique_ptr<TableRef> MetricFreshnessBindReplace(ClientContext &context, T
 	Value reference_time = (input.inputs.size() > 3) ? input.inputs[3] : Value();
 
 	string table_ref = BuildQueryTableRef(table_name);
-	string sql = GenerateFreshnessSQL(table_ref, timestamp_column, max_age, reference_time);
+	auto column_type = LookupColumnType(context, table_name, timestamp_column);
+	string sql = GenerateFreshnessSQL(table_ref, timestamp_column, column_type, max_age, reference_time);
 	return ParseSubquery(sql, context, "Failed to parse freshness metric query");
 }
 

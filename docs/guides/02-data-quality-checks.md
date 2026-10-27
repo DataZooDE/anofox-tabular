@@ -96,7 +96,9 @@ FROM values_in_set('orders', 'status', ['paid', 'shipped', 'cancelled']);
 └─────────┴──────────────┴─────────────┴───────────────────┘
 ```
 
-To see several checks side by side, combine them with `UNION ALL`:
+To see several checks side by side, combine them with `UNION ALL`. The threshold columns
+have a fixed type (`DOUBLE` for rates and value bounds, `BIGINT` for counts), so they line up
+whatever literals you pass:
 
 ```sql
 SELECT 'volume' AS check_name, status FROM volume('orders', 100, NULL)
@@ -348,6 +350,9 @@ FROM rel_count_change('orders', 'order_date');
 │ 2026-03-14     │             6.0 │         30.0 │       -0.8 │ fail    │
 └────────────────┴─────────────────┴──────────────┴────────────┴─────────┘
 ```
+
+The days are calendar days in UTC. A `TIMESTAMP WITH TIME ZONE` column is bucketed by its UTC
+date, whatever the session `TimeZone`; a plain `TIMESTAMP` or `DATE` column is used as it is.
 
 The named parameters `start_date` and `end_date` check every day of a range and return one
 row per day:
