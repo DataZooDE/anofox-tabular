@@ -1050,7 +1050,8 @@ def _parse_table_result(cursor: Any, extra: dict) -> dict:
     The dict holds the call's parameters (*extra*), then every result column
     by name (``status``, the metric value(s), the thresholds, ``message``),
     with DECIMAL values converted to float. ``_raw`` keeps the row as returned
-    by DuckDB, in column order, for backward compatibility.
+    by DuckDB, in column order, for backward compatibility (a DataFrame input
+    named "the DataFrame" there too, not its temporary table).
     """
     columns = [d[0] for d in cursor.description]
     rows = cursor.fetchall()
@@ -1060,5 +1061,5 @@ def _parse_table_result(cursor: Any, extra: dict) -> dict:
     row = rows[0]
     named = {c: _to_python(v) for c, v in zip(columns, row)}
     result: dict = {"status": str(named.get("status", "error")), **extra, **named}
-    result["_raw"] = list(row)
+    result["_raw"] = [without_temp_names(v) if isinstance(v, str) else v for v in row]
     return result

@@ -112,8 +112,11 @@ print(customers[["id", "email"]].join(details[["valid", "stage", "reason"]]).to_
 The phone helpers (`phone_is_valid`, `phone_parse`, `phone_format`, `phone_region`) take one
 region for all rows (`region="DE"`; `hint=` for `phone_region`), or a column with the region of
 each row (`region_column="country"`). Without either, the setting
-`anofox_tab_phonenumber_default_region` applies (`US` unless you change it). A number that
-cannot be parsed gives `None` (a missing value in a DataFrame):
+`anofox_tab_phonenumber_default_region` applies (`US` unless you change it). Phone numbers
+must be text: a number (`4930901820`) or a numeric column (`read_csv` reads digits-only
+numbers as `int64`) raises `TypeError`; convert it with `astype(str)`, after checking that no
+leading `0` was lost. A number that cannot be parsed gives `None` (a missing value in a
+DataFrame):
 
 ```python
 phones = pd.DataFrame({"phone": ["030 901820", "(650) 253-0000", "12"],

@@ -111,11 +111,21 @@ def money_from_cents(conn: Any, cents: Optional[int], currency: Optional[str]) -
         ``{"amount": decimal.Decimal, "currency": str}`` where ``amount`` is in
         major units (the cents value divided by the currency's
         ``subunit_to_unit``, e.g. ``1000`` cents -> ``Decimal("10.000")`` USD).
-        The conversion is exact for the full BIGINT cents range. ``None``
-        when *cents* or *currency* is missing.
+        The conversion is exact; an amount beyond the DECIMAL(18,3) range
+        (more than 999999999999999.999 major units) raises a DuckDB
+        out-of-range error. ``None`` when *cents* or *currency* is missing.
+
+    Raises
+    ------
+    ValueError
+        When *cents* is an integer outside the BIGINT range (-2**63 .. 2**63-1).
     """
     if is_missing(cents) or is_missing(currency):
         return None
+    if isinstance(cents, numbers.Integral) and not -(2**63) <= int(cents) < 2**63:
+        raise ValueError(
+            f"cents must fit in a BIGINT (-2**63 .. 2**63-1), got {int(cents)}"
+        )
     result = fetch_row(
         conn,
         "SELECT anofox_tab_money_from_cents(?, ?)", [cents, currency]

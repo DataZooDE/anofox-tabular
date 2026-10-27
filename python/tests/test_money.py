@@ -329,3 +329,18 @@ class TestMakeMoneyBadRows:
         from anofox import money
         with pytest.raises(duckdb.Error, match="currency"):
             money.make_money(conn, 10.0, "EUR?")
+
+
+class TestMoneyFromCentsRange:
+    def test_beyond_bigint_raises_value_error(self, conn):
+        from anofox import money
+        with pytest.raises(ValueError, match="BIGINT"):
+            money.money_from_cents(conn, 2**63, "EUR")
+        with pytest.raises(ValueError, match="BIGINT"):
+            money.money_from_cents(conn, -(2**63) - 1, "EUR")
+
+    def test_largest_amount_still_works(self, conn):
+        import numpy as np
+        from anofox import money
+        largest = money.money_from_cents(conn, np.int64(99_999_999_999_999_999), "USD")
+        assert largest == {"amount": Decimal("999999999999999.99"), "currency": "USD"}

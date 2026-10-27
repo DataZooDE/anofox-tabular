@@ -199,13 +199,18 @@ print(checks.checks["null_rate"]["null_rate"])
 
 - The `anofox.quality` checks return a dict with the call's parameters and every result
   column of the SQL function by name (`status`, the metric, the thresholds, `message`).
-  `DECIMAL` values are returned as `float`; `_raw` still holds the raw result row.
+  `DECIMAL` values are returned as `float`; `_raw` still holds the raw result row (a
+  DataFrame input is named "the DataFrame" there too, as in `message`).
 - Values are passed to DuckDB as bound parameters and column names are quoted, so any text
   (`o'brien@example.ie`) is safe to pass. numpy scalars (`df["qty"].max()`, `numpy.float32`,
   `numpy.datetime64`), numpy arrays and `pandas.Timestamp` are passed as the equivalent Python
   values, also in `conn.execute(...)` parameters and `define_checks` params.
 - Every function also takes a plain `duckdb.DuckDBPyConnection` with the extension loaded in
   place of an `AnofoxConnection`.
+- The phone helpers need text: a number or a numeric DataFrame column raises `TypeError`
+  ("phone numbers must be text ...; convert with astype(str)"); it is not converted, since a
+  leading `0` may already be lost. `money_from_cents` with an integer outside the `BIGINT`
+  range raises `ValueError`.
 - The anomaly wrappers use the SQL defaults: every tuning parameter defaults to `None`, is
   passed as `NULL`, and the extension applies its default (`n_trees` 100, `contamination` 0.1,
   `eps` 0.5, `min_pts` 5, ...). DBSCAN takes the SQL names `eps=` and `min_pts=`; the former

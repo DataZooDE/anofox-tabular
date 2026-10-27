@@ -54,8 +54,12 @@ def test_none_gives_none(conn, module, name):
 
 @pytest.mark.parametrize("module,name", ROW_WISE)
 def test_other_objects_are_a_type_error(conn, module, name):
-    with pytest.raises(TypeError, match="string or a pandas/polars DataFrame"):
+    # A phone number given as a number gets its own hint (it lost its leading 0).
+    expected = "phone numbers must be text" if name.startswith("phone_") else "string or a pandas/polars DataFrame"
+    with pytest.raises(TypeError, match=expected):
         _func(module, name)(conn, 42)
+    with pytest.raises(TypeError, match="string or a pandas/polars DataFrame"):
+        _func(module, name)(conn, object())
 
 
 @pytest.mark.parametrize("module,name", ROW_WISE)

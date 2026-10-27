@@ -8,11 +8,12 @@ or a pandas/polars DataFrame (returns a DataFrame with an added result column).
 from __future__ import annotations
 
 import json
+import numbers
 import warnings
 from typing import Any, Optional, Union
 
 from ._sql import fetch_one, quote_ident
-from ._table import DataFrame, apply_scalar, check_row_input, is_missing
+from ._table import DataFrame, apply_scalar, check_row_input, frame_column, is_missing
 
 
 # ---------------------------------------------------------------------------
@@ -184,13 +185,14 @@ def phone_is_valid(
         DataFrame only: column holding the region code of each row. Cannot be
         combined with *region*.
     """
+    _check_phone_scalar(phone_or_df)
     region_sql, region_params = _region_arg(region, region_column, _is_scalar(phone_or_df))
     if is_missing(phone_or_df):
         return None
     if isinstance(phone_or_df, str):
         return bool(fetch_one(conn, "SELECT anofox_tab_phonenumber_is_valid(?, ?)", [phone_or_df, *region_params]))
 
-    df_type = check_row_input(phone_or_df, column)
+    df_type = _phone_row_input(phone_or_df, column)
 
     return apply_scalar(
         conn, phone_or_df, df_type,
@@ -224,6 +226,7 @@ def phone_parse(
         DataFrame only: column holding the region hint of each row. Cannot be
         combined with *region*.
     """
+    _check_phone_scalar(phone_or_df)
     region_sql, region_params = _region_arg(region, region_column, _is_scalar(phone_or_df))
     if is_missing(phone_or_df):
         return None
@@ -238,7 +241,7 @@ def phone_parse(
                 return {"raw": raw}
         return {"raw": str(raw)}
 
-    df_type = check_row_input(phone_or_df, column)
+    df_type = _phone_row_input(phone_or_df, column)
 
     return apply_scalar(
         conn, phone_or_df, df_type,
@@ -300,6 +303,7 @@ def phone_format(
         format = fmt
     if format is None:
         format = "E164"
+    _check_phone_scalar(phone_or_df)
     region_sql, region_params = _region_arg(region, region_column, _is_scalar(phone_or_df))
     if is_missing(phone_or_df):
         return None
@@ -308,7 +312,7 @@ def phone_format(
             conn, "SELECT anofox_tab_phonenumber_format(?, ?, ?)", [phone_or_df, *region_params, format]
         )
 
-    df_type = check_row_input(phone_or_df, column)
+    df_type = _phone_row_input(phone_or_df, column)
 
     return apply_scalar(
         conn, phone_or_df, df_type,
@@ -351,13 +355,14 @@ def phone_region(
         When *phone_or_df* is a DataFrame: a copy with an added
         ``phone_region`` column.
     """
+    _check_phone_scalar(phone_or_df)
     region_sql, region_params = _region_arg(hint, region_column, _is_scalar(phone_or_df))
     if is_missing(phone_or_df):
         return None
     if isinstance(phone_or_df, str):
         return fetch_one(conn, "SELECT anofox_tab_phonenumber_region(?, ?)", [phone_or_df, *region_params])
 
-    df_type = check_row_input(phone_or_df, column)
+    df_type = _phone_row_input(phone_or_df, column)
 
     return apply_scalar(
         conn, phone_or_df, df_type,
@@ -373,6 +378,38 @@ def phone_region(
 def _is_scalar(value: Any) -> bool:
     """True for a single value (a string or a missing value), False for a DataFrame."""
     return isinstance(value, str) or is_missing(value)
+
+
+_PHONE_NOT_TEXT = (
+    "phone numbers must be text (a leading 0 or + is part of the number); "
+    "convert with astype(str)"
+)
+
+
+def _check_phone_scalar(value: Any) -> None:
+    """Raise TypeError for a single phone number given as a number instead of text."""
+    if isinstance(value, numbers.Number) and not isinstance(value, bool) and not is_missing(value):
+        raise TypeError(f"{_PHONE_NOT_TEXT}, got {type(value).__qualname__} {value!r}")
+
+
+def _phone_row_input(df: Any, column: Optional[str]) -> str:
+    """
+    :func:`~anofox._table.check_row_input` for a phone column, which must hold text.
+
+    A numeric column is rejected rather than converted: converting would lose
+    leading zeros (``030123456`` read as the integer ``30123456``). A column
+    holding only missing values is accepted (it is passed as text).
+    """
+    df_type = check_row_input(df, column)
+    values = frame_column(df, column)
+    dtype = values.dtype
+    if df_type == "polars":
+        numeric = dtype.is_numeric() and values.null_count() < len(values)
+    else:
+        numeric = getattr(dtype, "kind", None) in ("i", "u", "f") and bool(values.notna().any())
+    if numeric:
+        raise TypeError(f"column {column!r}: {_PHONE_NOT_TEXT}, got dtype {dtype}")
+    return df_type
 
 
 def _region_arg(

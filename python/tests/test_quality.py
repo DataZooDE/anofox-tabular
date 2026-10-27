@@ -797,3 +797,15 @@ class TestAwareReferenceTimes:
         finally:
             conn.execute("DROP TABLE IF EXISTS _scans")
             conn.execute("DROP TABLE IF EXISTS _scan_checks")
+
+
+class TestRawHidesTempTableName:
+    def test_schema_check_raw_names_the_dataframe(self, conn):
+        import pandas as pd
+        from anofox import quality
+        customers = pd.DataFrame({"customer_id": ["C-17"], "email": ["anna.berger@example.com"]})
+        result = quality.schema_check(conn, customers, ["customer_id", "email", "vat_id"])
+        assert result["status"] == "fail"
+        assert "_anofox_" not in repr(result)
+        assert result["_raw"][-1] == result["message"]
+        assert result["message"] == "The DataFrame is missing 1 column(s)"

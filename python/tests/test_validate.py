@@ -318,3 +318,45 @@ class TestPhoneFormatKeyword:
         from anofox import validate
         with pytest.raises(TypeError, match="fmt"):
             validate.phone_format(conn, "+49 30 901820", format="E164", fmt="E164")
+
+
+class TestPhoneNumbersMustBeText:
+    """A phone number read as a number has lost its leading 0: reject it clearly, never convert."""
+
+    @pytest.mark.parametrize("func", ["phone_is_valid", "phone_parse", "phone_format", "phone_region"])
+    def test_int_scalar_raises_type_error(self, conn, func):
+        import numpy as np
+        from anofox import validate
+        for value in (4930901820, np.int64(4930901820), 30901820.0):
+            with pytest.raises(TypeError, match=r"phone numbers must be text.*astype\(str\)"):
+                getattr(validate, func)(conn, value)
+
+    @pytest.mark.parametrize("func", ["phone_is_valid", "phone_parse", "phone_format", "phone_region"])
+    def test_int64_column_raises_type_error(self, conn, func):
+        import pandas as pd
+        from anofox import validate
+        # read_csv turns "030 901820"-style numbers without separators into int64
+        crm = pd.DataFrame({"customer": ["C-17", "C-18"], "phone": [30901820, 4930901820]})
+        with pytest.raises(TypeError, match=r"column 'phone'.*phone numbers must be text.*astype\(str\)"):
+            getattr(validate, func)(conn, crm, column="phone")
+
+    def test_polars_int_column_raises_type_error(self, conn):
+        pl = pytest.importorskip("polars")
+        from anofox import validate
+        crm = pl.DataFrame({"phone": [30901820, 4930901820]})
+        with pytest.raises(TypeError, match="phone numbers must be text"):
+            validate.phone_is_valid(conn, crm, column="phone", region="DE")
+
+    def test_text_column_converted_by_caller_works(self, conn):
+        import pandas as pd
+        from anofox import validate
+        crm = pd.DataFrame({"phone": [4930901820]})
+        out = validate.phone_format(conn, "+" + crm.astype({"phone": str}), column="phone")
+        assert out["phone_format"].tolist() == ["+4930901820"]
+
+    def test_all_missing_column_still_accepted(self, conn):
+        import pandas as pd
+        from anofox import validate
+        crm = pd.DataFrame({"phone": [float("nan"), float("nan")]})
+        out = validate.phone_is_valid(conn, crm, column="phone")
+        assert out["phone_is_valid"].isna().all()
