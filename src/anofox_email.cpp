@@ -713,7 +713,7 @@ void SetSmtpMailFromOption(ClientContext &, SetScope, Value &parameter) {
 
 void SetTraceEnabledOption(ClientContext &, SetScope, Value &parameter) {
 	if (parameter.IsNull()) {
-		throw InvalidInputException("anofox_trace_enabled cannot be NULL");
+		throw InvalidInputException("anofox_tab_trace_enabled cannot be NULL");
 	}
 	bool enabled = parameter.GetValue<bool>();
 	AnofoxTraceConfig::Get().SetEnabled(enabled);
@@ -722,7 +722,7 @@ void SetTraceEnabledOption(ClientContext &, SetScope, Value &parameter) {
 
 void SetTraceLevelOption(ClientContext &, SetScope, Value &parameter) {
 	if (parameter.IsNull()) {
-		throw InvalidInputException("anofox_trace_level cannot be NULL");
+		throw InvalidInputException("anofox_tab_trace_level cannot be NULL");
 	}
 	auto value = StringUtil::Lower(parameter.ToString());
 	AnofoxLogLevel parsed;
@@ -741,7 +741,9 @@ void SetTraceLevelOption(ClientContext &, SetScope, Value &parameter) {
 	} else if (value == "off" || value == "none") {
 		parsed = AnofoxLogLevel::Off;
 	} else {
-		throw InvalidInputException("Unsupported anofox_trace_level value: %s", value);
+		throw InvalidInputException("Unsupported anofox_tab_trace_level value '%s' (expected trace, debug, info, "
+		                            "warn, error, critical or off)",
+		                            value);
 	}
 	AnofoxTraceConfig::Get().SetLevel(parsed);
 	parameter = Value(AnofoxTraceConfig::Get().GetLevelString());

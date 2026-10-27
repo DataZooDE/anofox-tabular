@@ -48,10 +48,11 @@ SET anofox_tab_trace_enabled=true;
 statement ok
 SET anofox_tab_trace_level='debug';
 
+# The error names the real setting and the accepted levels
 statement error
 SET anofox_tab_trace_level='verbose';
 ----
-Unsupported anofox_trace_level value
+Unsupported anofox_tab_trace_level value 'verbose' (expected trace, debug, info, warn, error, critical or off)
 
 statement ok
 SET anofox_tab_email_regex_pattern='^user@[A-Za-z0-9.-]+$';
