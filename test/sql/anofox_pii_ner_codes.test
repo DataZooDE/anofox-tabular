@@ -47,6 +47,18 @@ SELECT pii_mask('UK customer', 'partial');
 ----
 ** customer
 
+# A NER match without any letter names nobody: bert-multi tags the number in
+# "clean text 903" as an organization
+query T
+SELECT pii_detect('clean text 903');
+----
+[]
+
+query T
+SELECT pii_mask('Order 4471 shipped to Berlin, ref 903-17');
+----
+Order 4471 shipped to [LOCATION], ref 903-17
+
 # pii_status gives the NER types real descriptions
 query TT
 SELECT pii_type, pattern_info FROM pii_status() WHERE pii_type IN ('LOCATION', 'MISC', 'ORGANIZATION') ORDER BY pii_type;

@@ -166,6 +166,23 @@ bool WidenToWords(const std::string &text, PIIMatch &match) {
     return true;
 }
 
+// A NER span without any letter ("903", "12-04") names nobody; the
+// multilingual models occasionally tag a bare number as ORG
+bool ContainsLetter(const std::string &text) {
+    size_t pos = 0;
+    while (pos < text.size()) {
+        uint32_t cp = 0;
+        const size_t length = DecodeUTF8CodePoint(text, pos, cp);
+        if (cp < 0x80 ? std::isalpha(static_cast<int>(cp)) != 0
+                      : ClassifyNERCodePoint(cp) == NERCharClass::WORD ||
+                            ClassifyNERCodePoint(cp) == NERCharClass::IDEOGRAPH) {
+            return true;
+        }
+        pos += length;
+    }
+    return false;
+}
+
 // Words that label a PII field ("IBAN DE89...", "SSN: 123-...") rather than
 // name an entity. The NER model tags some of them as ORG or LOC (#118).
 bool IsFieldLabel(const std::string &text) {
@@ -2879,7 +2896,8 @@ std::vector<PIIMatch> PIIEngine::Detect(
                 continue;
             }
             if (IsNERType(match.type)) {
-                if (!WidenToWords(text, match) || IsFieldLabel(match.matched_text) ||
+                if (!WidenToWords(text, match) || !ContainsLetter(match.matched_text) ||
+                    IsFieldLabel(match.matched_text) ||
                     IsCountryOrCurrencyCode(match.matched_text)) {
                     continue;
                 }
