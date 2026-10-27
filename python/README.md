@@ -174,6 +174,10 @@ print(result.failures)    # DataFrame: column, row_id, value, rule
   `"outliers"` (outlier tree); an unknown `output_mode` raises `ValueError`. Column lists
   can be a list or a comma-separated string (`"amount, items"`). A column whose name contains
   a comma cannot be selected and raises `ValueError`.
+- `outlier_tree(..., output_mode="outliers")` returns `conditions` as a list of dicts per
+  outlier (polars: `List(Struct)`), each with the keys `column`, `type` (`"numeric"` or
+  `"categorical"`), `operator`, `value` (numeric threshold, else `None`) and `values`
+  (categories, else `None`). The SQL function returns the same conditions as JSON text.
 - With no scored row (`total_count` 0) the `isolation_forest` summary has `avg_value`
   `None`. A DataFrame column of only `None` raises `ValueError` ("column 'amount' has no
   non-null values") in `isolation_forest`, `isolation_forest_mv`, `dbscan` and `dbscan_mv`.

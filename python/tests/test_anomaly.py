@@ -430,3 +430,60 @@ class TestEmptyAndAllMissingInput:
         df = pl.DataFrame({"payment_id": ["PAY-1", "PAY-2"], "amount": [None, None]})
         with pytest.raises(ValueError, match=r"column 'amount' has no non-null values"):
             anomaly.isolation_forest(conn, df, "amount")
+
+
+def _staff_frame():
+    """200 employees; employee 7 is a junior with a senior salary."""
+    staff_ids = list(range(1, 201))
+    return pandas.DataFrame({
+        "staff_id": [f"E{i:04d}" for i in staff_ids],
+        "level": ["junior" if i <= 100 else "senior" for i in staff_ids],
+        "salary": [92000 if i == 7 else (48000 + (i % 10) * 500 if i <= 100 else 88000 + (i % 10) * 600)
+                   for i in staff_ids],
+    })
+
+
+class TestOutlierTreeConditions:
+    """outlier_tree conditions come back as a list of dicts, not as JSON text."""
+
+    _JUNIOR = {"column": "level", "type": "categorical", "operator": "in", "value": None,
+               "values": ["junior"]}
+
+    def test_pandas_conditions_are_dicts(self, conn):
+        from anofox import anomaly
+        out = anomaly.outlier_tree(conn, _staff_frame(), ["level", "salary"], output_mode="outliers",
+                                   id_column="staff_id")
+        salary = out[out["column_name"] == "salary"]
+        assert salary["staff_id"].tolist() == ["E0007"]
+        conditions = salary["conditions"].iloc[0]
+        assert isinstance(conditions, list)
+        assert conditions == [self._JUNIOR]
+
+    def test_numeric_condition_has_value(self, conn):
+        from anofox import anomaly
+        out = anomaly.outlier_tree(conn, _staff_frame(), ["level", "salary"], output_mode="outliers")
+        level = out[out["column_name"] == "level"]
+        condition = level["conditions"].iloc[0][0]
+        assert condition["column"] == "salary" and condition["type"] == "numeric"
+        assert isinstance(condition["value"], float) and condition["values"] is None
+
+    def test_polars_conditions_are_structs(self, conn):
+        pl = pytest.importorskip("polars")
+        from anofox import anomaly
+        out = anomaly.outlier_tree(conn, pl.from_pandas(_staff_frame()), ["level", "salary"],
+                                   output_mode="outliers")
+        assert out.schema["conditions"] == pl.List(pl.Struct({
+            "column": pl.String, "type": pl.String, "operator": pl.String,
+            "value": pl.Float64, "values": pl.List(pl.String),
+        }))
+        salary = out.filter(pl.col("column_name") == "salary")
+        assert salary["conditions"].to_list() == [[self._JUNIOR]]
+
+    def test_no_outliers_gives_empty_frame(self, conn):
+        from anofox import anomaly
+        calm = _staff_frame()
+        calm.loc[6, "salary"] = 48500
+        out = anomaly.outlier_tree(conn, calm, ["level", "salary"], output_mode="outliers")
+        assert len(out) == 0
+        assert "conditions" in out.columns
+

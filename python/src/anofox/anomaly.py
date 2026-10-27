@@ -250,7 +250,13 @@ def outlier_tree(
         containing a comma raises ValueError.
     output_mode:
         ``"summary"`` → dict with counts; ``"outliers"`` → DataFrame with
-        per-row explanations.
+        per-row explanations. Its ``conditions`` column holds, per outlier,
+        the list of conditions that define the group, each a dict with the
+        keys ``column``, ``type`` (``"numeric"`` or ``"categorical"``),
+        ``operator`` (``"<="``, ``">"``, ``"in"``), ``value`` (the numeric
+        threshold, else ``None``) and ``values`` (the categories, else
+        ``None``); in polars a ``List(Struct)``. SQL returns the same
+        conditions as JSON text.
     max_depth:
         Maximum tree depth.
     max_perc_outliers:
@@ -282,12 +288,35 @@ def outlier_tree(
     with table_inputs(conn, table_or_df) as (table_name,):
         params = [table_name, cols_csv, output_mode, max_depth, max_perc_outliers,
                   min_size_numeric, min_size_categ, z_norm, z_outlier]
-        query = (
-            "SELECT * FROM anofox_tab_outlier_tree(?, ?, ?, ?::INTEGER, ?::DOUBLE, "
+        source = (
+            "anofox_tab_outlier_tree(?, ?, ?, ?::INTEGER, ?::DOUBLE, "
             "?::INTEGER, ?::INTEGER, ?::DOUBLE, ?::DOUBLE"
             f"{id_column_arg(id_column, params)})"
         )
-        return _execute_anomaly(conn, query, params, output_mode, output_df_type(table_or_df))
+        if output_mode == "summary":
+            query = f"SELECT * FROM {source}"
+        else:
+            # The extension returns the conditions as JSON text; parse them into
+            # one struct (dict) per condition with a fixed set of keys.
+            query = (
+                f"SELECT * REPLACE (from_json(conditions, '{_CONDITIONS_SCHEMA}') AS conditions) "
+                f"FROM {source}"
+            )
+        df_type = output_df_type(table_or_df)
+        result = _execute_anomaly(conn, query, params, output_mode, df_type)
+        if output_mode != "summary" and df_type == "pandas":
+            # DuckDB hands a LIST to pandas as a numpy array; give plain lists.
+            result["conditions"] = [list(c) if c is not None else None for c in result["conditions"]]
+        return result
+
+
+#: The keys of one outlier_tree condition: ``value`` is the threshold of a numeric
+#: split (``None`` for a categorical one), ``values`` the categories of a
+#: categorical split (``None`` for a numeric one).
+_CONDITIONS_SCHEMA = (
+    '[{"column":"VARCHAR","type":"VARCHAR","operator":"VARCHAR",'
+    '"value":"DOUBLE","values":["VARCHAR"]}]'
+)
 
 
 def _columns_csv(columns: Union[str, Sequence[str]]) -> str:
