@@ -174,7 +174,9 @@ SELECT onnx_available, model_status FROM anofox_ner_status();
 | `FAILED` | Download or load failed; `status_message` says why |
 | `NOT_AVAILABLE` | This build has no OpenVINO (`onnx_available = false`) |
 
-The model handles English text and reads the first 512 tokens of a value. See
+The model handles English text; values longer than 256 tokens are read in overlapping windows.
+Without the model, `pii_scan_table` reports `scanned (NER unavailable)` or
+`no_match (NER unavailable)`. See
 [PII detection](../api/06-pii.md#anofox_ner_status).
 
 ## SMTP checks time out

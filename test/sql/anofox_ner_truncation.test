@@ -1,11 +1,11 @@
 # name: test/sql/anofox_ner_truncation.test
-# description: NER long-input truncation tests (requires OpenVINO + model assets)
+# description: NER on inputs longer than the model's 512 tokens (requires OpenVINO + model assets): the text is split into overlapping windows, so entities before and after the 512th token are found
 # group: [anofox_tabular]
 
 # Inputs longer than the model's maximum sequence length (512 tokens for
-# DistilBERT) must be truncated at a token boundary instead of failing inside
-# OpenVINO (issue #56). Entities within the first ~512 tokens are still
-# detected; text beyond the limit is ignored (documented truncation).
+# DistilBERT) must not fail inside OpenVINO (issue #56). They used to be
+# truncated at 512 tokens; now overlapping windows of 256 tokens cover the
+# whole text, so entities after the first 512 tokens are found as well.
 require-env OPENVINO_AVAILABLE
 
 require anofox_tabular
@@ -22,7 +22,7 @@ SELECT list_contains(
 true
 
 # Long input (~1200 tokens): entity in the leading text must still be found.
-# Without truncation this threw inside OpenVINO and returned no NER entities.
+# Without bounding the input this threw inside OpenVINO and returned no NER entities.
 query I
 SELECT list_contains(
     list_transform(
@@ -32,6 +32,16 @@ SELECT list_contains(
     'ORGANIZATION');
 ----
 true
+
+# Entities after the first 512 tokens are found too (they were ignored when
+# the input was truncated)
+query II
+SELECT list_contains(list_transform(m, lambda x: x.type), 'ORGANIZATION'),
+       list_contains(list_transform(list_filter(m, lambda x: x.type = 'NAME'), lambda x: x.text), 'Maria Garcia')
+FROM (SELECT pii_detect(repeat('Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore. ', 60) ||
+                        'Maria Garcia works at Microsoft in Seattle.') AS m);
+----
+true	true
 
 # Long input must not break subsequent short inputs (no corrupted state)
 query I

@@ -3,6 +3,7 @@
 #include <string>
 #include <vector>
 #include <memory>
+#include <algorithm>
 #include <atomic>
 #include <cctype>
 #include <mutex>
@@ -189,36 +190,203 @@ struct TokenizedInput {
 /**
  * Maximum number of tokens (including special tokens) fed into the NER model.
  * BERT-class models such as DistilBERT have max_position_embeddings = 512;
- * longer sequences fail shape inference inside OpenVINO.
+ * longer sequences fail shape inference inside OpenVINO. Longer inputs are
+ * split into overlapping windows (NER_WINDOW_TOKENS, PlanNERWindows).
  */
 constexpr size_t NER_MAX_SEQ_LENGTH = 512;
 
 /**
- * Bound a tokenized input at the model's maximum sequence length.
- *
- * Sequences longer than max_seq_length are truncated at a token boundary:
- * the first max_seq_length - 1 tokens are kept and the trailing special
- * end-of-sequence token (final_token_id) is re-appended so the model still
- * sees a well-formed sequence. Text beyond the limit is ignored (documented
- * truncation semantics; no sliding window).
- *
- * UTF-8 safety: truncation only drops whole tokens, so every retained offset
- * pair is exactly one produced by the tokenizer — no new byte offsets that
- * could cut into a multibyte character are ever introduced. The re-appended
- * end token carries an empty offset range (special tokens have no position).
- *
- * A max_seq_length of 0 means "unbounded" and leaves the input untouched.
+ * Window length (in tokens, including the two special tokens) for inputs
+ * longer than this. The model accepts 512 tokens, but the bundled
+ * DistilBERT (trained on short CoNLL sentences) misses entities at late
+ * positions: a name in the signature of a 4 KB ticket was not found with
+ * ~450 tokens of preceding context, and was found with ~250. Windows of 256
+ * tokens keep every entity in the range the model handles well.
  */
-inline void TruncateTokenizedInput(TokenizedInput &input, size_t max_seq_length,
-                                   int64_t final_token_id) {
-    if (max_seq_length == 0 || input.ids.size() <= max_seq_length) {
-        return;
+constexpr size_t NER_WINDOW_TOKENS = 256;
+
+/**
+ * Number of tokens two neighbouring windows share (see PlanNERWindows). Each
+ * window owns the half of the overlap next to it, so every entity of up to
+ * OVERLAP/2 tokens is seen in full, with context, by the window that reports
+ * it.
+ */
+constexpr size_t NER_WINDOW_OVERLAP = 64;
+
+/**
+ * A window over the content tokens (the tokens between the leading and the
+ * trailing special token) of a tokenized input: content tokens [begin, end)
+ * are run through the model; entities starting in [own_begin, own_end) are
+ * reported by this window.
+ */
+struct NERWindow {
+    size_t begin;
+    size_t end;
+    size_t own_begin;
+    size_t own_end;
+};
+
+/**
+ * Split content_tokens tokens into windows of at most window_tokens tokens
+ * that overlap by `overlap` tokens (the last window is aligned to the end of
+ * the input, so it can overlap its neighbour by more). The owned ranges of the
+ * windows partition [0, content_tokens): the boundary between two windows is
+ * the middle of their overlap.
+ *
+ * An input that fits into one window yields exactly one window. window_tokens
+ * of 0 means "unbounded" (one window).
+ */
+inline std::vector<NERWindow> PlanNERWindows(size_t content_tokens, size_t window_tokens, size_t overlap) {
+    std::vector<NERWindow> windows;
+    if (window_tokens == 0 || content_tokens <= window_tokens) {
+        windows.push_back({0, content_tokens, 0, content_tokens});
+        return windows;
     }
-    input.ids.resize(max_seq_length - 1);
-    input.offsets.resize(max_seq_length - 1);
-    const size_t last_end = input.offsets.empty() ? 0 : input.offsets.back().second;
-    input.ids.push_back(final_token_id);
-    input.offsets.push_back({last_end, last_end});
+    // Keep the stride positive even for a nonsensical overlap
+    const size_t stride = overlap < window_tokens ? window_tokens - overlap : window_tokens;
+    for (size_t begin = 0;; begin += stride) {
+        if (begin + window_tokens >= content_tokens) {
+            windows.push_back({content_tokens - window_tokens, content_tokens, 0, 0});
+            break;
+        }
+        windows.push_back({begin, begin + window_tokens, 0, 0});
+    }
+    for (size_t i = 0; i < windows.size(); ++i) {
+        windows[i].own_begin = i == 0 ? 0 : (windows[i - 1].end + windows[i].begin) / 2;
+        windows[i].own_end = i + 1 == windows.size() ? content_tokens : (windows[i].end + windows[i + 1].begin) / 2;
+    }
+    return windows;
+}
+
+/**
+ * Build the model input of one window: the leading special token of `full`,
+ * the window's content tokens and the trailing special token of `full`. The
+ * byte offsets are those of the original text, so entities found in the
+ * window map directly back to the whole input.
+ * Precondition: full holds at least the two special tokens.
+ */
+inline TokenizedInput SliceTokenizedWindow(const TokenizedInput &full, const NERWindow &window) {
+    TokenizedInput slice;
+    const size_t count = window.end - window.begin;
+    slice.ids.reserve(count + 2);
+    slice.offsets.reserve(count + 2);
+    slice.ids.push_back(full.ids.front());
+    slice.offsets.push_back({0, 0});
+    for (size_t i = window.begin; i < window.end; ++i) {
+        // Content token i sits behind the leading special token
+        slice.ids.push_back(full.ids[i + 1]);
+        slice.offsets.push_back(full.offsets[i + 1]);
+    }
+    const size_t last_end = slice.offsets.back().second;
+    slice.ids.push_back(full.ids.back());
+    slice.offsets.push_back({last_end, last_end});
+    return slice;
+}
+
+/**
+ * Merge consecutive entities of the same type with no gap between them. This
+ * repairs fragmentation where the model emits several B- tags instead of B-
+ * followed by I- tags for one multi-token entity ("Don|au|wo|ert|h").
+ * The merged entity has the mean confidence of its parts.
+ * @param entities Entities sorted by start_pos
+ */
+inline std::vector<NEREntity> MergeConsecutiveSameTypeEntities(const std::vector<NEREntity> &entities) {
+    if (entities.size() <= 1) {
+        return entities;
+    }
+    std::vector<NEREntity> merged;
+    merged.reserve(entities.size());
+    size_t i = 0;
+    while (i < entities.size()) {
+        NEREntity current = entities[i];
+        double total_confidence = current.confidence;
+        int count = 1;
+        while (i + 1 < entities.size() && entities[i + 1].label == current.label &&
+               entities[i + 1].start_pos == current.end_pos) {
+            i++;
+            current.text += entities[i].text;
+            current.end_pos = entities[i].end_pos;
+            total_confidence += entities[i].confidence;
+            count++;
+        }
+        current.confidence = total_confidence / count;
+        merged.push_back(current);
+        i++;
+    }
+    return merged;
+}
+
+/**
+ * Combine the entities of all windows of one input into one list sorted by
+ * position. Overlapping entities (an entity near a window boundary seen by
+ * both windows) are reduced to one: entities of the same type are united
+ * (outermost span, higher confidence), of different types the one with the
+ * higher confidence is kept. Adjacent entities of the same type are then
+ * merged (MergeConsecutiveSameTypeEntities). `text` is the whole input, used
+ * to rebuild the text of a united span.
+ */
+inline std::vector<NEREntity> CombineWindowEntities(std::vector<NEREntity> entities, const std::string &text) {
+    std::sort(entities.begin(), entities.end(), [](const NEREntity &a, const NEREntity &b) {
+        if (a.start_pos != b.start_pos) {
+            return a.start_pos < b.start_pos;
+        }
+        return a.end_pos > b.end_pos;
+    });
+    std::vector<NEREntity> combined;
+    combined.reserve(entities.size());
+    for (auto &entity : entities) {
+        if (combined.empty() || entity.start_pos >= combined.back().end_pos) {
+            combined.push_back(std::move(entity));
+            continue;
+        }
+        auto &kept = combined.back();
+        if (entity.label == kept.label) {
+            if (entity.end_pos > kept.end_pos) {
+                kept.end_pos = entity.end_pos;
+                kept.text = text.substr(kept.start_pos, kept.end_pos - kept.start_pos);
+            }
+            kept.confidence = std::max(kept.confidence, entity.confidence);
+        } else if (entity.confidence > kept.confidence) {
+            kept = std::move(entity);
+        }
+    }
+    return MergeConsecutiveSameTypeEntities(combined);
+}
+
+/**
+ * Whether a text has natural-language structure, i.e. contains at least one
+ * word: a maximal run of characters between separators (ASCII whitespace and
+ * ASCII punctuation) that consists of letters only and has at least two of
+ * them. ASCII letters and non-ASCII characters (multi-byte UTF-8, counted per
+ * character) are letters; a digit makes the run no word.
+ *
+ * Values without a word (hex digests, UUIDs, numbers, base64 tokens with
+ * digits, codes such as "A-12") carry no names for the NER model to find, so
+ * NER skips them. "Li", "Wu", "Müller" and "J. Smith" are words.
+ */
+inline bool HasNaturalLanguageWord(const std::string &text) {
+    size_t letters = 0;
+    bool only_letters = true;
+    for (size_t i = 0; i <= text.size(); ++i) {
+        const unsigned char c = i < text.size() ? static_cast<unsigned char>(text[i]) : ' ';
+        if (c < 0x80 && (std::isspace(c) || std::ispunct(c))) {
+            if (only_letters && letters >= 2) {
+                return true;
+            }
+            letters = 0;
+            only_letters = true;
+        } else if (c >= 0x80) {
+            // Count each UTF-8 character once (skip continuation bytes)
+            if ((c & 0xC0) != 0x80) {
+                letters++;
+            }
+        } else if (std::isalpha(c)) {
+            letters++;
+        } else {
+            only_letters = false;
+        }
+    }
+    return false;
 }
 
 /**
@@ -305,7 +473,6 @@ public:
 
     /**
      * Id of the special token that terminates a sequence ([SEP] / </s>).
-     * Used to keep truncated sequences well-formed (issue #56).
      */
     virtual int64_t SequenceEndTokenId() const = 0;
 };
@@ -543,10 +710,18 @@ private:
     /**
      * Run cache lookup, tokenization, inference and post-processing for one
      * text. Shared by ExtractEntities and ExtractEntitiesBatch so the
-     * thread-safety guarantees live in exactly one place.
+     * thread-safety guarantees live in exactly one place. A text longer than
+     * NER_WINDOW_TOKENS tokens is split into overlapping windows
+     * (PlanNERWindows); their entities are combined (CombineWindowEntities).
      * Precondition: IsAvailable() returned true.
      */
     std::vector<NEREntity> RunSingleInference(const std::string &text);
+
+    /**
+     * Run the model on one tokenized sequence of at most max_seq_length_
+     * tokens and return its entities with byte offsets into `text`.
+     */
+    std::vector<NEREntity> InferSequence(TokenizedInput tokenized, const std::string &text);
 
     /**
      * Update status_message_ under state_mutex_

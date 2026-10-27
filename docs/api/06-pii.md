@@ -1011,17 +1011,35 @@ On a build with OpenVINO, after the model has been loaded, it reports `true`, `L
   organizations, and on their own they identify nobody.
 - **Confidence.** NER matches below 0.7 are never reported. `anofox_pii_min_confidence`
   (default 0.5) filters on top of that.
-- **Limits.** Input is truncated at 512 tokens, so entities after that are not found; the first
-  truncation in a process is logged as a warning. Split long texts to cover them. The
-  tokenizer is ASCII-focused: non-ASCII punctuation is not a word boundary. All-caps text can give
-  fragmented or no results.
+- **Long texts.** The model accepts at most 512 tokens, and it misses entities at late
+  positions well before that limit. A value longer than 256 tokens (roughly 1,200 characters of
+  English text) is therefore split into windows of 256 tokens that overlap by 64 tokens, and the
+  entities of all windows are combined, so a name in the signature of a long ticket is found like
+  one in its first line. The cost grows linearly with the length: each further 190 tokens
+  (roughly 900 characters) is one more model run.
+- **Values without words.** NER skips a value that contains no word, where a word is a run of at
+  least two letters between spaces or ASCII punctuation, with no digit in it (non-ASCII letters
+  such as `ü` count as letters). Hex digests, UUIDs, numbers, amounts and codes such as `A-12`
+  are therefore not sent through the model; `Li`, `Müller` and `J. Smith` are.
+- **Limits.** The tokenizer is ASCII-focused: non-ASCII punctuation is not a word boundary.
+  All-caps text can give fragmented or no results.
+- **Name dictionary.** Without the model, and for a text in which the model finds no person,
+  `NAME` uses a dictionary of common given names (English and Western European, and several
+  hundred German, Austrian and Swiss names). A capitalised given name from the dictionary, plus up
+  to two following capitalised words (`Sabine Weiß`, `Klaus-Peter Öztürk`, `Ursula von der Leyen`
+  with name particles), is a match with confidence 0.5. Matching is on whole words and handles
+  umlauts and accents; a surname alone (`Müller`) or a given name missing from the dictionary is
+  not found.
 
 ## Throughput
 
 Pattern-based detection is fast: plain regular expressions and checksums. NER is not: each
 distinct text runs through the model, which takes in the order of tens of milliseconds per row on
 a CPU, so a scan of a million free-text rows takes hours. Results are cached per distinct text
-(`anofox_ner_cache_size`), which helps only for repeated values.
+(`anofox_ner_cache_size`), which helps only for repeated values. Values without any word (ids,
+hashes, numbers) skip the model, and texts longer than 256 tokens take one model run per window.
+When `pii_scan_table` runs the NER types over more than 100,000 values, it logs a warning once
+with this hint.
 
 To keep large scans fast, leave the NER types out: set `anofox_pii_enabled_types` to the
 pattern-based types you need (no `NAME`, `ORGANIZATION`, `LOCATION`, `MISC`), or pass the type to

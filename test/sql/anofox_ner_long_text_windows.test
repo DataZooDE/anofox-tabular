@@ -1,0 +1,110 @@
+# name: test/sql/anofox_ner_long_text_windows.test
+# description: NER covers texts longer than the model's 512 tokens with overlapping windows: names at the start, in the middle and in the signature of a long support ticket are all found and masked, in the scalar functions and in the batch path of pii_scan_table and pii_audit_table
+# group: [anofox_tabular]
+
+require-env OPENVINO_AVAILABLE
+
+require anofox_tabular
+
+statement ok
+LOAD anofox_tabular
+
+statement ok
+SET anofox_pii_enabled_types = 'NAME,ORGANIZATION,LOCATION,MISC,EMAIL,PHONE';
+
+# Two support tickets of about 4 KB (roughly 870 tokens): the reporter is named
+# in the header, a colleague in the middle (after about 2 KB) and the agent in
+# the signature at the end
+statement ok
+CREATE TABLE support_tickets AS
+SELECT 4711 AS ticket_id,
+    'Ticket #4711 - Order 2024-88123 delivered damaged' || chr(10) ||
+    'Reported by: Michael Brown, Customer Service Desk' || chr(10) || chr(10) ||
+    'Hello team, the customer called this morning about order 2024-88123. ' ||
+    repeat('The parcel arrived with a crushed corner and two of the six glass jars inside were broken. '
+           'The customer sent photos of the box, the packing slip and the broken jars, and asked for a '
+           'replacement shipment instead of a refund. The warehouse confirmed that the order left the dock '
+           'in good condition and that the carrier scanned it at the hub on time. ', 6) ||
+    'I forwarded the photos to Jennifer Wilson in the claims department, who will open a claim with the carrier today. ' ||
+    repeat('We agreed to send the replacement by express at no extra charge and to keep the ticket open until '
+           'the carrier claim is settled. Please do not close the ticket before the claim reference has been '
+           'added to the case notes, and check the stock level of the jars before the replacement is picked. ', 6) ||
+    chr(10) || 'Best regards,' || chr(10) || 'Robert Johnson' || chr(10) || 'Senior Support Agent, Customer Care' AS body
+UNION ALL
+SELECT 4712,
+    'Ticket #4712 - Invoice 2024-55017 charged twice' || chr(10) ||
+    'Reported by: Sarah Miller' || chr(10) || chr(10) ||
+    'Good morning, the customer writes that the invoice for the March subscription was charged twice to her card. ' ||
+    repeat('According to the payment log the first charge failed with a timeout at the payment provider and was '
+           'retried automatically two minutes later. Both attempts were captured in the end, so the customer '
+           'now sees two identical amounts on her statement and wants one of them refunded as soon as possible. ', 6) ||
+    'The finance contact for this account is David Thompson, who approved the refund this afternoon. ' ||
+    repeat('The refund will be visible on the statement within five working days. Please add a note to the '
+           'account so that the next invoice run is checked manually, and close the ticket once the customer '
+           'has confirmed that the second amount has been returned to her card. ', 6) ||
+    chr(10) || 'Kind regards,' || chr(10) || 'Thomas Anderson' || chr(10) || 'Billing Support';
+
+query II
+SELECT ticket_id, length(body) > 3000 FROM support_tickets ORDER BY ticket_id;
+----
+4711	true
+4712	true
+
+# All three names of each ticket are detected, wherever they are in the text
+# (the model may run a signature name into the next line, "Thomas
+# Anderson\nBilling", so the check is on containment)
+query IIIII
+SELECT ticket_id,
+    len(list_filter(names, lambda n: contains(n, 'Michael Brown') OR contains(n, 'Sarah Miller'))) = 1,
+    len(list_filter(names, lambda n: contains(n, 'Jennifer Wilson') OR contains(n, 'David Thompson'))) = 1,
+    len(list_filter(names, lambda n: contains(n, 'Robert Johnson') OR contains(n, 'Thomas Anderson'))) = 1,
+    len(names) = len(list_distinct(names))
+FROM (
+    SELECT ticket_id,
+        list_transform(list_filter(pii_detect(body), lambda m: m.type = 'NAME'), lambda m: m.text) AS names
+    FROM support_tickets
+)
+ORDER BY ticket_id;
+----
+4711	true	true	true	true
+4712	true	true	true	true
+
+# Masking leaves none of the names in clear text
+query II
+SELECT ticket_id,
+    regexp_matches(pii_mask(body), 'Michael|Brown|Jennifer|Wilson|Robert|Johnson|Sarah|Miller|David|Thompson|Thomas|Anderson')
+FROM support_tickets ORDER BY ticket_id;
+----
+4711	false
+4712	false
+
+# The entity spans point into the original text (byte offsets of the windows
+# are mapped back to the whole input)
+query I
+SELECT bool_and(substr(body, m.start_pos + 1, m.end_pos - m.start_pos) = m.text)
+FROM (SELECT body, unnest(pii_detect(body)) AS m FROM support_tickets);
+----
+true
+
+# Batch path: pii_scan_table and pii_audit_table run the same windows
+query I
+SELECT match_count >= 6 FROM pii_scan_table('support_tickets', 'body') WHERE pii_type = 'NAME';
+----
+true
+
+query I
+SELECT len(list_filter(['David Thompson', 'Jennifer Wilson', 'Michael Brown', 'Robert Johnson', 'Sarah Miller', 'Thomas Anderson'],
+                       lambda n: list_bool_or(list_transform(found, lambda f: contains(f, n)))))
+FROM (SELECT list(matched_text) AS found FROM pii_audit_table('support_tickets', 'body') WHERE pii_type = 'NAME');
+----
+6
+
+# A short text after the long ones still works (no state carried over)
+query I
+SELECT pii_mask('Please call Maria Garcia back.');
+----
+Please call [NAME] back.
+
+# Restore the process-wide PII settings for the tests that follow
+statement ok
+SET anofox_pii_enabled_types = '';

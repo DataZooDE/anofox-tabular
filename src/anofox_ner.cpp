@@ -953,81 +953,41 @@ std::vector<NEREntity> NERModelManager::RunSingleInference(const std::string &te
         // Tokenize input; ids and offsets are returned by value so no
         // tokenizer state is shared between concurrent calls (issue #50)
         TokenizedInput tokenized = tokenizer_->Encode(text);
-        if (tokenized.ids.empty()) {
+        if (tokenized.ids.size() < 2) {
             return {};
         }
 
-        // Bound the sequence at the model's maximum length (issue #56).
-        // Truncation drops whole tokens only, so the retained byte offsets
-        // are still valid; text beyond the limit is ignored.
-        if (tokenized.ids.size() > max_seq_length_) {
-            // Warn once per process (a column of long texts would otherwise
-            // flood the log); later truncations are logged at Debug
-            static std::atomic<bool> truncation_warned{false};
-            const std::string detail = "input of " + std::to_string(tokenized.ids.size()) +
-                                       " tokens truncated to " + std::to_string(max_seq_length_) +
-                                       " tokens (model limit)";
-            if (!truncation_warned.exchange(true)) {
-                AnofoxTrace(AnofoxLogLevel::Warn,
-                    "ner: " + detail + "; text beyond " + std::to_string(max_seq_length_) +
-                    " tokens is not scanned for names, organisations, locations or other entities. "
-                    "Split long texts to cover them (this warning is shown once per process)");
-            } else {
-                AnofoxTrace(AnofoxLogLevel::Debug, "ner: " + detail);
+        // Longer inputs run as overlapping windows: the model accepts at
+        // most max_seq_length_ tokens (issue #56) and misses entities at late
+        // positions well before that (see NER_WINDOW_TOKENS)
+        const size_t window_tokens = std::min(NER_WINDOW_TOKENS, max_seq_length_);
+        std::vector<NEREntity> entities;
+        if (tokenized.ids.size() <= window_tokens) {
+            entities = InferSequence(std::move(tokenized), text);
+        } else {
+            // The windows keep the original byte offsets, so their entities
+            // map straight back to the text; each window reports the
+            // entities that start in its own part of the overlap
+            const size_t content_tokens = tokenized.ids.size() - 2;
+            const auto windows = PlanNERWindows(content_tokens, window_tokens - 2, NER_WINDOW_OVERLAP);
+            AnofoxTrace(AnofoxLogLevel::Debug,
+                        "ner: input of " + std::to_string(tokenized.ids.size()) + " tokens split into " +
+                            std::to_string(windows.size()) + " windows of up to " +
+                            std::to_string(window_tokens) + " tokens");
+            std::vector<NEREntity> collected;
+            for (const auto &window : windows) {
+                const size_t own_begin = tokenized.offsets[window.own_begin + 1].first;
+                const size_t own_end = window.own_end >= content_tokens
+                                           ? std::string::npos
+                                           : tokenized.offsets[window.own_end + 1].first;
+                for (auto &entity : InferSequence(SliceTokenizedWindow(tokenized, window), text)) {
+                    if (entity.start_pos >= own_begin && entity.start_pos < own_end) {
+                        collected.push_back(std::move(entity));
+                    }
+                }
             }
-            TruncateTokenizedInput(tokenized, max_seq_length_, tokenizer_->SequenceEndTokenId());
+            entities = CombineWindowEntities(std::move(collected), text);
         }
-
-        size_t actual_length = tokenized.ids.size();
-
-        // Pad to minimum length to avoid OpenVINO shape inference issues
-        // with very short sequences in the quantized model
-        static const size_t MIN_SEQ_LENGTH = 16;
-        size_t seq_length = std::max(actual_length, MIN_SEQ_LENGTH);
-
-        // Create attention mask (1 for real tokens, 0 for padding)
-        std::vector<int64_t> attention_mask(seq_length, 0);
-        for (size_t i = 0; i < actual_length; ++i) {
-            attention_mask[i] = 1;
-        }
-
-        // Pad input_ids with 0 (PAD token)
-        tokenized.ids.resize(seq_length, 0);
-
-        // Create input tensors
-        ov::Shape input_shape = {1, seq_length};
-
-        ov::Tensor input_ids_tensor(ov::element::i64, input_shape);
-        ov::Tensor attention_mask_tensor(ov::element::i64, input_shape);
-
-        // Copy data to tensors
-        int64_t* input_ids_data = input_ids_tensor.data<int64_t>();
-        int64_t* attention_data = attention_mask_tensor.data<int64_t>();
-        std::memcpy(input_ids_data, tokenized.ids.data(), tokenized.ids.size() * sizeof(int64_t));
-        std::memcpy(attention_data, attention_mask.data(), attention_mask.size() * sizeof(int64_t));
-
-        // Create a per-call inference request: ov::CompiledModel is
-        // thread-safe for creating requests, while a single ov::InferRequest
-        // is stateful and must not be shared across threads (issue #50)
-        ov::InferRequest infer_request = compiled_model_->create_infer_request();
-
-        // Set input tensors
-        infer_request.set_tensor("input_ids", input_ids_tensor);
-        infer_request.set_tensor("attention_mask", attention_mask_tensor);
-
-        // Run inference
-        infer_request.infer();
-
-        // Get output tensor and validate its shape before reading any logits;
-        // a mismatch would mean an out-of-bounds read (issue #56)
-        ov::Tensor output_tensor = infer_request.get_output_tensor(0);
-        const ov::Shape &output_shape = output_tensor.get_shape();
-        ValidateLogitsShape(output_shape, seq_length, static_cast<size_t>(NUM_LABELS));
-        const float* logits_data = output_tensor.data<float>();
-
-        std::vector<float> logits(logits_data, logits_data + seq_length * NUM_LABELS);
-
-        auto entities = PostProcess(logits, seq_length, text, tokenized.offsets);
 
         // Store in cache (no-op when the cache is disabled)
         if (result_cache_) {
@@ -1048,62 +1008,74 @@ std::vector<NEREntity> NERModelManager::RunSingleInference(const std::string &te
 #endif
 }
 
+std::vector<NEREntity> NERModelManager::InferSequence(TokenizedInput tokenized, const std::string &text) {
+#if HAVE_OPENVINO
+    size_t actual_length = tokenized.ids.size();
+
+    // Pad to minimum length to avoid OpenVINO shape inference issues
+    // with very short sequences in the quantized model
+    static const size_t MIN_SEQ_LENGTH = 16;
+    size_t seq_length = std::max(actual_length, MIN_SEQ_LENGTH);
+
+    // Create attention mask (1 for real tokens, 0 for padding)
+    std::vector<int64_t> attention_mask(seq_length, 0);
+    for (size_t i = 0; i < actual_length; ++i) {
+        attention_mask[i] = 1;
+    }
+
+    // Pad input_ids with 0 (PAD token)
+    tokenized.ids.resize(seq_length, 0);
+
+    // Create input tensors
+    ov::Shape input_shape = {1, seq_length};
+
+    ov::Tensor input_ids_tensor(ov::element::i64, input_shape);
+    ov::Tensor attention_mask_tensor(ov::element::i64, input_shape);
+
+    // Copy data to tensors
+    int64_t* input_ids_data = input_ids_tensor.data<int64_t>();
+    int64_t* attention_data = attention_mask_tensor.data<int64_t>();
+    std::memcpy(input_ids_data, tokenized.ids.data(), tokenized.ids.size() * sizeof(int64_t));
+    std::memcpy(attention_data, attention_mask.data(), attention_mask.size() * sizeof(int64_t));
+
+    // Create a per-call inference request: ov::CompiledModel is
+    // thread-safe for creating requests, while a single ov::InferRequest
+    // is stateful and must not be shared across threads (issue #50)
+    ov::InferRequest infer_request = compiled_model_->create_infer_request();
+
+    // Set input tensors
+    infer_request.set_tensor("input_ids", input_ids_tensor);
+    infer_request.set_tensor("attention_mask", attention_mask_tensor);
+
+    // Run inference
+    infer_request.infer();
+
+    // Get output tensor and validate its shape before reading any logits;
+    // a mismatch would mean an out-of-bounds read (issue #56)
+    ov::Tensor output_tensor = infer_request.get_output_tensor(0);
+    const ov::Shape &output_shape = output_tensor.get_shape();
+    ValidateLogitsShape(output_shape, seq_length, static_cast<size_t>(NUM_LABELS));
+    const float* logits_data = output_tensor.data<float>();
+
+    std::vector<float> logits(logits_data, logits_data + seq_length * NUM_LABELS);
+
+    return PostProcess(logits, seq_length, text, tokenized.offsets);
+#else
+    return {};
+#endif
+}
+
 std::vector<NEREntity> NERModelManager::ExtractEntities(const std::string &text) {
 #if HAVE_OPENVINO
-    if (!IsAvailable() || text.empty()) {
+    // A value without any word (hex digests, ids, numbers) holds nothing the
+    // model could tag; skipping it saves a full inference per value
+    if (!IsAvailable() || !HasNaturalLanguageWord(text)) {
         return {};
     }
     return RunSingleInference(text);
 #else
     return {};
 #endif
-}
-
-/**
- * Merge consecutive NER entities of the same type with no gaps.
- * This fixes fragmentation where the model outputs multiple B- tags
- * instead of B- followed by I- tags for multi-token entities.
- *
- * Example: "Donauwoerth" fragmented as [Don, au, wo, ert, h] all tagged as LOCATION
- *          -> merged to single entity "Donauwoerth" with averaged confidence
- *
- * @param entities Input entities (must be sorted by start_pos)
- * @return Merged entities with averaged confidences
- */
-static std::vector<NEREntity> MergeConsecutiveSameTypeEntities(
-    const std::vector<NEREntity> &entities
-) {
-    if (entities.size() <= 1) {
-        return entities;
-    }
-
-    std::vector<NEREntity> merged;
-    merged.reserve(entities.size());
-
-    size_t i = 0;
-    while (i < entities.size()) {
-        NEREntity current = entities[i];
-        double total_confidence = current.confidence;
-        int count = 1;
-
-        // Merge consecutive same-type entities with no gaps
-        while (i + 1 < entities.size() &&
-               entities[i + 1].label == current.label &&
-               entities[i + 1].start_pos == current.end_pos) {
-            i++;
-            current.text += entities[i].text;
-            current.end_pos = entities[i].end_pos;
-            total_confidence += entities[i].confidence;
-            count++;
-        }
-
-        // Average confidence across all merged tokens
-        current.confidence = total_confidence / count;
-        merged.push_back(current);
-        i++;
-    }
-
-    return merged;
 }
 
 std::vector<NEREntity> NERModelManager::PostProcess(
@@ -1307,8 +1279,9 @@ std::vector<std::vector<NEREntity>> NERModelManager::ExtractEntitiesBatch(
     // inference once
     std::unordered_map<std::string, std::vector<size_t>> text_to_indices;
     for (size_t i = 0; i < texts.size(); ++i) {
-        if (!texts[i].empty()) {
-            // Empty texts keep their default empty result
+        // Texts without any word (empty values, hex digests, ids, numbers)
+        // keep their default empty result, as in ExtractEntities
+        if (HasNaturalLanguageWord(texts[i])) {
             text_to_indices[texts[i]].push_back(i);
         }
     }
