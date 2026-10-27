@@ -894,6 +894,15 @@ metric_anomaly_iqr(table_name VARCHAR, date_column VARCHAR
 | `reference_date` | `DATE` | `NULL` = latest date in the data | The date to evaluate |
 | `start_date`, `end_date` | `DATE`, named | none | Evaluate every day of this range |
 
+In row-count mode (no `metric_column`) a reference date without rows has a metric of 0 rows,
+as in [`rel_count_change`](#rel_count_change): when a nightly feed stops, the next days fail
+(`Metric 0.0 on 2026-10-25 is outside IQR bounds [34.875, 47.875] (mode: both)`) and
+`metric_anomaly_iqr_events` lists them. The baseline holds the days with rows only, as the
+default of `rel_count_change`; days without rows before the reference date do not lower Q1. With
+a `metric_column` a reference date without values has no metric: `metric_value` is `NULL` and
+the check passes (`No metric value on 2026-10-25; check passed trivially`); in
+[`run_checks`](#run_checks) `"fail_on_empty": true` makes it fail.
+
 Empty input or an empty baseline window pass with a message that says so. A `metric_column`
 must be numeric (or `BOOLEAN`). The numbers in the message (and in the `label` of
 `metric_anomaly_iqr_events`) are rounded to three decimals, for example
@@ -1134,7 +1143,7 @@ The `value` column holds the measure of each type:
 | `occurrence` | frequency of the extreme value | `mode`: `max` (default) or `min` | no |
 | `match_rate` | match rate over the rows with a non-NULL key | `right_table`, `right_keys` (required), `left_keys` (default `column_name`); the keys as a comma-separated string or a JSON array (`["customer_id", "region"]`) | no |
 | `rel_count_change` | relative change | `date_column` (required), `count_column` (counted with `COUNT(DISTINCT ...)` per day; default: rows), `window_days` (7), `reference_date`, `fill_missing_days` (`false`) | no |
-| `metric_anomaly_iqr` | daily metric: `AVG` of `metric_column`, else of `column_name`, else the row count | `date_column` (required), `metric_column`, `window_days` (30), `k` (1.5), `reference_date` | no |
+| `metric_anomaly_iqr` | daily metric: `AVG` of `metric_column`, else of `column_name`, else the row count (0 on a reference date without rows) | `date_column` (required), `metric_column`, `window_days` (30), `k` (1.5), `reference_date` | no |
 | `rolling_values_in_set` | share in set | `date_column` (required), `allowed_values`, `window_days` (7), `reference_date` | no |
 
 For `metric_anomaly_iqr` the IQR bounds replace the table's thresholds and appear in
@@ -1142,7 +1151,10 @@ For `metric_anomaly_iqr` the IQR bounds replace the table's thresholds and appea
 available in a suite; both bounds apply. The metric column is `params.metric_column` or the
 check's `column_name`; when both are set they must name the same column, otherwise the check
 is an `error` row (`column_name 'amount' and params.metric_column 'order_id' name different
-columns; set only one`).
+columns; set only one`). Without a metric column a reference date without rows is a `value` of
+0 rows and fails against the bounds, as in the direct function. With a metric column such a
+date has no value and passes trivially; with `"fail_on_empty": true` it fails with the message
+`No metric value on 2026-10-25 (fail_on_empty)`.
 
 `match_rate` leaves left rows with a NULL key out of the rate, like the direct
 [`match_rate`](#match_rate), and its message says how many:

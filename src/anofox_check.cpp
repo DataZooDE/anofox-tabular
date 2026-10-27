@@ -767,8 +767,10 @@ static string GenerateRelCountChangeSQL(const string &table_ref, const string &d
 // Helper: Generate SQL for metric-level IQR anomaly detection.
 // Computes a daily metric (row count or AVG of metric_column) over the window_days days
 // strictly before the reference date, derives Q1/Q3 bounds with multiplier k, and flags
-// the reference day when it falls outside the bounds selected by mode.
-// Trivial-pass semantics: empty input or an empty baseline window pass with a message.
+// the reference day when it falls outside the bounds selected by mode. In row-count mode a
+// reference day without rows counts 0 rows; the baseline holds the days with rows only.
+// Trivial-pass semantics: empty input, an empty baseline window or (with a metric_column) a
+// reference day without a metric value pass with a message.
 static string GenerateMetricAnomalyIQRSQL(const string &table_ref, const string &date_column,
                                           const LogicalType &date_type, const string &metric_column,
                                           int64_t window_days, const Value &k, const string &mode,
@@ -782,6 +784,13 @@ static string GenerateMetricAnomalyIQRSQL(const string &table_ref, const string 
 	string window_val = std::to_string(window_days);
 	string metric_expr =
 	    metric_column.empty() ? "CAST(COUNT(*) AS DOUBLE)" : "AVG(CAST(" + QuoteSqlIdentifier(metric_column) + " AS DOUBLE))";
+
+	// Row-count mode: a reference day without rows is a count of 0 (as in rel_count_change), so a
+	// feed that stops fails instead of passing trivially. A metric_column has no value on such a day.
+	string reference_metric = "(SELECT m FROM daily WHERE d = s.ref_d)";
+	if (metric_column.empty()) {
+		reference_metric = "CASE WHEN s.ref_d IS NULL THEN NULL ELSE COALESCE(" + reference_metric + ", 0) END";
+	}
 
 	string lower_check = "metric_value < lower_bound";
 	string upper_check = "metric_value > upper_bound";
@@ -808,7 +817,7 @@ static string GenerateMetricAnomalyIQRSQL(const string &table_ref, const string 
 		"), "
 		"summary AS ("
 		"SELECT s.ref_d AS reference_date, "
-		"  (SELECT m FROM daily WHERE d = s.ref_d) AS metric_value, "
+		"  " + reference_metric + " AS metric_value, "
 		"  s.q1, s.q3, s.n AS baseline_days, "
 		"  s.q1 - " + k_val + " * (s.q3 - s.q1) AS lower_bound, "
 		"  s.q3 + " + k_val + " * (s.q3 - s.q1) AS upper_bound "

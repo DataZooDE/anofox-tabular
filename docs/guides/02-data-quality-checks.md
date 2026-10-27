@@ -560,7 +560,9 @@ Keep in mind what the checks do not cover:
   `"fail_on_empty": true` in its `params` to make an empty table or an empty filter result
   fail. `rolling_values_in_set` also passes when only its window is empty, so pair it with a
   volume or `rel_count_change` check anchored to
-  the expected date, as above.
+  the expected date, as above. `metric_anomaly_iqr` on the row count counts a day without rows
+  as 0 and fails, but with a `metric_column` a day without values passes unless
+  `fail_on_empty` is set.
 - A check that cannot run (missing table or column, a misspelled `params` key, a malformed
   `reference_date`) is an `error` row, not a failed query; the gate above treats it like a
   `fail`.

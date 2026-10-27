@@ -1017,6 +1017,10 @@ struct CheckBranch {
 	// When set, the message of a NULL value as a SQL expression over __c (instead of the
 	// literal null_value_message), e.g. to name the rows that were skipped
 	string null_value_message_sql;
+	// When set, with params.fail_on_empty a NULL value fails with this message (a SQL
+	// expression over __c): the check had rows, but none that give a value (metric_anomaly_iqr
+	// with a metric_column on a reference day without values)
+	string null_value_on_empty_message_sql;
 	// When set, the inner query also exposes nonfinite_count (the NaN/Inf inputs of the
 	// value), which the message of a NaN value reports.
 	string nonfinite_count_expr;
@@ -1387,6 +1391,14 @@ static CheckBranch BuildCheckBranch(ClientContext &context, const CheckSpec &spe
 		const string &metric_column = spec.metric_column.empty() ? spec.column_name : spec.metric_column;
 		string metric_expr = metric_column.empty() ? "CAST(COUNT(*) AS DOUBLE)"
 		                                           : "AVG(CAST(" + QuoteSqlIdentifier(metric_column) + " AS DOUBLE))";
+		// Row-count mode: a reference day without rows counts 0 rows (as the direct function)
+		string reference_metric = "(SELECT m FROM daily WHERE d = ref.ref_d)";
+		if (metric_column.empty()) {
+			reference_metric = "CASE WHEN ref.ref_d IS NULL THEN NULL ELSE COALESCE(" + reference_metric + ", 0) END";
+		} else {
+			branch.null_value_on_empty_message_sql =
+			    "'No metric value on ' || CAST(__c.__ref_d AS VARCHAR) || ' (fail_on_empty)'";
+		}
 		string ref_lit = spec.reference_date_sql.empty() ? "NULL" : spec.reference_date_sql;
 		string window_val = std::to_string(ParseWindowDays(spec, 30));
 		string k_val = "1.5";
@@ -1410,10 +1422,11 @@ static CheckBranch BuildCheckBranch(ClientContext &context, const CheckSpec &spe
 		    "ref AS (SELECT COALESCE(" + ref_lit + ", MAX(d)) AS ref_d FROM daily), "
 		    "w AS (SELECT m FROM daily, ref WHERE d < ref_d AND d >= ref_d - " + window_val + "), "
 		    "s AS (SELECT QUANTILE_CONT(m, 0.25) AS q1, QUANTILE_CONT(m, 0.75) AS q3, COUNT(*) AS n FROM w) "
-		    "SELECT CAST((SELECT m FROM daily, ref WHERE d = ref_d) AS DOUBLE) AS value, "
+		    "SELECT CAST(" + reference_metric + " AS DOUBLE) AS value, "
 		    "CAST(CASE WHEN s.n = 0 THEN NULL ELSE s.q1 - " + k_val + " * (s.q3 - s.q1) END AS DOUBLE) AS lower_threshold, "
-		    "CAST(CASE WHEN s.n = 0 THEN NULL ELSE s.q3 + " + k_val + " * (s.q3 - s.q1) END AS DOUBLE) AS upper_threshold "
-		    "FROM s";
+		    "CAST(CASE WHEN s.n = 0 THEN NULL ELSE s.q3 + " + k_val + " * (s.q3 - s.q1) END AS DOUBLE) AS upper_threshold, "
+		    "ref.ref_d AS __ref_d "
+		    "FROM s, ref";
 		branch.computed_thresholds = true;
 		AddSkippedDates(branch, spec, date);
 		return branch;
@@ -1536,6 +1549,10 @@ static string BuildBranchSQL(const CheckSpec &spec, const CheckBranch &branch, c
 	                                              : "No value to evaluate; check passed trivially";
 	string null_message_sql =
 	    branch.null_value_message_sql.empty() ? "'" + null_message + "'" : branch.null_value_message_sql;
+	if (spec.fail_on_empty && !branch.null_value_on_empty_message_sql.empty()) {
+		null_status = fail_status;
+		null_message_sql = branch.null_value_on_empty_message_sql;
+	}
 	// A NaN value (e.g. an average over a column holding NaN) cannot be shown to be within
 	// the thresholds: it fails instead of passing every comparison.
 	string type_lit = EscapeSqlStringLiteral(spec.check_type);
