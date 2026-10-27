@@ -249,8 +249,8 @@ def phone_format(
     Returns
     -------
     str or None
-        When *phone_or_df* is a string; ``None`` when the number cannot be
-        parsed or has an impossible length.
+        When *phone_or_df* is a string; ``None`` unless the number is valid
+        (the ``phone_is_valid`` check); ``phone_parse`` gives the reason.
     DataFrame
         When *phone_or_df* is a DataFrame: a copy with an added
         ``phone_format`` column (input index and row order kept).
@@ -299,7 +299,7 @@ def phone_region(
     -------
     str or None
         ISO 3166-1 alpha-2 region code when *phone_or_df* is a string;
-        ``None`` when the number cannot be parsed.
+        ``None`` unless the number is valid.
     DataFrame
         When *phone_or_df* is a DataFrame: a copy with an added
         ``phone_region`` column.

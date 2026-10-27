@@ -221,8 +221,12 @@ phonenumber_format(phone VARCHAR, region VARCHAR, format VARCHAR) -> VARCHAR
 | `region` | `VARCHAR` | Region hint, or `NULL` for the default region |
 | `format` | `VARCHAR` | `E164`, `INTERNATIONAL`, `NATIONAL` or `RFC3966`, case-insensitive |
 
-Returns `NULL` when the number cannot be parsed or has an impossible length. An unknown format
-raises an error.
+Returns `NULL` unless the number is valid, the same check as
+[`phonenumber_is_valid`](#phonenumber_is_valid): a number that cannot be parsed, has an
+impossible length or is not in an assigned range of its region is not formatted.
+`phonenumber_parse(...).reason` says why. So every non-`NULL` result is a valid number, and an
+`E164` column built with this function holds only valid numbers. An unknown format raises an
+error.
 
 | Format | Layout |
 |--------|--------|
@@ -253,6 +257,29 @@ FROM (VALUES ('E164'), ('INTERNATIONAL'), ('national'), ('RFC3966')) t(f);
 │ national      │ (650) 253-0000      │
 │ RFC3966       │ tel:+1-650-253-0000 │
 └───────────────┴─────────────────────┘
+```
+
+A number of a possible length that is not in an assigned range is not formatted either:
+
+```sql
+SELECT phone, region,
+       phonenumber_is_possible(phone, region) AS possible,
+       phonenumber_format(phone, region, 'E164') AS e164,
+       (phonenumber_parse(phone, region)).reason AS reason
+FROM (VALUES ('030 12345678', 'DE'), ('030 1234', 'DE'), ('+49 0180 1234567', NULL),
+             ('+31 20 123', NULL)) t(phone, region);
+```
+
+```text
+┌──────────────────┬─────────┬──────────┬───────────────┬─────────────────┐
+│      phone       │ region  │ possible │     e164      │     reason      │
+│     varchar      │ varchar │ boolean  │    varchar    │     varchar     │
+├──────────────────┼─────────┼──────────┼───────────────┼─────────────────┤
+│ 030 12345678     │ DE      │ true     │ +493012345678 │ NULL            │
+│ 030 1234         │ DE      │ true     │ NULL          │ invalid_pattern │
+│ +49 0180 1234567 │ NULL    │ true     │ NULL          │ invalid_pattern │
+│ +31 20 123       │ NULL    │ false    │ NULL          │ invalid_length  │
+└──────────────────┴─────────┴──────────┴───────────────┴─────────────────┘
 ```
 
 ```sql
@@ -294,7 +321,9 @@ FROM (VALUES ('030 12345678', 'DE'), ('0171 1234567', 'DE'), ('07400 123456', 'G
 
 Canonical name: `anofox_tab_phonenumber_region`. Scalar function.
 
-Returns the region code of a valid number, or `NULL`.
+Returns the region code of a valid number (as [`phonenumber_is_valid`](#phonenumber_is_valid)
+decides), or `NULL` for a number that is not valid: `phonenumber_region('030 1234', 'DE')` is
+`NULL` although the number has a German prefix.
 
 ```text
 phonenumber_region(phone VARCHAR, region VARCHAR) -> VARCHAR

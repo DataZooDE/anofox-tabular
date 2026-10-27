@@ -1,0 +1,83 @@
+# name: test/sql/anofox_phonenumber_valid_only.test
+# description: phonenumber_format and phonenumber_region return NULL unless the number is valid
+#              (same check as phonenumber_is_valid); phonenumber_parse.reason explains why
+# group: [phonenumber]
+
+require anofox_tabular
+
+statement ok
+LOAD anofox_tabular;
+
+statement ok
+SET anofox_tab_phonenumber_default_region='US';
+
+# A messy multi-country CRM contact list: national and international notation,
+# trunk prefixes after the country code, short and out-of-range numbers, junk
+statement ok
+CREATE TABLE contacts AS SELECT * FROM (VALUES
+    (1,  'Anna Schmidt',    '030 901820',        'DE'),
+    (2,  'Jonas Weber',     '+49 0180 1234567',  NULL),
+    (3,  'Lena Fischer',    '030 1234',          'DE'),
+    (4,  'Marie Dubois',    '01 42 68 53 00',    'FR'),
+    (5,  'Tom Baker',       '020 7946 0958',     'GB'),
+    (6,  'Sarah Miller',    '(415) 555-2671',    'US'),
+    (7,  'Luca Rossi',      '+39 06 6982 0000',  NULL),
+    (8,  'Pieter de Vries', '+31 20 123',        NULL),
+    (9,  'Emma Jansen',     '0049 151 23456789', 'DE'),
+    (10, 'Kenji Sato',      '+81 3-1234-5678',   NULL),
+    (11, 'Unknown',         'n/a',               'DE'),
+    (12, 'Chris Young',     '+1 555 0100',       NULL),
+    (13, 'Max Mustermann',  '+49 151 2345678',   NULL),
+    (14, 'Olivia Brown',    '07700 900123',      'GB')
+) t(id, name, phone, country);
+
+# E164, region and validity agree; invalid numbers get NULL and a reason
+query ITTTTT
+SELECT id, phonenumber_is_valid(phone, country),
+       phonenumber_format(phone, country, 'E164'),
+       phonenumber_region(phone, country),
+       (phonenumber_parse(phone, country)).reason,
+       phonenumber_format(phone, country, 'INTERNATIONAL') IS NULL
+FROM contacts ORDER BY id;
+----
+1	true	+4930901820	DE	NULL	false
+2	false	NULL	NULL	invalid_pattern	true
+3	false	NULL	NULL	invalid_pattern	true
+4	true	+33142685300	FR	NULL	false
+5	true	+442079460958	GB	NULL	false
+6	true	+14155552671	US	NULL	false
+7	true	+390669820000	IT	NULL	false
+8	false	NULL	NULL	invalid_length	true
+9	true	+4915123456789	DE	NULL	false
+10	true	+81312345678	JP	NULL	false
+11	false	NULL	NULL	not_a_number	true
+12	false	NULL	NULL	invalid_length	true
+13	false	NULL	NULL	invalid_pattern	true
+14	true	+447700900123	GB	NULL	false
+
+# Storing the E164 form is safe: every non-NULL E164 value is a valid number,
+# and every NULL one has a reason
+query III
+SELECT count(*) FILTER (WHERE e164 IS NOT NULL AND NOT phonenumber_is_valid(e164, NULL)),
+       count(*) FILTER (WHERE e164 IS NULL AND reason IS NULL),
+       count(e164)
+FROM (SELECT phonenumber_format(phone, country, 'E164') AS e164,
+             (phonenumber_parse(phone, country)).reason AS reason
+      FROM contacts);
+----
+0	0	8
+
+# All four formats agree on NULL for a possible-but-invalid number
+query TTTT
+SELECT phonenumber_format('+49 0180 1234567', NULL, 'E164'),
+       phonenumber_format('+49 0180 1234567', NULL, 'NATIONAL'),
+       phonenumber_format('030 1234', 'DE', 'RFC3966'),
+       phonenumber_region('030 1234', 'DE');
+----
+NULL	NULL	NULL	NULL
+
+# phonenumber_is_possible still reports the length check on its own
+query TT
+SELECT phonenumber_is_possible('030 1234', 'DE'), phonenumber_is_valid('030 1234', 'DE');
+----
+true	false

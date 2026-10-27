@@ -98,8 +98,11 @@ ORDER BY id;
 └───────┴─────────┴─────────┴──────────────────────────┴───────────────┴───────────────────┘
 ```
 
-Store the `E164` form; it is unique per number and the other formats can be derived from it. See
-[Phone numbers](../api/03-phone.md) for the supported regions.
+Store the `E164` form; it is unique per number and the other formats can be derived from it.
+`phonenumber_format` returns `NULL` for every number that `phonenumber_is_valid` rejects, also
+for numbers of a possible length outside an assigned range, so the stored column holds only valid
+numbers and `reason` explains the gaps. See [Phone numbers](../api/03-phone.md) for the supported
+regions.
 
 ## 4. VAT numbers
 

@@ -329,10 +329,14 @@ std::string PhoneNumberManager::Format(const std::string& raw_number, const std:
 	EnsureInitialized();
 
 	// Parse the number first
+	// Only a valid number (the phonenumber_is_valid check: a possible length
+	// and a number in an assigned range) is formatted, so a stored E164 value
+	// is always a valid number; phonenumber_parse().reason says why not.
 	auto parts = Parse(raw_number, region_hint, default_region);
-	if (!parts.valid) {
+	if (!parts.valid || !parts.matches_valid_pattern) {
 		AnofoxTrace(AnofoxLogLevel::Debug,
-		           "PhoneNumber format parse failed number=" + raw_number);
+		           "PhoneNumber format skipped, number is not valid number=" + raw_number +
+		               " reason=" + parts.reason);
 		throw InvalidInputException("Invalid phone number: %s", raw_number);
 	}
 
@@ -399,8 +403,12 @@ std::string PhoneNumberManager::Format(const std::string& raw_number, const std:
 std::string PhoneNumberManager::GetRegion(const std::string& raw_number, const std::string& region_hint,
                                           const std::string& default_region) {
 	EnsureInitialized();
+	// Same rule as Format: only a valid number has a region
 	auto parts = Parse(raw_number, region_hint, default_region);
-	if (!parts.valid) {
+	if (!parts.valid || !parts.matches_valid_pattern) {
+		AnofoxTrace(AnofoxLogLevel::Debug,
+		           "PhoneNumber region skipped, number is not valid number=" + raw_number +
+		               " reason=" + parts.reason);
 		throw InvalidInputException("Invalid phone number: %s", raw_number);
 	}
 	return parts.region_code;
