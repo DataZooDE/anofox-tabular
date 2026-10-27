@@ -11,7 +11,7 @@ from __future__ import annotations
 from typing import Any, Optional, Sequence, Union
 
 from ._sql import fetch_frame
-from ._table import DataFrame, column_list, output_df_type, table_inputs
+from ._table import DataFrame, column_list, is_missing, output_df_type, table_inputs
 
 
 def profile_table(
@@ -35,7 +35,8 @@ def profile_table(
         (``"email"``) profiles that one column.
     sample_size:
         Maximum rows to sample (default 1,000,000).  When ``exact=False``
-        and the table has more rows, a random sample is taken.
+        and the table has more rows, a fixed-seed sample of this many rows
+        is profiled.
     exact:
         When ``True``, always scan the full table.
 
@@ -50,14 +51,40 @@ def profile_table(
         actual_sample_size, nan_count, inf_count. The numeric statistics
         use the finite values only; NaN and Inf values are counted in
         nan_count / inf_count.
+
+        ``row_count`` is the number of rows scanned, as in SQL: for a
+        sampled profile (``is_sampled``) it is the sample size, not the
+        table's row count (use :func:`profile_summary`, or ``exact=True``).
+        ``top_values`` is a list of ``{"value": str, "count": int}`` dicts
+        (``None`` without values). ``column_type`` is the DuckDB type of the
+        column; a DataFrame column holding only ``None`` has no type of its
+        own, and DuckDB 2.0 copies it as type ``"NULL"`` (1.5: ``INTEGER``).
     """
     with table_inputs(conn, table_or_df) as (table_name,):
-        return fetch_frame(
+        result = fetch_frame(
             conn,
             "SELECT * FROM anofox_tab_profile_table(?, ?::VARCHAR[], ?::BIGINT, ?::BOOLEAN)",
             [table_name, column_list(columns) or [], sample_size, bool(exact)],
             output_df_type(table_or_df),
         )
+    return _top_values_as_lists(result)
+
+
+def _top_values_as_lists(result: Any) -> Any:
+    """
+    A pandas *result* with each ``top_values`` entry as a plain list of dicts.
+
+    DuckDB hands a ``LIST`` to pandas as a numpy array; polars gives lists
+    already. A missing entry stays ``None``.
+    """
+    if type(result).__module__.split(".")[0] != "pandas" or "top_values" not in result.columns:
+        return result
+    import pandas as pd
+    result["top_values"] = pd.Series(
+        [None if is_missing(v) else list(v) for v in result["top_values"]],
+        index=result.index, dtype=object,
+    )
+    return result
 
 
 def profile_summary(

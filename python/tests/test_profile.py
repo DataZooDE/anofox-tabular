@@ -319,3 +319,47 @@ class TestDocstringsListEveryColumn:
         documented = set(re.findall(r"[a-z_0-9]+", returns))
         missing = [c for c in func(conn, invoices).columns if c not in documented]
         assert missing == []
+
+
+class TestProfileTableResultValues:
+    """profile_table: plain Python top_values, row_count is the rows scanned."""
+
+    @pytest.fixture
+    def products(self):
+        import pandas as pd
+        return pd.DataFrame({
+            "sku": [f"SKU-{100 + i % 7}" for i in range(300)],
+            "price": [9.5 + i % 4 for i in range(300)],
+            "fax": ["+49 30 1234-56" if i == 3 else None for i in range(300)],
+        })
+
+    def test_top_values_is_a_list_for_pandas(self, conn, products):
+        from anofox import profile
+        out = profile.profile_table(conn, products)
+        top = out.set_index("column_name").loc["sku", "top_values"]
+        assert type(top) is list
+        assert top[0] == {"value": "SKU-100", "count": 43}
+        import polars as pl
+        polars_top = profile.profile_table(conn, pl.from_pandas(products)).filter(
+            pl.col("column_name") == "sku")["top_values"].to_list()[0]
+        assert polars_top == top
+
+    def test_top_values_none_and_empty_result(self, conn, products):
+        from anofox import profile
+        out = profile.profile_table(conn, products.iloc[0:0])
+        assert out["top_values"].isna().all() or all(v in (None, []) for v in out["top_values"])
+        assert out["top_values"].dtype == object
+
+    def test_row_count_is_rows_scanned(self, conn, products):
+        from anofox import profile
+        sampled = profile.profile_table(conn, products, sample_size=10)
+        assert sampled["row_count"].tolist() == [10, 10, 10]
+        assert sampled["is_sampled"].all()
+        total = profile.profile_summary(conn, products)["row_count"].iloc[0]
+        assert total == 300
+        exact = profile.profile_table(conn, products, sample_size=10, exact=True)
+        assert exact["row_count"].tolist() == [300, 300, 300]
+
+    def test_docstring_says_rows_scanned(self):
+        from anofox import profile
+        assert "rows scanned" in profile.profile_table.__doc__

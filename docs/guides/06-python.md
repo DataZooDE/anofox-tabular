@@ -642,10 +642,35 @@ There are two ways to profile from Python:
 - `anofox.profile.profile_table`, `profile_summary` and `profile_correlations` call the SQL
   functions of the same name and return all their columns (29 per column for `profile_table`:
   quantiles, top values, patterns, NaN/Inf counts and more). See
-  [Profiling](../api/10-profiling.md) for the columns.
+  [Profiling](../api/10-profiling.md) for the columns. `profile_table` profiles a sample of
+  `sample_size` rows (default 1,000,000) of a larger table unless `exact=True`; its `row_count`
+  is then the rows scanned, as in SQL, not the table's row count (`profile_summary` has that).
+  `top_values` is a list of `{"value": ..., "count": ...}` dicts. A DataFrame column holding only
+  `None` has no type of its own: DuckDB 2.0 copies it as type `NULL`, so its `column_type` is
+  `"NULL"` (DuckDB 1.5: `INTEGER`); give it a type first (`df["fax"].astype("string")`) for a
+  stable result.
 - `conn.profile(df_or_table)` is a short overview: per column only `type`, `row_count`,
   `null_count`, `null_rate`, `distinct_count` and `distinct_rate`, computed with plain SQL
   counts (exact, no sampling).
+
+```python
+products = pd.DataFrame({
+    "sku": [f"SKU-{100 + i % 7}" for i in range(300)],
+    "price": [9.5 + i % 4 for i in range(300)],
+})
+sampled = anofox.profile.profile_table(conn, products, sample_size=50)
+print(sampled[["column_name", "row_count", "is_sampled"]].to_string(index=False))
+print(anofox.profile.profile_summary(conn, products)["row_count"].iloc[0])
+print(anofox.profile.profile_table(conn, products, columns="sku")["top_values"].iloc[0][:2])
+```
+
+```text
+column_name  row_count  is_sampled
+        sku         50        True
+      price         50        True
+300
+[{'value': 'SKU-100', 'count': 43}, {'value': 'SKU-101', 'count': 43}]
+```
 
 ```python
 print(conn.profile(customers)[["column", "null_count", "distinct_count"]].to_string(index=False))
