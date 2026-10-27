@@ -202,6 +202,8 @@ print(checks.checks["null_rate"]["null_rate"])
   `DECIMAL` values are returned as `float`; `_raw` still holds the raw result row.
 - Values are passed to DuckDB as bound parameters and column names are quoted, so any text
   (`o'brien@example.ie`) is safe to pass.
+- Every function also takes a plain `duckdb.DuckDBPyConnection` with the extension loaded in
+  place of an `AnofoxConnection`.
 - The anomaly wrappers use the SQL defaults: every tuning parameter defaults to `None`, is
   passed as `NULL`, and the extension applies its default (`n_trees` 100, `contamination` 0.1,
   `eps` 0.5, `min_pts` 5, ...). DBSCAN takes the SQL names `eps=` and `min_pts=`; the former

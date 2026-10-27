@@ -48,9 +48,20 @@ def finish(conn: Any) -> None:
     this is a no-op there. *conn* is a DuckDB connection or an
     :class:`~anofox.AnofoxConnection`.
     """
-    complete = getattr(getattr(conn, "native", conn), "complete", None)
+    complete = getattr(native_connection(conn), "complete", None)
     if complete is not None:
         complete()
+
+
+def native_connection(conn: Any) -> Any:
+    """
+    The DuckDB connection behind *conn*.
+
+    *conn* is an :class:`~anofox.AnofoxConnection` (its ``native`` connection
+    is returned) or a plain ``duckdb.DuckDBPyConnection`` with the extension
+    loaded (returned as it is).
+    """
+    return getattr(conn, "native", conn)
 
 
 def run(conn: Any, query: str, params: Sequence[Any] = ()) -> None:
@@ -77,7 +88,7 @@ def fetch_frame(conn: Any, query: str, params: Sequence[Any] = (), df_type: str 
     # execute() binds the query once. A relation from sql() is bound when it is
     # created and again when it runs, so a table function's bind-time warnings
     # (e.g. the diff's "changed type") were printed twice.
-    native = getattr(conn, "native", conn)
+    native = native_connection(conn)
     finish(native)
     result = native.execute(query, list(params))
     try:

@@ -12,7 +12,7 @@ from decimal import Decimal
 from contextlib import contextmanager
 from typing import TYPE_CHECKING, Any, Callable, Iterator, Optional, Sequence, TypeVar, Union
 
-from ._sql import fetch_frame, fetch_one, quote_ident
+from ._sql import fetch_frame, fetch_one, native_connection, quote_ident
 from ._utils import (
     detect_df_type,
     drop_df_table,
@@ -55,7 +55,7 @@ def resolve_table(conn: Any, table_or_df: Union[str, Any]) -> tuple[str, bool]:
                 "pass a table name, a DataFrame (pandas or polars) or a pyarrow Table, "
                 f"got {_describe(table_or_df)}"
             ) from None
-    table_name = register_df_as_table(conn.native, table_or_df)
+    table_name = register_df_as_table(native_connection(conn), table_or_df)
     return table_name, True
 
 
@@ -165,7 +165,7 @@ def _registered_view_error(conn: Any, error: BaseException, inputs: tuple) -> Op
             continue
         try:
             is_temp_view = fetch_one(
-                getattr(conn, "native", conn),
+                native_connection(conn),
                 "SELECT count(*) > 0 FROM duckdb_views() WHERE temporary AND view_name = ?",
                 [value],
             )
@@ -334,7 +334,7 @@ def output_df_type(*inputs: Any) -> str:
 def cleanup_table(conn: Any, table_name: str, was_registered: bool) -> None:
     """Drop a table only when it was created by :func:`resolve_table`."""
     if was_registered:
-        drop_df_table(conn.native, table_name)
+        drop_df_table(native_connection(conn), table_name)
 
 
 def apply_scalar(
@@ -362,7 +362,7 @@ def apply_scalar(
     ``NULL``: pandas reads an empty CSV column as float64 NaN, which would
     otherwise reach the function as ``DOUBLE`` and fail to bind.
     """
-    with registered_view(conn.native, _missing_as_text(df, df_type, text_columns)) as (view, position):
+    with registered_view(native_connection(conn), _missing_as_text(df, df_type, text_columns)) as (view, position):
         try:
             result = fetch_frame(
                 conn,

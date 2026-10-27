@@ -832,8 +832,18 @@ con.execute("LOAD anofox_tabular")
 print(con.execute("SELECT vat_is_valid('DE111111125')").fetchall())  # [(True,)]
 ```
 
-This snippet downloads the extension from the community repository. It was run once by hand
-for this guide; the automatic check of this page does not run it.
+The functions of the `anofox` package take such a connection as well as an `anofox.connect()`
+connection:
+
+```python no-run
+from anofox import profile, quality
+
+print(quality.volume(con, "orders", min_rows=1)["status"])
+print(profile.profile_summary(con, orders_df))
+```
+
+These snippets download the extension from the community repository. They were run once by
+hand for this guide; the automatic check of this page does not run them.
 
 ## Next steps
 
