@@ -173,3 +173,60 @@ class TestPiiMaskValue:
         from anofox import pii
         with pytest.raises(duckdb.Error, match="Unknown PII type"):
             pii.pii_mask_value(conn, "x", "NO_SUCH_TYPE")
+
+
+class TestMaskReplace:
+    """replace=True masks the column in place instead of adding a column next
+    to the raw value, so the result no longer carries the PII."""
+
+    @staticmethod
+    def _tickets():
+        import pandas as pd
+        return pd.DataFrame({
+            "ticket_id": [5001, 5002, 5003],
+            "body": ["Please call me at +1 650-253-0000",
+                     "Mail ana.lopez@example.com about the refund",
+                     None],
+            "agent": ["Mia Schulz", "Li", "Tom Berger"],
+        }, index=[7, 8, 9])
+
+    def test_pii_mask_replaces_the_column(self, conn):
+        from anofox import pii
+        tickets = self._tickets()
+        masked = pii.pii_mask(conn, tickets, column="body", replace=True)
+        assert list(masked.columns) == ["ticket_id", "body", "agent"]
+        assert list(masked.index) == [7, 8, 9]
+        assert "650-253-0000" not in masked.loc[7, "body"]
+        assert "ana.lopez@example.com" not in masked.loc[8, "body"]
+        assert masked["body"].isna().tolist() == [False, False, True]
+        # The input is not changed.
+        assert tickets.loc[8, "body"] == "Mail ana.lopez@example.com about the refund"
+
+    def test_pii_mask_default_still_adds_a_column(self, conn):
+        from anofox import pii
+        masked = pii.pii_mask(conn, self._tickets(), column="body")
+        assert list(masked.columns) == ["ticket_id", "body", "agent", "pii_mask"]
+
+    def test_pii_mask_value_replaces_the_column(self, conn):
+        from anofox import pii
+        masked = pii.pii_mask_value(conn, self._tickets(), "NAME", column="agent", replace=True)
+        assert list(masked.columns) == ["ticket_id", "body", "agent"]
+        assert "Li" not in masked["agent"].tolist()
+        assert "Mia Schulz" not in masked["agent"].tolist()
+
+    def test_polars(self, conn):
+        pl = pytest.importorskip("polars")
+        from anofox import pii
+        tickets = pl.from_pandas(self._tickets())
+        masked = pii.pii_mask(conn, tickets, column="body", replace=True)
+        assert masked.columns == ["ticket_id", "body", "agent"]
+        assert "ana.lopez@example.com" not in masked["body"][1]
+
+    @pytest.mark.parametrize("call", [
+        lambda pii, conn: pii.pii_mask(conn, "ana@example.com", replace=True),
+        lambda pii, conn: pii.pii_mask_value(conn, "Li", "NAME", replace=True),
+    ])
+    def test_replace_needs_a_dataframe(self, conn, call):
+        from anofox import pii
+        with pytest.raises(ValueError, match="replace.*DataFrame"):
+            call(pii, conn)

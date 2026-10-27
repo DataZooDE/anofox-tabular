@@ -209,6 +209,22 @@ False
   3    SSN [US_SSN]
 ```
 
+The masked result is a copy of the DataFrame plus a `pii_mask` column, so it still holds the raw
+`note` next to the mask. To share the result, pass `replace=True`: the masked text then replaces
+the `note` column and no raw value is left. `pii_mask_value` takes `replace=True` too.
+
+```python
+masked = pii.pii_mask(conn, customers.head(3), column="note", replace=True)
+print(masked[["id", "note"]].to_string(index=False))
+```
+
+```text
+ id            note
+  1    call [PHONE]
+  2 no contact data
+  3    SSN [US_SSN]
+```
+
 ## Score anomalies
 
 ```python
@@ -237,7 +253,8 @@ Python defaults are the SQL defaults: a parameter you leave out is passed as `NU
 extension applies its own default. `dbscan` returns one row per analyzed row with
 `output_mode="clusters"`, `outlier_tree` one row per outlier with `output_mode="outliers"`. Rows
 with a `NULL` in a selected column are left out; `row_id` is still the 1-based row number in
-the input, so the remaining rows keep their numbers.
+the input, so the remaining rows keep their numbers. A polars `NaN` is not a `NULL`; see
+[Missing values](#missing-values-nan-and-null) for how each detector treats it.
 
 ## Diff two DataFrames
 

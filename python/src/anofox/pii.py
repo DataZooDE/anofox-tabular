@@ -58,6 +58,7 @@ def pii_mask(
     text_or_df: Union[str, Any],
     strategy: str = "redact",
     column: Optional[str] = None,
+    replace: bool = False,
 ) -> Union[str, Any]:
     """
     Mask all detected PII in a text or in a DataFrame column.
@@ -73,6 +74,11 @@ def pii_mask(
         ``"partial"``, or ``"asterisk"``.
     column:
         Column name when *text_or_df* is a DataFrame.
+    replace:
+        DataFrame only. ``False`` (default): add a ``pii_mask`` column next to
+        *column*, like the other row-wise helpers, so the result still holds
+        the raw value. ``True``: put the masked text in *column* itself, so
+        the result no longer holds the raw value.
 
     Returns
     -------
@@ -81,8 +87,10 @@ def pii_mask(
         *strategy*.
     DataFrame
         When *text_or_df* is a DataFrame: a copy with an added ``pii_mask``
-        column (same index and row order as the input).
+        column, or with *column* masked when ``replace=True`` (same index and
+        row order as the input).
     """
+    _check_replace(replace, text_or_df)
     if isinstance(text_or_df, str):
         value = fetch_one(conn, "SELECT anofox_tab_pii_mask(?, ?)", [text_or_df, strategy])
         return str(value) if value is not None else ""
@@ -90,7 +98,8 @@ def pii_mask(
     df_type = check_row_input(text_or_df, column)
     return apply_scalar(
         conn, text_or_df, df_type,
-        f"anofox_tab_pii_mask({quote_ident(column)}, ?)", [strategy], "pii_mask",
+        f"anofox_tab_pii_mask({quote_ident(column)}, ?)", [strategy],
+        column if replace else "pii_mask",
     )
 
 
@@ -100,6 +109,7 @@ def pii_mask_value(
     pii_type: str,
     strategy: str = "redact",
     column: Optional[str] = None,
+    replace: bool = False,
 ) -> Union[str, None, Any]:
     """
     Mask a whole value of a known PII type, without running detection.
@@ -119,15 +129,21 @@ def pii_mask_value(
         ``"redact"`` (default), ``"hash"``, ``"partial"``, ``"asterisk"`` or ``"none"``.
     column:
         Column name when *value_or_df* is a DataFrame.
+    replace:
+        DataFrame only. ``False`` (default): add a ``pii_mask_value`` column.
+        ``True``: put the masked values in *column* itself, so the result no
+        longer holds the raw values.
 
     Returns
     -------
     str or None
         For a value: the masked value; ``None`` for ``None``.
     DataFrame
-        For a DataFrame: a copy with an added ``pii_mask_value`` column (same
-        index and row order as the input).
+        For a DataFrame: a copy with an added ``pii_mask_value`` column, or
+        with *column* masked when ``replace=True`` (same index and row order
+        as the input).
     """
+    _check_replace(replace, value_or_df)
     if value_or_df is None or isinstance(value_or_df, str):
         return fetch_one(conn, "SELECT anofox_tab_pii_mask_value(?, ?, ?)", [value_or_df, pii_type, strategy])
 
@@ -135,8 +151,14 @@ def pii_mask_value(
     return apply_scalar(
         conn, value_or_df, df_type,
         f"anofox_tab_pii_mask_value(CAST({quote_ident(column)} AS VARCHAR), ?, ?)", [pii_type, strategy],
-        "pii_mask_value",
+        column if replace else "pii_mask_value",
     )
+
+
+def _check_replace(replace: bool, value: Any) -> None:
+    """Raise ValueError when ``replace=True`` is given for a single value."""
+    if replace and (value is None or isinstance(value, str)):
+        raise ValueError("'replace=True' requires a DataFrame input (with column=).")
 
 
 def pii_contains(

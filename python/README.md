@@ -94,6 +94,7 @@ print(pii.pii_contains(conn, "Call me at +1-415-555-2671"))  # True
 print(pii.pii_detect(conn, "Email: test@example.com"))        # [{"type": "EMAIL", ...}]
 print(pii.pii_mask(conn, "test@example.com", strategy="redact"))
 print(pii.pii_mask(conn, df, column="email"))                 # adds a 'pii_mask' column
+print(pii.pii_mask(conn, df, column="email", replace=True))   # masks 'email' itself
 print(pii.pii_scan_table(conn, "orders"))
 
 # ── Diff ──────────────────────────────────────────────────────────────
@@ -129,6 +130,8 @@ print(result.failures)    # DataFrame: column, row_id, value, rule
   `phone_format`, `phone_region`, the `anofox.vat` functions, `make_money`, `pii_detect`,
   `pii_mask` with `column=`) are a copy of the input plus one column. They keep
   the input's index (pandas) and row order, so `df["ok"] = ...["email_is_valid"]` lines up.
+  For `pii_mask` and `pii_mask_value` that copy still holds the raw PII next to the mask;
+  `replace=True` puts the masked values in the input column instead, so no raw value is left.
 - **Table functions** (`anofox.quality`, `anofox.anomaly`, `anofox.profile`, `anofox.diff`,
   `pii_scan_table`, `pii_audit_table`, `conn.profile`, `conn.quality_check`) take a table name
   or a DataFrame. A DataFrame is copied into a temporary table for the call and dropped

@@ -206,6 +206,9 @@ def apply_scalar(
     """
     Return a copy of *df* with one added column *result_name*.
 
+    If *df* already has a column *result_name*, that column is replaced in
+    place (``pii_mask(..., replace=True)`` relies on this).
+
     *expression* is a SQL expression over the columns of *df* (identifiers
     already quoted) with ``?`` placeholders for *params*. The result keeps the
     input's rows in their order, its other columns unchanged and, for pandas,
