@@ -168,8 +168,13 @@ ORDER BY customer_id, column_name;
   14 rows                                                        4 columns
 ```
 
-`original_value` is the unmasked cell: the audit result holds the PII it reports. Share
-`masked_value` instead when the findings leave the team that owns the data.
+`original_value` is the unmasked cell: the audit result holds the PII it reports. When the
+findings leave the team that owns the data, share `masked_value` rather than `original_value`,
+but do not take it as safe. `masked_value` is the whole cell with only the detected PII masked:
+PII that detection misses stays in it, such as a compact phone number without a phone keyword
+(`01511234567`, a documented limit of `PHONE`). A second scan of the masked values cannot prove
+them clean either, as it misses the same values. For columns known to hold PII, mask the whole
+value with `pii_mask_value` (section 4), and review free-text columns before you export them.
 
 Count the findings per customer to see who has the most personal data on file:
 
