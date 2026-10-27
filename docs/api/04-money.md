@@ -102,6 +102,10 @@ money(amount DOUBLE, currency_code VARCHAR) -> MONEY
   digits, so amounts with more digits than that are not stored exactly: cast them to `DECIMAL`
   first, e.g. `money(amount::DECIMAL(18,3), 'EUR')`. Whole numbers up to the maximum are exact.
   A value that rounds outside the range raises `Out of Range`.
+- **String amounts** must be cast. A string literal such as `'1250.00'` fits both overloads, so
+  `money('1250.00', 'EUR')` is a binder error, and `TRY()` does not catch it. Write
+  `money(CAST('1250.00' AS DECIMAL(18,3)), 'EUR')`, or cast a `VARCHAR` column the same way
+  (`TRY_CAST` gives `NULL` for text that is not a number).
 
 ```sql
 SELECT money_amount(money(123456789012345.678, 'EUR')) AS from_decimal,
@@ -376,7 +380,8 @@ money_format(money MONEY, format_style VARCHAR) -> VARCHAR
 
 The number of decimals follows the currency: 2 for USD and EUR, none for JPY. The style names
 are case-insensitive (`'Symbol'` is `symbol`); any other style raises an error. A `NULL` money
-value or style returns `NULL`.
+value or style returns `NULL`. The style has no default: `money_format(m)` with one argument is a
+binder error.
 
 ```sql
 SELECT money_format(money(1234567.891, 'USD'), 'symbol') AS usd,

@@ -224,7 +224,8 @@ Both styles first normalize the input like `vat_normalize` (no spaces or punctua
 case). The style is case-insensitive. `vat_format` does not validate: a number with a supported
 prefix is formatted even when its national part is malformed (`vat_format('DEabc123', 'plain')`
 is `ABC123`), so check it with `vat_is_valid` first. A number without a supported prefix returns
-`NULL`. An unknown style raises an error.
+`NULL`. An unknown style raises an error. The style has no default: `vat_format(v)` with one
+argument is a binder error.
 
 ```sql
 SELECT vat_normalize('de 111-111-125') AS normalized,

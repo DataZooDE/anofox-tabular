@@ -219,6 +219,56 @@ SELECT TRY(money(10, 'XYZ')) AS m;
 Validation functions such as `email_is_valid` or `phonenumber_is_valid` do not raise for bad
 values; they return `false`.
 
+### NULL or error
+
+The rule of thumb: a bad *value* (a row of your data) gives `false`, `NULL` or a `reason`; a bad
+*option* (a style, format, mode or strategy you typed) raises an error. Money is the exception: an
+unknown currency code raises, because a money value without a valid currency cannot exist.
+
+| Module | Bad value | Bad option |
+|--------|-----------|------------|
+| [Email](01-email.md) | `email_is_valid` is `false`; `email_validate` has `valid = false` and a `reason`. A DNS or SMTP check that gets no answer is `NULL` (`valid = NULL`) | An unknown mode is not an error: `valid = false`, `reason = 'validation_not_implemented'` |
+| [Postal](02-postal.md) | No error: parts that libpostal does not find are `NULL` | none; missing data starts the download, and a failed download raises |
+| [Phone](03-phone.md) | `phonenumber_is_valid` is `false`; `phonenumber_format` and `phonenumber_region` are `NULL`; `phonenumber_parse` has `valid = false` and a `reason`. An unsupported `region` argument makes the row invalid (`unsupported_region`) | An unknown format raises; an unsupported code in `SET anofox_tab_phonenumber_default_region` raises |
+| [Money](04-money.md) | An unknown currency code raises in `money` and `money_from_cents`; arithmetic on two currencies raises | An unknown `money_format` style raises |
+| [VAT](05-vat.md) | `vat_is_valid` is `false`; `vat_format`, `vat_split` and `vat_country_name` are `NULL`; `vat_normalize` only cleans the text and does not validate | An unknown `vat_format` style raises |
+| [PII](06-pii.md) | No error: text without PII gives an empty list or the unchanged text | An unknown mask strategy raises |
+| Table functions ([checks](07-data-quality.md), [anomaly](08-anomaly-detection.md), [diff](09-diffing.md), [profile](10-profiling.md)) | Data never raises; checks report `fail` | An unknown table or column raises; `run_checks` reports it in an `error` row |
+
+`TRY()` turns a raised error into `NULL` only for errors raised while the query runs. A binder
+error, for example a function called with the wrong number or types of arguments, still stops
+the query:
+
+```sql
+SELECT TRY(money('1250.00', 'EUR')) AS m;
+```
+
+```text
+Binder Error: Could not choose a best candidate function for the function call "money(STRING_LITERAL, STRING_LITERAL)". In order to select one, please add explicit type casts.
+	Candidate functions:
+	money(amount DOUBLE, currency_code VARCHAR, /) -> STRUCT(amount DECIMAL(18,3), currency VARCHAR)
+	money(amount DECIMAL(18,3), currency_code VARCHAR, /) -> STRUCT(amount DECIMAL(18,3), currency VARCHAR)
+
+
+LINE 1: SELECT TRY(money('1250.00', 'EUR')) AS m;
+                   ^^^^^^^^^^^^^^^^^^^^^^^
+```
+
+Cast a string amount to `DECIMAL(18,3)` first:
+
+```sql
+SELECT TRY(money(CAST('1250.00' AS DECIMAL(18,3)), 'EUR')) AS m;
+```
+
+```text
+┌────────────────────────────────────────────────┐
+│                       m                        │
+│ struct(amount decimal(18,3), currency varchar) │
+├────────────────────────────────────────────────┤
+│ {'amount': 1250.000, 'currency': EUR}          │
+└────────────────────────────────────────────────┘
+```
+
 ## Tracing output
 
 Tracing is on by default at level `info`. In the DuckDB CLI the extension prints lines such as

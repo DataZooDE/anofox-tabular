@@ -78,10 +78,16 @@ See [Email](../api/01-email.md) for all reason codes.
 ## 3. Phone numbers
 
 Pass each customer's country as the region, so local numbers like `030 12345678` are read
-correctly. A leading label such as `Tel.` is dropped and a trailing extension (`ext. 12`, `x12`,
+correctly. The region is an ISO 3166 alpha-2 code (`'DE'`, `'GB'`; `'UK'` is accepted as `'GB'`).
+The phone module knows 21 regions: US, CA, GB, DE, FR, IT, ES, AU, JP, CN, IN, BR, MX, AR, RU,
+NL, SE, NO, DK, FI and CH. A number of any other country, for example Austria (AT), Belgium
+(BE), the Czech Republic (CZ) or Poland (PL), is invalid with reason `unsupported_country_code`
+when it is written with `+`, or `unsupported_region` when it is written locally with that
+country as the region. A leading label such as `Tel.` is dropped and a trailing extension (`ext. 12`, `x12`,
 `Durchwahl 12`) is returned in `extension` instead of being read as part of the number. Any
 other letter makes a number invalid: the Swiss number has a letter `O` typed for a zero. `reason`
-says why a number is rejected; Austria is not one of the supported regions:
+says why a number is rejected; Austria is not one of the supported regions (`+43` is written
+with its country code, so the reason is `unsupported_country_code`):
 
 ```sql
 SELECT id, country,
@@ -171,6 +177,24 @@ ORDER BY id;
 └───────┴──────────┴────────────────────────────────────────────────┴──────────────┘
 ```
 
+When the amount is a string, for example from a CSV file read as text, cast it to
+`DECIMAL(18,3)` first. `money('1250.00', 'EUR')` is a binder error, because a string literal
+fits both the `DOUBLE` and the `DECIMAL` variant of `money`, and `TRY()` does not catch binder
+errors:
+
+```sql
+SELECT TRY(money(CAST('1250.00' AS DECIMAL(18,3)), 'EUR')) AS amount_money;
+```
+
+```text
+┌────────────────────────────────────────────────┐
+│                  amount_money                  │
+│ struct(amount decimal(18,3), currency varchar) │
+├────────────────────────────────────────────────┤
+│ {'amount': 1250.000, 'currency': EUR}          │
+└────────────────────────────────────────────────┘
+```
+
 See [Money](../api/04-money.md) for the supported currencies.
 
 ## 6. Score the table
@@ -220,12 +244,29 @@ and run `compliance('checked', ...)`. Re-check the excluded rows later.
 
 ## 7. Addresses
 
-`postal_parse_address` splits an address into its parts. It needs the libpostal data (about
-500 MB, downloaded on first use) and is not available on Windows:
+`postal_parse_address` splits an address into its parts. It needs the libpostal data, and is
+not available on Windows.
+
+> **About 500 MB download.** If the data is missing, the first `postal_parse_address` call
+> downloads it, inside your query, and the query waits for it. Download it on purpose first,
+> once per machine; it goes to `~/.duckdb/extensions/libpostal` (set
+> `anofox_tab_postal_data_path` before the first postal call to choose another directory):
+>
+> ```sql no-run
+> SELECT postal_load_data();
+> SELECT data_present, data_dir FROM postal_status();
+> ```
 
 ```sql no-run
-SELECT postal_parse_address('Hauptstraße 5, 80331 München');
+SELECT postal_parse_address('Hauptstraße 5, 80331 München, Deutschland');
+-- {'house_number': 5, 'road': hauptstraße, 'city': münchen, 'state': NULL,
+--  'postcode': 80331, 'country': deutschland}
 ```
+
+The parts are lower-cased, and `country` is the country name as written in the address
+(`deutschland`), not an ISO code; it is `NULL` when the address has no country. Keep the
+`country` column of the table as the ISO code, and store the parsed parts next to the original
+address rather than replacing it.
 
 See [Postal addresses](../api/02-postal.md).
 

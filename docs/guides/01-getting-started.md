@@ -21,6 +21,14 @@ LOAD anofox_tabular;
 FORCE INSTALL anofox_tabular FROM community;
 ```
 
+The community build can be older than these docs, so a function or option described here may
+be missing or behave differently in your copy. Check the installed release (a date version
+such as `v2026.10.25`) and upgrade if it is older than you expect:
+
+```sql no-run
+SELECT extension_version FROM duckdb_extensions() WHERE extension_name = 'anofox_tabular';
+```
+
 In the DuckDB CLI the extension prints a few `[anofox] [info]` lines when it loads. They go to
 stderr. To hide them:
 
@@ -49,6 +57,11 @@ SELECT email_is_valid('user@example.com') AS email_ok,
 │ true     │ true    │ +1 650 253 0000 │ Call [PHONE] or mail [EMAIL] │
 └──────────┴─────────┴─────────────────┴──────────────────────────────┘
 ```
+
+`email_is_valid` uses the `regex` mode by default, which checks the format only: a typo in the
+domain such as `ana@gmail.con` passes. The `dns` mode also looks up the domain's mail servers;
+see [Email](../api/01-email.md). The phone `region` (`'US'` above) is an ISO 3166 alpha-2 country
+code; `'UK'` is accepted as `'GB'`.
 
 Every function also has a long name with the prefix `anofox_tab_`, for example
 `anofox_tab_email_is_valid`. See [API conventions](../api/00-conventions.md).

@@ -9,7 +9,9 @@
 
 The phone module is a built-in implementation modeled on Google's libphonenumber. It does not
 link libphonenumber. It carries number metadata for 21 regions: US, CA, GB, DE, FR, IT, ES, AU,
-JP, CN, IN, BR, MX, AR, RU, NL, SE, NO, DK, FI and CH. Numbers of other regions are not valid.
+JP, CN, IN, BR, MX, AR, RU, NL, SE, NO, DK, FI and CH. Numbers of other regions are not valid,
+including most of the EU, for example AT, BE, CZ, PL and PT: `+43 1 58800` is invalid with reason
+`unsupported_country_code`.
 
 ## Functions
 
@@ -27,7 +29,9 @@ JP, CN, IN, BR, MX, AR, RU, NL, SE, NO, DK, FI and CH. Numbers of other regions 
 
 ## The region argument
 
-Most functions take a `region` argument: a two-letter ISO region code such as `'US'` or `'DE'`.
+Most functions take a `region` argument: an ISO 3166-1 alpha-2 country code such as `'US'` or
+`'DE'`. Three-letter codes (`'DEU'`) and country names are not accepted; they count as an
+unsupported region.
 It tells the parser how to read a number without a leading `+` and country code. A number that
 starts with `+` carries its own country code. When `region` is `NULL`, the setting
 `anofox_tab_phonenumber_default_region` applies (default `US`). The code is case-insensitive and
@@ -371,7 +375,9 @@ Canonical name: `anofox_tab_phonenumber_region`. Scalar function.
 
 Returns the region code of a valid number (as [`phonenumber_is_valid`](#phonenumber_is_valid)
 decides), or `NULL` for a number that is not valid: `phonenumber_region('030 1234', 'DE')` is
-`NULL` although the number has a German prefix.
+`NULL` although the number has a German prefix. The `region` argument is required, also for
+numbers with `+`; pass `NULL` to use the default region (`phonenumber_region(phone)` with one
+argument is a binder error).
 
 ```text
 phonenumber_region(phone VARCHAR, region VARCHAR) -> VARCHAR
