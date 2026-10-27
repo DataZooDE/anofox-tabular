@@ -22,7 +22,7 @@ import json
 from decimal import Decimal
 from typing import Any, Callable, Optional, TypeVar, Union
 
-from ._sql import quote_table_name, run
+from ._sql import bind_value, execute, quote_table_name, run
 from ._table import TableLike, accepts_dataframes, column_label, column_list, without_temp_names
 
 
@@ -124,7 +124,8 @@ def volume(
     if max_rows is not None and max_rows < min_rows:
         raise ValueError("max_rows must be >= min_rows")
 
-    cursor = conn.execute(
+    cursor = execute(
+        conn,
         "SELECT * FROM anofox_tab_volume(?, ?::BIGINT, ?::BIGINT)",
         [table_name, min_rows, max_rows],
     )
@@ -159,7 +160,8 @@ def null_rate(
     dict
         ``{"status": "pass"|"fail", "null_rate": float, ...}``
     """
-    cursor = conn.execute(
+    cursor = execute(
+        conn,
         "SELECT * FROM anofox_tab_null_rate(?, ?, ?::DOUBLE)", [table_name, column_name, max_null_rate]
     )
     return _parse_table_result(
@@ -195,7 +197,8 @@ def distinct_count(
     dict
         ``{"status": "pass"|"fail", "distinct_count": int, ...}``
     """
-    cursor = conn.execute(
+    cursor = execute(
+        conn,
         "SELECT * FROM anofox_tab_distinct_count(?, ?, ?::BIGINT, ?::BIGINT)",
         [table_name, column_name, min_distinct, max_distinct],
     )
@@ -247,7 +250,8 @@ def freshness(
         params.append(reference_time)
     # Without reference_time the extension returns threshold as TIMESTAMPTZ, which the
     # duckdb Python client converts only with pytz installed; return it as TIMESTAMP.
-    cursor = conn.execute(
+    cursor = execute(
+        conn,
         "SELECT status, metric_value, threshold::TIMESTAMP AS threshold, age_seconds, message "
         f"FROM anofox_tab_freshness(?, ?, ?::INTERVAL{reference_sql})",
         params,
@@ -283,7 +287,8 @@ def zscore(
     dict
         ``{"status": "pass"|"fail", ...}``
     """
-    cursor = conn.execute(
+    cursor = execute(
+        conn,
         "SELECT * FROM anofox_tab_zscore(?, ?, ?::DOUBLE)", [table_name, column_name, threshold]
     )
     return _parse_table_result(
@@ -316,7 +321,8 @@ def iqr(
     dict
         ``{"status": "pass"|"fail", ...}``
     """
-    cursor = conn.execute(
+    cursor = execute(
+        conn,
         "SELECT * FROM anofox_tab_iqr(?, ?, ?::DOUBLE)", [table_name, column_name, multiplier]
     )
     return _parse_table_result(
@@ -346,7 +352,8 @@ def schema_check(
     dict
         ``{"status": "pass"|"fail", ...}``
     """
-    cursor = conn.execute(
+    cursor = execute(
+        conn,
         "SELECT * FROM anofox_tab_schema_check(?, ?::VARCHAR[])",
         [table_name, column_list(required_columns)],
     )
@@ -387,12 +394,14 @@ def regex_match(
         ``{"status": "pass"|"fail", ...}``
     """
     if max_match_rate is not None:
-        cursor = conn.execute(
+        cursor = execute(
+            conn,
             "SELECT * FROM anofox_tab_regex_match(?, ?, ?, ?::DOUBLE, ?::DOUBLE)",
             [table_name, column_name, pattern, min_match_rate, max_match_rate],
         )
     else:
-        cursor = conn.execute(
+        cursor = execute(
+            conn,
             "SELECT * FROM anofox_tab_regex_match(?, ?, ?, ?::DOUBLE)",
             [table_name, column_name, pattern, min_match_rate],
         )
@@ -436,7 +445,8 @@ def values_in_set(
     dict
         ``{"status": "pass"|"fail", ...}``
     """
-    cursor = conn.execute(
+    cursor = execute(
+        conn,
         "SELECT * FROM anofox_tab_values_in_set(?, ?, ?::VARCHAR[], ?::DOUBLE)",
         [table_name, column_name, [str(v) for v in allowed_values], min_rate],
     )
@@ -479,7 +489,8 @@ def agg_check(
     """
     if agg.lower() not in ("avg", "min", "max", "sum", "median", "stddev"):
         raise ValueError("agg must be one of 'avg', 'min', 'max', 'sum', 'median', 'stddev'")
-    cursor = conn.execute(
+    cursor = execute(
+        conn,
         "SELECT * FROM anofox_tab_agg_check(?, ?, ?, ?::DOUBLE, ?::DOUBLE)",
         [table_name, column_name, agg.lower(), lower_threshold, upper_threshold],
     )
@@ -523,7 +534,8 @@ def duplicate_count(
     if max_duplicates < 0:
         raise ValueError("max_duplicates must be >= 0")
     cols = ",".join(column_names) if isinstance(column_names, list) else column_names
-    cursor = conn.execute(
+    cursor = execute(
+        conn,
         "SELECT * FROM anofox_tab_duplicate_count(?, ?, ?::BIGINT)",
         [table_name, cols, max_duplicates],
     )
@@ -565,7 +577,8 @@ def occurrence(
     """
     if mode.lower() not in ("max", "min"):
         raise ValueError("mode must be 'max' or 'min'")
-    cursor = conn.execute(
+    cursor = execute(
+        conn,
         "SELECT * FROM anofox_tab_occurrence(?, ?, ?, ?::BIGINT, ?::BIGINT)",
         [table_name, column_name, mode.lower(), lower_threshold, upper_threshold],
     )
@@ -616,7 +629,8 @@ def match_rate(
     """
     lk = ",".join(left_keys) if isinstance(left_keys, list) else left_keys
     rk = ",".join(right_keys) if isinstance(right_keys, list) else right_keys
-    cursor = conn.execute(
+    cursor = execute(
+        conn,
         "SELECT * FROM anofox_tab_match_rate(?, ?, ?, ?, ?::DOUBLE)",
         [left_table, right_table, lk, rk, min_rate],
     )
@@ -655,7 +669,8 @@ def compliance(
     dict
         ``{"status": "pass"|"fail", "compliance_rate": float, ...}``
     """
-    cursor = conn.execute(
+    cursor = execute(
+        conn,
         "SELECT * FROM anofox_tab_compliance(?, ?, ?::DOUBLE)", [table_name, expression, min_rate]
     )
     return _parse_table_result(
@@ -715,7 +730,7 @@ def rel_count_change(
     )
     if start_date is not None or end_date is not None:
         return _fetch_dicts(conn, sql, params)
-    cursor = conn.execute(sql, params)
+    cursor = execute(conn, sql, params)
     return _parse_table_result(
         cursor,
         {
@@ -783,7 +798,7 @@ def metric_anomaly_iqr(
     )
     if start_date is not None or end_date is not None:
         return _fetch_dicts(conn, sql, params)
-    cursor = conn.execute(sql, params)
+    cursor = execute(conn, sql, params)
     return _parse_table_result(
         cursor,
         {
@@ -852,7 +867,7 @@ def rolling_values_in_set(
     )
     if start_date is not None or end_date is not None:
         return _fetch_dicts(conn, sql, params)
-    cursor = conn.execute(sql, params)
+    cursor = execute(conn, sql, params)
     return _parse_table_result(
         cursor,
         {
@@ -919,6 +934,9 @@ def define_checks(conn: Any, checks: list[dict], checks_table: str = "dq_checks"
 
 def _json_param(value: Any) -> Any:
     """JSON form of a check parameter json.dumps cannot encode itself."""
+    converted = bind_value(value)  # numpy scalar/array, pandas.Timestamp
+    if converted is not value:
+        return converted  # json.dumps calls this again for a datetime in it
     if isinstance(value, datetime.datetime):
         return _utc_naive(value).isoformat()  # aware: as naive UTC, 2026-03-11T06:00:00
     if isinstance(value, (datetime.date, datetime.time)):
@@ -970,13 +988,15 @@ def run_checks(
             conn,
             f"INSERT INTO {result_sql} SELECT * FROM anofox_tab_run_checks(?)", [checks_table]
         )
-        cursor = conn.execute(
+        cursor = execute(
+            conn,
             f"SELECT * FROM {result_sql} "
             f"WHERE run_ts = (SELECT MAX(run_ts) FROM {result_sql}) "
             "ORDER BY check_name NULLS LAST, identifier NULLS LAST"
         )
     else:
-        cursor = conn.execute(
+        cursor = execute(
+            conn,
             "SELECT * FROM anofox_tab_run_checks(?) "
             "ORDER BY check_name NULLS LAST, identifier NULLS LAST",
             [checks_table],
@@ -1008,7 +1028,7 @@ def _date_range_sql(start_date: Optional[str], end_date: Optional[str], params: 
 
 def _fetch_dicts(conn: Any, sql: str, params: list) -> list[dict]:
     """Run a query and return every row as a dict keyed by the result column names."""
-    cursor = conn.execute(sql, params)
+    cursor = execute(conn, sql, params)
     columns = [d[0] for d in cursor.description]
     return [{c: _to_python(v) for c, v in zip(columns, row)} for row in cursor.fetchall()]
 

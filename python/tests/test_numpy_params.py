@@ -1,7 +1,12 @@
 """
-Plain DuckDB connections.
+Values taken from a DataFrame as parameters, and plain DuckDB connections.
 
-The wrappers accept a plain ``duckdb.DuckDBPyConnection`` with the
+A value read from a DataFrame (``df["qty"].max()``, ``df["amount"].iloc[0]``)
+is a numpy scalar, which the DuckDB 2.0 client cannot bind on its own
+("Unable to transform python value of type numpy.int64"). Every wrapper must
+accept such values wherever it accepts a Python number, string or time.
+
+The wrappers also accept a plain ``duckdb.DuckDBPyConnection`` with the
 extension loaded, not only an :class:`~anofox.AnofoxConnection`.
 """
 
@@ -51,6 +56,150 @@ def plain_conn(ext_path):
     connection.execute(f"LOAD '{escaped}'")
     yield connection
     connection.close()
+
+
+# ---------------------------------------------------------------------------
+# The conversion itself
+# ---------------------------------------------------------------------------
+
+class TestBindValue:
+    def test_numpy_scalars_become_python_values(self):
+        import datetime
+        from anofox._sql import bind_value
+        assert type(bind_value(np.int64(7))) is int
+        assert type(bind_value(np.uint8(7))) is int
+        assert type(bind_value(np.float32(0.5))) is float
+        assert bind_value(np.float32(0.5)) == 0.5
+        assert bind_value(np.bool_(True)) is True
+        assert type(bind_value(np.str_("EUR"))) is str
+        assert bind_value(np.datetime64("2026-09-11T09:30:00")) == datetime.datetime(2026, 9, 11, 9, 30)
+        assert bind_value(np.datetime64("2026-09-11")) == datetime.date(2026, 9, 11)
+        assert bind_value(np.datetime64("NaT")) is None
+        assert bind_value(np.timedelta64(90, "m")) == datetime.timedelta(minutes=90)
+        assert bind_value(pd.Timestamp("2026-09-11 09:30")) == datetime.datetime(2026, 9, 11, 9, 30)
+        assert type(bind_value(pd.Timestamp("2026-09-11 09:30"))) is datetime.datetime
+
+    def test_containers_are_converted_element_by_element(self):
+        from anofox._sql import bind_params, bind_value
+        converted = bind_value([np.int64(1), (np.float64(2.5), np.str_("x"))])
+        assert converted == [1, (2.5, "x")]
+        assert type(converted[0]) is int
+        assert bind_value(np.array(["open", "shipped"], dtype=object)) == ["open", "shipped"]
+        assert bind_params({"n": np.int64(3)}) == {"n": 3}
+
+    def test_other_values_are_unchanged(self):
+        from anofox._sql import bind_value
+        for value in (None, 3, 2.5, "EUR", Decimal("1.25"), True, b"x"):
+            assert bind_value(value) is value
+
+
+# ---------------------------------------------------------------------------
+# numpy values from a DataFrame, per wrapper module
+# ---------------------------------------------------------------------------
+
+class TestNumpyParameters:
+    def test_connection_execute(self, conn, orders):
+        row = conn.execute("SELECT ? + 1, ?", [orders["qty"].max(), orders["unit_price"].min()]).fetchone()
+        assert row == (481, float(orders["unit_price"].min()))
+
+    def test_quality_checks(self, conn, orders):
+        from anofox import quality
+        assert isinstance(orders["qty"].min(), np.integer)
+        result = quality.volume(conn, orders, min_rows=orders["qty"].min(), max_rows=np.int64(len(orders)))
+        assert result["status"] == "pass"
+        assert result["row_count"] == len(orders)
+        assert quality.distinct_count(
+            conn, orders, "customer", min_distinct=orders["qty"].min()
+        )["status"] == "pass"
+        assert quality.zscore(conn, orders, "qty", threshold=np.float32(3.0))["status"] == "fail"
+        assert quality.values_in_set(
+            conn, orders, "status", allowed_values=orders["status"].unique(), min_rate=np.float64(1.0)
+        )["status"] == "pass"
+        assert quality.duplicate_count(conn, orders, "order_id", max_duplicates=np.int64(0))["status"] == "pass"
+
+    def test_quality_times_from_a_dataframe(self, conn, orders):
+        from anofox import quality
+        newest = orders["ordered_at"].max()  # pandas.Timestamp
+        result = quality.freshness(conn, orders, "ordered_at", "1 day", reference_time=newest)
+        assert result["status"] == "pass"
+        result = quality.rel_count_change(
+            conn, orders, "ordered_at", window_days=np.int64(3),
+            reference_date=orders["ordered_at"].dt.date.max(),
+        )
+        assert result["status"] in ("pass", "fail")
+        result = quality.rel_count_change(
+            conn, orders, "ordered_at", window_days=np.int64(3),
+            reference_date=orders["ordered_at"].values.max(),  # numpy.datetime64
+        )
+        assert result["status"] in ("pass", "fail")
+
+    def test_anomaly(self, conn, orders):
+        from anofox import anomaly
+        result = anomaly.isolation_forest(
+            conn, orders, "qty", n_trees=np.int64(50), sample_size=np.int64(32),
+            contamination=np.float32(0.05), seed=np.int64(42),
+        )
+        assert result["total_count"] == len(orders)
+        result = anomaly.dbscan(conn, orders, "qty", eps=np.float32(1.5), min_pts=np.int64(3))
+        assert result["total_count"] == len(orders)
+        result = anomaly.outlier_tree(conn, orders, ["qty", "unit_price"], max_depth=np.int64(2))
+        assert isinstance(result, dict)
+
+    def test_profile(self, conn, orders):
+        from anofox import profile
+        result = profile.profile_table(conn, orders, columns="qty", sample_size=np.int64(len(orders)))
+        assert result["column_name"].tolist() == ["qty"]
+
+    def test_money(self, conn, orders):
+        from anofox import money
+        cents = orders["amount_cents"].iloc[-1]
+        assert isinstance(cents, np.integer)
+        assert money.money_from_cents(conn, cents, orders["currency"].to_numpy(dtype=str)[0]) == {
+            "amount": Decimal("4200.00"), "currency": "EUR",
+        }
+        assert money.make_money(conn, orders["unit_price"].iloc[-1], "EUR") == {
+            "amount": Decimal("8.750"), "currency": "EUR",
+        }
+        assert money.make_money(conn, orders["qty"].iloc[-1], "EUR") == {
+            "amount": Decimal("480.000"), "currency": "EUR",
+        }
+        assert money.make_money(conn, np.float32(12.5), "EUR") == {
+            "amount": Decimal("12.500"), "currency": "EUR",
+        }
+        price = money.make_money(conn, Decimal("8.75"), "EUR")
+        assert money.money_multiply(conn, price, orders["qty"].iloc[-1]) == {
+            "amount": Decimal("4200.000"), "currency": "EUR",
+        }
+
+    def test_diff(self, conn, orders):
+        from anofox import diff
+        target = orders.copy()
+        target.loc[3, "qty"] = 99
+        target.loc[5, "status"] = "returned"
+        result = diff.joindiff(
+            conn, orders, target, orders.columns[:1].to_numpy(),
+            compare_columns=np.array(["qty"]),
+        )
+        assert result["order_id"].tolist() == ["SO-2026-1003"]
+
+    def test_check_suite(self, conn, orders):
+        from anofox import quality
+        conn.execute("CREATE OR REPLACE TABLE _np_orders AS SELECT * FROM range(41) t(id)")
+        quality.define_checks(conn, [
+            {"check_name": "orders_volume", "check_type": "volume", "table_name": "_np_orders",
+             "lower_threshold": orders["qty"].min(), "upper_threshold": np.int64(len(orders))},
+            {"check_name": "status_set", "check_type": "values_in_set", "table_name": "_np_orders",
+             "column_name": "id", "params": {"allowed_values": np.arange(41).astype(str)},
+             "lower_threshold": np.float32(1.0)},
+        ], checks_table="_np_checks")
+        try:
+            results = quality.run_checks(conn, "_np_checks")
+            assert {r["check_name"]: r["status"] for r in results} == {
+                "orders_volume": "pass", "status_set": "pass",
+            }
+        finally:
+            conn.execute("DROP TABLE IF EXISTS _np_orders")
+            conn.execute("DROP TABLE IF EXISTS _np_checks")
 
 
 # ---------------------------------------------------------------------------
@@ -112,3 +261,6 @@ class TestPlainConnection:
             "Contact [EMAIL] today"
         )
 
+    def test_numpy_parameters(self, plain_conn, orders):
+        from anofox import quality
+        assert quality.volume(plain_conn, orders, orders["qty"].min())["status"] == "pass"

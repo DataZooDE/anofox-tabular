@@ -10,7 +10,7 @@ from typing import Any, Optional
 import duckdb
 
 from ._loader import AnofoxLoader, _DEFAULT_S3_BASE
-from ._sql import fetch_one, finish, quote_ident
+from ._sql import bind_params, execute, fetch_one, finish, quote_ident
 
 
 def _describe_table(conn: Any, name: str) -> tuple[str, list[tuple[str, str]]]:
@@ -98,9 +98,12 @@ class AnofoxConnection:
         methods of this class, and the anofox functions taking this
         connection, first run such a pending result to its end, so a partly
         read result never blocks them.
+
+        numpy scalars among *parameters* (a value taken from a DataFrame,
+        such as ``df["a"].max()``) are bound as the equivalent Python values.
         """
         if parameters is not None:
-            return self._conn.execute(query, parameters)
+            return self._conn.execute(query, bind_params(parameters))
         return self._conn.execute(query)
 
     def complete(self) -> None:
@@ -291,7 +294,8 @@ class AnofoxConnection:
                 # The second argument is a bound value, or a column of the row.
                 argument, params = (quote_ident(param_column), []) if param_column else ("?", [param])
                 key_sql = quote_ident(id_column) if id_column is not None else "NULL"
-                results = self._conn.execute(
+                results = execute(
+                    self._conn,
                     f"SELECT {quote_ident(position_column)}, {key_sql}, {quote_ident(col)}, "
                     f"{check_sql}({quote_ident(col)}, {argument}) AS valid "
                     f"FROM {quote_ident(view)} ORDER BY 1",

@@ -64,15 +64,71 @@ def native_connection(conn: Any) -> Any:
     return getattr(conn, "native", conn)
 
 
+def bind_value(value: Any) -> Any:
+    """
+    *value* as a parameter DuckDB can bind.
+
+    A value taken from a DataFrame is often a numpy scalar (``df["a"].max()``
+    is a ``numpy.int64``), which the DuckDB 2.0 client cannot bind ("Unable to
+    transform python value of type numpy.int64"). numpy scalars become the
+    equivalent Python value (``int``, ``float``, ``bool``, ``str``, a
+    ``datetime.datetime``/``datetime.date`` for ``datetime64``, ``None`` for
+    ``NaT``), a ``pandas.Timestamp`` a ``datetime.datetime``, a numpy array a
+    list; lists, tuples and dicts are converted element by element. Anything
+    else is returned unchanged.
+    """
+    if isinstance(value, list):
+        return [bind_value(v) for v in value]
+    if isinstance(value, tuple):
+        return tuple(bind_value(v) for v in value)
+    if isinstance(value, dict):
+        return {k: bind_value(v) for k, v in value.items()}
+    cls = type(value)
+    module = cls.__module__.split(".")[0]
+    if module == "numpy":
+        kind = getattr(getattr(value, "dtype", None), "kind", None)
+        if getattr(value, "ndim", 0):  # an array
+            return [bind_value(v) for v in value]
+        if kind == "M":  # datetime64
+            if value != value:  # NaT
+                return None
+            unit = str(value.dtype)[len("datetime64"):].strip("[]")
+            return value.item() if unit in ("D", "W", "M", "Y") else value.astype("datetime64[us]").item()
+        if kind == "m":  # timedelta64
+            return None if value != value else value.astype("timedelta64[us]").item()
+        item = getattr(value, "item", None)
+        return item() if item is not None else value
+    if module == "pandas" and cls.__name__ == "Timestamp":
+        import warnings as _warnings
+        with _warnings.catch_warnings():  # nanoseconds are dropped
+            _warnings.simplefilter("ignore")
+            return value.to_pydatetime()
+    return value
+
+
+def bind_params(params: Any) -> Any:
+    """*params* (a sequence, or a dict of named parameters) with each value converted by :func:`bind_value`."""
+    if params is None:
+        return None
+    if isinstance(params, dict):
+        return {k: bind_value(v) for k, v in params.items()}
+    return [bind_value(v) for v in params]
+
+
+def execute(conn: Any, query: str, params: Any = ()) -> Any:
+    """``conn.execute(query, params)`` with the parameters converted by :func:`bind_params`."""
+    return conn.execute(query, bind_params(params))
+
+
 def run(conn: Any, query: str, params: Sequence[Any] = ()) -> None:
     """Run *query* with bound *params* for its effect, leaving no pending result."""
-    conn.execute(query, list(params))
+    execute(conn, query, params)
     finish(conn)
 
 
 def fetch_row(conn: Any, query: str, params: Sequence[Any] = ()) -> Optional[tuple]:
     """Run *query* with bound *params* and return its first row (``None`` if empty)."""
-    row = conn.execute(query, list(params)).fetchone()
+    row = execute(conn, query, params).fetchone()
     finish(conn)
     return row
 
@@ -90,7 +146,7 @@ def fetch_frame(conn: Any, query: str, params: Sequence[Any] = (), df_type: str 
     # (e.g. the diff's "changed type") were printed twice.
     native = native_connection(conn)
     finish(native)
-    result = native.execute(query, list(params))
+    result = execute(native, query, params)
     try:
         if df_type != "polars":
             return result.df()

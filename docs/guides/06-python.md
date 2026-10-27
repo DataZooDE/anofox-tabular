@@ -245,6 +245,20 @@ fail 0.25 Null rate 0.25 (1/4) exceeds maximum 0.1
 pass
 ```
 
+A value taken from a DataFrame works wherever a number, text or time is expected: numpy
+scalars such as `df["qty"].max()` (`numpy.int64`), `numpy.float32`, `numpy.datetime64` and a
+`pandas.Timestamp` are passed as the equivalent Python value, in every wrapper and in
+`conn.execute(...)` parameters:
+
+```python
+orders = pd.DataFrame({"order_id": ["SO-1001", "SO-1002", "SO-1003"], "qty": [2, 5, 1]})
+print(quality.volume(conn, orders, min_rows=orders["qty"].min(), max_rows=orders["qty"].max())["status"])
+```
+
+```text
+pass
+```
+
 A DataFrame is copied into a temporary table for the call and dropped afterwards. On a
 connection to a database file (`anofox.connect("my.db")`) that copy is written to the file
 while the call runs. The functions that read through a second connection (anomaly detection,

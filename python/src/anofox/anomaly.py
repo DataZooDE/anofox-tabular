@@ -17,7 +17,7 @@ from __future__ import annotations
 import warnings
 from typing import Any, Optional, Sequence, Union
 
-from ._sql import fetch_frame, id_column_arg, quote_ident
+from ._sql import execute, fetch_frame, id_column_arg, quote_ident
 from ._table import DataFrame, column_label, frame_column, output_df_type, table_inputs
 from ._utils import is_arrow_table
 
@@ -625,7 +625,7 @@ def _execute_anomaly(
         return _with_input_index(result, table_or_df)
 
     # summary — convert first row to dict using column names from description
-    cursor = conn.execute(query, params)
+    cursor = execute(conn, query, params)
     col_names = [d[0] for d in cursor.description]
     rows = cursor.fetchall()
 

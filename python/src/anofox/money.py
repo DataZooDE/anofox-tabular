@@ -12,6 +12,7 @@ A missing argument (``None``, ``pandas.NA`` or NaN) gives ``None``, as SQL
 
 from __future__ import annotations
 
+import numbers
 from decimal import Decimal
 from typing import Any, Optional, Union
 
@@ -65,7 +66,8 @@ def make_money(
         raise ValueError("pass either 'currency' or 'currency_column', not both.")
     if is_missing(amount):
         amount = None
-    if amount is None or (isinstance(amount, (int, float, Decimal)) and not isinstance(amount, bool)):
+    # numbers.Real also covers numpy scalars (a value taken from a DataFrame).
+    if amount is None or (isinstance(amount, (numbers.Real, Decimal)) and not isinstance(amount, bool)):
         if currency_column is not None:
             raise ValueError("'currency_column' requires a DataFrame input.")
         if currency is None:

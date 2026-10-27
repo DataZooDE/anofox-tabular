@@ -201,7 +201,9 @@ print(checks.checks["null_rate"]["null_rate"])
   column of the SQL function by name (`status`, the metric, the thresholds, `message`).
   `DECIMAL` values are returned as `float`; `_raw` still holds the raw result row.
 - Values are passed to DuckDB as bound parameters and column names are quoted, so any text
-  (`o'brien@example.ie`) is safe to pass.
+  (`o'brien@example.ie`) is safe to pass. numpy scalars (`df["qty"].max()`, `numpy.float32`,
+  `numpy.datetime64`), numpy arrays and `pandas.Timestamp` are passed as the equivalent Python
+  values, also in `conn.execute(...)` parameters and `define_checks` params.
 - Every function also takes a plain `duckdb.DuckDBPyConnection` with the extension loaded in
   place of an `AnofoxConnection`.
 - The anomaly wrappers use the SQL defaults: every tuning parameter defaults to `None`, is
