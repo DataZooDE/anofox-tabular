@@ -1,7 +1,8 @@
 """
 Anomaly detection wrappers (Isolation Forest, DBSCAN, Outlier Tree).
 
-Functions accept either a table name string or a DataFrame.
+Functions accept a table name string, a pandas/polars DataFrame or a
+pyarrow Table (whose per-row output is a pandas DataFrame).
 When ``output_mode="summary"`` they return a ``dict``; when
 ``output_mode="scores"`` they return a DataFrame: polars for a polars input,
 pandas otherwise.
@@ -18,6 +19,7 @@ from typing import Any, Optional, Sequence, Union
 
 from ._sql import fetch_frame, id_column_arg, quote_ident
 from ._table import DataFrame, column_label, frame_column, output_df_type, table_inputs
+from ._utils import is_arrow_table
 
 
 #: Fewest scored rows for which ``isolation_forest`` and ``isolation_forest_mv``
@@ -433,12 +435,27 @@ def _nan_as_null(table_or_df: Any) -> Any:
     a null, a NaN row is left out by every detector, for both libraries. The
     caller's DataFrame is not changed.
     """
+    if is_arrow_table(table_or_df):
+        return _arrow_nan_as_null(table_or_df)
     if isinstance(table_or_df, str) or type(table_or_df).__module__.split(".")[0] != "polars":
         return table_or_df
     import polars as pl
     if not hasattr(table_or_df, "with_columns"):  # a polars object that is not a DataFrame
         return table_or_df
     return table_or_df.with_columns(pl.col(pl.Float32, pl.Float64).fill_nan(None))
+
+
+def _arrow_nan_as_null(table: Any) -> Any:
+    """A pyarrow Table with each float NaN replaced by null (see :func:`_nan_as_null`)."""
+    import pyarrow as pa
+    import pyarrow.compute as pc
+    for index, field in enumerate(table.schema):
+        if pa.types.is_floating(field.type):
+            column = table.column(index)
+            table = table.set_column(
+                index, field, pc.if_else(pc.is_nan(column), pa.scalar(None, field.type), column)
+            )
+    return table
 
 
 def _columns_csv(columns: Union[str, Sequence[str]]) -> str:
@@ -488,6 +505,13 @@ def _is_untyped_all_missing(series: Any) -> bool:
     if len(series) == 0:
         return False
     module = type(series).__module__
+    if module.startswith("pyarrow"):
+        import pyarrow as pa
+        numeric = (pa.types.is_integer(series.type) or pa.types.is_floating(series.type)
+                   or pa.types.is_decimal(series.type))
+        return pa.types.is_null(series.type) or (
+            not numeric and series.null_count == len(series)
+        )
     if module.startswith("polars"):
         import polars as pl
         return series.dtype == pl.Null or (not series.dtype.is_numeric() and series.null_count() == len(series))
@@ -542,7 +566,9 @@ def _with_input_index(result: Any, table_or_df: Any) -> Any:
     polars result keeps ``row_id`` (polars has no index); a table name input
     keeps the default index.
     """
-    if isinstance(table_or_df, str) or output_df_type(table_or_df) != "pandas":
+    if isinstance(table_or_df, str) or is_arrow_table(table_or_df):
+        return result
+    if output_df_type(table_or_df) != "pandas":
         return result
     positions = result["row_id"].to_numpy(dtype="int64") - 1
     result.index = table_or_df.index.take(positions)

@@ -16,6 +16,7 @@ from ._sql import fetch_frame, fetch_one, quote_ident
 from ._utils import (
     detect_df_type,
     drop_df_table,
+    is_arrow_table,
     register_df_as_table,
     registered_view,
 )
@@ -39,18 +40,21 @@ def resolve_table(conn: Any, table_or_df: Union[str, Any]) -> tuple[str, bool]:
     """
     Return ``(table_name, was_registered)``.
 
-    If *table_or_df* is a DataFrame, it is materialized as a temporary table.
+    If *table_or_df* is a DataFrame or a ``pyarrow.Table``, it is materialized
+    as a temporary table.
     """
     if isinstance(table_or_df, str):
         return table_or_df, False
-    try:
-        detect_df_type(table_or_df)  # validate type before registering
-    except TypeError as error:
-        if "Series" in str(error):
-            raise
-        raise TypeError(
-            f"pass a table name or a DataFrame (pandas or polars), got {_describe(table_or_df)}"
-        ) from None
+    if not is_arrow_table(table_or_df):
+        try:
+            detect_df_type(table_or_df)  # validate type before registering
+        except TypeError as error:
+            if "Series" in str(error):
+                raise
+            raise TypeError(
+                "pass a table name, a DataFrame (pandas or polars) or a pyarrow Table, "
+                f"got {_describe(table_or_df)}"
+            ) from None
     table_name = register_df_as_table(conn.native, table_or_df)
     return table_name, True
 
@@ -209,6 +213,8 @@ def column_list(columns: Any) -> Optional[list]:
 
 def frame_column(df: Any, name: str) -> Any:
     """The column of DataFrame *df* that DuckDB calls *name* (also for an integer label), else None."""
+    if is_arrow_table(df):
+        return df.column(name) if name in df.column_names else None
     for label in df.columns:
         if str(label) == name:
             return df[label]
@@ -230,8 +236,12 @@ def check_row_input(value: Any, column: Optional[str]) -> str:
     try:
         df_type = detect_df_type(value)
     except TypeError:
+        hint = (
+            "; convert a pyarrow Table with table.to_pandas() or polars.from_arrow(table)"
+            if is_arrow_table(value) else ""
+        )
         raise TypeError(
-            f"expected a string or a pandas/polars DataFrame, got {_describe(value)}"
+            f"expected a string or a pandas/polars DataFrame, got {_describe(value)}{hint}"
         ) from None
     if column is None:
         raise ValueError("'column' is required when passing a DataFrame.")
@@ -310,9 +320,12 @@ def _describe(value: Any) -> str:
 def output_df_type(*inputs: Any) -> str:
     """
     DataFrame library for a result: ``"polars"`` when the first DataFrame among
-    *inputs* is a polars DataFrame, else ``"pandas"`` (also for table names).
+    *inputs* is a polars DataFrame, else ``"pandas"`` (also for table names
+    and pyarrow Tables).
     """
     for value in inputs:
+        if is_arrow_table(value):
+            return "pandas"
         if not isinstance(value, str):
             return detect_df_type(value)
     return "pandas"

@@ -159,7 +159,10 @@ print(checks.checks["null_rate"]["null_rate"])
   `pii_scan_table`, `pii_audit_table`, `conn.profile`, `conn.quality_check`) take a table name
   or a DataFrame. A DataFrame is copied into a temporary table for the call and dropped
   afterwards. On a connection to a database file (`anofox.connect("my.db")`) that copy is
-  written to the file while the call runs. Any other object raises `TypeError`. The
+  written to the file while the call runs. They also take a `pyarrow.Table` (copied by DuckDB
+  directly; the result is a pandas DataFrame, as for a table name). Any other object raises
+  `TypeError`; the row-wise helpers need a pandas or polars DataFrame (convert a pyarrow Table
+  with `table.to_pandas()` or `polars.from_arrow(table)`). The
   functions that read through their own connection (anomaly detection, profiling, PII table
   scans) cannot see a temporary view, such as a DataFrame registered with `conn.register()`:
   its name raises `ValueError` with the hint to pass the DataFrame itself.

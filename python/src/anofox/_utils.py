@@ -38,6 +38,14 @@ def detect_df_type(df: Any) -> DFType:
     )
 
 
+def is_arrow_table(obj: Any) -> bool:
+    """True for a ``pyarrow.Table`` (or a subclass), which DuckDB can copy natively."""
+    return any(
+        cls.__module__.split(".")[0] == "pyarrow" and cls.__name__ == "Table"
+        for cls in type(obj).__mro__
+    )
+
+
 def register_df_as_table(conn: Any, df: Any, name: str | None = None) -> str:
     """
     Materialise *df* as a real DuckDB table on *conn* and return the table name.
@@ -64,6 +72,8 @@ def register_df_as_table(conn: Any, df: Any, name: str | None = None) -> str:
 
 def _registrable(df: Any) -> Any:
     """Return an object DuckDB can register for *df* (pandas goes through Arrow)."""
+    if is_arrow_table(df):
+        return df
     if detect_df_type(df) == "pandas":
         # Convert via PyArrow to handle pandas 3.x StringDtype and other
         # extended dtypes that DuckDB's register() may not recognise directly.

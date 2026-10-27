@@ -49,9 +49,9 @@ class TestQualityAcceptsDataFrames:
 
     def test_other_objects_raise_type_error(self, conn):
         from anofox import quality
-        with pytest.raises(TypeError, match="pass a table name or a DataFrame"):
+        with pytest.raises(TypeError, match="pass a table name, a DataFrame"):
             quality.volume(conn, 42, min_rows=1)
-        with pytest.raises(TypeError, match="pass a table name or a DataFrame"):
+        with pytest.raises(TypeError, match="pass a table name, a DataFrame"):
             quality.null_rate(conn, None, "x")
 
 
@@ -69,5 +69,5 @@ class TestPiiTablesAcceptDataFrames:
 
     def test_other_objects_raise_type_error(self, conn):
         from anofox import pii
-        with pytest.raises(TypeError, match="pass a table name or a DataFrame"):
+        with pytest.raises(TypeError, match="pass a table name, a DataFrame"):
             pii.pii_scan_table(conn, ["a"])

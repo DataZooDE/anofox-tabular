@@ -5,7 +5,7 @@
 **Use this guide to:**
 - Install the Python package and open a connection
 - Run the SQL functions from Python
-- Validate, check, mask, score and diff pandas or polars DataFrames
+- Validate, check, mask, score and diff pandas or polars DataFrames (or pyarrow Tables)
 - Load the extension into a plain `duckdb` connection instead
 
 ## Install
@@ -769,6 +769,34 @@ for orders in (pd.DataFrame({"amount": amounts}), pl.DataFrame({"amount": amount
 In SQL a `NaN` in a table is a value: the Isolation Forest skips it, but DBSCAN calls it noise
 and OutlierTree counts it in `total_rows`. Filter infinite values yourself if they are errors
 rather than extreme values.
+
+## Use a pyarrow Table
+
+The functions that take a table name (the checks in `anofox.quality`, the detectors in
+`anofox.anomaly`, `anofox.profile`, `anofox.diff`, `pii_scan_table` and `pii_audit_table`) also
+take a `pyarrow.Table`, which DuckDB copies without a conversion. They return a pandas
+DataFrame for it, as for a table name. A float `NaN` in it is left out by the detectors like a
+`NULL`. The row-wise helpers (`validate.email_is_valid(..., column=)` and the like) need a
+pandas or polars DataFrame and raise `TypeError` for a pyarrow Table: convert it with
+`table.to_pandas()` or `polars.from_arrow(table)`.
+
+```python
+import pyarrow as pa
+
+ledger = pa.table({
+    "invoice_no": [f"INV-{20260001 + i}" for i in range(30)],
+    "amount": [4800.0 if i == 17 else 120.0 + (i % 6) * 4.5 for i in range(30)],
+})
+print(quality.volume(conn, ledger, min_rows=30)["status"])
+scores = anomaly.isolation_forest(conn, ledger, "amount", output_mode="scores",
+                                  id_column="invoice_no", contamination=0.05, seed=7)
+print(type(scores).__module__.split(".")[0], scores.loc[scores["is_anomaly"], "invoice_no"].tolist())
+```
+
+```text
+pass
+pandas ['INV-20260018']
+```
 
 ## Use polars
 

@@ -154,7 +154,7 @@ class AnofoxConnection:
         Parameters
         ----------
         df_or_table:
-            Either a pandas/polars DataFrame or a table name. The name is
+            A pandas/polars DataFrame, a pyarrow Table or a table name. The name is
             resolved like in a query (the search path picks among same-named
             tables in different schemas); ``"schema.table"`` names a table in
             another schema. An unknown table raises ``duckdb.CatalogException``.
@@ -328,7 +328,7 @@ class AnofoxConnection:
         Parameters
         ----------
         df:
-            pandas or polars DataFrame.
+            pandas or polars DataFrame, or a pyarrow Table.
         rules:
             Mapping of ``{check_name: params_dict}``. Supported checks and
             their keys:
@@ -354,10 +354,11 @@ class AnofoxConnection:
             ``result["checks"]`` work too.
         """
         from ._table import table_inputs
-        from ._utils import detect_df_type
+        from ._utils import detect_df_type, is_arrow_table
         from . import quality as q
 
-        detect_df_type(df)  # validate type
+        if not is_arrow_table(df):
+            detect_df_type(df)  # validate type
         unknown = [name for name in rules if name not in _QUALITY_CHECK_RULES]
         if unknown:
             raise ValueError(
