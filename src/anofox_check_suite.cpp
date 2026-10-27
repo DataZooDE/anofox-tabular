@@ -838,28 +838,14 @@ constexpr const char *UTC_INSTANT_TEMPLATE =
 
 using TokenSet = std::unordered_set<const ParsedExpression *>;
 
-// One SQL expression parsed with the session's parser settings; nullptr when it does not parse
-// as exactly one plain expression
+// One SQL expression parsed with the session's parser settings (ParseSingleExpression);
+// nullptr when it is not exactly one expression
 static unique_ptr<ParsedExpression> ParseExpression(ClientContext &context, const string &sql) {
-	vector<unique_ptr<SQLStatement>> statements;
 	try {
-		statements = ParseWithContextSettings(context, "SELECT (" + sql + ")");
+		return ParseSingleExpression(context, sql, "filter_expr");
 	} catch (std::exception &) {
 		return nullptr;
 	}
-	if (statements.size() != 1 || statements[0]->type != StatementType::SELECT_STATEMENT) {
-		return nullptr;
-	}
-	auto &select = statements[0]->Cast<SelectStatement>();
-	if (!select.node || select.node->type != QueryNodeType::SELECT_NODE) {
-		return nullptr;
-	}
-	auto &node = select.node->Cast<SelectNode>();
-	if (node.select_list.size() != 1 || node.where_clause ||
-	    (node.from_table && node.from_table->type != TableReferenceType::EMPTY_FROM)) {
-		return nullptr;
-	}
-	return std::move(node.select_list[0]);
 }
 
 // Whether `expr` is the column reference `name` (a placeholder)
@@ -1257,19 +1243,20 @@ static CheckBranch BuildCheckBranch(ClientContext &context, const CheckSpec &spe
 		return branch;
 	} else if (spec.check_type == "compliance") {
 		RequireParam(spec, spec.expression, "expression");
-		ValidateBooleanExpression(context, spec.expression, "params.expression");
+		// The parsed expression written back as SQL (ParseSingleExpression)
+		const string expression = ValidateBooleanExpression(context, spec.expression, "params.expression");
 		// TRY(): a row on which the user's expression fails at runtime (e.g. a
 		// CAST of free text) counts as non-compliant instead of aborting the suite
-		if (ExpressionSupportsTry(context, spec, spec.expression)) {
+		if (ExpressionSupportsTry(context, spec, expression)) {
 			// One outcome per row: TRUE compliant, FALSE not (also for a NULL result), NULL where
 			// the expression fails (TRY). The expression appears only once: DuckDB's common
 			// subexpression elimination would move a repeated one out of the TRY().
-			source_sql = "(SELECT *, TRY(COALESCE((" + spec.expression + "), FALSE)) AS __anofox_outcome FROM " +
+			source_sql = "(SELECT *, TRY(COALESCE((" + expression + "), FALSE)) AS __anofox_outcome FROM " +
 			             table_ref + where_clause + ") __src";
 			value_expr = "CAST(SUM(CASE WHEN __anofox_outcome THEN 1 ELSE 0 END) AS DOUBLE) / NULLIF(COUNT(*), 0)";
 			branch.unevaluated_expr = "COUNT(*) FILTER (WHERE __anofox_outcome IS NULL)";
 		} else {
-			value_expr = "CAST(SUM(CASE WHEN COALESCE((" + spec.expression +
+			value_expr = "CAST(SUM(CASE WHEN COALESCE((" + expression +
 			             "), FALSE) THEN 1 ELSE 0 END) AS DOUBLE) / NULLIF(COUNT(*), 0)";
 		}
 	} else if (spec.check_type == "freshness") {
@@ -1780,7 +1767,7 @@ static string BuildValidatedCheckSQL(ClientContext &context, CheckSpec spec) {
 	string filter_sql;
 	if (!spec.filter_expr.empty()) {
 		filter_sql = ExpandFilterDateTokens(context, spec);
-		ValidateBooleanExpression(context, filter_sql, "filter_expr");
+		filter_sql = ValidateBooleanExpression(context, filter_sql, "filter_expr");
 		// A row on which the filter fails at runtime is filtered out instead of
 		// aborting the suite
 		filter_sql = TolerantBooleanSQL(context, spec, filter_sql);

@@ -729,10 +729,17 @@ compliance(table_name VARCHAR, expression VARCHAR [, min_rate DOUBLE])
 | `expression` | `VARCHAR` | required | A SQL boolean expression over the table's columns |
 | `min_rate` | `DOUBLE` | `1.0` (also for `NULL`) | Lowest allowed share of compliant rows |
 
+The expression is parsed on its own and must be exactly one SQL expression. A comment in it
+(`amount > 0 -- refunds excluded`) is fine. Text that does not parse, such as an unterminated
+`/*` or `false) OR (true`, is rejected (`compliance: failed to parse expression ...`), and so
+is anything that parses as more than one expression: a second statement, a list
+(`a > 0, b > 0`), a `FROM`, `WHERE` or `ORDER BY` clause, a `UNION` or an alias
+(`compliance: expression '...' must be a single expression`). `CASE`, `IN` lists and
+subqueries (`customer_id IN (SELECT id FROM customers)`) work.
+
 > **Security note:** the expression runs as SQL with your privileges. At bind time it must parse
-> as a single boolean expression, so a second statement is rejected. Scalar subqueries are still
-> allowed. Pass only expressions you trust; the trust model is the same as running the SQL
-> yourself.
+> as a single expression, so a second statement is rejected. Subqueries are still allowed. Pass
+> only expressions you trust; the trust model is the same as running the SQL yourself.
 
 ```sql
 SELECT status, compliance_rate, compliant_count, total_count
@@ -753,7 +760,7 @@ SELECT * FROM compliance('orders', 'amount > 0; DROP TABLE orders');
 ```
 
 ```text
-Binder Error: compliance: failed to parse expression 'amount > 0; DROP TABLE orders': syntax error at or near ";"
+Binder Error: compliance: expression 'amount > 0; DROP TABLE orders' must be a single expression
 -> Unexpected? Please report it: https://github.com/DataZooDE/anofox-tabular/issues
 
 LINE 1: SELECT * FROM compliance('orders', 'amount > 0; DROP TABLE orders');
@@ -1290,8 +1297,10 @@ are, for example:
   results could not be told apart
 - a `date_column`, or the `column_name` of a `freshness` check, that is not a date, timestamp or
   text column (see above)
-- a `compliance` expression or `filter_expr` that does not parse or references an unknown column
-  (`params.expression: failed to parse expression 'amount >': syntax error at or near ")"`)
+- a `compliance` expression or `filter_expr` that does not parse, is not exactly one expression
+  (as for [`compliance`](#compliance)) or references an unknown column
+  (`params.expression: failed to parse expression 'amount >': syntax error at or near ">"`,
+  `filter_expr: expression 'id > 0; DROP TABLE orders' must be a single expression`)
 - a `regex_match` pattern that is not a valid regular expression
   (`params.pattern '[a-z' is not a valid regular expression: missing ]: [a-z`)
 - a `match_rate` `right_table` that does not exist

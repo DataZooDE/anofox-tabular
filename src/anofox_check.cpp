@@ -5,6 +5,9 @@
 #include "telemetry.hpp"
 #include "duckdb/function/table_function.hpp"
 #include "duckdb/parser/parser.hpp"
+#include "duckdb/parser/query_node/select_node.hpp"
+#include "duckdb/parser/statement/select_statement.hpp"
+#include "duckdb/parser/tableref.hpp"
 #include "duckdb/parser/tableref/subqueryref.hpp"
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/error_data.hpp"
@@ -58,18 +61,16 @@ string BuildVarcharArrayLiteral(const Value &list_value) {
 	return literal;
 }
 
-// Validate that a caller-supplied string is a single SQL boolean expression.
-// Rejects multi-statement payloads ("1); DROP TABLE x;--") because "SELECT (<expr>)"
-// must parse to exactly one SELECT statement. The generated query is additionally
-// re-validated by ParseSubquery as a single SELECT. Note that the expression is still
-// executed with the caller's privileges — same trust model as running SQL directly.
-void ValidateBooleanExpression(ClientContext &context, const string &expr, const string &function_name) {
+unique_ptr<ParsedExpression> ParseSingleExpression(ClientContext &context, const string &expr,
+                                                   const string &function_name) {
 	if (expr.empty()) {
 		throw BinderException(function_name + ": expression must not be empty");
 	}
+	// The expression is parsed on its own (a SELECT list): nothing after it can close a
+	// surrounding parenthesis, and a trailing -- comment ends with the text
 	vector<unique_ptr<SQLStatement>> statements;
 	try {
-		statements = ParseWithContextSettings(context, "SELECT (" + expr + ")");
+		statements = ParseWithContextSettings(context, "SELECT " + expr);
 	} catch (const std::exception &ex) {
 		// RawMessage: what() of a DuckDB 2.0 exception is a JSON object
 		auto cause = ErrorData(ex).RawMessage();
@@ -79,9 +80,27 @@ void ValidateBooleanExpression(ClientContext &context, const string &expr, const
 		}
 		throw BinderException(function_name + ": failed to parse expression '" + expr + "': " + cause);
 	}
+	const string not_single = function_name + ": expression '" + expr + "' must be a single expression";
 	if (statements.size() != 1 || statements[0]->type != StatementType::SELECT_STATEMENT) {
-		throw BinderException(function_name + ": expression must be a single SQL boolean expression");
+		throw BinderException(not_single);
 	}
+	auto &select = statements[0]->Cast<SelectStatement>();
+	if (!select.node || select.node->type != QueryNodeType::SELECT_NODE || !select.node->modifiers.empty() ||
+	    !select.node->cte_map.map.empty()) {
+		throw BinderException(not_single);
+	}
+	auto &node = select.node->Cast<SelectNode>();
+	const bool has_from = node.from_table && node.from_table->type != TableReferenceType::EMPTY_FROM;
+	if (node.select_list.size() != 1 || has_from || node.where_clause || node.having || node.qualify ||
+	    node.sample || !node.groups.group_expressions.empty() || !node.groups.grouping_sets.empty() ||
+	    node.select_list[0]->HasAlias()) {
+		throw BinderException(not_single);
+	}
+	return std::move(node.select_list[0]);
+}
+
+string ValidateBooleanExpression(ClientContext &context, const string &expr, const string &function_name) {
+	return ParseSingleExpression(context, expr, function_name)->ToString();
 }
 
 void ValidateRegexPattern(ClientContext &context, const string &pattern, const string &prefix) {
@@ -1267,7 +1286,9 @@ static unique_ptr<TableRef> CheckComplianceBindReplace(ClientContext &context, T
 
 	string table_name = RequireNameArgument(input, 0, "compliance", "table_name");
 	string expression = RequireNonNullArgument(input, 1, "compliance", "expression");
-	ValidateBooleanExpression(context, expression, "compliance");
+	// The parsed expression, written back as SQL: no comment or trailing text of the caller's
+	// can reach the generated query
+	expression = ValidateBooleanExpression(context, expression, "compliance");
 	Value min_rate = (input.inputs.size() > 2) ? input.inputs[2] : Value();
 	ValidateRate(min_rate, "compliance", "min_rate");
 	RequireRelationColumns(context, "compliance", table_name);

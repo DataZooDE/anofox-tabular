@@ -95,11 +95,16 @@ SELECT * FROM compliance('checkval_t', '')
 ----
 expression must not be empty
 
-# multi-statement payload is rejected
+# multi-statement payload is rejected (the expression is parsed on its own: ')' cannot close it)
 statement error
 SELECT * FROM compliance('checkval_t', '1); DROP TABLE checkval_t;--')
 ----
-single SQL boolean expression
+failed to parse expression
+
+statement error
+SELECT * FROM compliance('checkval_t', '1; DROP TABLE checkval_t')
+----
+must be a single expression
 
 # unbalanced parenthesis payload is rejected
 statement error

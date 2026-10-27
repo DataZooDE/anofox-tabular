@@ -2,6 +2,7 @@
 
 #include "duckdb.hpp"
 #include "duckdb/main/extension/extension_loader.hpp"
+#include "duckdb/parser/parsed_expression.hpp"
 
 namespace duckdb {
 namespace anofox {
@@ -10,10 +11,17 @@ void RegisterCheckFunctions(ExtensionLoader &loader);
 
 // Shared with the check-suite runner (anofox_check_suite.cpp):
 
-// Validate that a caller-supplied string is a single SQL boolean expression.
-// Rejects multi-statement payloads; the expression is still executed with the
-// caller's privileges (same trust model as running SQL directly).
-void ValidateBooleanExpression(ClientContext &context, const string &expr, const string &function_name);
+// Parse a caller-supplied expression (compliance, params.expression, filter_expr) on its own.
+// It must be exactly one SQL expression: text that does not parse throws "<function_name>:
+// failed to parse expression '<expr>': <cause>"; several statements, a list, a FROM/WHERE/
+// GROUP BY/ORDER BY/... clause, a set operation or an alias throw "<function_name>: expression
+// '<expr>' must be a single expression". The expression is still executed with the caller's
+// privileges (same trust model as running SQL directly).
+unique_ptr<ParsedExpression> ParseSingleExpression(ClientContext &context, const string &expr,
+                                                   const string &function_name);
+// ParseSingleExpression written back as SQL (comments dropped): the text to embed in generated
+// queries, so nothing of the caller's text outside the expression can reach them
+string ValidateBooleanExpression(ClientContext &context, const string &expr, const string &function_name);
 
 // window_days of the time-aware checks: 1 to MAX_WINDOW_DAYS (100 years)
 constexpr int64_t MAX_WINDOW_DAYS = 36500;

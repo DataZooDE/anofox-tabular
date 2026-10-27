@@ -1,0 +1,201 @@
+# name: test/sql/anofox_check_expression.test
+# description: The expression of compliance (and of a run_checks compliance check) and a
+#              run_checks filter_expr are parsed on their own and must be exactly one SQL
+#              expression. A trailing comment is part of the expression's text, not of the
+#              generated query; text that closes the expression early (false) OR (true), a
+#              UNION, a second statement, a list, a FROM clause or an alias is rejected with a
+#              clear error (an 'error' row in run_checks). CASE, IN and subqueries keep working.
+# group: [anofox_tabular]
+
+require anofox_tabular
+
+statement ok
+LOAD anofox_tabular
+
+statement ok
+SET anofox_tab_trace_enabled = false
+
+# A support desk: 8 tickets, P1 tickets have a 4 hour SLA, the others 48 hours
+statement ok
+CREATE TABLE support_tickets (
+    ticket_id INTEGER, priority VARCHAR, status VARCHAR, customer_tier VARCHAR, sla_hours INTEGER,
+    resolved_hours INTEGER)
+
+statement ok
+INSERT INTO support_tickets VALUES
+    (1, 'P1', 'closed', 'gold', 4, 3),
+    (2, 'P2', 'closed', 'silver', 48, 30),
+    (3, 'P3', 'open', 'bronze', 48, NULL),
+    (4, 'P1', 'closed', 'gold', 4, 9),
+    (5, 'P2', 'pending', 'silver', 48, NULL),
+    (6, 'P3', 'closed', 'bronze', 48, 50),
+    (7, 'P2', 'closed', 'gold', 48, 12),
+    (8, 'P1', 'escalated', 'platinum', 4, NULL)
+
+statement ok
+CREATE TABLE sla_tiers (tier VARCHAR)
+
+statement ok
+INSERT INTO sla_tiers VALUES ('bronze'), ('silver'), ('gold')
+
+# ===--------------------------------------------------------------------===
+# compliance: comments belong to the expression
+# ===--------------------------------------------------------------------===
+
+query TII
+SELECT status, compliant_count, total_count FROM compliance('support_tickets', 'ticket_id < 5 -- first batch only', 0.0)
+----
+pass	4	8
+
+query TII
+SELECT status, compliant_count, total_count
+FROM compliance('support_tickets', 'resolved_hours <= sla_hours /* contractual SLA */ OR resolved_hours IS NULL', 0.5)
+----
+pass	6	8
+
+query TII
+SELECT status, compliant_count, total_count FROM compliance('support_tickets', '-- the SLA rule
+resolved_hours <= sla_hours', 0.0)
+----
+pass	3	8
+
+# ===--------------------------------------------------------------------===
+# compliance: valid complex expressions
+# ===--------------------------------------------------------------------===
+
+query TII
+SELECT status, compliant_count, total_count FROM compliance('support_tickets',
+    'CASE WHEN priority = ''P1'' THEN resolved_hours <= 4 ELSE resolved_hours <= 48 END', 0.0)
+----
+pass	3	8
+
+query TII
+SELECT status, compliant_count, total_count
+FROM compliance('support_tickets', 'status IN (''open'', ''pending'', ''closed'')', 0.9)
+----
+fail	7	8
+
+query TII
+SELECT status, compliant_count, total_count
+FROM compliance('support_tickets', 'customer_tier IN (SELECT tier FROM sla_tiers)', 0.0)
+----
+pass	7	8
+
+query TII
+SELECT status, compliant_count, total_count
+FROM compliance('support_tickets', 'EXISTS (SELECT 1 FROM sla_tiers WHERE tier = customer_tier) AND status <> ''open''', 0.0)
+----
+pass	6	8
+
+# A string literal holding comment and statement characters is just a string
+query TII
+SELECT status, compliant_count, total_count
+FROM compliance('support_tickets', 'status <> ''-- ); DROP TABLE support_tickets; /*''', 1.0)
+----
+pass	8	8
+
+# ===--------------------------------------------------------------------===
+# compliance: anything but one expression is rejected
+# ===--------------------------------------------------------------------===
+
+statement error
+SELECT * FROM compliance('support_tickets', 'false) OR (true')
+----
+compliance: failed to parse expression 'false) OR (true'
+
+statement error
+SELECT * FROM compliance('support_tickets', 'ticket_id<5) UNION ALL (SELECT 1')
+----
+compliance: failed to parse expression 'ticket_id<5) UNION ALL (SELECT 1'
+
+statement error
+SELECT * FROM compliance('support_tickets', 'ticket_id < 5 /* unterminated')
+----
+compliance: failed to parse expression 'ticket_id < 5 /* unterminated'
+
+statement error
+SELECT * FROM compliance('support_tickets', 'sla_hours > 0; DROP TABLE support_tickets')
+----
+compliance: expression 'sla_hours > 0; DROP TABLE support_tickets' must be a single expression
+
+statement error
+SELECT * FROM compliance('support_tickets', 'ticket_id > 0, status = ''open''')
+----
+compliance: expression 'ticket_id > 0, status = 'open'' must be a single expression
+
+statement error
+SELECT * FROM compliance('support_tickets', 'true FROM sla_tiers')
+----
+compliance: expression 'true FROM sla_tiers' must be a single expression
+
+statement error
+SELECT * FROM compliance('support_tickets', 'ticket_id > 0 UNION SELECT false')
+----
+compliance: expression 'ticket_id > 0 UNION SELECT false' must be a single expression
+
+statement error
+SELECT * FROM compliance('support_tickets', 'sla_hours > 0 AS sla_set')
+----
+compliance: expression 'sla_hours > 0 AS sla_set' must be a single expression
+
+statement error
+SELECT * FROM compliance('support_tickets', 'sla_hours > 0 ORDER BY 1')
+----
+compliance: expression 'sla_hours > 0 ORDER BY 1' must be a single expression
+
+# the table survived
+query I
+SELECT COUNT(*) FROM support_tickets
+----
+8
+
+# ===--------------------------------------------------------------------===
+# run_checks: params.expression and filter_expr
+# ===--------------------------------------------------------------------===
+
+statement ok
+CREATE TABLE desk_checks (
+    check_name VARCHAR, check_type VARCHAR, table_name VARCHAR, column_name VARCHAR,
+    params VARCHAR, lower_threshold DOUBLE, upper_threshold DOUBLE, monitor_only BOOLEAN,
+    identifier_column VARCHAR, filter_expr VARCHAR)
+
+statement ok
+INSERT INTO desk_checks VALUES
+    ('a_sla_commented', 'compliance', 'support_tickets', NULL,
+     '{"expression": "resolved_hours <= sla_hours -- open tickets count as late"}', 0.0, NULL, false, NULL, NULL),
+    ('b_p1_volume', 'volume', 'support_tickets', NULL, NULL, 1, NULL, false, NULL,
+     'priority = ''P1'' -- the urgent queue'),
+    ('c_p1_block_comment', 'volume', 'support_tickets', NULL, NULL, 1, NULL, false, NULL,
+     '/* urgent */ priority = ''P1'''),
+    ('d_tier_subquery', 'volume', 'support_tickets', NULL, NULL, 1, NULL, false, NULL,
+     'customer_tier IN (SELECT tier FROM sla_tiers) AND status <> ''open'''),
+    ('e_case_rule', 'compliance', 'support_tickets', NULL,
+     '{"expression": "CASE WHEN priority = ''P1'' THEN resolved_hours <= 4 ELSE resolved_hours <= 48 END"}', 0.0, NULL, false, NULL, NULL),
+    ('f_filter_breakout', 'volume', 'support_tickets', NULL, NULL, 1, NULL, false, NULL, 'false) OR (true'),
+    ('g_filter_union', 'volume', 'support_tickets', NULL, NULL, 1, NULL, false, NULL,
+     'ticket_id<5) UNION ALL (SELECT 1'),
+    ('h_filter_statements', 'volume', 'support_tickets', NULL, NULL, 1, NULL, false, NULL,
+     'ticket_id > 0; DROP TABLE support_tickets'),
+    ('i_expression_breakout', 'compliance', 'support_tickets', NULL,
+     '{"expression": "false) OR (true"}', 1.0, NULL, false, NULL, NULL),
+    ('j_expression_list', 'compliance', 'support_tickets', NULL,
+     '{"expression": "ticket_id > 0, true"}', 1.0, NULL, false, NULL, NULL)
+
+query TTT
+SELECT check_name, status, message FROM run_checks('desk_checks')
+----
+a_sla_commented	pass	compliance value 0.375 is within thresholds
+b_p1_volume	pass	volume value 3.0 is within thresholds; filter matched 3/8 rows
+c_p1_block_comment	pass	volume value 3.0 is within thresholds; filter matched 3/8 rows
+d_tier_subquery	pass	volume value 6.0 is within thresholds; filter matched 6/8 rows
+e_case_rule	pass	compliance value 0.375 is within thresholds
+f_filter_breakout	error	check 'f_filter_breakout' (volume) cannot run: filter_expr: failed to parse expression 'false) OR (true': syntax error at or near ")"
+g_filter_union	error	check 'g_filter_union' (volume) cannot run: filter_expr: failed to parse expression 'ticket_id<5) UNION ALL (SELECT 1': syntax error at or near ")"
+h_filter_statements	error	check 'h_filter_statements' (volume) cannot run: filter_expr: expression 'ticket_id > 0; DROP TABLE support_tickets' must be a single expression
+i_expression_breakout	error	check 'i_expression_breakout' (compliance) cannot run: params.expression: failed to parse expression 'false) OR (true': syntax error at or near ")"
+j_expression_list	error	check 'j_expression_list' (compliance) cannot run: params.expression: expression 'ticket_id > 0, true' must be a single expression
+
+query I
+SELECT COUNT(*) FROM support_tickets
+----
+8
