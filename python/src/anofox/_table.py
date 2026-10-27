@@ -10,7 +10,6 @@ from typing import Any, Callable, Optional, TypeVar, Union
 
 from ._sql import fetch_frame, quote_ident
 from ._utils import (
-    POSITION_COLUMN,
     detect_df_type,
     drop_df_table,
     register_df_as_table,
@@ -147,11 +146,11 @@ def apply_scalar(
     input's rows in their order, its other columns unchanged and, for pandas,
     its index, so the new column can be assigned back to the input.
     """
-    with registered_view(conn.native, df) as view:
+    with registered_view(conn.native, df) as (view, position):
         result = fetch_frame(
             conn,
             f"SELECT {expression} AS {quote_ident(result_name)} "
-            f"FROM {quote_ident(view)} ORDER BY {quote_ident(POSITION_COLUMN)}",
+            f"FROM {quote_ident(view)} ORDER BY {quote_ident(position)}",
             params,
             df_type,
         )

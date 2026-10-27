@@ -231,7 +231,7 @@ class AnofoxConnection:
             DataFrame, its 0-based row position for a polars DataFrame.
         """
         from .validate import EmailRule, PhoneRule
-        from ._utils import POSITION_COLUMN, detect_df_type, registered_view
+        from ._utils import detect_df_type, registered_view
 
         df_type = detect_df_type(df)
         labels = list(df.index) if df_type == "pandas" else None
@@ -254,10 +254,10 @@ class AnofoxConnection:
                 )
 
         failure_rows = []
-        with registered_view(self._conn, df) as view:
+        with registered_view(self._conn, df) as (view, position_column):
             for col, check_sql, param, rule_name in checks:
                 results = self._conn.execute(
-                    f"SELECT {quote_ident(POSITION_COLUMN)}, {quote_ident(col)}, "
+                    f"SELECT {quote_ident(position_column)}, {quote_ident(col)}, "
                     f"{check_sql}({quote_ident(col)}, ?) AS valid "
                     f"FROM {quote_ident(view)} ORDER BY 1",
                     [param],

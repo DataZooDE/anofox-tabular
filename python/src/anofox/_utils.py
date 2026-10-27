@@ -77,32 +77,32 @@ def _registrable(df: Any) -> Any:
     return df
 
 
-POSITION_COLUMN = "__anofox_pos"
-
-
-def with_position(df: Any) -> Any:
-    """Return a copy of *df* with a 0-based row position column :data:`POSITION_COLUMN`."""
+def with_position(df: Any, name: str) -> Any:
+    """Return a copy of *df* with a 0-based row position column *name*."""
     positions = range(len(df))
     if detect_df_type(df) == "pandas":
-        return df.assign(**{POSITION_COLUMN: list(positions)})
+        return df.assign(**{name: list(positions)})
     import polars as pl
-    return df.with_columns(pl.Series(POSITION_COLUMN, list(positions), dtype=pl.Int64))
+    return df.with_columns(pl.Series(name, list(positions), dtype=pl.Int64))
 
 
 @contextmanager
-def registered_view(conn: Any, df: Any) -> Iterator[str]:
+def registered_view(conn: Any, df: Any) -> Iterator[tuple[str, str]]:
     """
-    Register *df* plus a :data:`POSITION_COLUMN` as a temporary view on *conn*.
+    Register *df* plus a row position column as a temporary view on *conn*.
 
-    Yields the view name; the view is removed on exit. Unlike
-    :func:`register_df_as_table` nothing is copied, so this suits scalar
+    Yields ``(view_name, position_column)``; the view is removed on exit. The
+    position column has a random name, so it never replaces a column of *df*.
+    Unlike :func:`register_df_as_table` nothing is copied, so this suits scalar
     functions, not table functions that read through a second connection.
     """
-    name = f"_anofox_v_{uuid.uuid4().hex}"
+    suffix = uuid.uuid4().hex
+    name = f"_anofox_v_{suffix}"
+    position_column = f"__anofox_pos_{suffix}"
     finish(conn)  # register() fails while a result of execute() is pending (DuckDB 2.0)
-    conn.register(name, _registrable(with_position(df)))
+    conn.register(name, _registrable(with_position(df, position_column)))
     try:
-        yield name
+        yield name, position_column
     finally:
         try:
             finish(conn)

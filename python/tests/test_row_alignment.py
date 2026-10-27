@@ -90,3 +90,23 @@ class TestValidateRowId:
         df = pl.DataFrame({"email": ["a@b.com", "bad", "c@d.org", "x y@z"]})
         result = conn.validate(df, {"email": EmailRule()})
         assert sorted(result.failures["row_id"].to_list()) == [1, 3]
+
+
+class TestPositionColumnCollision:
+    """A DataFrame column named like the internal row-position column is used as data."""
+
+    def test_row_wise_on_column_named_anofox_pos(self, conn):
+        import pandas as pd
+        from anofox import validate
+        df = pd.DataFrame({"__anofox_pos": ["ana@example.com", "bob(at)example.com"]}, index=[7, 3])
+        out = validate.email_is_valid(conn, df, column="__anofox_pos")
+        assert out["email_is_valid"].tolist() == [True, False]
+        assert out.index.tolist() == [7, 3]
+
+    def test_validate_on_column_named_anofox_pos(self, conn):
+        import pandas as pd
+        from anofox.validate import EmailRule
+        df = pd.DataFrame({"__anofox_pos": ["ana@example.com", "bob(at)example.com"]}, index=[7, 3])
+        result = conn.validate(df, {"__anofox_pos": EmailRule(mode="regex")})
+        assert result.failures["row_id"].tolist() == [3]
+        assert result.failures["value"].tolist() == ["bob(at)example.com"]
