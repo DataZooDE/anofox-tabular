@@ -10,6 +10,11 @@
 Set a value with `SET name = value;` and read it with `current_setting('name')` or
 `duckdb_settings()`. All settings have global scope.
 
+A statement reads the PII settings (`anofox_pii_*`, `anofox_ner_required`) and the email settings
+(`anofox_tab_email_*`) once and uses those values for all of its rows: a `SET` from another
+connection while the statement runs applies from the next statement on, never to part of a
+result.
+
 The names use four prefixes: `anofox_tab_` for the email, phone, postal and tracing settings,
 `anofox_pii_` and `anofox_ner_` for PII detection, `anofox_telemetry_` for telemetry, and
 `datazoo_banner` for the feedback banner that DataZoo extensions share.

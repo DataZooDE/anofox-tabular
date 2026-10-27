@@ -520,9 +520,11 @@ private:
  * Immutable value snapshot of the PII configuration.
  *
  * Worker threads must never read the mutable PIIConfig singleton directly;
- * they take a snapshot once per function invocation / data chunk and read
- * all options through it. This avoids data races with concurrent SET
- * callbacks mutating the singleton.
+ * the SQL functions take one snapshot per statement (StatementSettings in
+ * anofox_statement_settings.hpp) and read all options through it. This avoids
+ * data races with concurrent SET callbacks mutating the singleton, and a SET
+ * from another connection never changes the configuration between two chunks
+ * of a running statement.
  */
 struct PIIConfigSnapshot {
     double min_confidence = 0.5;
@@ -738,7 +740,7 @@ struct PIIAuditResult {
  * Manages runtime configuration for PII detection and masking.
  *
  * All accessors are mutex-guarded; the query path takes a PIIConfigSnapshot
- * via Snapshot() once per function invocation / chunk and reads through it.
+ * via Snapshot() once per statement and reads through it.
  */
 class PIIConfig {
 public:

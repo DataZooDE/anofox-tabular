@@ -8,6 +8,7 @@
 #include "anofox_phonenumber.hpp"
 #include "anofox_phonenumber_metadata.hpp"
 #include "anofox_money_currency.hpp"
+#include "anofox_statement_settings.hpp"
 #include "telemetry.hpp"
 
 #include "duckdb/catalog/catalog.hpp"
@@ -754,6 +755,43 @@ PIIConfigSnapshot PIIConfig::Snapshot() const {
     return snapshot;
 }
 
+namespace {
+
+// The PII configuration of the statement running in `context` (see
+// StatementSettings): a SET from another connection while the statement runs
+// takes effect with the next statement, never between two of its chunks.
+PIIConfigSnapshot StatementPIIConfig(optional_ptr<ClientContext> context) {
+    return StatementSettings<PIIConfigSnapshot>(context, "anofox_pii_statement_config",
+                                                [] { return PIIConfig::Get().Snapshot(); });
+}
+
+// The configuration the recognizers of this thread read options through while
+// PIIEngine detects with a snapshot (anofox_pii_deep_validation in the phone
+// recognizer); nullptr outside of detection
+thread_local const PIIConfigSnapshot *active_config = nullptr;
+
+// Makes `config` the active configuration of this thread for its lifetime
+class ActiveConfigScope {
+public:
+    explicit ActiveConfigScope(const PIIConfigSnapshot &config) : previous_(active_config) {
+        active_config = &config;
+    }
+    ~ActiveConfigScope() {
+        active_config = previous_;
+    }
+    ActiveConfigScope(const ActiveConfigScope &) = delete;
+    ActiveConfigScope &operator=(const ActiveConfigScope &) = delete;
+
+private:
+    const PIIConfigSnapshot *previous_;
+};
+
+bool DeepValidationEnabled() {
+    return active_config ? active_config->deep_validation : PIIConfig::Get().IsDeepValidationEnabled();
+}
+
+} // namespace
+
 void PIIConfig::SetMinConfidence(double value) {
     if (value < MIN_CONFIDENCE || value > MAX_CONFIDENCE) {
         throw InvalidInputException("anofox_pii_min_confidence must be between " +
@@ -775,17 +813,21 @@ void PIIConfig::SetDefaultMaskStrategy(const std::string &strategy) {
     default_mask_strategy_ = parsed;
 }
 
-std::string PIIConfig::GetEnabledTypesString() const {
-    std::lock_guard<std::mutex> guard(mutex_);
-    if (enabled_types_.empty()) {
-        return "";  // Empty means all types enabled
-    }
+namespace {
+// anofox_pii_enabled_types as shown by SET and pii_config(); empty means all types
+std::string EnabledTypesToString(const std::vector<PIIType> &types) {
     std::ostringstream oss;
-    for (size_t i = 0; i < enabled_types_.size(); i++) {
+    for (size_t i = 0; i < types.size(); i++) {
         if (i > 0) oss << ",";
-        oss << PIITypeToString(enabled_types_[i]);
+        oss << PIITypeToString(types[i]);
     }
     return oss.str();
+}
+} // namespace
+
+std::string PIIConfig::GetEnabledTypesString() const {
+    std::lock_guard<std::mutex> guard(mutex_);
+    return EnabledTypesToString(enabled_types_);
 }
 
 void PIIConfig::SetEnabledTypes(const std::string &types_csv) {
@@ -2291,7 +2333,7 @@ bool PhoneRecognizer::Validate(const std::string &text) const {
     }
 
     // Without deep validation, the pattern and the digit count are enough
-    if (!PIIConfig::Get().IsDeepValidationEnabled()) {
+    if (!DeepValidationEnabled()) {
         return true;
     }
     try {
@@ -3293,6 +3335,7 @@ void AddWrappedMatches(const PIIRecognizer &recognizer, const SpaceFoldedText &w
 
 std::vector<PIIMatch> PIIEngine::DetectPatterns(const std::string &text, const std::vector<PIIType> &effective_types,
                                                 const PIIConfigSnapshot &config, bool &run_ner) const {
+    const ActiveConfigScope active_scope(config);
     const SpaceFoldedText folded(text);
     // The same text with single line breaks folded too, for the types that
     // find values wrapped over two lines (built only when a line break is there)
@@ -3616,10 +3659,10 @@ static ClientContext *InterruptContext(ExpressionState &state) {
 // given type filter and writes the matches directly into the LIST(STRUCT)
 // result vector. The input is normalized once per chunk and match rows are
 // written into the list child vectors without per-row Value materialization.
-void ExecutePIIDetectToList(DataChunk &args, Vector &result, const std::vector<PIIType> &filter) {
+void ExecutePIIDetectToList(DataChunk &args, ExpressionState &state, Vector &result, const std::vector<PIIType> &filter) {
     auto &engine = PIIEngine::Instance();
-    // Snapshot the configuration once per chunk; all reads go through it
-    const auto config = PIIConfig::Get().Snapshot();
+    // One configuration for the whole statement; all reads go through it
+    const auto config = StatementPIIConfig(StatementContext(state));
     result.SetVectorType(VectorType::FLAT_VECTOR);
 
     // Get list entries data and child struct vector
@@ -3691,7 +3734,7 @@ void ExecutePIIDetectToList(DataChunk &args, Vector &result, const std::vector<P
 struct PIIDetectFunction {
     static void Execute(DataChunk &args, ExpressionState &state, Vector &result) {
         NERInterruptScope interrupt_scope(InterruptContext(state));
-        ExecutePIIDetectToList(args, result, {});
+        ExecutePIIDetectToList(args, state, result, {});
     }
 
     static ScalarFunction GetFunction() {
@@ -3705,7 +3748,7 @@ struct PIIMaskFunction {
     static void Execute(DataChunk &args, ExpressionState &state, Vector &result) {
         NERInterruptScope interrupt_scope(InterruptContext(state));
         auto &engine = PIIEngine::Instance();
-        const auto config = PIIConfig::Get().Snapshot();
+        const auto config = StatementPIIConfig(StatementContext(state));
 
         BinaryExecutor::Execute<string_t, string_t, string_t>(
             args.data[0], args.data[1], result, args.size(),
@@ -3730,7 +3773,7 @@ struct PIIMaskDefaultFunction {
     static void Execute(DataChunk &args, ExpressionState &state, Vector &result) {
         NERInterruptScope interrupt_scope(InterruptContext(state));
         auto &engine = PIIEngine::Instance();
-        const auto config = PIIConfig::Get().Snapshot();
+        const auto config = StatementPIIConfig(StatementContext(state));
 
         UnaryExecutor::Execute<string_t, string_t>(
             args.data[0], result, args.size(),
@@ -3753,7 +3796,7 @@ struct PIIContainsFunction {
     static void Execute(DataChunk &args, ExpressionState &state, Vector &result) {
         NERInterruptScope interrupt_scope(InterruptContext(state));
         auto &engine = PIIEngine::Instance();
-        const auto config = PIIConfig::Get().Snapshot();
+        const auto config = StatementPIIConfig(StatementContext(state));
 
         UnaryExecutor::Execute<string_t, bool>(
             args.data[0], result, args.size(),
@@ -3776,7 +3819,7 @@ struct PIICountFunction {
     static void Execute(DataChunk &args, ExpressionState &state, Vector &result) {
         NERInterruptScope interrupt_scope(InterruptContext(state));
         auto &engine = PIIEngine::Instance();
-        const auto config = PIIConfig::Get().Snapshot();
+        const auto config = StatementPIIConfig(StatementContext(state));
 
         UnaryExecutor::Execute<string_t, int64_t>(
             args.data[0], result, args.size(),
@@ -3803,6 +3846,9 @@ template<PIIType Type>
 struct PIIIsValidFunction {
     static void Execute(DataChunk &args, ExpressionState &state, Vector &result) {
         auto &engine = PIIEngine::Instance();
+        // anofox_pii_deep_validation (phone numbers) as of the statement start
+        const auto config = StatementPIIConfig(StatementContext(state));
+        const ActiveConfigScope active_scope(config);
 
         UnaryExecutor::Execute<string_t, bool>(
             args.data[0], result, args.size(),
@@ -3908,7 +3954,7 @@ Value CreatePIIMatchListValue(const std::vector<PIIMatch> &matches) {
 // pii_detect_emails(text) -> LIST(STRUCT(...))
 struct PIIDetectEmailsFunction {
     static void Execute(DataChunk &args, ExpressionState &state, Vector &result) {
-        ExecutePIIDetectToList(args, result, {PIIType::EMAIL});
+        ExecutePIIDetectToList(args, state, result, {PIIType::EMAIL});
     }
 
     static ScalarFunction GetFunction() {
@@ -3920,7 +3966,7 @@ struct PIIDetectEmailsFunction {
 // pii_detect_phones(text) -> LIST(STRUCT(...))
 struct PIIDetectPhonesFunction {
     static void Execute(DataChunk &args, ExpressionState &state, Vector &result) {
-        ExecutePIIDetectToList(args, result, {PIIType::PHONE});
+        ExecutePIIDetectToList(args, state, result, {PIIType::PHONE});
     }
 
     static ScalarFunction GetFunction() {
@@ -3932,7 +3978,7 @@ struct PIIDetectPhonesFunction {
 // pii_detect_credit_cards(text) -> LIST(STRUCT(...))
 struct PIIDetectCreditCardsFunction {
     static void Execute(DataChunk &args, ExpressionState &state, Vector &result) {
-        ExecutePIIDetectToList(args, result, {PIIType::CREDIT_CARD});
+        ExecutePIIDetectToList(args, state, result, {PIIType::CREDIT_CARD});
     }
 
     static ScalarFunction GetFunction() {
@@ -3944,7 +3990,7 @@ struct PIIDetectCreditCardsFunction {
 // pii_detect_ssns(text) -> LIST(STRUCT(...))
 struct PIIDetectSSNsFunction {
     static void Execute(DataChunk &args, ExpressionState &state, Vector &result) {
-        ExecutePIIDetectToList(args, result, {PIIType::US_SSN});
+        ExecutePIIDetectToList(args, state, result, {PIIType::US_SSN});
     }
 
     static ScalarFunction GetFunction() {
@@ -3957,7 +4003,7 @@ struct PIIDetectSSNsFunction {
 struct PIIDetectNamesFunction {
     static void Execute(DataChunk &args, ExpressionState &state, Vector &result) {
         NERInterruptScope interrupt_scope(InterruptContext(state));
-        ExecutePIIDetectToList(args, result, {PIIType::NAME});
+        ExecutePIIDetectToList(args, state, result, {PIIType::NAME});
     }
 
     static ScalarFunction GetFunction() {
@@ -3969,7 +4015,7 @@ struct PIIDetectNamesFunction {
 // pii_detect_ibans(text) -> LIST(STRUCT(...))
 struct PIIDetectIBANsFunction {
     static void Execute(DataChunk &args, ExpressionState &state, Vector &result) {
-        ExecutePIIDetectToList(args, result, {PIIType::IBAN});
+        ExecutePIIDetectToList(args, state, result, {PIIType::IBAN});
     }
 
     static ScalarFunction GetFunction() {
@@ -3988,7 +4034,7 @@ struct PIIDetectBatchFunction {
     static void Execute(DataChunk &args, ExpressionState &state, Vector &result) {
         NERInterruptScope interrupt_scope(InterruptContext(state));
         auto &engine = PIIEngine::Instance();
-        const auto config = PIIConfig::Get().Snapshot();
+        const auto config = StatementPIIConfig(StatementContext(state));
 
         // Process each row (which contains an array)
         for (idx_t i = 0; i < args.size(); i++) {
@@ -4055,7 +4101,7 @@ struct PIIMaskColumnFunction {
     static void Execute(DataChunk &args, ExpressionState &state, Vector &result) {
         NERInterruptScope interrupt_scope(InterruptContext(state));
         auto &engine = PIIEngine::Instance();
-        const auto config = PIIConfig::Get().Snapshot();
+        const auto config = StatementPIIConfig(StatementContext(state));
 
         // The type and strategy are read per row; a NULL argument yields NULL for that row.
         // Mask() returns the original text when nothing of the requested type is
@@ -4114,7 +4160,7 @@ struct PIIRedactColumnFunction {
     static void Execute(DataChunk &args, ExpressionState &state, Vector &result) {
         NERInterruptScope interrupt_scope(InterruptContext(state));
         auto &engine = PIIEngine::Instance();
-        const auto config = PIIConfig::Get().Snapshot();
+        const auto config = StatementPIIConfig(StatementContext(state));
 
         // The strategy is read per row; a NULL argument yields NULL for that row.
         BinaryExecutor::Execute<string_t, string_t, string_t>(
@@ -4138,7 +4184,7 @@ struct PIIRedactColumnDefaultFunction {
     static void Execute(DataChunk &args, ExpressionState &state, Vector &result) {
         NERInterruptScope interrupt_scope(InterruptContext(state));
         auto &engine = PIIEngine::Instance();
-        const auto config = PIIConfig::Get().Snapshot();
+        const auto config = StatementPIIConfig(StatementContext(state));
         auto strategy = config.default_mask_strategy;
 
         UnaryExecutor::Execute<string_t, string_t>(
@@ -4192,7 +4238,7 @@ unique_ptr<FunctionData> PIIStatusBind(ClientContext &, TableFunctionBindInput &
     return nullptr;
 }
 
-void PIIStatusFunction(ClientContext &, TableFunctionInput &input, DataChunk &output) {
+void PIIStatusFunction(ClientContext &context, TableFunctionInput &input, DataChunk &output) {
     auto &state = input.global_state->Cast<PIIStatusState>();
 
     if (state.current_index >= state.types.size()) {
@@ -4260,7 +4306,7 @@ void PIIStatusFunction(ClientContext &, TableFunctionInput &input, DataChunk &ou
         {PIIType::UNKNOWN, "Unknown pattern"}
     };
 
-    const auto config = PIIConfig::Get().Snapshot();
+    const auto config = StatementPIIConfig(&context);
 
     // Calculate how many rows to output in this batch
     idx_t remaining = state.types.size() - state.current_index;
@@ -4662,7 +4708,7 @@ void PIIAuditTableFunction(ClientContext &context, TableFunctionInput &input, Da
             // configuration once for the whole scan; enabled_types and
             // min_confidence are applied centrally by PIIEngine::Detect
             state.columns_to_scan = ResolvePIIScanColumns(context, "pii_audit_table", bind_data.table_name, bind_data.column_filter);
-            state.config = PIIConfig::Get().Snapshot();
+            state.config = StatementPIIConfig(&context);
             state.mask_strategy = state.config.default_mask_strategy;
         }
 
@@ -4991,7 +5037,7 @@ void PIIScanTableFunction(ClientContext &context, TableFunctionInput &input, Dat
             // Resolve the text columns to scan and snapshot the
             // configuration once for the whole scan
             state.columns_to_scan = ResolvePIIScanPlan(context, "pii_scan_table", bind_data.table_name, bind_data.column_filter);
-            state.config = PIIConfig::Get().Snapshot();
+            state.config = StatementPIIConfig(&context);
             state.wants_ner = WantsNERTypes(state.config.enabled_types);
         }
 
@@ -5393,7 +5439,7 @@ unique_ptr<GlobalTableFunctionState> PIIConfigInit(ClientContext &, TableFunctio
     return make_uniq<PIIConfigState>();
 }
 
-void PIIConfigFunction(ClientContext &, TableFunctionInput &input, DataChunk &output) {
+void PIIConfigFunction(ClientContext &context, TableFunctionInput &input, DataChunk &output) {
     auto &state = input.global_state->Cast<PIIConfigState>();
 
     struct ConfigOption {
@@ -5403,8 +5449,8 @@ void PIIConfigFunction(ClientContext &, TableFunctionInput &input, DataChunk &ou
     };
 
     // Single consistent snapshot of the configuration
-    const auto config = PIIConfig::Get().Snapshot();
-    const auto enabled_types_str = PIIConfig::Get().GetEnabledTypesString();
+    const auto config = StatementPIIConfig(&context);
+    const auto enabled_types_str = EnabledTypesToString(config.enabled_types);
 
     std::vector<ConfigOption> options = {
         {"anofox_pii_min_confidence",

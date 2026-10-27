@@ -3,6 +3,7 @@
 #include "anofox_email_smtp.hpp"
 #include "anofox_email_logging.hpp"
 #include "anofox_function_alias.hpp"
+#include "anofox_statement_settings.hpp"
 #include "telemetry.hpp"
 
 #include "duckdb/common/string_util.hpp"
@@ -158,6 +159,15 @@ bool LastLabelIsNumeric(std::string_view email) {
 	return !label.empty() && std::all_of(label.begin(), label.end(), [](char c) { return c >= '0' && c <= '9'; });
 }
 
+//! The email settings one statement validates with: default mode, compiled
+//! pattern, DNS and SMTP options taken together (see StatementSettings)
+struct EmailSettingsSnapshot {
+	std::string default_validation;
+	std::shared_ptr<const CompiledEmailPattern> regex;
+	email::DnsOptions dns_options;
+	email::SmtpOptions smtp_options;
+};
+
 class EmailConfig {
 public:
 	static EmailConfig &Get() {
@@ -286,6 +296,11 @@ public:
 		return smtp_options;
 	}
 
+	EmailSettingsSnapshot Snapshot() {
+		std::lock_guard<std::mutex> lock(config_mutex);
+		return EmailSettingsSnapshot {default_validation, regex_compiled, dns_options, smtp_options};
+	}
+
 	std::vector<std::pair<std::string, std::string>> List() {
 		std::lock_guard<std::mutex> lock(config_mutex);
 		std::vector<std::pair<std::string, std::string>> entries;
@@ -364,10 +379,12 @@ std::string_view TrimEmailWhitespace(std::string_view email) {
 }
 
 //! Validates one email address. `normalized_mode` must already be normalized via
-//! NormalizeValidationMode and `regex` is the compiled pattern; both are hoisted
-//! out of the per-chunk row loops so the hot regex path does no per-row setup.
+//! NormalizeValidationMode and `settings` are the statement's email settings;
+//! both are hoisted out of the per-chunk row loops so the hot regex path does no
+//! per-row setup.
 EmailValidationResult ValidateEmailAddress(std::string_view raw_email, const std::string &normalized_mode,
-                                           const CompiledEmailPattern &regex) {
+                                           const EmailSettingsSnapshot &settings) {
+	const auto &regex = *settings.regex;
 	// Every stage (regex, DNS, SMTP) sees the address without surrounding whitespace
 	const auto email = TrimEmailWhitespace(raw_email);
 	// Trace message construction is guarded so disabled tracing costs nothing per row.
@@ -397,8 +414,7 @@ EmailValidationResult ValidateEmailAddress(std::string_view raw_email, const std
 	}
 
 	EmailTrace(AnofoxLogLevel::Debug, "Performing DNS lookup for domain=" + domain);
-	auto dns_options = EmailConfig::Get().GetDnsOptions();
-	email::DnsResolver resolver(dns_options);
+	email::DnsResolver resolver(settings.dns_options);
 	auto dns_lookup = resolver.Resolve(domain);
 
 	EmailValidationResult dns_stage;
@@ -429,10 +445,9 @@ EmailValidationResult ValidateEmailAddress(std::string_view raw_email, const std
 		return dns_stage;
 	}
 
-	auto smtp_options = EmailConfig::Get().GetSmtpOptions();
 	EmailTrace(AnofoxLogLevel::Debug,
 	           "Starting SMTP verification with " + std::to_string(smtp_hosts.size()) + " host candidates");
-	email::SmtpClient smtp_client(smtp_options);
+	email::SmtpClient smtp_client(settings.smtp_options);
 	auto smtp_result = smtp_client.Verify(std::string(email), smtp_hosts);
 
 	EmailValidationResult smtp_stage;
@@ -456,6 +471,12 @@ EmailValidationResult ValidateEmailAddress(std::string_view raw_email, const std
 	return smtp_stage;
 }
 
+//! The email settings of the statement running in `context`
+EmailSettingsSnapshot StatementEmailSettings(optional_ptr<ClientContext> context) {
+	return StatementSettings<EmailSettingsSnapshot>(context, "anofox_tab_email_statement_settings",
+	                                                [] { return EmailConfig::Get().Snapshot(); });
+}
+
 //! Per-chunk view of the optional validation-mode argument. The mode is usually
 //! a constant vector (literal or absent), in which case it is normalized exactly
 //! once; only genuinely varying mode columns pay per-row normalization.
@@ -465,9 +486,9 @@ struct ValidationModeArgument {
 	std::string default_mode;
 	UnifiedVectorFormat data;
 
-	static ValidationModeArgument Prepare(DataChunk &args, idx_t mode_column) {
+	static ValidationModeArgument Prepare(DataChunk &args, idx_t mode_column, const std::string &default_mode) {
 		ValidationModeArgument arg;
-		arg.default_mode = EmailConfig::Get().GetDefaultValidation();
+		arg.default_mode = default_mode;
 		if (args.ColumnCount() <= mode_column) {
 			arg.constant_mode = arg.default_mode;
 			return arg;
@@ -524,7 +545,7 @@ void AppendToListVector(Vector &list_vec, const std::vector<std::string> &values
 	ListVector::SetListSize(list_vec, offset + values.size());
 }
 
-void EmailValidateFunction(DataChunk &args, ExpressionState &, Vector &result) {
+void EmailValidateFunction(DataChunk &args, ExpressionState &state, Vector &result) {
 	result.SetVectorType(VectorType::FLAT_VECTOR);
 	auto &children = StructVector::GetEntries(result);
 	auto &valid_vec = anofox::VectorRef(children[0]);
@@ -548,9 +569,11 @@ void EmailValidateFunction(DataChunk &args, ExpressionState &, Vector &result) {
 	UnifiedVectorFormat email_data;
 	args.data[0].ToUnifiedFormat(args.size(), email_data);
 	auto email_values = UnifiedVectorFormat::GetData<string_t>(email_data);
-	auto mode_arg = ValidationModeArgument::Prepare(args, 1);
-	auto regex_ptr = EmailConfig::Get().GetCompiledRegex();
-	if (!regex_ptr) {
+	// One configuration for the whole statement: a SET from another connection
+	// takes effect with the next statement, never between two chunks
+	const auto settings = StatementEmailSettings(StatementContext(state));
+	auto mode_arg = ValidationModeArgument::Prepare(args, 1, settings.default_validation);
+	if (!settings.regex) {
 		throw InternalException("Email regex pattern is not initialized");
 	}
 
@@ -564,7 +587,7 @@ void EmailValidateFunction(DataChunk &args, ExpressionState &, Vector &result) {
 
 		auto &email = email_values[email_idx];
 		auto validation =
-		    ValidateEmailAddress(std::string_view(email.GetData(), email.GetSize()), mode_arg.Get(row), *regex_ptr);
+		    ValidateEmailAddress(std::string_view(email.GetData(), email.GetSize()), mode_arg.Get(row), settings);
 
 		// valid is NULL when the check could not reach an answer; reason says why
 		FlatVector::SetNull(valid_vec, row, IsUnknownOutcome(validation));
@@ -590,7 +613,7 @@ void EmailValidateFunction(DataChunk &args, ExpressionState &, Vector &result) {
 	}
 }
 
-void EmailIsValidFunction(DataChunk &args, ExpressionState &, Vector &result) {
+void EmailIsValidFunction(DataChunk &args, ExpressionState &state, Vector &result) {
 	result.SetVectorType(VectorType::FLAT_VECTOR);
 	auto bool_data = duckdb_compat::FlatData<bool>(result);
 
@@ -598,9 +621,11 @@ void EmailIsValidFunction(DataChunk &args, ExpressionState &, Vector &result) {
 	UnifiedVectorFormat email_data;
 	args.data[0].ToUnifiedFormat(args.size(), email_data);
 	auto email_values = UnifiedVectorFormat::GetData<string_t>(email_data);
-	auto mode_arg = ValidationModeArgument::Prepare(args, 1);
-	auto regex_ptr = EmailConfig::Get().GetCompiledRegex();
-	if (!regex_ptr) {
+	// One configuration for the whole statement: a SET from another connection
+	// takes effect with the next statement, never between two chunks
+	const auto settings = StatementEmailSettings(StatementContext(state));
+	auto mode_arg = ValidationModeArgument::Prepare(args, 1, settings.default_validation);
+	if (!settings.regex) {
 		throw InternalException("Email regex pattern is not initialized");
 	}
 
@@ -612,7 +637,7 @@ void EmailIsValidFunction(DataChunk &args, ExpressionState &, Vector &result) {
 		}
 		auto &email = email_values[email_idx];
 		auto validation =
-		    ValidateEmailAddress(std::string_view(email.GetData(), email.GetSize()), mode_arg.Get(row), *regex_ptr);
+		    ValidateEmailAddress(std::string_view(email.GetData(), email.GetSize()), mode_arg.Get(row), settings);
 		// NULL when the check could not reach an answer (timeout, unreachable server)
 		FlatVector::SetNull(result, row, IsUnknownOutcome(validation));
 		bool_data[row] = validation.valid;
