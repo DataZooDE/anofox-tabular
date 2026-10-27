@@ -930,7 +930,8 @@ FROM metric_anomaly_iqr_events('orders', 'order_date', 'amount', 14, 1.5, 'upper
 Canonical name: `anofox_tab_run_checks`. Table function.
 
 Runs every check defined in a checks table and returns one uniform row per check, and per
-partition when the check has an `identifier_column`.
+partition when the check has an `identifier_column`. `run_checks` works in UTC; see
+[Time zone](#time-zone).
 
 ```text
 run_checks(checks_table VARCHAR)
@@ -973,7 +974,7 @@ suite. The `value` column holds the measure of each type:
 | `agg` | the aggregate | `agg` (required): `avg`, `min`, `max`, `sum`, `median`, `stddev` | yes |
 | `duplicate_count` | duplicates | none | yes |
 | `compliance` | compliance rate | `expression` (required) | yes |
-| `freshness` | age in seconds | `reference_time` (default: the current time, no ICU needed) | yes |
+| `freshness` | age in seconds | `reference_time` (default: the current UTC time, no ICU needed) | yes |
 | `occurrence` | frequency of the extreme value | `mode`: `max` (default) or `min` | no |
 | `match_rate` | match rate | `right_table`, `right_keys` (required), `left_keys` (default `column_name`) | no |
 | `rel_count_change` | relative change | `date_column` (required), `count_column`, `window_days` (7), `reference_date` | no |
@@ -981,23 +982,42 @@ suite. The `value` column holds the measure of each type:
 | `rolling_values_in_set` | share in set | `date_column` (required), `allowed_values`, `window_days` (7), `reference_date` | no |
 
 For `metric_anomaly_iqr` the IQR bounds replace the table's thresholds and appear in
-`lower_threshold` and `upper_threshold`. The `mode` parameter of the direct function is not used
-in a suite; both bounds apply.
+`lower_threshold` and `upper_threshold`. The `mode` parameter of the direct function is not
+available in a suite; both bounds apply.
+
+`params` may only hold the keys listed for its type. Any other key, for example a misspelled
+`refernce_date`, is an `error` row that lists the valid keys:
+`unknown params key 'refernce_date' (valid keys for rel_count_change: date_column, count_column, window_days, reference_date)`.
+Typed values are checked when the suite is built: `reference_date` must be a date
+(`YYYY-MM-DD`), `reference_time` a timestamp (`YYYY-MM-DD[ HH:MM[:SS]]`, optionally with a UTC
+offset such as `+02:00`), `window_days` a positive integer and `k` a finite number. A malformed
+value is an `error` row of that check that names the key, the value and the expected format,
+for example `params.reference_date '21/10/2026' is not a valid date (expected YYYY-MM-DD)`; the
+other checks run.
 
 `filter_expr` accepts the date tokens `${today}`, `${yesterday}`, `${today+N}`, `${today-N}`,
-`${yesterday+N}` and `${yesterday-N}`, for example `order_date >= ${today-7}`.
+`${yesterday+N}` and `${yesterday-N}` (UTC dates), for example `order_date >= ${today-7}`.
 
 ### Status
 
 | `status` | Meaning |
 |----------|---------|
-| `pass` | `value` is within the thresholds, or `value` is NULL (nothing to evaluate; message `No value to evaluate; check passed trivially`) |
+| `pass` | `value` is within the thresholds; or the check has neither a `lower_threshold` nor an `upper_threshold` (a monitor row that only records the value; message `<check_type> value <value>: no thresholds configured (monitor)`); or `value` is NULL (nothing to evaluate; message `No value to evaluate; check passed trivially`) |
 | `fail` | `value` is outside a threshold. For `freshness` also a NULL `value` (empty table, all-NULL column or, with `identifier_column`, a group without timestamps), like the direct [`freshness`](#freshness) function; message `No timestamp values found (table is empty or column is all NULL)` |
 | `warn` | as `fail`, for a check with `monitor_only = true` |
 | `error` | the check could not run; `value` is NULL and the message says why |
 
 A `NaN` value (for example an `agg` average over a column with NaN values) is `fail` (or `warn`),
 with the message `agg value is NaN: the column contains <n> NaN/Inf value(s)`.
+
+The message of a `fail` or `warn` row names the violated bound, for example
+`null_rate value 0.099 violates thresholds (0.099 > upper 0.05)` or
+`values_in_set value 0.751 violates thresholds (0.751 < lower 0.95)`. For `values_in_set`,
+`duplicate_count` and `match_rate` it also lists up to 5 offending values, the smallest first:
+the values not in the set, the duplicated keys (`(a, b)` for a key of several columns) and the
+left keys without a match, for example
+`values_in_set value 0.75 violates thresholds (0.75 < lower 0.95); samples: 'SHIPPED', 'shiped'`.
+With an `identifier_column` the samples are those of the row's partition.
 
 Every check produces its row. A check that cannot be built or bound gets one `error` row, with
 a NULL `identifier` also when it has an `identifier_column`, and the message
@@ -1010,7 +1030,8 @@ are, for example:
   `column 'coupon_code' not found in table 'nightly_orders' (available columns: ...)`.
   Column names match case-insensitively.
 - an `agg` check on a column that is not numeric
-- an unknown `check_type`, invalid `params` JSON or a missing required `params` key
+- an unknown `check_type`, invalid `params` JSON, a missing required `params` key, a `params`
+  key the type does not accept, or a malformed typed `params` value (see above)
 - a `compliance` expression or `filter_expr` that does not parse or references an unknown column
 - a `match_rate` `right_table` that does not exist
 - `lower_threshold` greater than `upper_threshold`, or a rate threshold outside 0 to 1 for
@@ -1023,9 +1044,26 @@ example a `CAST` of free text such as `'n/a'`) does not stop the call: such rows
 compliant in a `compliance` check and are left out by `filter_expr`, as if the expression were
 wrapped in `TRY()`. Check the expression on its own when a rate looks too low. The standalone
 [`compliance`](#compliance) function does not do this; there a failing expression is an error.
+
+DuckDB cannot wrap an expression that contains a subquery or a volatile function such as
+`random()` in `TRY()`. Such an expression is evaluated as it is, so a referential check
+`{"expression": "customer_id IN (SELECT id FROM customers)"}` or a sampling filter
+`random() < 0.1` works. A row on which such an expression fails at runtime is then not
+tolerated: the error aborts the whole `run_checks` call, as it would in a plain query.
 `compliance` expressions and `filter_expr` are validated like the
 [`compliance`](#compliance) expression and run with your privileges. Messages print values
 rounded to three decimals; the `value` column keeps the full precision.
+
+### Time zone
+
+`run_checks` works in UTC, with or without the ICU extension and whatever `SET TimeZone` says:
+
+- `run_ts` is the current time in UTC.
+- `${today}`, `${yesterday}` and their `+N`/`-N` forms are UTC dates.
+- `freshness` compares UTC timestamps. Its default reference is the current UTC time; a
+  `reference_time` with an offset (`2026-10-29 08:00:00+02:00`) is converted to UTC, one without
+  an offset is taken as UTC. A `TIMESTAMP WITH TIME ZONE` column is compared as its UTC
+  instant; a `TIMESTAMP`, `DATE` or text column is taken as UTC.
 
 ### Example
 
@@ -1099,7 +1137,7 @@ ORDER BY check_name;
 │  check_name   │ status  │                                        message                                         │
 │    varchar    │ varchar │                                        varchar                                         │
 ├───────────────┼─────────┼────────────────────────────────────────────────────────────────────────────────────────┤
-│ email_nulls   │ warn    │ null_rate value 0.099 violates thresholds                                              │
+│ email_nulls   │ warn    │ null_rate value 0.099 violates thresholds (0.099 > upper 0.05)                         │
 │ missing_table │ error   │ check 'missing_table' (volume) cannot run: target table 'no_such_table' does not exist │
 └───────────────┴─────────┴────────────────────────────────────────────────────────────────────────────────────────┘
 ```

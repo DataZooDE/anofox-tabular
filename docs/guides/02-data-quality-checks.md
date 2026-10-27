@@ -218,7 +218,28 @@ ORDER BY region;
 └─────────┴─────────────┴─────────┘
 ```
 
-A check that cannot run does not stop the others. It returns a row with status `error`:
+The message of a failing check names the violated bound. For `values_in_set`,
+`duplicate_count` and `match_rate` it also shows up to 5 offending values, so you see the bad
+status without a second query:
+
+```sql
+SELECT identifier AS region, message
+FROM run_checks('dq_checks')
+WHERE check_name = 'status_by_region' AND status = 'fail';
+```
+
+```text
+┌─────────┬───────────────────────────────────────────────────────────────────────────────────────┐
+│ region  │                                        message                                        │
+│ varchar │                                        varchar                                        │
+├─────────┼───────────────────────────────────────────────────────────────────────────────────────┤
+│ south   │ values_in_set value 0.803 violates thresholds (0.803 < lower 1.0); samples: 'on_hold' │
+└─────────┴───────────────────────────────────────────────────────────────────────────────────────┘
+```
+
+A check that cannot run does not stop the others. It returns a row with status `error`. This
+also covers a misspelled `params` key (`refernce_date`) and a malformed date in `params`
+(`"reference_date": "15.03.2026"`):
 
 ```sql
 INSERT INTO dq_checks VALUES
@@ -404,26 +425,28 @@ SELECT check_name, value, status, message FROM run_checks('nightly_checks');
 ```
 
 ```text
-┌────────────────┬──────────┬─────────┬─────────────────────────────────────────────────┐
-│   check_name   │  value   │ status  │                     message                     │
-│    varchar     │  double  │ varchar │                     varchar                     │
-├────────────────┼──────────┼─────────┼─────────────────────────────────────────────────┤
-│ order_id_dupes │      0.0 │ pass    │ duplicate_count value 0.0 is within thresholds  │
-│ orders_arrived │     -1.0 │ fail    │ rel_count_change value -1.0 violates thresholds │
-│ orders_fresh   │ 194400.0 │ fail    │ freshness value 194400.0 violates thresholds    │
-└────────────────┴──────────┴─────────┴─────────────────────────────────────────────────┘
+┌────────────────┬──────────┬─────────┬──────────────────────────────────────────────────────────────────────────┐
+│   check_name   │  value   │ status  │                                 message                                  │
+│    varchar     │  double  │ varchar │                                 varchar                                  │
+├────────────────┼──────────┼─────────┼──────────────────────────────────────────────────────────────────────────┤
+│ order_id_dupes │      0.0 │ pass    │ duplicate_count value 0.0 is within thresholds                           │
+│ orders_arrived │     -1.0 │ fail    │ rel_count_change value -1.0 violates thresholds (-1.0 < lower -0.5)      │
+│ orders_fresh   │ 194400.0 │ fail    │ freshness value 194400.0 violates thresholds (194400.0 > upper 129600.0) │
+└────────────────┴──────────┴─────────┴──────────────────────────────────────────────────────────────────────────┘
 ```
 
 `orders_arrived` compares the 0 orders of 2026-03-15 with the average of the 7 days before
 (`value` -1.0). `orders_fresh` measures the age of the newest `order_date` (midnight of
 2026-03-14) at 06:00 on 2026-03-16: 54 hours, more than the allowed 36 hours (129600 seconds).
 In production, write the expected date into the checks table when the job starts (`json_object`
-needs the `json` extension):
+needs the `json` extension). `run_checks` works in UTC (`run_ts`, `${today}`, the default
+`freshness` reference), so compute the date in UTC too; `make_timestamp(epoch_us(now()))` is
+the current UTC time with or without the ICU extension:
 
 ```sql no-run
 UPDATE nightly_checks
 SET params = json_object('date_column', 'order_date',
-                         'reference_date', CAST(CAST(now() AS TIMESTAMP) AS DATE) - 1)
+                         'reference_date', CAST(make_timestamp(epoch_us(now())) AS DATE) - 1)
 WHERE check_name = 'orders_arrived';
 ```
 
@@ -453,8 +476,12 @@ failing run. Keep in mind what the checks do not cover:
 - `rolling_values_in_set` passes when its window holds no rows (nothing to evaluate), so a
   missing load does not fail it. Pair it with a volume or `rel_count_change` check anchored to
   the expected date, as above.
-- A check that cannot run (missing table or column) is an `error` row, not a failed query; the
-  gate above treats it like a `fail`.
+- A check that cannot run (missing table or column, a misspelled `params` key, a malformed
+  `reference_date`) is an `error` row, not a failed query; the gate above treats it like a
+  `fail`.
+- A `compliance` expression or `filter_expr` with a subquery or `random()` cannot be wrapped in
+  `TRY()`. It runs as written, so a runtime error in it (a failing `CAST`) aborts the whole
+  `run_checks` call instead of counting the row as non-compliant.
 
 ## Next steps
 

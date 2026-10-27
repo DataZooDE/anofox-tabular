@@ -1,0 +1,50 @@
+# name: test/sql/anofox_check_suite_utc_icu.test
+# description: With ICU loaded and a session time zone far from UTC, run_checks still works in UTC:
+#              a TIMESTAMPTZ freshness column, run_ts and ${today} do not follow SET TimeZone.
+#              Pacific/Kiritimati (+14) and Pacific/Pago_Pago (-11) between them differ from the
+#              UTC date at any time of day.
+# group: [anofox_tabular]
+
+require anofox_tabular
+
+require icu
+
+statement ok
+LOAD anofox_tabular
+
+statement ok
+CREATE TABLE warehouse_feed AS SELECT * FROM (VALUES
+  ('WH-HAM', TIMESTAMPTZ '2026-10-29 05:00:00+00')
+) t(warehouse, loaded_at_tz)
+
+statement ok
+CREATE TABLE feed_checks(check_name VARCHAR, check_type VARCHAR, table_name VARCHAR,
+  column_name VARCHAR, params VARCHAR, lower_threshold DOUBLE, upper_threshold DOUBLE,
+  monitor_only BOOLEAN, identifier_column VARCHAR, filter_expr VARCHAR)
+
+statement ok
+INSERT INTO feed_checks VALUES
+  ('fresh_tz', 'freshness', 'warehouse_feed', 'loaded_at_tz',
+     '{"reference_time": "2026-10-29 06:00:00"}', NULL, 7200, false, NULL, NULL),
+  ('utc_today', 'volume', 'warehouse_feed', NULL, NULL, 1, NULL, false, NULL,
+     '${today} = CAST(make_timestamp(epoch_us(now())) AS DATE)')
+
+statement ok
+SET TimeZone = 'Pacific/Kiritimati'
+
+query TTRT
+SELECT check_name, status, value, abs(epoch(run_ts) - epoch(make_timestamp(epoch_us(now())))) < 60
+FROM run_checks('feed_checks') ORDER BY check_name
+----
+fresh_tz	pass	3600.0	true
+utc_today	pass	1.0	true
+
+statement ok
+SET TimeZone = 'Pacific/Pago_Pago'
+
+query TTRT
+SELECT check_name, status, value, abs(epoch(run_ts) - epoch(make_timestamp(epoch_us(now())))) < 60
+FROM run_checks('feed_checks') ORDER BY check_name
+----
+fresh_tz	pass	3600.0	true
+utc_today	pass	1.0	true

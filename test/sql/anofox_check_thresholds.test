@@ -189,8 +189,8 @@ SELECT message FROM run_checks('invoice_checks')
 ----
 check 'i1_volume_swapped' (volume) cannot run: lower_threshold (100.0) must not be greater than upper_threshold (10.0)
 check 'i2_vat_null_rate' (null_rate) cannot run: upper_threshold must be between 0 and 1 for a null_rate check (got 40.0)
-null_rate value 0.333 violates thresholds
-compliance value 0.833 violates thresholds
+null_rate value 0.333 violates thresholds (0.333 > upper 0.1)
+compliance value 0.833 violates thresholds (0.833 < lower 0.9)
 
 # ===--------------------------------------------------------------------===
 # output_mode is case-insensitive

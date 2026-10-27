@@ -1,0 +1,61 @@
+# name: test/sql/anofox_check_suite_utc.test
+# description: run_checks works in UTC: a reference_time with a UTC offset is converted to UTC,
+#              TIMESTAMP WITH TIME ZONE columns are compared as UTC, run_ts and ${today} are UTC.
+# group: [anofox_tabular]
+
+require anofox_tabular
+
+statement ok
+LOAD anofox_tabular
+
+# A warehouse feed stores its load time twice: naive UTC and as TIMESTAMPTZ
+statement ok
+CREATE TABLE warehouse_feed AS SELECT * FROM (VALUES
+  ('WH-HAM', TIMESTAMP '2026-10-29 04:30:00', TIMESTAMPTZ '2026-10-29 04:30:00+00', '2026-10-29 04:30:00'),
+  ('WH-MUC', TIMESTAMP '2026-10-29 05:00:00', TIMESTAMPTZ '2026-10-29 07:00:00+02', '2026-10-29 05:00:00')
+) t(warehouse, loaded_at, loaded_at_tz, loaded_at_txt)
+
+statement ok
+CREATE TABLE feed_checks(check_name VARCHAR, check_type VARCHAR, table_name VARCHAR,
+  column_name VARCHAR, params VARCHAR, lower_threshold DOUBLE, upper_threshold DOUBLE,
+  monitor_only BOOLEAN, identifier_column VARCHAR, filter_expr VARCHAR)
+
+# The reference 08:00 at +02:00 is 06:00 UTC; the newest load is 05:00 UTC -> 3600 s
+statement ok
+INSERT INTO feed_checks VALUES
+  ('fresh_naive',      'freshness', 'warehouse_feed', 'loaded_at',
+     '{"reference_time": "2026-10-29 08:00:00+02:00"}', NULL, 7200, false, NULL, NULL),
+  ('fresh_tz',         'freshness', 'warehouse_feed', 'loaded_at_tz',
+     '{"reference_time": "2026-10-29 08:00:00+02:00"}', NULL, 7200, false, NULL, NULL),
+  ('fresh_txt',        'freshness', 'warehouse_feed', 'loaded_at_txt',
+     '{"reference_time": "2026-10-29 06:00:00"}', NULL, 7200, false, NULL, NULL),
+  ('fresh_tz_per_wh',  'freshness', 'warehouse_feed', 'loaded_at_tz',
+     '{"reference_time": "2026-10-29 06:00:00"}', NULL, 4000, false, 'warehouse', NULL)
+
+query TTTR
+SELECT check_name, identifier, status, value FROM run_checks('feed_checks') ORDER BY check_name, identifier
+----
+fresh_naive	NULL	pass	3600.0
+fresh_txt	NULL	pass	3600.0
+fresh_tz	NULL	pass	3600.0
+fresh_tz_per_wh	WH-HAM	fail	5400.0
+fresh_tz_per_wh	WH-MUC	pass	3600.0
+
+# run_ts is the current time in UTC
+query T
+SELECT bool_and(abs(epoch(run_ts) - epoch(make_timestamp(epoch_us(now())))) < 60) FROM run_checks('feed_checks')
+----
+true
+
+# ${today} is the current UTC date
+statement ok
+INSERT INTO warehouse_feed VALUES ('WH-BER', make_timestamp(epoch_us(now())), now(), NULL)
+
+statement ok
+INSERT INTO feed_checks VALUES
+  ('loaded_today', 'volume', 'warehouse_feed', NULL, NULL, 1, 1, false, NULL, 'CAST(loaded_at AS DATE) = ${today}')
+
+query TR
+SELECT status, value FROM run_checks('feed_checks') WHERE check_name = 'loaded_today'
+----
+pass	1.0
