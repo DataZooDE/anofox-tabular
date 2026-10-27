@@ -212,3 +212,19 @@ class TestDiffSchema:
         before = conn.execute("SELECT count(*) FROM duckdb_tables()").fetchall()
         diff.diff_schema(conn, pd.DataFrame({"a": [1]}), pd.DataFrame({"a": [1]}))
         assert conn.execute("SELECT count(*) FROM duckdb_tables()").fetchall() == before
+
+
+class TestTypeChangeWarningOnce:
+    """The extension's type-change warning is printed once per call, not once per bind."""
+
+    @pytest.mark.parametrize("func", ["joindiff", "hashdiff"])
+    def test_warning_printed_once(self, conn, capfd, func):
+        import pandas as pd
+        from anofox import diff
+        before = pd.DataFrame({"sku": ["A-100", "B-200"], "unit_price": [19.99, 4.5]})
+        after = pd.DataFrame({"sku": ["A-100", "B-200"], "unit_price": ["19.99", "4.95"]})
+        capfd.readouterr()
+        result = getattr(diff, func)(conn, before, after, "sku")
+        err = capfd.readouterr().err
+        assert err.count("changed type DOUBLE -> VARCHAR") == 1
+        assert result["sku"].tolist() == ["B-200"]

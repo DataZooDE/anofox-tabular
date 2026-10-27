@@ -8,6 +8,7 @@ and only through :func:`quote_ident`.
 
 from __future__ import annotations
 
+import warnings
 from typing import Any, Optional, Sequence
 
 
@@ -73,12 +74,25 @@ def fetch_one(conn: Any, query: str, params: Sequence[Any] = ()) -> Any:
 
 def fetch_frame(conn: Any, query: str, params: Sequence[Any] = (), df_type: str = "pandas") -> Any:
     """Run *query* with bound *params* and return the result as a pandas or polars DataFrame."""
-    # A relation from sql() offers .df() and .pl() on DuckDB 1.x and 2.0; the
-    # result of execute() has no .pl() on 2.0.
+    # execute() binds the query once. A relation from sql() is bound when it is
+    # created and again when it runs, so a table function's bind-time warnings
+    # (e.g. the diff's "changed type") were printed twice.
     native = getattr(conn, "native", conn)
     finish(native)
-    relation = native.sql(query, params=list(params))
-    return relation.pl() if df_type == "polars" else relation.df()
+    result = native.execute(query, list(params))
+    try:
+        if df_type != "polars":
+            return result.df()
+        if hasattr(result, "pl"):  # DuckDB 1.x
+            return result.pl()
+        # DuckDB 2.0: no .pl() on a result. Its Arrow export warns about an
+        # extra copy of the rows; that copy is cheaper than binding twice.
+        import polars as pl
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", message="Arrow output on a DB-API result")
+            return pl.from_arrow(result.to_arrow_table())
+    finally:
+        finish(native)
 
 
 def id_column_arg(id_column: Optional[str], params: list) -> str:
