@@ -81,6 +81,11 @@ biometric data. A note such as `Diagnose: Diabetes Typ 2, katholisch, Gewerkscha
 not flagged as special-category data. Review free-text columns that can hold such data by other
 means.
 
+Not supported: national identifiers of other countries have no type, among them the Swiss AHV
+number (`756.1234.5678.97`, `CH_AHV`) and the Austrian social insurance number
+(`1234 010180`, `AT_SVNR`). They are not detected as such; mask columns that hold them with
+[`pii_mask_value`](#pii_mask_value).
+
 Detection skips a bare 9-digit number such as `123456789`. It is neither a `US_SSN` nor a
 `US_PASSPORT`, because contract, order and claim numbers have the same shape.
 
@@ -191,6 +196,11 @@ completely. Each type has its own rule:
 | `NAME` | Per word: the first character; words of up to 4 characters are masked completely | `Anna Schmidt` → `**** S******`, `Li Na` → `** **` |
 | `ORGANIZATION`, `MISC` | Per word: up to the first 3 characters, at most half of the word; words of up to 4 characters are masked completely | `Microsoft` → `Mic******`, `Deutsche Bank AG` → `Deu***** **** **` |
 | `LOCATION` | The first word like `ORGANIZATION`, all further words masked | `Berlin` → `Ber***`, `Rome` → `****`, `Frankfurt am Main` → `Fra****** ** ****` |
+| `DATE_OF_BIRTH` | The year; day and month are masked. The year stays readable on purpose (age bands stay usable); use `redact` or `asterisk` to hide it as well | `12.03.1985` → `**.**.1985`, `1985-03-12` → `1985-**-**`, `05.05.80` → `**.**.80` |
+| `POSTAL_CODE` | The first 2 characters (the region) | `80331` → `80***`, `SW1A 2AA` → `SW** ***` |
+| `DE_SVNR` | The area number (first 2 digits) | `65 170839 J 003` → `65 ****** * ***` |
+| `DE_KVNR` | The leading letter | `A123456780` → `A*********` |
+| `DE_ID_CARD` | The first character (part of the authority code) | `T220001293` → `T*********` |
 | Any other type | The first and last character from 5 characters on, the first and last 2 from 8 characters on; up to 4 characters are masked completely | |
 
 The half rule is checked for every match: a type-specific mask that would reveal more than half of
@@ -1075,6 +1085,11 @@ On a build with OpenVINO, after the model has been loaded, it reports `true`, `L
 The multilingual models are the ONNX exports of Davlan's `*-multilingual-cased-ner-hrl` models.
 They tag no `MISC` entities, so `MISC` is found only with `distilbert-en`; they also tag dates,
 which are not reported (dates of birth are the pattern type `DATE_OF_BIRTH`).
+
+The models are cased: they rely on capital letters to find names. A name written in lower case
+(`klaus fischer`, common in form input and chat messages) is not detected as `NAME`, and places
+and organizations in lower case are found less reliably. A `no_match` on such a column does not
+mean it holds no names.
 
 ```sql no-run
 -- needs a build with OpenVINO; the default model bert-multi is downloaded on first use
