@@ -53,8 +53,9 @@ def vat_validate(conn: Any, vat_string: Union[str, Any], column: Optional[str] =
     Check a VAT number and say why it fails, like SQL ``vat_validate(vat)``.
 
     Returns ``{"valid": bool, "country": str | None, "reason": str | None}``;
-    *reason* is ``missing_prefix``, ``unsupported_country``, ``invalid_format``
-    or ``checksum_mismatch``, and ``None`` for a valid number. ``None`` input
+    *reason* is ``empty`` (blank or whitespace only), ``missing_prefix``,
+    ``unsupported_country``, ``invalid_format`` or ``checksum_mismatch``, and
+    ``None`` for a valid number. ``None`` input
     gives ``None``. Accepts a DataFrame with *column*.
     """
     return _vat_call(conn, vat_string, column, "anofox_tab_vat_validate", "vat_validate", _to_dict)
