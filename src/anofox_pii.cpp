@@ -189,7 +189,7 @@ bool IsFieldLabel(const std::string &text) {
     static const std::unordered_set<std::string> labels = {
         "IBAN", "BIC", "SWIFT", "SSN", "VAT", "VAT ID", "USTID", "UST-IDNR", "TIN", "NINO", "EIN",
         "ITIN", "PIN", "CVV", "CVC", "DOB", "ID", "EMAIL", "E-MAIL", "PHONE", "TEL", "FAX", "MOBILE",
-        "URL", "IP", "MAC", "PASSPORT", "API KEY"};
+        "URL", "IP", "MAC", "PASSPORT", "API KEY", "KVNR", "KV-NR", "EGK"};
     std::string upper;
     for (char c : text) {
         if (c == ':' || c == '.' || c == '#') {
@@ -370,9 +370,10 @@ std::string NormalizeForHash(PIIType type, const std::string &text) {
     case PIIType::IBAN:
     case PIIType::UK_NINO:
     case PIIType::DE_SVNR:
+    case PIIType::DE_KVNR:
     case PIIType::DE_ID_CARD: {
         const bool upper = type == PIIType::IBAN || type == PIIType::UK_NINO || type == PIIType::DE_SVNR ||
-                           type == PIIType::DE_ID_CARD;
+                           type == PIIType::DE_KVNR || type == PIIType::DE_ID_CARD;
         std::string normalized;
         normalized.reserve(text.size());
         for (char c : text) {
@@ -420,6 +421,7 @@ std::string PIITypeToString(PIIType type) {
         case PIIType::API_KEY: return "API_KEY";
         case PIIType::DATE_OF_BIRTH: return "DATE_OF_BIRTH";
         case PIIType::DE_SVNR: return "DE_SVNR";
+        case PIIType::DE_KVNR: return "DE_KVNR";
         case PIIType::DE_ID_CARD: return "DE_ID_CARD";
         case PIIType::POSTAL_CODE: return "POSTAL_CODE";
         default: return "UNKNOWN";
@@ -449,6 +451,7 @@ PIIType StringToPIIType(const std::string &str) {
     if (upper == "API_KEY" || upper == "APIKEY" || upper == "KEY") return PIIType::API_KEY;
     if (upper == "DATE_OF_BIRTH" || upper == "DOB" || upper == "BIRTH_DATE") return PIIType::DATE_OF_BIRTH;
     if (upper == "DE_SVNR" || upper == "SVNR" || upper == "RVNR") return PIIType::DE_SVNR;
+    if (upper == "DE_KVNR" || upper == "KVNR" || upper == "KRANKENVERSICHERTENNUMMER") return PIIType::DE_KVNR;
     if (upper == "DE_ID_CARD" || upper == "PERSONALAUSWEIS") return PIIType::DE_ID_CARD;
     if (upper == "POSTAL_CODE" || upper == "POSTCODE" || upper == "ZIP" || upper == "PLZ") return PIIType::POSTAL_CODE;
     return PIIType::UNKNOWN;
@@ -1095,6 +1098,62 @@ std::vector<PIIMatch> IBANRecognizer::FindMatches(const std::string &text) const
             AnofoxTrace(AnofoxLogLevel::Trace, "pii: IBAN candidate failed validation: " + match.str());
         }
     }
+
+    // IBANs typed with irregular grouping ("DE89 37040044 0532013000",
+    // "DE 89 370 400 440 532 013 000"): from a country code at the start of a
+    // word, collect upper-case letters and digits across single spaces or
+    // dashes until the length registered for the country is reached. The
+    // value must end there (no letter or digit directly after it) and pass
+    // the registered-length and MOD-97 checks, which keep random digit runs out.
+    for (size_t i = 0; i + 4 <= text.size(); i++) {
+        if (!std::isupper(static_cast<unsigned char>(text[i])) || !std::isupper(static_cast<unsigned char>(text[i + 1])) ||
+            (i > 0 && std::isalnum(static_cast<unsigned char>(text[i - 1])))) {
+            continue;
+        }
+        const bool known = std::any_of(matches.begin(), matches.end(),
+                                       [i](const PIIMatch &m) { return i >= m.start_pos && i < m.end_pos; });
+        if (known) {
+            continue;
+        }
+        const size_t expected = RegisteredLength(text.substr(i, 2));
+        if (expected == 0) {
+            continue;
+        }
+        size_t length = 0;
+        size_t pos = i;
+        bool separated = false;  // a separator was seen
+        while (pos < text.size() && length < expected) {
+            const auto c = static_cast<unsigned char>(text[pos]);
+            if (std::isdigit(c) || std::isupper(c)) {
+                // Country code letters, then two check digits, then the BBAN
+                if ((length < 2 && !std::isupper(c)) || (length >= 2 && length < 4 && !std::isdigit(c))) {
+                    break;
+                }
+                length++;
+                pos++;
+            } else if ((c == ' ' || c == '-') && length > 0 && pos + 1 < text.size() &&
+                       std::isalnum(static_cast<unsigned char>(text[pos + 1]))) {
+                separated = true;
+                pos++;
+            } else {
+                break;
+            }
+        }
+        if (!separated || length != expected ||
+            (pos < text.size() && std::isalnum(static_cast<unsigned char>(text[pos])))) {
+            continue;
+        }
+        const std::string candidate = text.substr(i, pos - i);
+        if (!Validate(candidate)) {
+            AnofoxTrace(AnofoxLogLevel::Trace, "pii: irregularly grouped IBAN candidate failed validation: " + candidate);
+            continue;
+        }
+        AnofoxTrace(AnofoxLogLevel::Trace, "pii: IBAN with irregular grouping: " + candidate);
+        matches.emplace_back(type_, candidate, i, pos, 1.0);
+        i = pos - 1;
+    }
+    std::sort(matches.begin(), matches.end(),
+              [](const PIIMatch &a, const PIIMatch &b) { return a.start_pos < b.start_pos; });
     return matches;
 }
 
@@ -1928,6 +1987,33 @@ std::vector<PIIMatch> PhoneRecognizer::FindMatches(const std::string &text) cons
             matches.emplace_back(type_, number, start, start + number.size(), 1.0);
         }
     }
+
+    // A compact national number ("01701234567") has the shape of an order or
+    // claim number, so it is matched only right after a phone keyword:
+    // "Tel 0170...", "Tel.: 0170...", "Telefon: 0221...", "Mobil", "Handy",
+    // "phone". The keyword is a whole word ("Hotel", "Telefonat" do not count)
+    // and only ':', '.', a "-Nr." / "no." label and spaces may stand between.
+    static const std::regex keyword_number(
+        R"((?:^|[^A-Za-z0-9])(?:tel|telefon|telefonnummer|tel\.-?nr|mobil|mobilnummer|mobiltelefon|handy|handynummer|)"
+        R"(phone|mobile|cell|fon|fax|telefax)(?:\.|-?nr\.?|\s+no\.?|\s+number)?\s*:?\s*(0[1-9][0-9]{5,13})(?![0-9A-Za-z]))",
+        std::regex_constants::ECMAScript | std::regex_constants::icase);
+    for (std::sregex_iterator iter(text.begin(), text.end(), keyword_number); iter != end; ++iter) {
+        const auto start = static_cast<size_t>(iter->position(1));
+        const std::string number = (*iter)[1].str();
+        const size_t stop = start + number.size();
+        // Skip numbers the main pattern found already (it never matches a compact one, but a
+        // number inside a longer match must not be reported twice)
+        const bool known = std::any_of(matches.begin(), matches.end(), [&](const PIIMatch &m) {
+            return start < m.end_pos && m.start_pos < stop;
+        });
+        if (known || !Validate(number)) {
+            continue;
+        }
+        AnofoxTrace(AnofoxLogLevel::Trace, "pii: compact phone number after a phone keyword: " + number);
+        matches.emplace_back(type_, number, start, stop, 1.0);
+    }
+    std::sort(matches.begin(), matches.end(),
+              [](const PIIMatch &a, const PIIMatch &b) { return a.start_pos < b.start_pos; });
     return matches;
 }
 
@@ -2809,6 +2895,7 @@ void PIIEngine::InitializeDefaultRecognizers() {
     // German insurance data (F24): context-gated or checksum-validated
     recognizers_.push_back(std::make_unique<DateOfBirthRecognizer>());
     recognizers_.push_back(std::make_unique<DESVNRRecognizer>());
+    recognizers_.push_back(std::make_unique<DEKVNRRecognizer>());
     recognizers_.push_back(std::make_unique<DEIDCardRecognizer>());
     recognizers_.push_back(std::make_unique<PostalCodeRecognizer>());  // opt-in
 
@@ -3721,6 +3808,7 @@ void PIIStatusFunction(ClientContext &, TableFunctionInput &input, DataChunk &ou
         {PIIType::API_KEY, "API Key"},
         {PIIType::DATE_OF_BIRTH, "Date of Birth"},
         {PIIType::DE_SVNR, "German Social Insurance Number"},
+        {PIIType::DE_KVNR, "German Health Insurance Number"},
         {PIIType::DE_ID_CARD, "German ID Card / Passport"},
         {PIIType::POSTAL_CODE, "Postal Code"},
         {PIIType::UNKNOWN, "Unknown"}
@@ -3728,7 +3816,7 @@ void PIIStatusFunction(ClientContext &, TableFunctionInput &input, DataChunk &ou
 
     static const std::unordered_map<PIIType, std::string> pattern_info = {
         {PIIType::EMAIL, "RFC 5322 email pattern"},
-        {PIIType::PHONE, "International (+XX, 00XX) and national (0XX) formats"},
+        {PIIType::PHONE, "International (+XX, 00XX) and national (0XX) formats; compact numbers after a phone keyword"},
         {PIIType::CREDIT_CARD, "Card brand prefixes (IIN) with Luhn validation"},
         {PIIType::US_SSN, "XXX-XX-XXXX format with area validation"},
         {PIIType::IP_ADDRESS, "IPv4 and IPv6 formats"},
@@ -3753,6 +3841,7 @@ void PIIStatusFunction(ClientContext &, TableFunctionInput &input, DataChunk &ou
         {PIIType::API_KEY, "AWS/GitHub tokens and high-entropy strings"},
         {PIIType::DATE_OF_BIRTH, "Date after a birth keyword (geb., Geburtsdatum, DOB, born on), real calendar date"},
         {PIIType::DE_SVNR, "Rentenversicherungsnummer with check digit"},
+        {PIIType::DE_KVNR, "Krankenversichertennummer: letter + 9 digits with check digit, after a keyword (KVNR, Versichertennummer, eGK)"},
         {PIIType::DE_ID_CARD, "9-character document number; check digit or keyword (Personalausweis, Reisepass) required"},
         {PIIType::POSTAL_CODE, "DE/AT/CH, NL and UK postcodes next to an address (off by default)"},
         {PIIType::UNKNOWN, "Unknown pattern"}

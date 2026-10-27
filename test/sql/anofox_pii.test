@@ -573,10 +573,10 @@ true
 # PII Status Table Function Tests
 # ============================================================================
 
-# Returns all 21 PII types (14 original + ORGANIZATION, LOCATION, MISC
-# + DATE_OF_BIRTH, DE_SVNR, DE_ID_CARD, POSTAL_CODE)
+# Returns all 22 PII types (14 original + ORGANIZATION, LOCATION, MISC
+# + DATE_OF_BIRTH, DE_SVNR, DE_KVNR, DE_ID_CARD, POSTAL_CODE)
 query I
-SELECT COUNT(*) = 21 FROM pii_status();
+SELECT COUNT(*) = 22 FROM pii_status();
 ----
 true
 

@@ -1,0 +1,227 @@
+# name: test/sql/anofox_pii_german_gaps.test
+# description: German gaps (F11): compact national phone numbers after a phone keyword, birth
+#              dates with a two-digit year, IBANs with irregular grouping and the
+#              Krankenversichertennummer DE_KVNR
+# group: [anofox_tabular]
+
+require anofox_tabular
+
+statement ok
+LOAD anofox_tabular
+
+# All pattern types, NER types left out so the results do not depend on the model
+statement ok
+SET anofox_pii_enabled_types = 'EMAIL,PHONE,CREDIT_CARD,US_SSN,IP_ADDRESS,IBAN,DE_TAX_ID,URL,US_PASSPORT,CRYPTO_ADDRESS,UK_NINO,MAC_ADDRESS,API_KEY,DATE_OF_BIRTH,DE_SVNR,DE_ID_CARD,DE_KVNR';
+
+statement ok
+CREATE MACRO found(t) AS array_to_string(list_transform(pii_detect(t), lambda m: m.type || ':' || m.text), ' ; ');
+
+# ============================================================================
+# (a) Compact national phone numbers after a phone keyword
+# ============================================================================
+
+statement ok
+CREATE TABLE support_notes AS SELECT * FROM (VALUES
+    (1, 'Kundin bittet um Rückruf, Tel 01701234567, ab 14 Uhr erreichbar.'),
+    (2, 'Neue Nummer: Tel. 01711234567'),
+    (3, 'Telefon: 0221470815'),
+    (4, 'Mobil 015112345678 / Festnetz über Zentrale'),
+    (5, 'Handy: 01761234567'),
+    (6, 'Customer asked for a callback, phone 01601234567'),
+    (7, 'Tel.: 08912345678 (Büro)'),
+    (8, 'Telefonnummer 03012345678 hinterlegt'),
+    -- no keyword: reference numbers of the same shape are no phone numbers
+    (9, 'Rechnung 01701234567 vom 15.08.2024 offen'),
+    (10, 'Vertragsnummer 01711234567, Schadennummer 0221470815'),
+    (11, 'Hotel 01701234567 storniert'),
+    (12, 'Telefonat am 12.10. wegen Vorgang 01701234567'),
+    -- a keyword before a number that is too short stays unmatched
+    (13, 'Tel 012345'),
+    (14, 'Fax: 0221470816, Ansprechpartner Herr Weber')
+) t(id, note);
+
+query IT
+SELECT id, found(note) FROM support_notes ORDER BY id;
+----
+1	PHONE:01701234567
+2	PHONE:01711234567
+3	PHONE:0221470815
+4	PHONE:015112345678
+5	PHONE:01761234567
+6	PHONE:01601234567
+7	PHONE:08912345678
+8	PHONE:03012345678
+9	(empty)
+10	(empty)
+11	(empty)
+12	(empty)
+13	(empty)
+14	PHONE:0221470816
+
+query T
+SELECT pii_mask('Kundin bittet um Rückruf, Tel 01701234567, ab 14 Uhr erreichbar.');
+----
+Kundin bittet um Rückruf, Tel [PHONE], ab 14 Uhr erreichbar.
+
+# The hash pseudonym equals the one of the same number written with spaces
+query T
+SELECT pii_mask('Tel 01701234567', 'hash') = 'Tel ' || pii_mask('0170 1234567', 'hash');
+----
+true
+
+# ============================================================================
+# (b) DATE_OF_BIRTH with a two-digit year
+# ============================================================================
+
+statement ok
+CREATE TABLE claims AS SELECT * FROM (VALUES
+    (1, 'Schadenmeldung VN Hans Meier, Geburtsdatum: 05.05.80, Wasserschaden vom 15.08.24'),
+    (2, 'Mitversicherte Person geb. 5.5.80 in Köln'),
+    (3, 'Kind geboren am 12.03.19'),
+    (4, 'Geburtsdatum: 01.01.30'),
+    -- not a real date / in the future / no keyword
+    (5, 'Geburtsdatum: 31.02.80'),
+    (6, 'Geburtsdatum: 24.12.99, Schaden vom 03.01.24'),
+    (7, 'Schaden vom 05.05.80 gemeldet'),
+    (8, 'geb. 05.05.1980')
+) t(id, note);
+
+query IT
+SELECT id, found(note) FROM claims ORDER BY id;
+----
+1	DATE_OF_BIRTH:05.05.80
+2	DATE_OF_BIRTH:5.5.80
+3	DATE_OF_BIRTH:12.03.19
+4	DATE_OF_BIRTH:01.01.30
+5	(empty)
+6	DATE_OF_BIRTH:24.12.99
+7	(empty)
+8	DATE_OF_BIRTH:05.05.1980
+
+# A two-digit year that would lie in the future is a 19xx year; this year's date after
+# today is rejected (the year 20yy is never interpreted as the following century)
+query I
+SELECT len(pii_detect('Geburtsdatum: 31.12.' || strftime(get_current_timestamp()::TIMESTAMP, '%y'))) = (strftime(get_current_timestamp()::TIMESTAMP, '%m-%d') = '12-31')::INT;
+----
+true
+
+# The partial mask keeps the year
+query T
+SELECT pii_mask_column('Geburtsdatum: 05.05.80', 'DATE_OF_BIRTH', 'partial');
+----
+Geburtsdatum: **.**.80
+
+# ============================================================================
+# (c) IBANs with irregular grouping
+# ============================================================================
+
+statement ok
+CREATE TABLE payments AS SELECT * FROM (VALUES
+    (1, 'Bitte erstatten auf IBAN DE89 37040044 0532013000, BIC COBADEFFXXX'),
+    (2, 'Kontoverbindung: DE 89 370 400 440 532 013 000'),
+    (3, 'IBAN: DE89-3704 0044-0532-0130-00 (Kontoinhaber Meier)'),
+    (4, 'Überweisung an AT61 1904300234573201 erfolgt'),
+    (5, 'NL91 ABNA 041716 4300 ist die neue Bankverbindung'),
+    (6, 'regulär: DE89 3704 0044 0532 0130 00'),
+    -- checksum fails / wrong length: no IBAN
+    (7, 'Bitte erstatten auf IBAN DE89 37040044 0532013001'),
+    (8, 'Kontoverbindung: DE 89 370 400 440 532 013'),
+    (9, 'Lieferschein DE12 3456 7890 12 Positionen')
+) t(id, note);
+
+query IT
+SELECT id, found(note) FROM payments ORDER BY id;
+----
+1	IBAN:DE89 37040044 0532013000
+2	IBAN:DE 89 370 400 440 532 013 000
+3	IBAN:DE89-3704 0044-0532-0130-00
+4	IBAN:AT61 1904300234573201
+5	IBAN:NL91 ABNA 041716 4300
+6	IBAN:DE89 3704 0044 0532 0130 00
+7	(empty)
+8	(empty)
+9	(empty)
+
+# Irregularly grouped copies hash alike
+query I
+SELECT count(DISTINCT pii_mask_column(note, 'IBAN', 'hash')) FROM (VALUES
+    ('DE89 37040044 0532013000'), ('DE 89 370 400 440 532 013 000'), ('DE89370400440532013000')) t(note);
+----
+1
+
+# An IBAN directly followed by more characters of the same token is no IBAN
+query T
+SELECT found('Referenz DE89 37040044 0532013000X7');
+----
+(empty)
+
+# ============================================================================
+# (d) DE_KVNR: Krankenversichertennummer (letter + 9 digits, check digit, keyword)
+# ============================================================================
+
+statement ok
+CREATE TABLE health_claims AS SELECT * FROM (VALUES
+    (1, 'Versicherte Person: Anna Berger, Krankenversichertennummer A123456780, Leistungsantrag Physiotherapie'),
+    (2, 'KVNR: T203456712 laut eGK'),
+    (3, 'Versichertennummer M814700323; Kasse: AOK'),
+    (4, 'eGK-Nr. X555012347 bitte prüfen'),
+    (5, 'KV-Nr.: A123456780'),
+    (6, 'health insurance number A123456780'),
+    -- wrong check digit
+    (7, 'Krankenversichertennummer A123456789'),
+    -- valid check digit but no keyword: an order number of the same shape
+    (8, 'Bestellung A123456780 versandt'),
+    -- keyword, but separated by a sentence end and another number
+    (9, 'Versichertennummer folgt. Auftrag 4711, Artikel A123456780')
+) t(id, note);
+
+query IT
+SELECT id, found(note) FROM health_claims ORDER BY id;
+----
+1	DE_KVNR:A123456780
+2	DE_KVNR:T203456712
+3	DE_KVNR:M814700323
+4	DE_KVNR:X555012347
+5	DE_KVNR:A123456780
+6	DE_KVNR:A123456780
+7	(empty)
+8	(empty)
+9	(empty)
+
+query T
+SELECT pii_mask('Versicherte Person: Anna Berger, Krankenversichertennummer A123456780, Leistungsantrag Physiotherapie');
+----
+Versicherte Person: Anna Berger, Krankenversichertennummer [DE_KVNR], Leistungsantrag Physiotherapie
+
+# The partial mask keeps the letter
+query T
+SELECT pii_mask_column('KVNR: T203456712', 'DE_KVNR', 'partial');
+----
+KVNR: T*********
+
+# Alias and default: DE_KVNR is a default type (it needs the keyword and the check digit)
+statement ok
+RESET anofox_pii_enabled_types;
+
+query T
+SELECT pii_mask_column('KVNR A123456780', 'KVNR', 'redact');
+----
+KVNR [DE_KVNR]
+
+query T
+SELECT list_contains(list_transform(pii_detect('Krankenversichertennummer A123456780'), lambda m: m.type), 'DE_KVNR');
+----
+true
+
+query T
+SELECT recognizer_name FROM pii_status() WHERE pii_type = 'DE_KVNR';
+----
+German Health Insurance Number
+
+# The other new rules are part of the default types too (NER types left out of the check)
+query T
+SELECT array_to_string(list_transform(list_filter(pii_detect('Tel 01701234567, geb. 5.5.80, IBAN DE89 37040044 0532013000'),
+                                                  lambda m: m.type NOT IN ('NAME', 'ORGANIZATION', 'LOCATION', 'MISC')),
+                                      lambda m: m.type || ':' || m.text), ' ; ');
+----
+PHONE:01701234567 ; DATE_OF_BIRTH:5.5.80 ; IBAN:DE89 37040044 0532013000

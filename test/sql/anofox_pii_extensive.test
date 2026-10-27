@@ -1990,17 +1990,17 @@ SET anofox_pii_default_mask_strategy = 'redact';
 # PII STATUS FUNCTION TESTS (5+ cases)
 # ============================================================================
 
-# All 21 types listed
+# All 22 types listed
 query I
 SELECT COUNT(*) FROM pii_status();
 ----
-21
+22
 
 # All enabled except the opt-in POSTAL_CODE
 query I
 SELECT COUNT(*) FROM pii_status() WHERE enabled = true;
 ----
-20
+21
 
 # Check specific types exist
 query I

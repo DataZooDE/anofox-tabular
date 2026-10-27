@@ -303,9 +303,12 @@ RESET anofox_pii_enabled_types;
 `SET anofox_pii_enabled_types = 'DEFAULT,POSTAL_CODE'` when addresses have to be masked too.
 
 For German customer and claims data, `DATE_OF_BIRTH` (a date after `geb.`, `Geburtsdatum`,
-`DOB`, ...), `DE_SVNR` (Rentenversicherungsnummer) and `DE_ID_CARD` (Personalausweis and
-Reisepass numbers) are detected by default. Invoice dates and order numbers without such a
-keyword or check digit are left alone. If mistyped IBANs and card numbers must be masked as well,
+`DOB`, ..., also with a two-digit year such as `geb. 5.5.80`), `DE_SVNR`
+(Rentenversicherungsnummer), `DE_KVNR` (Krankenversichertennummer after a keyword such as
+`KVNR` or `Versichertennummer`, with a valid check digit) and `DE_ID_CARD` (Personalausweis and
+Reisepass numbers) are detected by default, as are compact phone numbers after a phone keyword
+(`Tel 01701234567`) and IBANs with irregular grouping (`DE89 37040044 0532013000`). Invoice dates
+and order numbers without such a keyword or check digit are left alone. If mistyped IBANs and card numbers must be masked as well,
 `SET anofox_pii_require_checksum = false` reports them at confidence 0.6 (see
 [Settings](../api/06-pii.md#settings)).
 

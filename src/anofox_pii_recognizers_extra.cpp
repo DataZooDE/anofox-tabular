@@ -1,5 +1,5 @@
 // PII recognizers for German insurance data (finding F24): DATE_OF_BIRTH,
-// DE_SVNR, DE_ID_CARD, POSTAL_CODE, plus the checksum-failure search behind
+// DE_SVNR, DE_KVNR, DE_ID_CARD, POSTAL_CODE, plus the checksum-failure search behind
 // anofox_pii_require_checksum = false for IBAN and CREDIT_CARD.
 //
 // All of these are context-gated or checksum-validated: a plain date, a
@@ -180,6 +180,8 @@ std::regex CaseInsensitive(const char *pattern) {
 const char *DATE_PATTERN =
     // 12.03.1985, 3.7.1962, 12. 03. 1985
     R"(\b(?:\d{1,2}\. ?\d{1,2}\. ?\d{4})"
+    // 05.05.80, 5.5.80 (two-digit year, see TwoDigitBirthYear)
+    R"(|\d{1,2}\. ?\d{1,2}\. ?\d{2})"
     // 1985-03-12
     R"(|\d{4}-\d{2}-\d{2})"
     // 12/03/1985
@@ -238,6 +240,15 @@ bool IsPlausibleBirthDate(int year, int month, int day) {
         return month < today_month;
     }
     return day <= today_day;
+}
+
+// The century of a two-digit birth year: up to this year's two digits it is
+// 20yy, above them 19yy (05.05.80 -> 1980, 12.03.19 -> 2019). A date that
+// still lies ahead this year is then rejected by IsPlausibleBirthDate.
+int TwoDigitBirthYear(int two_digits) {
+    int32_t today_year = 0, today_month = 0, today_day = 0;
+    Date::Convert(Timestamp::GetDate(Timestamp::GetCurrentTimestamp()), today_year, today_month, today_day);
+    return two_digits <= today_year % 100 ? 2000 + two_digits : 1900 + two_digits;
 }
 
 size_t CompactLength(const std::string &text) {
@@ -486,16 +497,23 @@ bool DateOfBirthRecognizer::Validate(const std::string &text) const {
         return IsPlausibleBirthDate(numbers[2], numbers[1], numbers[0]) ||
                IsPlausibleBirthDate(numbers[2], numbers[0], numbers[1]);
     }
-    return IsPlausibleBirthDate(numbers[2], numbers[1], numbers[0]);  // DD.MM.YYYY
+    if (widths[2] == 2) {
+        return IsPlausibleBirthDate(TwoDigitBirthYear(numbers[2]), numbers[1], numbers[0]);  // DD.MM.YY
+    }
+    return widths[2] == 4 && IsPlausibleBirthDate(numbers[2], numbers[1], numbers[0]);  // DD.MM.YYYY
 }
 
 std::string DateOfBirthRecognizer::GetPartialMask(const std::string &text) const {
-    // Keep the year: 12.03.1985 -> **.**.1985, 1985-03-12 -> 1985-**-**
+    // Keep the year: 12.03.1985 -> **.**.1985, 1985-03-12 -> 1985-**-**, 05.05.80 -> **.**.80
     for (size_t i = 0; i + 4 <= text.size(); i++) {
         if ((i == 0 || !IsAsciiDigit(text[i - 1])) && IsAsciiDigit(text[i]) && IsAsciiDigit(text[i + 1]) &&
             IsAsciiDigit(text[i + 2]) && IsAsciiDigit(text[i + 3]) && (i + 4 == text.size() || !IsAsciiDigit(text[i + 4]))) {
             return MaskAlnum(text, 0, i, i + 4);
         }
+    }
+    const size_t dot = text.rfind('.');
+    if (dot != std::string::npos && text.size() - dot == 3 && IsAsciiDigit(text[dot + 1]) && IsAsciiDigit(text[dot + 2])) {
+        return MaskAlnum(text, 0, dot + 1, text.size());
     }
     return MaskAlnum(text, 0);
 }
@@ -554,6 +572,75 @@ bool DESVNRRecognizer::Validate(const std::string &text) const {
 std::string DESVNRRecognizer::GetPartialMask(const std::string &text) const {
     // Keep the area number: 65 170839 J 003 -> 65 ****** * ***
     return MaskAlnum(text, 2);
+}
+
+// ============================================================================
+// DE_KVNR (Krankenversichertennummer)
+// ============================================================================
+
+namespace {
+
+const char *KVNR_KEYWORD_PATTERN =
+    R"(krankenversichertennummer|krankenversicherungsnummer|krankenversicherten-?nr\.?|versichertennummer|)"
+    R"(versicherten-?nr\.?|versicherten-?id|kvnr|kv-?nr\.?|egk(?:-?nr\.?)?|gesundheitskarte|)"
+    R"(health\s+insurance\s+(?:number|no\.?|id))";
+
+} // namespace
+
+DEKVNRRecognizer::DEKVNRRecognizer()
+    : RegexRecognizer(PIIType::DE_KVNR, "German Health Insurance Number", R"(\b[A-Z][0-9]{9}\b)"),
+      keyword_(CaseInsensitive(KVNR_KEYWORD_PATTERN)) {
+}
+
+DEKVNRRecognizer::~DEKVNRRecognizer() {
+}
+
+std::vector<PIIMatch> DEKVNRRecognizer::FindMatches(const std::string &text) const {
+    // A letter and 9 digits is also the shape of order and article numbers, and
+    // one in ten of them passes the check digit by chance: the number needs both
+    // the check digit and a keyword before it ("Krankenversichertennummer
+    // A123456780", "KVNR: A123456780", "eGK-Nr. A123456780")
+    std::vector<PIIMatch> matches;
+    for (std::sregex_iterator it(text.begin(), text.end(), pattern_), stop; it != stop; ++it) {
+        const auto start = static_cast<size_t>(it->position());
+        const std::string candidate = it->str();
+        if (!KeywordPrecedes(text, start, keyword_, 3, 40, ",;!?\n\r")) {
+            continue;
+        }
+        if (!Validate(candidate)) {
+            AnofoxTrace(AnofoxLogLevel::Trace, "pii: KVNR candidate fails its check digit: " + candidate);
+            continue;
+        }
+        matches.emplace_back(type_, candidate, start, start + candidate.size(), 1.0);
+    }
+    return matches;
+}
+
+bool DEKVNRRecognizer::Validate(const std::string &text) const {
+    // The letter becomes its two-digit position in the alphabet (A=01 .. Z=26);
+    // with the first 8 digits that gives 10 digits, weighted alternately 1 and
+    // 2. The digit sums of the products are added up, and the sum modulo 10 is
+    // the check digit (the last of the 9 digits): A123456780.
+    if (text.size() != 10 || !std::isupper(static_cast<unsigned char>(text[0])) ||
+        !std::all_of(text.begin() + 1, text.end(), IsAsciiDigit)) {
+        return false;
+    }
+    const int letter = text[0] - 'A' + 1;
+    std::string digits;
+    digits += static_cast<char>('0' + letter / 10);
+    digits += static_cast<char>('0' + letter % 10);
+    digits += text.substr(1, 8);
+    int sum = 0;
+    for (size_t i = 0; i < digits.size(); i++) {
+        const int product = (digits[i] - '0') * (i % 2 == 0 ? 1 : 2);
+        sum += product / 10 + product % 10;
+    }
+    return sum % 10 == text[9] - '0';
+}
+
+std::string DEKVNRRecognizer::GetPartialMask(const std::string &text) const {
+    // Keep the letter: A123456780 -> A*********
+    return MaskAlnum(text, 1);
 }
 
 // ============================================================================

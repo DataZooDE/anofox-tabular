@@ -27,6 +27,7 @@ enum class PIIType {
     DE_TAX_ID,       // German Tax ID (Steueridentifikationsnummer)
     DATE_OF_BIRTH,   // A date following a birth keyword (geb., Geburtsdatum, DOB, born on)
     DE_SVNR,         // German pension insurance number (Rentenversicherungsnummer)
+    DE_KVNR,         // German health insurance number (Krankenversichertennummer)
     DE_ID_CARD,      // German Personalausweis / Reisepass document number
     URL,             // HTTP/HTTPS URLs
     NAME,            // Person names (NER-based detection, PER entities)
@@ -380,6 +381,23 @@ public:
     ~DESVNRRecognizer() override;
     bool Validate(const std::string &text) const override;
     std::string GetPartialMask(const std::string &text) const override;
+};
+
+/**
+ * German health insurance number (Krankenversichertennummer, KVNR): a letter
+ * and 9 digits whose last digit is the check digit; matched only after a
+ * keyword (Krankenversichertennummer, Versichertennummer, KVNR, eGK, ...)
+ */
+class DEKVNRRecognizer : public RegexRecognizer {
+public:
+    DEKVNRRecognizer();
+    ~DEKVNRRecognizer() override;
+    std::vector<PIIMatch> FindMatches(const std::string &text) const override;
+    bool Validate(const std::string &text) const override;
+    std::string GetPartialMask(const std::string &text) const override;
+
+private:
+    std::regex keyword_;
 };
 
 /**

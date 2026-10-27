@@ -52,10 +52,10 @@ NER types need the NER model.
 | Type | Detects | Method |
 |------|---------|--------|
 | `EMAIL` | Email addresses, also with non-ASCII letters (`jörg.k@müller-gmbh.de`); a local part of at most 64 characters and domain labels of at most 63. The local part ends at `/`, `?`, `#`, `&`, `=` and `:`, so an address in a URL query or path or after `mailto:` is matched as the bare address (`max@web.de` in `https://shop.example.com/unsubscribe?email=max@web.de&id=7`) | pattern |
-| `PHONE` | International numbers with a `+` or `00` prefix (`+49 (0) 221 4711-0`, `0049 171 1234567`), national numbers with an area code and a space, dash or slash (`0171 1234567`, `089/12345678`, `(089) 123 456 78`) and US `(555) 123-4567`; 7 to 15 digits. A number starts and ends at the text boundary or at any character that is no letter, digit or `+`, so numbers in JSON values (`"phone":"+49 171 2345678"`), CSV fields, HTML cells (`<td>+49 30 1234567</td>`), `tel=+49...` and `Tel.+49...` are found. A number joined by a dash to letters or digits (`INC-0221-4711`, the groups of a UUID), or following a digit and a space, `/` or `.` (the groups of an IBAN), is part of a longer token and not matched | pattern |
+| `PHONE` | International numbers with a `+` or `00` prefix (`+49 (0) 221 4711-0`, `0049 171 1234567`), national numbers with an area code and a space, dash or slash (`0171 1234567`, `089/12345678`, `(089) 123 456 78`) and US `(555) 123-4567`; 7 to 15 digits. A compact national number without separators (`01701234567`) is matched only right after a phone keyword (`Tel`, `Tel.`, `Telefon`, `Telefonnummer`, `Mobil`, `Handy`, `Fon`, `Fax`, `phone`, `mobile`, `cell`, optionally followed by `:` or `-Nr.`), because order and claim numbers have the same shape. A number starts and ends at the text boundary or at any character that is no letter, digit or `+`, so numbers in JSON values (`"phone":"+49 171 2345678"`), CSV fields, HTML cells (`<td>+49 30 1234567</td>`), `tel=+49...` and `Tel.+49...` are found. A number joined by a dash to letters or digits (`INC-0221-4711`, the groups of a UUID), or following a digit and a space, `/` or `.` (the groups of an IBAN), is part of a longer token and not matched | pattern |
 | `CREDIT_CARD` | Card numbers of Visa, Mastercard (51-55, 2221-2720), American Express, Discover, Maestro, JCB, Diners Club and UnionPay: 13 to 19 digits, compact or in groups joined by one space, dash or dot (`4111 1111 1111 1111`, `3782-822463-10005`, `4111.1111.1111.1111`). The digits must carry a brand prefix with a length the brand issues; digits that continue a longer token (`DE89 3704 ...`, `SN4111...`, `4111...-01`) are not matched | pattern + Luhn checksum + brand prefix |
 | `US_SSN` | US Social Security Numbers `XXX-XX-XXXX` or `XXX XX XXXX`; bare 9-digit numbers are not matched | pattern + area validation |
-| `IBAN` | International Bank Account Numbers, compact or in groups of four separated by single spaces or dashes (`DE89 3704 0044 0532 0130 00`). The country code must be in the SWIFT IBAN registry and the IBAN must have that country's length (`DE` 22, `NL` 18, ...), so a hex id such as `ce78d1da254c0843eb23951ae077ff5f` whose MOD-97 checksum holds by chance is no IBAN | pattern + registered country and length + MOD-97 checksum |
+| `IBAN` | International Bank Account Numbers, compact or in groups of four separated by single spaces or dashes (`DE89 3704 0044 0532 0130 00`). Irregular grouping (`DE89 37040044 0532013000`, `DE 89 370 400 440 532 013 000`, mixed spaces and dashes) is matched when the IBAN ends after exactly the country's length and its MOD-97 checksum holds. The country code must be in the SWIFT IBAN registry and the IBAN must have that country's length (`DE` 22, `NL` 18, ...), so a hex id such as `ce78d1da254c0843eb23951ae077ff5f` whose MOD-97 checksum holds by chance is no IBAN | pattern + registered country and length + MOD-97 checksum |
 | `IP_ADDRESS` | IPv4 and IPv6 addresses. IPv6 in all RFC 4291 text forms: full, compressed with `::` (`2001:db8::1`, `::1`), with an IPv4 tail (`::ffff:192.0.2.1`) and with a zone (`fe80::1%eth0`); an IPv6 address needs at least one decimal digit, so `cafe::beef` and `std::vector` are not matched | pattern |
 | `URL` | HTTP and HTTPS URLs. A URL that contains an email address (other than its userinfo, as in `https://deploy@git.example.com/`) is not a `URL` match: the address inside is the `EMAIL` match and the rest of the URL stays readable (`https://shop.example.com/unsubscribe?email=[EMAIL]&id=7`), so hash pseudonyms of the address match those of an email column. Without `EMAIL` among the enabled types the whole URL is matched | pattern |
 | `MAC_ADDRESS` | MAC addresses with colons or hyphens (`00:1A:2B:3C:4D:5E`) or dots (`0026.5e8b.1c2a`: exactly three groups of four with at least one letter A-F, so `4111.1111.1111.1111` is no MAC); without separators only a standalone 12-character hex token with at least one letter A-F and one digit that is not the last group of a UUID | pattern |
@@ -64,8 +64,9 @@ NER types need the NER model.
 | `DE_TAX_ID` | German tax ID (Steueridentifikationsnummer, 11 digits) | pattern + checksum |
 | `API_KEY` | AWS and GitHub tokens, high-entropy strings of 32 to 64 characters; a run next to `+` or `/` is a piece of a base64 or path token (an inline attachment) and not matched. UUIDs (`8-4-4-4-12` hex groups in any case, with or without braces) and md5, sha1 and sha256 hex digests (32, 40 or 64 hex characters, all lower or all upper case) are identifiers, not keys, and not matched | pattern + entropy |
 | `CRYPTO_ADDRESS` | Bitcoin (P2PKH, P2SH, SegWit) and Ethereum addresses | pattern + checksum where available |
-| `DATE_OF_BIRTH` | A date (`12.03.1985`, `3.7.1962`, `1985-03-12`, `12/03/1985`, `12. März 1985`, `March 12, 1985`) that follows a birth keyword (`geboren`, `geb.`, `Geburtsdatum`, `Geburtstag`, `DOB`, `D.O.B.`, `date of birth`, `birthday`, `born`) with at most three words and no comma or sentence end in between. A date without a keyword is not matched. It must be a real calendar date from 1900 up to today | pattern + keyword + date check |
+| `DATE_OF_BIRTH` | A date (`12.03.1985`, `3.7.1962`, `05.05.80`, `1985-03-12`, `12/03/1985`, `12. März 1985`, `March 12, 1985`) that follows a birth keyword (`geboren`, `geb.`, `Geburtsdatum`, `Geburtstag`, `DOB`, `D.O.B.`, `date of birth`, `birthday`, `born`) with at most three words and no comma or sentence end in between. A date without a keyword is not matched. It must be a real calendar date from 1900 up to today. A two-digit year (`05.05.80`, `5.5.80`) up to this year's two digits is `20yy`, above them `19yy` (`80` is 1980, `19` is 2019), and the date must still lie in the past | pattern + keyword + date check |
 | `DE_SVNR` | German pension insurance number (Rentenversicherungsnummer, often called Sozialversicherungsnummer): area, birth date `DDMMYY`, initial letter, serial, check digit, with or without spaces (`65 170839 J 003`, `65170839J003`) | pattern + check digit |
+| `DE_KVNR` | German health insurance number (Krankenversichertennummer, the number on the eGK): a capital letter and 9 digits (`A123456780`). The last digit is the check digit (the letter as its position `01`-`26`, then the first 8 digits, weighted alternately 1 and 2, digit sums of the products added, modulo 10). One in ten numbers of this shape passes the check by chance, so it must also follow a keyword (`Krankenversichertennummer`, `Versichertennummer`, `Versicherten-Nr.`, `KVNR`, `KV-Nr.`, `eGK`, `Gesundheitskarte`, `health insurance number`) with at most three words and no digit, comma or sentence end in between. Alias `KVNR` | pattern + check digit + keyword |
 | `DE_ID_CARD` | German Personalausweis or Reisepass number: a letter and 8 characters from `CFGHJKLMNPRTVWXYZ0-9` with at least one digit, optionally followed by the check digit (`T220001293`). With a valid ICAO 9303 check digit it is matched anywhere; without it only after a keyword (`Personalausweis`, `Ausweis`, `Ausweis-Nr.`, `Reisepass`, `Passnummer`, `ID card`, `passport`) | pattern + check digit or keyword |
 | `POSTAL_CODE` | Off by default (see below). DE 5-digit, AT/CH 4-digit codes followed by a town (`80331 München`) after a street and house number, at the start of a line or after a comma, or with a `D-`/`A-`/`CH-` prefix; NL `1015 CJ` followed by a town; UK postcodes (`SW1A 2AA`) at the end of an address line; any of these after `PLZ`, `Postleitzahl`, `postcode` or `zip` | pattern + address context |
 | `NAME` | Person names | NER; a name dictionary when the model is not available |
@@ -82,32 +83,33 @@ and plain 5-digit numbers are not matched. A 9-character document number such as
 is a `DE_ID_CARD` after an ID keyword and a `US_PASSPORT` (a letter and 8 digits) without one.
 
 ```sql
-SET anofox_pii_enabled_types = 'DATE_OF_BIRTH,DE_SVNR,DE_ID_CARD';
-SELECT pii_mask('VN geb. 12.03.1985, Ausweis-Nr. T220001293, SV-Nr. 65 170839 J 003; Schaden vom 15.08.2024, Rechnung 4711081512') AS masked;
+SET anofox_pii_enabled_types = 'DATE_OF_BIRTH,DE_SVNR,DE_KVNR,DE_ID_CARD';
+SELECT pii_mask('VN geb. 12.03.1985, Ausweis-Nr. T220001293, SV-Nr. 65 170839 J 003, KVNR A123456780; Schaden vom 15.08.2024, Rechnung 4711081512') AS masked;
 ```
 
 ```text
-┌──────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
-│                                                      masked                                                      │
-│                                                     varchar                                                      │
-├──────────────────────────────────────────────────────────────────────────────────────────────────────────────────┤
-│ VN geb. [DATE_OF_BIRTH], Ausweis-Nr. [DE_ID_CARD], SV-Nr. [DE_SVNR]; Schaden vom 15.08.2024, Rechnung 4711081512 │
-└──────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│                                                              masked                                                              │
+│                                                             varchar                                                              │
+├──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+│ VN geb. [DATE_OF_BIRTH], Ausweis-Nr. [DE_ID_CARD], SV-Nr. [DE_SVNR], KVNR [DE_KVNR]; Schaden vom 15.08.2024, Rechnung 4711081512 │
+└──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
 ```sql
 SELECT pii_mask_column('VN geb. 12.03.1985', 'DATE_OF_BIRTH', 'partial') AS dob,
        pii_mask_column('SV-Nr. 65 170839 J 003', 'DE_SVNR', 'partial') AS svnr,
-       pii_mask_column('Ausweis-Nr. T220001293', 'DE_ID_CARD', 'partial') AS id_card;
+       pii_mask_column('Ausweis-Nr. T220001293', 'DE_ID_CARD', 'partial') AS id_card,
+       pii_mask_column('KVNR A123456780', 'DE_KVNR', 'partial') AS kvnr;
 ```
 
 ```text
-┌────────────────────┬────────────────────────┬────────────────────────┐
-│        dob         │          svnr          │        id_card         │
-│      varchar       │        varchar         │        varchar         │
-├────────────────────┼────────────────────────┼────────────────────────┤
-│ VN geb. **.**.1985 │ SV-Nr. 65 ****** * *** │ Ausweis-Nr. T********* │
-└────────────────────┴────────────────────────┴────────────────────────┘
+┌────────────────────┬────────────────────────┬────────────────────────┬─────────────────┐
+│        dob         │          svnr          │        id_card         │      kvnr       │
+│      varchar       │        varchar         │        varchar         │     varchar     │
+├────────────────────┼────────────────────────┼────────────────────────┼─────────────────┤
+│ VN geb. **.**.1985 │ SV-Nr. 65 ****** * *** │ Ausweis-Nr. T********* │ KVNR A********* │
+└────────────────────┴────────────────────────┴────────────────────────┴─────────────────┘
 ```
 
 ```sql
@@ -222,7 +224,7 @@ so hashed columns can still be joined and counted:
 | Type | Normalisation before hashing |
 |------|------------------------------|
 | `PHONE`, `CREDIT_CARD`, `US_SSN`, `DE_TAX_ID` | Spaces, `-`, `.`, `/`, `(` and `)` removed (a leading `+` is kept) |
-| `IBAN`, `UK_NINO`, `DE_SVNR`, `DE_ID_CARD` | Same separators removed, upper-cased |
+| `IBAN`, `UK_NINO`, `DE_SVNR`, `DE_KVNR`, `DE_ID_CARD` | Same separators removed, upper-cased |
 | `EMAIL` | Lower-cased |
 | all other types | None: the matched text is hashed as it is |
 
@@ -888,33 +890,34 @@ SELECT pii_type, recognizer_name, pattern_info FROM pii_status() ORDER BY pii_ty
 ```
 
 ```text
-┌────────────────┬────────────────────────────────┬───────────────────────────────────────────────────────────────────────────────────────────┐
-│    pii_type    │        recognizer_name         │                                       pattern_info                                        │
-│    varchar     │            varchar             │                                          varchar                                          │
-├────────────────┼────────────────────────────────┼───────────────────────────────────────────────────────────────────────────────────────────┤
-│ API_KEY        │ API Key                        │ AWS/GitHub tokens and high-entropy strings                                                │
-│ CREDIT_CARD    │ Credit Card                    │ Card brand prefixes (IIN) with Luhn validation                                            │
-│ CRYPTO_ADDRESS │ Crypto Address                 │ Bitcoin (P2PKH/P2SH/SegWit) and Ethereum                                                  │
-│ DATE_OF_BIRTH  │ Date of Birth                  │ Date after a birth keyword (geb., Geburtsdatum, DOB, born on), real calendar date         │
-│ DE_ID_CARD     │ German ID Card / Passport      │ 9-character document number; check digit or keyword (Personalausweis, Reisepass) required │
-│ DE_SVNR        │ German Social Insurance Number │ Rentenversicherungsnummer with check digit                                                │
-│ DE_TAX_ID      │ German Tax ID                  │ 11-digit Steueridentifikationsnummer                                                      │
-│ EMAIL          │ Email                          │ RFC 5322 email pattern                                                                    │
-│ IBAN           │ IBAN                           │ ISO 13616: registered country, its length and MOD-97 checksum                             │
-│ IP_ADDRESS     │ IP Address                     │ IPv4 and IPv6 formats                                                                     │
-│ LOCATION       │ Location                       │ OpenVINO NER model (anofox_ner_model), LOC entities (cities, countries, regions)          │
-│ MAC_ADDRESS    │ MAC Address                    │ Colon/hyphen/dot formats; bare hex needs letter+digit                                     │
-│ MISC           │ Miscellaneous Entity           │ OpenVINO NER model distilbert-en only, MISC entities (events, nationalities, products)    │
-│ NAME           │ Person Name                    │ OpenVINO NER model (anofox_ner_model), PER entities; name dictionary fallback             │
-│ ORGANIZATION   │ Organization Name              │ OpenVINO NER model (anofox_ner_model), ORG entities (companies, institutions)             │
-│ PHONE          │ Phone                          │ International (+XX, 00XX) and national (0XX) formats                                      │
-│ POSTAL_CODE    │ Postal Code                    │ DE/AT/CH, NL and UK postcodes next to an address (off by default)                         │
-│ UK_NINO        │ UK NINO                        │ UK National Insurance Number format                                                       │
-│ URL            │ URL                            │ HTTP/HTTPS URLs                                                                           │
-│ US_PASSPORT    │ US Passport                    │ Letter + 8 digits                                                                         │
-│ US_SSN         │ US SSN                         │ XXX-XX-XXXX format with area validation                                                   │
-└────────────────┴────────────────────────────────┴───────────────────────────────────────────────────────────────────────────────────────────┘
-  21 rows                                                                                                                           3 columns
+┌────────────────┬────────────────────────────────┬────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│    pii_type    │        recognizer_name         │                                                  pattern_info                                                  │
+│    varchar     │            varchar             │                                                    varchar                                                     │
+├────────────────┼────────────────────────────────┼────────────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+│ API_KEY        │ API Key                        │ AWS/GitHub tokens and high-entropy strings                                                                     │
+│ CREDIT_CARD    │ Credit Card                    │ Card brand prefixes (IIN) with Luhn validation                                                                 │
+│ CRYPTO_ADDRESS │ Crypto Address                 │ Bitcoin (P2PKH/P2SH/SegWit) and Ethereum                                                                       │
+│ DATE_OF_BIRTH  │ Date of Birth                  │ Date after a birth keyword (geb., Geburtsdatum, DOB, born on), real calendar date                              │
+│ DE_ID_CARD     │ German ID Card / Passport      │ 9-character document number; check digit or keyword (Personalausweis, Reisepass) required                      │
+│ DE_KVNR        │ German Health Insurance Number │ Krankenversichertennummer: letter + 9 digits with check digit, after a keyword (KVNR, Versichertennummer, eGK) │
+│ DE_SVNR        │ German Social Insurance Number │ Rentenversicherungsnummer with check digit                                                                     │
+│ DE_TAX_ID      │ German Tax ID                  │ 11-digit Steueridentifikationsnummer                                                                           │
+│ EMAIL          │ Email                          │ RFC 5322 email pattern                                                                                         │
+│ IBAN           │ IBAN                           │ ISO 13616: registered country, its length and MOD-97 checksum                                                  │
+│ IP_ADDRESS     │ IP Address                     │ IPv4 and IPv6 formats                                                                                          │
+│ LOCATION       │ Location                       │ OpenVINO NER model (anofox_ner_model), LOC entities (cities, countries, regions)                               │
+│ MAC_ADDRESS    │ MAC Address                    │ Colon/hyphen/dot formats; bare hex needs letter+digit                                                          │
+│ MISC           │ Miscellaneous Entity           │ OpenVINO NER model distilbert-en only, MISC entities (events, nationalities, products)                         │
+│ NAME           │ Person Name                    │ OpenVINO NER model (anofox_ner_model), PER entities; name dictionary fallback                                  │
+│ ORGANIZATION   │ Organization Name              │ OpenVINO NER model (anofox_ner_model), ORG entities (companies, institutions)                                  │
+│ PHONE          │ Phone                          │ International (+XX, 00XX) and national (0XX) formats; compact numbers after a phone keyword                    │
+│ POSTAL_CODE    │ Postal Code                    │ DE/AT/CH, NL and UK postcodes next to an address (off by default)                                              │
+│ UK_NINO        │ UK NINO                        │ UK National Insurance Number format                                                                            │
+│ URL            │ URL                            │ HTTP/HTTPS URLs                                                                                                │
+│ US_PASSPORT    │ US Passport                    │ Letter + 8 digits                                                                                              │
+│ US_SSN         │ US SSN                         │ XXX-XX-XXXX format with area validation                                                                        │
+└────────────────┴────────────────────────────────┴────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+  22 rows                                                                                                                                                3 columns
 ```
 
 ---
