@@ -21,6 +21,14 @@ SELECT model_status FROM anofox_ner_status();
 ----
 NOT_DOWNLOADED
 
+# The message and the path name the directory of the default model bert-multi
+query TT
+SELECT regexp_matches(status_message, 'or place model_quantized\.onnx and tokenizer\.json in .*/\.duckdb/extensions/anofox/ner/bert-multi$'),
+       ends_with(model_path, '/.duckdb/extensions/anofox/ner/bert-multi/model_quantized.onnx')
+FROM anofox_ner_status();
+----
+true	true
+
 # Names with umlauts and ß are found as whole names
 query T
 SELECT pii_mask('Joachim Sauer, Sabine Weiß, Peter Müller');

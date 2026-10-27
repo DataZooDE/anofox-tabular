@@ -130,11 +130,12 @@ Ubuntu or Arch, and the environment variables above have no effect on them. Upgr
 - Download the files with the system `curl` into the places the extension reads them from:
 
   ```bash
-  # NER model: distilbert-en (about 66 MB); for distilbert-multi or bert-multi use
-  # that directory name and the repository from the model table in docs/api/06-pii.md
-  # (Xenova/distilbert-base-multilingual-cased-ner-hrl, Xenova/bert-base-multilingual-cased-ner-hrl)
-  dir=~/.duckdb/extensions/anofox/ner/distilbert-en
-  base=https://huggingface.co/onnx-community/distilbert-base-cased-finetuned-conll03-english-ONNX/resolve/main
+  # NER model: the default bert-multi (about 178 MB); for another anofox_ner_model use its
+  # name as the directory and its repository from the model table in docs/api/06-pii.md
+  # (distilbert-en: onnx-community/distilbert-base-cased-finetuned-conll03-english-ONNX,
+  # distilbert-multi: Xenova/distilbert-base-multilingual-cased-ner-hrl)
+  dir=~/.duckdb/extensions/anofox/ner/bert-multi
+  base=https://huggingface.co/Xenova/bert-base-multilingual-cased-ner-hrl/resolve/main
   mkdir -p "$dir"
   curl -L -o "$dir/model_quantized.onnx" "$base/onnx/model_quantized.onnx"
   curl -L -o "$dir/tokenizer.json" "$base/tokenizer.json"

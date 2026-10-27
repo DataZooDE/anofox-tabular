@@ -1,0 +1,71 @@
+# name: test/sql/anofox_ner_model_distilbert_en.test
+# description: The English NER model distilbert-en (no longer the default) still loads when
+#              selected before the first NER call, finds English names, organizations and
+#              places, and is the only model that reports MISC entities.
+# group: [anofox_tabular]
+
+# The NER model is chosen once per process: run this file in a process of its own
+# (make test_ner_models); downloads ~66 MB on first use.
+require-env OPENVINO_AVAILABLE
+
+require-env ANOFOX_TEST_NER_MODELS
+
+require anofox_tabular
+
+statement ok
+LOAD anofox_tabular
+
+statement ok
+SET anofox_tab_trace_level = 'warn';
+
+statement ok
+SET anofox_ner_model = 'distilbert-en';
+
+query T
+SELECT model_status IN ('NOT_LOADED', 'NOT_DOWNLOADED') FROM anofox_ner_status();
+----
+true
+
+query IT
+SELECT id, pii_mask(txt) FROM (VALUES
+  (1, 'Please contact Mr. David O''Connor at Lloyds Banking Group regarding the claim filed in Edinburgh.'),
+  (2, 'Hi, this is Sarah Thompson from Acme Logistics. Our shipment to Manchester was damaged.')
+) t(id, txt) ORDER BY id;
+----
+1	Please contact Mr. [NAME] at [ORGANIZATION] regarding the claim filed in [LOCATION].
+2	Hi, this is [NAME] from [ORGANIZATION]. Our shipment to [LOCATION] was damaged.
+
+query TT
+SELECT model_status, starts_with(status_message, 'Model loaded successfully (distilbert-en,') FROM anofox_ner_status();
+----
+LOADED	true
+
+# MISC: languages and nationalities (only this model tags MISC)
+query I
+SELECT list_contains(list_transform(pii_detect('He speaks French fluently'), lambda x: x.type), 'MISC');
+----
+true
+
+query I
+SELECT list_contains(list_transform(pii_detect('She is German'), lambda x: x.type), 'MISC');
+----
+true
+
+query I
+SELECT pii_mask('Speaks Spanish', 'redact') LIKE '%[MISC]%';
+----
+true
+
+query I
+SELECT pii_count('John at Microsoft in Berlin speaks German') >= 4;
+----
+true
+
+# Once loaded, the model cannot be switched
+statement error
+SET anofox_ner_model = 'bert-multi';
+----
+anofox_ner_model cannot be changed after the NER model has been loaded (currently 'distilbert-en')
+
+statement ok
+SET anofox_tab_trace_level = 'info';

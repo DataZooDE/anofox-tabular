@@ -49,7 +49,7 @@ ORDER BY column_name, pii_type;
 ├─────────────┼─────────────┼─────────────┤
 │ card        │ CREDIT_CARD │           2 │
 │ email       │ EMAIL       │           3 │
-│ first_name  │ NAME        │           2 │
+│ first_name  │ NAME        │           3 │
 │ note        │ IBAN        │           1 │
 │ note        │ IP_ADDRESS  │           1 │
 │ note        │ PHONE       │           1 │
@@ -82,7 +82,7 @@ FROM pii_scan_table('customers');
 │   varchar   │   varchar   │    int64    │     int64      │      varchar      │
 ├─────────────┼─────────────┼─────────────┼────────────────┼───────────────────┤
 │ customer_id │ NULL        │           0 │              0 │ skipped (INTEGER) │
-│ first_name  │ NAME        │           2 │              4 │ scanned           │
+│ first_name  │ NAME        │           3 │              4 │ scanned           │
 │ email       │ EMAIL       │           3 │              4 │ scanned           │
 │ ssn         │ US_SSN      │           2 │              2 │ scanned           │
 │ card        │ CREDIT_CARD │           2 │              2 │ scanned           │
@@ -100,8 +100,8 @@ This is the record to keep for an audit: every column of the table is listed. Na
 column in the `columns` argument to scan it as text.
 
 A count below `values_scanned`, or `no_match`, means that detection found nothing in the other
-values, not that they are free of personal data. `first_name` holds four names, but `Li` and `Bo`
-are too short for the NER model, and `phone` holds `01511234567`, a number without a separator
+values, not that they are free of personal data. `first_name` holds four names, but the NER
+model does not take `Li` on its own for a name, and `phone` holds `01511234567`, a number without a separator
 that the phone pattern does not match. Columns like these are masked by what you know about them,
 not by detection (step 4).
 
@@ -127,6 +127,7 @@ ORDER BY customer_id, column_name;
 │         101 │ note        │ PHONE       │ Call me on +1 (415) 555-1234   │
 │         101 │ ssn         │ US_SSN      │ 123-45-6789                    │
 │         102 │ email       │ EMAIL       │ bob@example.org                │
+│         103 │ first_name  │ NAME        │ Bo                             │
 │         103 │ note        │ IBAN        │ Wire to DE89370400440532013000 │
 │         103 │ phone       │ PHONE       │ 030 1234567                    │
 │         103 │ ssn         │ US_SSN      │ 219-09-9999                    │
@@ -135,7 +136,7 @@ ORDER BY customer_id, column_name;
 │         104 │ first_name  │ NAME        │ Carol                          │
 │         104 │ note        │ IP_ADDRESS  │ Server 192.168.1.20 is down    │
 └─────────────┴─────────────┴─────────────┴────────────────────────────────┘
-  13 rows                                                        4 columns
+  14 rows                                                        4 columns
 ```
 
 `original_value` is the unmasked cell: the audit result holds the PII it reports. Share
@@ -156,8 +157,8 @@ ORDER BY findings DESC, customer_id;
 │    int32    │  int64   │
 ├─────────────┼──────────┤
 │         101 │        5 │
+│         103 │        4 │
 │         104 │        4 │
-│         103 │        3 │
 │         102 │        1 │
 └─────────────┴──────────┘
 ```
@@ -213,17 +214,16 @@ ORDER BY column_name, pii_type;
 ```
 
 ```text
-┌─────────────┬──────────────┬─────────────┬───────────────┐
-│ column_name │   pii_type   │ match_count │ sample_values │
-│   varchar   │   varchar    │    int64    │   varchar[]   │
-├─────────────┼──────────────┼─────────────┼───────────────┤
-│ note        │ ORGANIZATION │           1 │ [IP_ADDRESS]  │
-└─────────────┴──────────────┴─────────────┴───────────────┘
+┌─────────────┬──────────┬─────────────┬───────────────┐
+│ column_name │ pii_type │ match_count │ sample_values │
+│   varchar   │ varchar  │    int64    │   varchar[]   │
+└─────────────┴──────────┴─────────────┴───────────────┘
+                         0 rows
 ```
 
 The re-scan only confirms that what detection finds was masked. It cannot show that values
 detection never found are gone: had `first_name` and `phone` been masked with `pii_mask_column`,
-`Li`, `Bo` and `01511234567` would still be in the export and this scan would not report them.
+`Li` and `01511234567` would still be in the export and this scan would not report them.
 Mask columns that are known to hold PII with `pii_mask_value`.
 
 This matters most for name columns. `pii_mask_column(last_name, 'NAME', 'redact')` masks only
@@ -249,10 +249,10 @@ FROM (SELECT customer_id, postal_parse_address(address) AS a FROM customer_addre
 libpostal lower-cases the parts it returns. A row where libpostal finds no road keeps a `NULL`
 street; `concat_ws` of only `NULL` parts is an empty string, which `pii_mask_value` leaves empty.
 
-The `ORGANIZATION` row comes from the NER model, which reads the label `[IP_ADDRESS]` as an
-organization name. NER results are statistical, so review them before you act on them. The
-model is trained on English: on German or other non-English free text it misses many names and
-places, so do not rely on it alone there.
+Names, organizations and places come from the NER model. Its results are statistical, so
+review them before you act on them. The default model `bert-multi` covers German, English and
+eight other languages; the English-only `distilbert-en` misses many names and places in German
+or other non-English free text (see [NER model](../api/06-pii.md#ner-model)).
 
 `hash` is the first 16 hex characters of the SHA-256 of the card number with spaces and dashes
 removed, so `4111 1111 1111 1111` and `4111-1111-1111-1111` give the same value. It has no key:
@@ -311,7 +311,8 @@ keyword or check digit are left alone. If mistyped IBANs and card numbers must b
 ## 6. Run without network access
 
 Names, organizations and places are found by a NER model. The first detection that needs it
-downloads the model (66 MB to 178 MB, depending on `anofox_ner_model`) from Hugging Face into
+downloads the model (`bert-multi`, about 178 MB, for German, English and other European
+languages; see `anofox_ner_model`) from Hugging Face into
 `~/.duckdb/extensions/anofox/ner/<model>/`.
 To prevent the download:
 

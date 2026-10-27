@@ -200,7 +200,7 @@ constexpr size_t NER_MAX_SEQ_LENGTH = 512;
  * NER model used unless anofox_ner_model selects another one (the model
  * registry is GetSupportedModels() in anofox_ner.cpp).
  */
-constexpr const char *NER_DEFAULT_MODEL = "distilbert-en";
+constexpr const char *NER_DEFAULT_MODEL = "bert-multi";
 
 /**
  * Entity types the NER layer reports: PER, ORG, LOC (all models) and MISC
@@ -213,8 +213,8 @@ inline bool IsReportedNEREntityType(const std::string &entity_type) {
 
 /**
  * Window length (in tokens, including the two special tokens) for inputs
- * longer than this. The model accepts 512 tokens, but the bundled
- * DistilBERT (trained on short CoNLL sentences) misses entities at late
+ * longer than this. The models accept 512 tokens, but distilbert-en
+ * (trained on short CoNLL sentences) misses entities at late
  * positions: a name in the signature of a 4 KB ticket was not found with
  * ~450 tokens of preceding context, and was found with ~250. Windows of 256
  * tokens keep every entity in the range the model handles well.

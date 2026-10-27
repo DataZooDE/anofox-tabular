@@ -76,18 +76,20 @@ SET anofox_pii_enabled_types = '';
 # anofox_pii_min_confidence must be honored by the scalar APIs
 # ============================================================================
 # Dictionary-based NAME matches carry confidence 0.5; regex matches carry 1.0.
+# "Contact John" is a dictionary match: the NER model (where available) does not
+# tag "John" in it ("Contact John for details" it tags at 0.999).
 
 statement ok
 SET anofox_pii_min_confidence = 0.99;
 
 # Dictionary-based NAME match (confidence 0.5) is filtered out
 query I
-SELECT pii_contains('Contact John for details');
+SELECT pii_contains('Contact John');
 ----
 false
 
 query I
-SELECT pii_detect('Contact John for details');
+SELECT pii_detect('Contact John');
 ----
 []
 
@@ -102,7 +104,7 @@ SET anofox_pii_min_confidence = 0.5;
 
 # At the default threshold the dictionary match (confidence 0.5) is kept
 query I
-SELECT pii_contains('Contact John for details');
+SELECT pii_contains('Contact John');
 ----
 true
 

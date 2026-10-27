@@ -153,8 +153,8 @@ Expected output:
 ```
 
 The first PII call downloads the NER model used for names, organizations and locations
-(66-178 MB, depending on `anofox_ner_model`; the English model is the default, `bert-multi`
-covers German and nine other languages). Run `SET anofox_ner_auto_download = false;` first to skip it; the pattern-based
+(`bert-multi`, ~178 MB, for German, English and eight other languages; `anofox_ner_model`
+selects the smaller English-only `distilbert-en` instead). Run `SET anofox_ner_auto_download = false;` first to skip it; the pattern-based
 types (email, credit card, IBAN, …) work without it, and the output above is the same.
 
 To try the Python example scripts, see [`examples/README.md`](examples/README.md).
@@ -175,7 +175,7 @@ The core functions run locally and send nothing. These parts use the network:
 
 | Feature | Network use | Opt out |
 |---------|-------------|---------|
-| PII names, organizations, locations (NER) | Downloads a 66-178 MB model (see `anofox_ner_model`) from Hugging Face on first use | `SET anofox_ner_auto_download = false` |
+| PII names, organizations, locations (NER) | Downloads a ~178 MB model (`bert-multi`; 66 MB for `distilbert-en`) from Hugging Face on first use | `SET anofox_ner_auto_download = false` |
 | Postal addresses | Downloads ~500 MB of libpostal data on first use or with `postal_load_data()` | Do not call the postal functions |
 | Email modes `dns` and `smtp` | DNS query; SMTP connection to the mail host | Use mode `regex` (the default) |
 | Telemetry | Anonymous usage events to PostHog EU; on by default | `SET anofox_telemetry_enabled = false` or `DATAZOO_DISABLE_TELEMETRY=1` |
@@ -296,7 +296,8 @@ Built on:
 
 - [DuckDB](https://duckdb.org) and its extension framework
 - [libpostal](https://github.com/openvenues/libpostal) for address parsing
-- [OpenVINO](https://github.com/openvinotoolkit/openvino) and a DistilBERT NER model for
+- [OpenVINO](https://github.com/openvinotoolkit/openvino) and NER models from Hugging Face
+  (Davlan's multilingual NER-HRL BERT and DistilBERT, an English CoNLL-2003 DistilBERT) for
   name, organization and location detection
 - [c-ares](https://github.com/c-ares/c-ares) for DNS lookups, [spdlog](https://github.com/gabime/spdlog)
   for logging, [curl](https://curl.se/) and [OpenSSL](https://www.openssl.org/)

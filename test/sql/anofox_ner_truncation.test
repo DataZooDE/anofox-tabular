@@ -3,7 +3,7 @@
 # group: [anofox_tabular]
 
 # Inputs longer than the model's maximum sequence length (512 tokens for
-# DistilBERT) must not fail inside OpenVINO (issue #56). They used to be
+# the BERT-class models) must not fail inside OpenVINO (issue #56). They used to be
 # truncated at 512 tokens; now overlapping windows of 256 tokens cover the
 # whole text, so entities after the first 512 tokens are found as well.
 require-env OPENVINO_AVAILABLE
@@ -53,16 +53,16 @@ true
 
 # Re-setting the currently loaded model name after load stays a no-op success
 statement ok
-SET anofox_ner_model = 'distilbert-en';
+SET anofox_ner_model = 'bert-multi';
 
 # Switching to a different model after load is rejected (issue #56): compiled
 # model and tokenizer are immutable once loaded
 statement error
-SET anofox_ner_model = 'bert-multi';
+SET anofox_ner_model = 'distilbert-en';
 ----
-anofox_ner_model cannot be changed after the NER model has been loaded (currently 'distilbert-en')
+anofox_ner_model cannot be changed after the NER model has been loaded (currently 'bert-multi')
 
 query T
 SELECT current_setting('anofox_ner_model');
 ----
-distilbert-en
+bert-multi

@@ -1,6 +1,6 @@
 # NER model benchmark
 
-A manual benchmark of the NER models that `anofox_ner_model` can select: precision and recall
+A manual benchmark of the NER models that `anofox_ner_model` can select (default `bert-multi`): precision and recall
 for persons (PER), organizations (ORG) and locations (LOC), and the time per row. It is not
 part of CI: the models are downloaded from Hugging Face on first use, and the timings depend
 on the machine.

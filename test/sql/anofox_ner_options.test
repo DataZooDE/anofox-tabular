@@ -160,26 +160,28 @@ SELECT current_setting('anofox_ner_cache_size');
 # anofox_ner_model option tests
 # ============================================================================
 
-# 18. Default value is 'distilbert-en'
+# 18. Default value is 'bert-multi'
 query T
 SELECT current_setting('anofox_ner_model');
 ----
-distilbert-en
+bert-multi
 
 # 19. Visible in duckdb_settings() with correct default
 query I
-SELECT COUNT(*) FROM duckdb_settings() WHERE name = 'anofox_ner_model' AND value = 'distilbert-en';
+SELECT COUNT(*) FROM duckdb_settings() WHERE name = 'anofox_ner_model' AND value = 'bert-multi';
 ----
 1
 
-# 20. SET to 'distilbert-en' (valid, round-trip) - accepted
+# 20. SET to 'bert-multi' (valid, round-trip) - accepted. Only the default is
+# set here: in a test run with OpenVINO the default model may already be
+# loaded, and switching to another model is then an error
 statement ok
-SET anofox_ner_model = 'distilbert-en';
+SET anofox_ner_model = 'bert-multi';
 
 query T
 SELECT current_setting('anofox_ner_model');
 ----
-distilbert-en
+bert-multi
 
 # 21. SET to 'xlm-roberta-multi' - rejected: no downloadable assets exist for
 # this model, so advertising it would be a silent no-op (issue #56). The error
@@ -192,7 +194,7 @@ Unsupported NER model
 query T
 SELECT current_setting('anofox_ner_model');
 ----
-distilbert-en
+bert-multi
 
 # 22. SET to 'invalid-model' - throws (model name validated at SET time);
 # the error message lists the valid model names
@@ -227,12 +229,12 @@ anofox_ner_model cannot be NULL
 
 # Reset model to default
 statement ok
-SET anofox_ner_model = 'distilbert-en';
+SET anofox_ner_model = 'bert-multi';
 
 query T
 SELECT current_setting('anofox_ner_model');
 ----
-distilbert-en
+bert-multi
 
 # ============================================================================
 # Global option count

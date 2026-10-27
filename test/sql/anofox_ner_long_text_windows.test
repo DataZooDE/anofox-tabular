@@ -51,17 +51,20 @@ SELECT ticket_id, length(body) > 3000 FROM support_tickets ORDER BY ticket_id;
 4712	true
 
 # All three names of each ticket are detected, wherever they are in the text
-# (the model may run a signature name into the next line, "Thomas
-# Anderson\nBilling", so the check is on containment)
+# (the model may run a signature name into the next line, so the check is on
+# containment; bert-multi tags the signature "Thomas Anderson\nBilling
+# Support" as one ORGANIZATION, so the signature column counts NAME and
+# ORGANIZATION matches)
 query IIIII
 SELECT ticket_id,
     len(list_filter(names, lambda n: contains(n, 'Michael Brown') OR contains(n, 'Sarah Miller'))) = 1,
     len(list_filter(names, lambda n: contains(n, 'Jennifer Wilson') OR contains(n, 'David Thompson'))) = 1,
-    len(list_filter(names, lambda n: contains(n, 'Robert Johnson') OR contains(n, 'Thomas Anderson'))) = 1,
+    len(list_filter(entities, lambda n: contains(n, 'Robert Johnson') OR contains(n, 'Thomas Anderson'))) = 1,
     len(names) = len(list_distinct(names))
 FROM (
     SELECT ticket_id,
-        list_transform(list_filter(pii_detect(body), lambda m: m.type = 'NAME'), lambda m: m.text) AS names
+        list_transform(list_filter(pii_detect(body), lambda m: m.type = 'NAME'), lambda m: m.text) AS names,
+        list_transform(list_filter(pii_detect(body), lambda m: m.type IN ('NAME', 'ORGANIZATION')), lambda m: m.text) AS entities
     FROM support_tickets
 )
 ORDER BY ticket_id;
@@ -86,16 +89,17 @@ FROM (SELECT body, unnest(pii_detect(body)) AS m FROM support_tickets);
 ----
 true
 
-# Batch path: pii_scan_table and pii_audit_table run the same windows
+# Batch path: pii_scan_table and pii_audit_table run the same windows (five
+# names are NAME matches, the signature "Thomas Anderson" an ORGANIZATION one)
 query I
-SELECT match_count >= 6 FROM pii_scan_table('support_tickets', 'body') WHERE pii_type = 'NAME';
+SELECT match_count >= 5 FROM pii_scan_table('support_tickets', 'body') WHERE pii_type = 'NAME';
 ----
 true
 
 query I
 SELECT len(list_filter(['David Thompson', 'Jennifer Wilson', 'Michael Brown', 'Robert Johnson', 'Sarah Miller', 'Thomas Anderson'],
                        lambda n: list_bool_or(list_transform(found, lambda f: contains(f, n)))))
-FROM (SELECT list(matched_text) AS found FROM pii_audit_table('support_tickets', 'body') WHERE pii_type = 'NAME');
+FROM (SELECT list(matched_text) AS found FROM pii_audit_table('support_tickets', 'body') WHERE pii_type IN ('NAME', 'ORGANIZATION'));
 ----
 6
 

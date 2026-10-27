@@ -261,11 +261,11 @@ STRUCT(type VARCHAR, text VARCHAR, start_pos BIGINT, end_pos BIGINT, confidence 
 | `text` | `VARCHAR` | The matched text |
 | `start_pos` | `BIGINT` | Start offset in the input, 0-based, in UTF-8 bytes |
 | `end_pos` | `BIGINT` | End offset in the input, exclusive, in UTF-8 bytes |
+| `confidence` | `DOUBLE` | `1.0` for pattern matches; `0.6` for an IBAN or card number that fails its checksum (only with `anofox_pii_require_checksum = false`); `0.5` for a name-dictionary match; the model score for NER matches |
 
 The offsets count bytes of the UTF-8 encoding, not characters, so after a non-ASCII character
 they are larger than the character position that `substr` expects. For ASCII text the two are
 the same.
-| `confidence` | `DOUBLE` | `1.0` for pattern matches; `0.6` for an IBAN or card number that fails its checksum (only with `anofox_pii_require_checksum = false`); the model score for NER matches |
 
 ---
 
@@ -299,7 +299,7 @@ FROM (SELECT unnest(pii_detect('Contact john.doe@example.com, SSN 123-45-6789'))
 ```
 
 With the NER model available, names, organizations and places are found too. The confidence
-of a NER match is the model score, so it is below `1.0`:
+of a NER match is the model score (from 0.7 up to just below `1.0`; rounded here):
 
 ```sql
 SELECT m.type, m.text, round(m.confidence, 3) AS confidence
@@ -311,9 +311,9 @@ FROM (SELECT unnest(pii_detect('John Smith from Microsoft visited Paris')) AS m)
 │     type     │    text    │ confidence │
 │   varchar    │  varchar   │   double   │
 ├──────────────┼────────────┼────────────┤
-│ NAME         │ John Smith │      0.999 │
-│ ORGANIZATION │ Microsoft  │      0.999 │
-│ LOCATION     │ Paris      │      0.998 │
+│ NAME         │ John Smith │        1.0 │
+│ ORGANIZATION │ Microsoft  │        1.0 │
+│ LOCATION     │ Paris      │        1.0 │
 └──────────────┴────────────┴────────────┘
 ```
 
@@ -896,11 +896,11 @@ SELECT pii_type, recognizer_name, pattern_info FROM pii_status() ORDER BY pii_ty
 │ EMAIL          │ Email                          │ RFC 5322 email pattern                                                                    │
 │ IBAN           │ IBAN                           │ ISO 13616: registered country, its length and MOD-97 checksum                             │
 │ IP_ADDRESS     │ IP Address                     │ IPv4 and IPv6 formats                                                                     │
-│ LOCATION       │ Location                       │ OpenVINO DistilBERT NER, LOC entities (cities, countries, regions)                        │
+│ LOCATION       │ Location                       │ OpenVINO NER model (anofox_ner_model), LOC entities (cities, countries, regions)          │
 │ MAC_ADDRESS    │ MAC Address                    │ Colon/hyphen/dot formats; bare hex needs letter+digit                                     │
-│ MISC           │ Miscellaneous Entity           │ OpenVINO DistilBERT NER, MISC entities (events, nationalities, products)                  │
-│ NAME           │ Person Name                    │ OpenVINO DistilBERT NER (92% F1)                                                          │
-│ ORGANIZATION   │ Organization Name              │ OpenVINO DistilBERT NER, ORG entities (companies, institutions)                           │
+│ MISC           │ Miscellaneous Entity           │ OpenVINO NER model distilbert-en only, MISC entities (events, nationalities, products)    │
+│ NAME           │ Person Name                    │ OpenVINO NER model (anofox_ner_model), PER entities; name dictionary fallback             │
+│ ORGANIZATION   │ Organization Name              │ OpenVINO NER model (anofox_ner_model), ORG entities (companies, institutions)             │
 │ PHONE          │ Phone                          │ International (+XX, 00XX) and national (0XX) formats                                      │
 │ POSTAL_CODE    │ Postal Code                    │ DE/AT/CH, NL and UK postcodes next to an address (off by default)                         │
 │ UK_NINO        │ UK NINO                        │ UK National Insurance Number format                                                       │
@@ -981,7 +981,7 @@ SELECT onnx_available, model_status, status_message FROM anofox_ner_status();
 ```
 
 On a build with OpenVINO, after the model has been loaded, it reports `true`, `LOADED` and
-`Model loaded successfully (distilbert-en, device: CPU)`.
+`Model loaded successfully (bert-multi, device: CPU)`.
 
 ## NER model
 
@@ -990,37 +990,38 @@ On a build with OpenVINO, after the model has been loaded, it reports `true`, `L
 
 | Model | Languages | Entity types | Download | Licence | Hugging Face repository |
 |-------|-----------|--------------|----------|---------|-------------------------|
-| `distilbert-en` (default) | English | PER, ORG, LOC, MISC | 66 MB | Apache-2.0 | `onnx-community/distilbert-base-cased-finetuned-conll03-english-ONNX` |
-| `distilbert-multi` | German, English, French, Spanish, Italian, Dutch, Portuguese, Latvian, Arabic, Chinese | PER, ORG, LOC | 135 MB | AFL-3.0 | `Xenova/distilbert-base-multilingual-cased-ner-hrl` |
-| `bert-multi` | as `distilbert-multi` | PER, ORG, LOC | 178 MB | AFL-3.0 | `Xenova/bert-base-multilingual-cased-ner-hrl` |
+| `bert-multi` (default) | German, English, French, Spanish, Italian, Dutch, Portuguese, Latvian, Arabic, Chinese | PER, ORG, LOC | 178 MB | AFL-3.0 | `Xenova/bert-base-multilingual-cased-ner-hrl` |
+| `distilbert-en` | English | PER, ORG, LOC, MISC | 66 MB | Apache-2.0 | `onnx-community/distilbert-base-cased-finetuned-conll03-english-ONNX` |
+| `distilbert-multi` | as `bert-multi` | PER, ORG, LOC | 135 MB | AFL-3.0 | `Xenova/distilbert-base-multilingual-cased-ner-hrl` |
 
 The multilingual models are the ONNX exports of Davlan's `*-multilingual-cased-ner-hrl` models.
-They tag no `MISC` entities; they also tag dates, which are not reported (dates of birth are the
-pattern type `DATE_OF_BIRTH`).
+They tag no `MISC` entities, so `MISC` is found only with `distilbert-en`; they also tag dates,
+which are not reported (dates of birth are the pattern type `DATE_OF_BIRTH`).
 
 ```sql no-run
--- before the first detection of the process
-SET anofox_ner_model = 'bert-multi';
+-- needs a build with OpenVINO; the default model bert-multi is downloaded on first use
 SELECT pii_mask('Mit freundlichen Grüßen Jürgen Schäfer, Allianz Versicherungs-AG, München');
 -- Mit freundlichen Grüßen [NAME], [ORGANIZATION], [LOCATION]
+
+-- English-only model (66 MB, also tags MISC): set it before the first detection of the process
+SET anofox_ner_model = 'distilbert-en';
 ```
 
-- **Language.** `distilbert-en` is trained on English text. It finds names and places in other
-  languages only partly: on German free text it takes capitalised nouns for entities and misses
-  German names and companies. For German and other European text use `bert-multi` or
-  `distilbert-multi`. On the benchmark in `test/ner_eval` (42 hand-annotated tickets and
+- **Language.** `bert-multi` covers German and the other languages of the table. The English
+  `distilbert-en` finds names and places in other languages only partly: on German free text it
+  takes capitalised nouns for entities and misses German names and companies. On the benchmark in `test/ner_eval` (42 hand-annotated tickets and
   letters, 24 of them German) `bert-multi` finds 93% of the person names at a precision of
   0.94, `distilbert-en` 65% at 0.55; on the German texts alone 87% at 1.00 against 55% at 0.38.
   Review NER results anyway, and do not rely on them alone.
 - **Choosing the model.** Set `anofox_ner_model` before the first detection that needs the
   model. Once the model is loaded, switching to another one is an error (`anofox_ner_model
   cannot be changed after the NER model has been loaded`) until the process restarts.
-- **Speed.** On a 16-core desktop CPU, `distilbert-en` takes about 20 ms per row of the
-  benchmark, `bert-multi` about 40 ms. `distilbert-multi` needs a fixed input length of 256
+- **Speed.** On a 16-core desktop CPU, `bert-multi` takes about 40 ms per row of the
+  benchmark, `distilbert-en` about 20 ms. `distilbert-multi` needs a fixed input length of 256
   tokens with the OpenVINO version the extension is built with (the extension detects this when
   it loads the model and logs a warning), which makes it slower than `bert-multi`: about 50 ms.
-- **Download.** The first detection that needs the model downloads it (66 MB to 178 MB, see
-  above) from Hugging Face into `~/.duckdb/extensions/anofox/ner/<model>/`. This applies to `pii_detect`,
+- **Download.** The first detection that needs the model downloads it (178 MB for the default
+  `bert-multi`, see above) from Hugging Face into `~/.duckdb/extensions/anofox/ner/<model>/`. This applies to `pii_detect`,
   `pii_mask`, `pii_scan_table`, `pii_audit_table` and the other detection functions, unless
   `anofox_pii_enabled_types` lists only pattern-based types.
 - **Offline use.** `SET anofox_ner_auto_download = false` turns the download off. NER detection

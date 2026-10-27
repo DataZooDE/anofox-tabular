@@ -63,6 +63,6 @@ Order 4471 shipped to [LOCATION], ref 903-17
 query TT
 SELECT pii_type, pattern_info FROM pii_status() WHERE pii_type IN ('LOCATION', 'MISC', 'ORGANIZATION') ORDER BY pii_type;
 ----
-LOCATION	OpenVINO DistilBERT NER, LOC entities (cities, countries, regions)
-MISC	OpenVINO DistilBERT NER, MISC entities (events, nationalities, products)
-ORGANIZATION	OpenVINO DistilBERT NER, ORG entities (companies, institutions)
+LOCATION	OpenVINO NER model (anofox_ner_model), LOC entities (cities, countries, regions)
+MISC	OpenVINO NER model distilbert-en only, MISC entities (events, nationalities, products)
+ORGANIZATION	OpenVINO NER model (anofox_ner_model), ORG entities (companies, institutions)

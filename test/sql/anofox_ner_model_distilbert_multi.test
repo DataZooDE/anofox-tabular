@@ -1,4 +1,4 @@
-# name: test/sql/anofox_ner_multilingual_distilbert.test
+# name: test/sql/anofox_ner_model_distilbert_multi.test
 # description: The multilingual NER model distilbert-multi (DistilBERT) finds German names, companies and places
 #              (umlauts, ß, double names, GmbH/AG) that the English distilbert-en misses or
 #              mistags. Selecting the model before the first NER call loads it; switching to
@@ -6,11 +6,11 @@
 # group: [anofox_tabular]
 
 # Needs an OpenVINO build and downloads the distilbert-multi model (~135 MB) on first use, so it
-# runs only when ANOFOX_TEST_NER_MULTI is set. The model can only be chosen before the first
-# NER call of the process: run this file in a process of its own (make test_ner_multi).
+# runs only when ANOFOX_TEST_NER_MODELS is set. The model can only be chosen before the first
+# NER call of the process: run this file in a process of its own (make test_ner_models).
 require-env OPENVINO_AVAILABLE
 
-require-env ANOFOX_TEST_NER_MULTI
+require-env ANOFOX_TEST_NER_MODELS
 
 require anofox_tabular
 

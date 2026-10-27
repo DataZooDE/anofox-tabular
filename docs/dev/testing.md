@@ -34,8 +34,9 @@ DATAZOO_DISABLE_TELEMETRY=1 /path/to/build/release/test/unittest --test-dir "$PW
 
 | Tests | Guard | How to run |
 |-------|-------|------------|
-| NER: every test with `require-env OPENVINO_AVAILABLE` (`anofox_pii_ner*.test`, `anofox_ner_*.test`, ...) | `require-env OPENVINO_AVAILABLE` | `make test_ner`. Needs a build with OpenVINO and downloads the NER model `distilbert-en` (~66 MB) on first run. |
-| Multilingual NER: `anofox_ner_multilingual.test` (`bert-multi`), `anofox_ner_multilingual_distilbert.test` (`distilbert-multi`) | `require-env OPENVINO_AVAILABLE` and `require-env ANOFOX_TEST_NER_MULTI` | `make test_ner_multi`. Downloads 178 MB and 135 MB on first run. The NER model is chosen once per process, so each file runs in a process of its own; do not set `ANOFOX_TEST_NER_MULTI` for a whole-suite run. |
+| NER: every test with `require-env OPENVINO_AVAILABLE` (`anofox_pii_ner*.test`, `anofox_ner_*.test`, ...) | `require-env OPENVINO_AVAILABLE` | `make test_ner`. Needs a build with OpenVINO and downloads the default NER model `bert-multi` (~178 MB) on first run. |
+| Non-default NER models: `anofox_ner_model_distilbert_en.test`, `anofox_ner_model_distilbert_multi.test` | `require-env OPENVINO_AVAILABLE` and `require-env ANOFOX_TEST_NER_MODELS` | `make test_ner_models`. Downloads 66 MB and 135 MB on first run. The NER model is chosen once per process, so each file runs in a process of its own; do not set `ANOFOX_TEST_NER_MODELS` for a whole-suite run. |
+| NER offline: `anofox_pii_ner_offline.test` | `require-env ANOFOX_TEST_NER_OFFLINE` | Needs a home directory without the model: `HOME=$(mktemp -d) ANOFOX_TEST_NER_OFFLINE=1 build/release/test/unittest test/sql/anofox_pii_ner_offline.test` |
 | Postal: `anofox_postal_null.test` | `require-env POSTAL_AVAILABLE` | `make test` sets `POSTAL_AVAILABLE=1` when libpostal is installed |
 
 `test/sql/anofox_postal.test.disabled` and `anofox_postal.test_disabled` are not run, because

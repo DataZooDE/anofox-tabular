@@ -66,7 +66,7 @@ ORDER BY name;
 | `anofox_pii_deep_validation` | `BOOLEAN` | `false` | [PII](#pii) |
 | `anofox_pii_require_checksum` | `BOOLEAN` | `true` | [PII](#pii) |
 | `anofox_ner_auto_download` | `BOOLEAN` | `true` | [NER](#ner) |
-| `anofox_ner_model` | `VARCHAR` | `distilbert-en` | [NER](#ner) |
+| `anofox_ner_model` | `VARCHAR` | `bert-multi` | [NER](#ner) |
 | `anofox_ner_device` | `VARCHAR` | `AUTO` | [NER](#ner) |
 | `anofox_ner_cache_size` | `BIGINT` | `10000` | [NER](#ner) |
 | `anofox_telemetry_enabled` | `BOOLEAN` | `true` (`false` when `DATAZOO_DISABLE_TELEMETRY` is set) | [Telemetry](#telemetry) |
@@ -185,8 +185,8 @@ uses an OpenVINO model that is downloaded on first use. See
 
 | Setting | Effect |
 |---------|--------|
-| `anofox_ner_auto_download` | `true` downloads the model (66-178 MB, see `anofox_ner_model`) from Hugging Face when it is not on disk. `false` never downloads: NER detection is skipped, the pattern recognizers keep working, `NAME` falls back to a name dictionary, `anofox_ner_status()` reports `NOT_DOWNLOADED` while the model is not on disk, and `pii_scan_table` marks its status with `(NER unavailable)`. |
-| `anofox_ner_model` | Model name: `distilbert-en` (English), `distilbert-multi` or `bert-multi` (German, English, French, Spanish, Italian, Dutch, Portuguese, Latvian, Arabic, Chinese). Set it before the model is first loaded; switching afterwards is an error until the process restarts. See [NER model](../api/06-pii.md#ner-model). |
+| `anofox_ner_auto_download` | `true` downloads the model (178 MB for the default `bert-multi`, see `anofox_ner_model`) from Hugging Face when it is not on disk. `false` never downloads: NER detection is skipped, the pattern recognizers keep working, `NAME` falls back to a name dictionary, `anofox_ner_status()` reports `NOT_DOWNLOADED` while the model is not on disk, and `pii_scan_table` marks its status with `(NER unavailable)`. |
+| `anofox_ner_model` | Model name: `bert-multi` (default) or `distilbert-multi` (German, English, French, Spanish, Italian, Dutch, Portuguese, Latvian, Arabic, Chinese), or `distilbert-en` (English only, 66 MB, the only model that tags `MISC`). Set it before the model is first loaded; switching afterwards is an error until the process restarts. See [NER model](../api/06-pii.md#ner-model). |
 | `anofox_ner_device` | OpenVINO device: `AUTO`, `CPU`, `GPU`, `GPU.0`, ... Takes effect at the next model load. |
 | `anofox_ner_cache_size` | Number of NER results kept in an LRU cache; `0` disables the cache |
 

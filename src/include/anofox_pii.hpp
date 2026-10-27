@@ -418,7 +418,7 @@ private:
 
 /**
  * Person Name recognizer (NER-based detection, PER entities)
- * Uses OpenVINO DistilBERT NER model with dictionary fallback
+ * Uses the OpenVINO NER model (anofox_ner_model) with dictionary fallback
  */
 class NameRecognizer : public PIIRecognizer {
 public:
@@ -443,7 +443,7 @@ public:
 
 /**
  * Organization Name recognizer (NER-based detection, ORG entities)
- * Uses OpenVINO DistilBERT NER model to detect company/organization names
+ * Uses the OpenVINO NER model (anofox_ner_model) to detect company/organization names
  */
 class OrganizationRecognizer : public PIIRecognizer {
 public:
@@ -462,7 +462,7 @@ private:
 
 /**
  * Location recognizer (NER-based detection, LOC entities)
- * Uses OpenVINO DistilBERT NER model to detect geographic locations
+ * Uses the OpenVINO NER model (anofox_ner_model) to detect geographic locations
  */
 class LocationRecognizer : public PIIRecognizer {
 public:
@@ -481,7 +481,7 @@ private:
 
 /**
  * Miscellaneous Entity recognizer (NER-based detection, MISC entities)
- * Uses OpenVINO DistilBERT NER model to detect misc entities (events, languages, etc.)
+ * Uses the OpenVINO NER model (anofox_ner_model) to detect misc entities (events, languages, etc.; only distilbert-en tags them)
  */
 class MiscRecognizer : public PIIRecognizer {
 public:

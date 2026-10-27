@@ -3702,10 +3702,10 @@ void PIIStatusFunction(ClientContext &, TableFunctionInput &input, DataChunk &ou
         {PIIType::DE_TAX_ID, "11-digit Steueridentifikationsnummer"},
         {PIIType::URL, "HTTP/HTTPS URLs"},
 #if HAVE_OPENVINO
-        {PIIType::NAME, "OpenVINO DistilBERT NER (92% F1)"},
-        {PIIType::ORGANIZATION, "OpenVINO DistilBERT NER, ORG entities (companies, institutions)"},
-        {PIIType::LOCATION, "OpenVINO DistilBERT NER, LOC entities (cities, countries, regions)"},
-        {PIIType::MISC, "OpenVINO DistilBERT NER, MISC entities (events, nationalities, products)"},
+        {PIIType::NAME, "OpenVINO NER model (anofox_ner_model), PER entities; name dictionary fallback"},
+        {PIIType::ORGANIZATION, "OpenVINO NER model (anofox_ner_model), ORG entities (companies, institutions)"},
+        {PIIType::LOCATION, "OpenVINO NER model (anofox_ner_model), LOC entities (cities, countries, regions)"},
+        {PIIType::MISC, "OpenVINO NER model distilbert-en only, MISC entities (events, nationalities, products)"},
 #else
         {PIIType::NAME, "Dictionary-based name detection (200+ first names)"},
         {PIIType::ORGANIZATION, "Needs the NER model, which this build does not include"},

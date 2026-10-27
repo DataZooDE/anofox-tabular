@@ -27,7 +27,7 @@ SELECT hex(pii_mask_column('Ömer Özdemir', 'NAME', 'partial'));
 query T
 SELECT pii_mask('Mr Smith moved to Brüssel last year.', 'partial');
 ----
-Mr Smith moved to Brü**** last year.
+Mr S**** moved to Brü**** last year.
 
 query T
 SELECT pii_mask('Thomas Müller works at Siemens in München.', 'partial');
@@ -57,7 +57,7 @@ SELECT pii_mask_column('Ömer Özdemir', 'NAME', 'partial') AS name_partial,
 query TTT
 SELECT * FROM masked_utf8;
 ----
-**** Ö******	************	Mr Smith moved to Brü**** last year.
+**** Ö******	************	Mr S**** moved to Brü**** last year.
 
 query I
 SELECT length(name_asterisk) FROM masked_utf8;

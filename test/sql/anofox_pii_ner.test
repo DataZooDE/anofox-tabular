@@ -3,7 +3,7 @@
 # group: [anofox_tabular]
 
 # This test file requires OpenVINO to be available.
-# NER-based detection (NAME, ORGANIZATION, LOCATION, MISC) uses OpenVINO + DistilBERT model.
+# NER-based detection (NAME, ORGANIZATION, LOCATION) uses OpenVINO and the default NER model (bert-multi).
 # On platforms without OpenVINO (musl/Alpine), these tests are skipped.
 require-env OPENVINO_AVAILABLE
 
@@ -99,26 +99,15 @@ SELECT pii_mask('Office in Tokyo', 'partial') LIKE '%To***%';
 true
 
 # ============================================================================
-# MISC Entity Detection Tests (NER-based)
+# MISC Entity Detection
 # ============================================================================
 
-# Language detection as MISC
+# MISC (languages, nationalities) comes only from distilbert-en; the default
+# model bert-multi tags no MISC entities (see anofox_ner_model_distilbert_en.test)
 query I
 SELECT list_contains(list_transform(pii_detect('He speaks French fluently'), lambda x: x.type), 'MISC');
 ----
-true
-
-# Nationality as MISC
-query I
-SELECT list_contains(list_transform(pii_detect('She is German'), lambda x: x.type), 'MISC');
-----
-true
-
-# MISC masking - REDACT
-query I
-SELECT pii_mask('Speaks Spanish', 'redact') LIKE '%[MISC]%';
-----
-true
+false
 
 # ============================================================================
 # Combined NER Entity Detection
@@ -142,9 +131,10 @@ SELECT pii_count('John joined Google in San Francisco') >= 3;
 ----
 true
 
-# All entity types in one sentence
+# Name, organization and location in one sentence ("German" would be MISC
+# with distilbert-en only)
 query I
-SELECT pii_count('John at Microsoft in Berlin speaks German') >= 4;
+SELECT pii_count('John at Microsoft in Berlin speaks German') >= 3;
 ----
 true
 
@@ -227,13 +217,13 @@ INSERT INTO ner_test_data VALUES
     (3, 'Bob speaks French'),
     (4, 'Clean text here');
 
-# Scan detects NER entities
+# Scan detects NER entities (no MISC with the default model bert-multi)
 query I
 SELECT COUNT(DISTINCT pii_type)
 FROM pii_scan_table('ner_test_data')
 WHERE pii_type IN ('NAME', 'ORGANIZATION', 'LOCATION', 'MISC');
 ----
-4
+3
 
 # NAME detection count
 query I

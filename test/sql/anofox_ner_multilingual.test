@@ -1,16 +1,13 @@
 # name: test/sql/anofox_ner_multilingual.test
-# description: The multilingual NER model bert-multi finds German names, companies and places
+# description: The default NER model bert-multi finds German names, companies and places
 #              (umlauts, ß, double names, GmbH/AG) that the English distilbert-en misses or
-#              mistags. Selecting the model before the first NER call loads it; switching to
-#              another model afterwards is rejected.
+#              mistags, and English, French and Spanish ones; switching to another model
+#              after it has been loaded is rejected.
 # group: [anofox_tabular]
 
-# Needs an OpenVINO build and downloads the bert-multi model (~178 MB) on first use, so it
-# runs only when ANOFOX_TEST_NER_MULTI is set. The model can only be chosen before the first
-# NER call of the process: run this file in a process of its own (make test_ner_multi).
+# bert-multi is the default NER model, so this runs with the other NER tests
+# (downloads ~178 MB on first use)
 require-env OPENVINO_AVAILABLE
-
-require-env ANOFOX_TEST_NER_MULTI
 
 require anofox_tabular
 
@@ -20,19 +17,10 @@ LOAD anofox_tabular
 statement ok
 SET anofox_tab_trace_level = 'warn';
 
-# Selecting the model before the first NER call: accepted, loaded on first use
-statement ok
-SET anofox_ner_model = 'bert-multi';
-
 query T
 SELECT current_setting('anofox_ner_model');
 ----
 bert-multi
-
-query T
-SELECT model_status IN ('NOT_LOADED', 'NOT_DOWNLOADED') FROM anofox_ner_status();
-----
-true
 
 statement ok
 CREATE TABLE tickets AS SELECT * FROM (VALUES
