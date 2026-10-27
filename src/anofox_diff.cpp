@@ -497,7 +497,7 @@ void RegisterDiffFunctions(ExtensionLoader &loader) {
 	{
 		FunctionDescription desc;
 		desc.description = "Computes a row-level diff between two tables using a primary key (VARCHAR or VARCHAR[]), returning rows that were added, removed, or changed. Primary keys are matched NULL-safely (IS NOT DISTINCT FROM).";
-		desc.parameter_names = {"source_table", "target_table", "primary_key"};
+		desc.parameter_names = {"source_table", "target_table", "primary_key", "compare_columns", "include_all"};
 		desc.examples = {"SELECT * FROM diff_joindiff('orders_v1', 'orders_v2', 'order_id');",
 		                 "SELECT * FROM diff_joindiff('orders_v1', 'orders_v2', ['order_id', 'line_id']);"};
 		desc.categories = {"diff", "data-quality"};
@@ -531,7 +531,7 @@ void RegisterDiffFunctions(ExtensionLoader &loader) {
 	{
 		FunctionDescription desc;
 		desc.description = "Computes a row-level diff between two tables using a primary key (VARCHAR or VARCHAR[]). Currently identical to diff_joindiff; the bisection_threshold/bisection_factor parameters are not implemented and rejected.";
-		desc.parameter_names = {"source_table", "target_table", "primary_key"};
+		desc.parameter_names = {"source_table", "target_table", "primary_key", "bisection_threshold", "bisection_factor"};
 		desc.examples = {"SELECT * FROM diff_hashdiff('products_v1', 'products_v2', 'product_id');",
 		                 "SELECT * FROM diff_hashdiff('products_v1', 'products_v2', ['product_id', 'sku']);"};
 		desc.categories = {"diff", "data-quality"};

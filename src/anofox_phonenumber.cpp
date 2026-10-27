@@ -1191,9 +1191,9 @@ void RegisterPhonenumberFunctions(ExtensionLoader& loader) {
 	{
 		FunctionDescription desc;
 		desc.description = "Parses a phone number string and returns a struct with validity, country code, national number, region, number type and, for an invalid number, the reason.";
-		desc.parameter_names = {"phone"};
-		desc.parameter_types = {LogicalType::VARCHAR};
-		desc.examples = {"SELECT phonenumber_parse('+14155552671');"};
+		desc.parameter_names = {"phone", "region"};
+		desc.parameter_types = {LogicalType::VARCHAR, LogicalType::VARCHAR};
+		desc.examples = {"SELECT phonenumber_parse('+14155552671', NULL);"};
 		desc.categories = {"phone", "parsing"};
 		ScalarFunction parse_func = CreateParseScalar("anofox_tab_phonenumber_parse");
 		parse_func.SetBindCallback(&ScalarContextBind<PhoneParseBind>::Bind);
@@ -1203,10 +1203,10 @@ void RegisterPhonenumberFunctions(ExtensionLoader& loader) {
 	// Register phonenumber_format
 	{
 		FunctionDescription desc;
-		desc.description = "Formats a phone number string in the specified format: 'E164', 'INTERNATIONAL', 'NATIONAL', or 'RFC3966'.";
-		desc.parameter_names = {"phone", "format"};
-		desc.parameter_types = {LogicalType::VARCHAR, LogicalType::VARCHAR};
-		desc.examples = {"SELECT phonenumber_format('+14155552671', 'NATIONAL');"};
+		desc.description = "Formats a valid phone number in the specified format: 'E164', 'INTERNATIONAL', 'NATIONAL', or 'RFC3966'. Returns NULL for a number that is not valid (see phonenumber_parse().reason).";
+		desc.parameter_names = {"phone", "region", "format"};
+		desc.parameter_types = {LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR};
+		desc.examples = {"SELECT phonenumber_format('+14155552671', NULL, 'NATIONAL');"};
 		desc.categories = {"phone", "formatting"};
 		ScalarFunction format_func = CreateFormatScalar("anofox_tab_phonenumber_format");
 		format_func.SetBindCallback(&ScalarContextBind<PhoneFormatBind>::Bind);
@@ -1216,10 +1216,10 @@ void RegisterPhonenumberFunctions(ExtensionLoader& loader) {
 	// Register phonenumber_region
 	{
 		FunctionDescription desc;
-		desc.description = "Returns the 2-letter ISO region code (e.g., 'US', 'DE') for a given phone number.";
-		desc.parameter_names = {"phone"};
-		desc.parameter_types = {LogicalType::VARCHAR};
-		desc.examples = {"SELECT phonenumber_region('+14155552671');"};
+		desc.description = "Returns the 2-letter ISO region code (e.g., 'US', 'DE') of a valid phone number, or NULL for a number that is not valid.";
+		desc.parameter_names = {"phone", "region"};
+		desc.parameter_types = {LogicalType::VARCHAR, LogicalType::VARCHAR};
+		desc.examples = {"SELECT phonenumber_region('+14155552671', NULL);"};
 		desc.categories = {"phone", "parsing"};
 		ScalarFunction region_func = CreateRegionScalar("anofox_tab_phonenumber_region");
 		region_func.SetBindCallback(&ScalarContextBind<PhoneRegionBind>::Bind);
@@ -1230,9 +1230,9 @@ void RegisterPhonenumberFunctions(ExtensionLoader& loader) {
 	{
 		FunctionDescription desc;
 		desc.description = "Returns TRUE if the phone number is a valid, dialable number.";
-		desc.parameter_names = {"phone"};
-		desc.parameter_types = {LogicalType::VARCHAR};
-		desc.examples = {"SELECT phonenumber_is_valid('+14155552671');"};
+		desc.parameter_names = {"phone", "region"};
+		desc.parameter_types = {LogicalType::VARCHAR, LogicalType::VARCHAR};
+		desc.examples = {"SELECT phonenumber_is_valid('+14155552671', NULL);"};
 		desc.categories = {"phone", "validation"};
 		ScalarFunction is_valid_func = CreateIsValidScalar("anofox_tab_phonenumber_is_valid");
 		is_valid_func.SetBindCallback(&ScalarContextBind<PhoneIsValidBind>::Bind);
@@ -1243,9 +1243,9 @@ void RegisterPhonenumberFunctions(ExtensionLoader& loader) {
 	{
 		FunctionDescription desc;
 		desc.description = "Returns TRUE if the phone number length is plausible for its region (lighter check than is_valid).";
-		desc.parameter_names = {"phone"};
-		desc.parameter_types = {LogicalType::VARCHAR};
-		desc.examples = {"SELECT phonenumber_is_possible('+14155552671');"};
+		desc.parameter_names = {"phone", "region"};
+		desc.parameter_types = {LogicalType::VARCHAR, LogicalType::VARCHAR};
+		desc.examples = {"SELECT phonenumber_is_possible('+14155552671', NULL);"};
 		desc.categories = {"phone", "validation"};
 		ScalarFunction is_possible_func = CreateIsPossibleScalar("anofox_tab_phonenumber_is_possible");
 		is_possible_func.SetBindCallback(&ScalarContextBind<PhoneIsPossibleBind>::Bind);
@@ -1268,10 +1268,10 @@ void RegisterPhonenumberFunctions(ExtensionLoader& loader) {
 	// Register phonenumber_match
 	{
 		FunctionDescription desc;
-		desc.description = "Returns TRUE if two phone number strings refer to the same number.";
-		desc.parameter_names = {"phone1", "phone2"};
-		desc.parameter_types = {LogicalType::VARCHAR, LogicalType::VARCHAR};
-		desc.examples = {"SELECT phonenumber_match('+14155552671', '(415) 555-2671');"};
+		desc.description = "Compares two phone number strings and returns the match type: 'EXACT_MATCH', 'NSN_MATCH', 'SHORT_NSN_MATCH' or 'NO_MATCH'.";
+		desc.parameter_names = {"phone1", "phone2", "region"};
+		desc.parameter_types = {LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR};
+		desc.examples = {"SELECT phonenumber_match('+14155552671', '(415) 555-2671', 'US');"};
 		desc.categories = {"phone", "comparison"};
 		ScalarFunction match_func = CreateMatchScalar("anofox_tab_phonenumber_match");
 		match_func.SetBindCallback(&ScalarContextBind<PhoneMatchBind>::Bind);

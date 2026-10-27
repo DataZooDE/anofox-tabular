@@ -308,10 +308,10 @@ void RegisterVATFunctions(ExtensionLoader& loader) {
   }
   {
     FunctionDescription desc;
-    desc.description = "Returns TRUE if the VAT number belongs to an EU member state.";
-    desc.parameter_names = {"vat_number"};
+    desc.description = "Returns TRUE if the 2-letter country code (ISO, or the VAT prefix 'EL' for Greece) is an EU member state.";
+    desc.parameter_names = {"country_code"};
     desc.parameter_types = {LogicalType::VARCHAR};
-    desc.examples = {"SELECT vat_is_eu_member('DE123456789');"};
+    desc.examples = {"SELECT vat_is_eu_member('DE');"};
     desc.categories = {"vat", "utility"};
     ScalarFunction is_eu_member_func("anofox_tab_vat_is_eu_member", {LogicalTypeId::VARCHAR}, LogicalTypeId::BOOLEAN, VATIsEUMemberFunc);
     is_eu_member_func.SetBindCallback(&anofox::ScalarContextBind<VatIsEuMemberBind>::Bind);
@@ -319,10 +319,10 @@ void RegisterVATFunctions(ExtensionLoader& loader) {
   }
   {
     FunctionDescription desc;
-    desc.description = "Returns the English country name for the VAT number's country prefix (e.g., 'Germany').";
-    desc.parameter_names = {"vat_number"};
+    desc.description = "Returns the English country name for a 2-letter country code (e.g., 'Germany' for 'DE'), or NULL for an unsupported code.";
+    desc.parameter_names = {"country_code"};
     desc.parameter_types = {LogicalType::VARCHAR};
-    desc.examples = {"SELECT vat_country_name('DE123456789');"};
+    desc.examples = {"SELECT vat_country_name('DE');"};
     desc.categories = {"vat", "utility"};
     ScalarFunction country_name_func("anofox_tab_vat_country_name", {LogicalTypeId::VARCHAR}, LogicalTypeId::VARCHAR, VATCountryNameFunc);
     country_name_func.SetBindCallback(&anofox::ScalarContextBind<VatCountryNameBind>::Bind);

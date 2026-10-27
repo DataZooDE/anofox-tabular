@@ -4786,7 +4786,7 @@ void RegisterPIIFunctions(ExtensionLoader &loader) {
     {
         FunctionDescription desc;
         desc.description = "Scans all string columns of a table and returns a summary of detected PII types per column.";
-        desc.parameter_names = {"table_name"};
+        desc.parameter_names = {"table_name", "columns"};
         desc.examples = {"SELECT * FROM pii_scan_table('customers');"};
         desc.categories = {"pii", "audit"};
         auto pii_scan_set = CreatePIIScanTableFunctionSet();
@@ -4796,7 +4796,7 @@ void RegisterPIIFunctions(ExtensionLoader &loader) {
     {
         FunctionDescription desc;
         desc.description = "Returns a row-level audit of PII detected in all string columns of a table.";
-        desc.parameter_names = {"table_name"};
+        desc.parameter_names = {"table_name", "columns"};
         desc.examples = {"SELECT * FROM pii_audit_table('customers');"};
         desc.categories = {"pii", "audit"};
         auto pii_audit_set = CreatePIIAuditTableFunctionSet();
