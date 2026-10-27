@@ -68,10 +68,11 @@ INSERT INTO broken_checks VALUES
     ('orders_email_format', 'regex_match', 'web_orders', 'email', '{"pattern": "[a-z"}', 0.9, NULL, false, NULL, NULL),
     ('orders_window_ok', 'rel_count_change', 'web_orders', NULL, '{"date_column": "order_date", "window_days": 36500}', NULL, NULL, false, NULL, NULL)
 
+# The parser's wording after "syntax error" differs between DuckDB versions
 query TTT
-SELECT check_name, status, message FROM run_checks('broken_checks')
+SELECT check_name, status, regexp_replace(message, 'syntax error .*$', 'syntax error') FROM run_checks('broken_checks')
 ----
-orders_amount_rule	error	check 'orders_amount_rule' (compliance) cannot run: params.expression: failed to parse expression 'amount >': syntax error at or near ">"
+orders_amount_rule	error	check 'orders_amount_rule' (compliance) cannot run: params.expression: failed to parse expression 'amount >': syntax error
 orders_email_format	error	check 'orders_email_format' (regex_match) cannot run: params.pattern '[a-z' is not a valid regular expression: missing ]: [a-z
 orders_iqr_window	error	check 'orders_iqr_window' (metric_anomaly_iqr) cannot run: params.window_days '36501' must be at most 36500
 orders_window	error	check 'orders_window' (rel_count_change) cannot run: params.window_days '999999999999' must be at most 36500
@@ -91,7 +92,7 @@ regex_match: pattern '[a-z' is not a valid regular expression: missing ]: [a-z
 statement error
 SELECT * FROM compliance('web_orders', 'amount >')
 ----
-compliance: failed to parse expression 'amount >': syntax error at or near ">"
+compliance: failed to parse expression 'amount >': syntax error
 
 # ===--------------------------------------------------------------------===
 # Table names with a dot or a quote
