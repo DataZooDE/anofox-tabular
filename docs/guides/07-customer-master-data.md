@@ -4,7 +4,7 @@
 
 **Use this guide to:**
 - Normalise and validate email addresses, and see why one fails
-- Parse phone numbers with each customer's country as the region, and format them
+- Parse phone numbers with each customer's country as the region, split off extensions, and format them
 - Check EU VAT numbers that are stored without or with their country prefix
 - Turn amounts and currency codes into money values without failing on a bad code
 - Score each column so you know how clean the table is
@@ -15,15 +15,15 @@ Every example creates its own data. Run them in order in one DuckDB session, aft
 ## 1. The table
 
 A customer master merged from several systems: emails with stray spaces and capitals, phone
-numbers in local notation, VAT numbers with and without the country prefix, and amounts with
+numbers in local notation with labels, extensions and a typo, VAT numbers with and without the country prefix, and amounts with
 free-text currency codes:
 
 ```sql
 CREATE TABLE customers AS SELECT * FROM (VALUES
-  (1, 'DE', ' Anna.Schmidt@Example.com ', '030 12345678',      'DE136695976',   1250.00, 'EUR'),
+  (1, 'DE', ' Anna.Schmidt@Example.com ', 'Tel. 030 12345678 ext. 12', 'DE136695976',   1250.00, 'EUR'),
   (2, 'GB', 'tom@example.co.uk',          '07400 123456',      'GB123456782',    880.50, 'gbp'),
   (3, 'FR', 'claire@exemple',             '01 23 45 67 89',    'FR40303265045',  410.00, ' EUR'),
-  (4, 'CH', 'luca@example.ch',            '044 668 18 00',     NULL,             99.90, 'CHF'),
+  (4, 'CH', 'luca@example.ch',            '044 668 18 0O',     NULL,             99.90, 'CHF'),
   (5, 'NL', 'not-an-email',               '020 123 4567',      'NL004495445B01', 310.00, 'EURO'),
   (6, 'AT', 'eva@example.at',             '+43 1 58800',       'ATU13585627',    720.00, 'EUR')
 ) t(id, country, email, phone, vat, amount, currency);
@@ -31,14 +31,15 @@ CREATE TABLE customers AS SELECT * FROM (VALUES
 
 ## 2. Emails
 
-Trim and lower-case the addresses first, then validate them. `email_validate` returns the
-stage that decided and a `reason` when the address fails:
+`email_validate` ignores the spaces around an address, so validate the column as it is; store
+the trimmed, lower-cased form. `email_validate` returns the stage that decided and a `reason`
+when the address fails:
 
 ```sql
 SELECT id,
        lower(trim(email)) AS email_clean,
-       (email_validate(lower(trim(email)), 'regex')).valid AS valid,
-       (email_validate(lower(trim(email)), 'regex')).reason AS reason
+       (email_validate(email, 'regex')).valid AS valid,
+       (email_validate(email, 'regex')).reason AS reason
 FROM customers
 ORDER BY id;
 ```
@@ -63,8 +64,8 @@ addresses and typos like `gmail.con`. It needs network access and caches one res
 per domain:
 
 ```sql no-run
-SELECT id, (email_validate(lower(trim(email)), 'dns')).valid,
-       (email_validate(lower(trim(email)), 'dns')).reason
+SELECT id, (email_validate(email, 'dns')).valid,
+       (email_validate(email, 'dns')).reason
 FROM customers;
 ```
 
@@ -77,12 +78,16 @@ See [Email](../api/01-email.md) for all reason codes.
 ## 3. Phone numbers
 
 Pass each customer's country as the region, so local numbers like `030 12345678` are read
-correctly. `reason` says why a number is rejected; Austria is not one of the supported regions:
+correctly. A leading label such as `Tel.` is dropped and a trailing extension (`ext. 12`, `x12`,
+`Durchwahl 12`) is returned in `extension` instead of being read as part of the number. Any
+other letter makes a number invalid: the Swiss number has a letter `O` typed for a zero. `reason`
+says why a number is rejected; Austria is not one of the supported regions:
 
 ```sql
 SELECT id, country,
        (phonenumber_parse(phone, country)).valid AS valid,
        (phonenumber_parse(phone, country)).reason AS reason,
+       (phonenumber_parse(phone, country)).extension AS ext,
        phonenumber_format(phone, country, 'E164') AS e164,
        phonenumber_format(phone, country, 'INTERNATIONAL') AS international
 FROM customers
@@ -90,17 +95,17 @@ ORDER BY id;
 ```
 
 ```text
-┌───────┬─────────┬─────────┬──────────────────────────┬───────────────┬───────────────────┐
-│  id   │ country │  valid  │          reason          │     e164      │   international   │
-│ int32 │ varchar │ boolean │         varchar          │    varchar    │      varchar      │
-├───────┼─────────┼─────────┼──────────────────────────┼───────────────┼───────────────────┤
-│     1 │ DE      │ true    │ NULL                     │ +493012345678 │ +49 30 12345678   │
-│     2 │ GB      │ true    │ NULL                     │ +447400123456 │ +44 7400 123456   │
-│     3 │ FR      │ true    │ NULL                     │ +33123456789  │ +33 1 23 45 67 89 │
-│     4 │ CH      │ true    │ NULL                     │ +41446681800  │ +41 44 668 18 00  │
-│     5 │ NL      │ true    │ NULL                     │ +31201234567  │ +31 20 123 4567   │
-│     6 │ AT      │ false   │ unsupported_country_code │ NULL          │ NULL              │
-└───────┴─────────┴─────────┴──────────────────────────┴───────────────┴───────────────────┘
+┌───────┬─────────┬─────────┬──────────────────────────┬─────────┬───────────────┬───────────────────┐
+│  id   │ country │  valid  │          reason          │   ext   │     e164      │   international   │
+│ int32 │ varchar │ boolean │         varchar          │ varchar │    varchar    │      varchar      │
+├───────┼─────────┼─────────┼──────────────────────────┼─────────┼───────────────┼───────────────────┤
+│     1 │ DE      │ true    │ NULL                     │ 12      │ +493012345678 │ +49 30 12345678   │
+│     2 │ GB      │ true    │ NULL                     │ NULL    │ +447400123456 │ +44 7400 123456   │
+│     3 │ FR      │ true    │ NULL                     │ NULL    │ +33123456789  │ +33 1 23 45 67 89 │
+│     4 │ CH      │ false   │ invalid_characters       │ NULL    │ NULL          │ NULL              │
+│     5 │ NL      │ true    │ NULL                     │ NULL    │ +31201234567  │ +31 20 123 4567   │
+│     6 │ AT      │ false   │ unsupported_country_code │ NULL    │ NULL          │ NULL              │
+└───────┴─────────┴─────────┴──────────────────────────┴─────────┴───────────────┴───────────────────┘
 ```
 
 Store the `E164` form; it is unique per number and the other formats can be derived from it.
@@ -175,7 +180,7 @@ expression holds. One row per column shows where the cleanup effort goes:
 
 ```sql
 SELECT 'email' AS field, round(compliance_rate, 3) AS compliance_rate
-FROM compliance('customers', '(email_validate(lower(trim(email)), ''regex'')).valid')
+FROM compliance('customers', '(email_validate(email, ''regex'')).valid')
 UNION ALL
 SELECT 'phone', round(compliance_rate, 3)
 FROM compliance('customers', 'phonenumber_is_valid(phone, country)')
@@ -192,7 +197,7 @@ ORDER BY field;
 ├──────────┼─────────────────┤
 │ currency │           0.833 │
 │ email    │           0.833 │
-│ phone    │           0.833 │
+│ phone    │           0.667 │
 └──────────┴─────────────────┘
 ```
 
@@ -203,14 +208,14 @@ DNS lookup timed out. Choose what an unknown result counts as in the expression 
 ```sql no-run
 -- Uses the network. Unknown outcomes count against the score (strict) ...
 SELECT round(compliance_rate, 3)
-FROM compliance('customers', 'email_is_valid(lower(trim(email)), ''dns'')');
+FROM compliance('customers', 'email_is_valid(email, ''dns'')');
 -- ... or are given the benefit of the doubt
 SELECT round(compliance_rate, 3)
-FROM compliance('customers', 'coalesce(email_is_valid(lower(trim(email)), ''dns''), true)');
+FROM compliance('customers', 'coalesce(email_is_valid(email, ''dns''), true)');
 ```
 
 To leave them out of the score entirely, score a view of the rows with a known result, e.g.
-`CREATE VIEW checked AS SELECT * FROM customers WHERE email_is_valid(lower(trim(email)), 'dns') IS NOT NULL`,
+`CREATE VIEW checked AS SELECT * FROM customers WHERE email_is_valid(email, 'dns') IS NOT NULL`,
 and run `compliance('checked', ...)`. Re-check the excluded rows later.
 
 ## 7. Addresses
