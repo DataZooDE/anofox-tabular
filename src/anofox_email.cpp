@@ -32,12 +32,10 @@ namespace {
 constexpr const char *EMAIL_STAGE_REGEX = "regex";
 constexpr const char *EMAIL_STAGE_DNS = "dns";
 constexpr const char *EMAIL_STAGE_SMTP = "smtp";
-constexpr const char *EMAIL_STAGE_UNSUPPORTED = "unsupported";
 constexpr const char *EMAIL_REASON_REGEX_FAIL = "invalid_format";
 constexpr const char *EMAIL_REASON_TOO_LONG = "invalid_length";
 constexpr const char *EMAIL_REASON_DNS_FAIL = "dns_resolution_failed";
 constexpr const char *EMAIL_REASON_SMTP_FAIL = "smtp_verification_failed";
-constexpr const char *EMAIL_REASON_UNSUPPORTED = "validation_not_implemented";
 constexpr const char *DEFAULT_VALIDATION = "regex";
 //! Default pattern: an RFC 5322 dot-atom local part (no leading, trailing or
 //! consecutive dots; quoted local parts are not accepted) and a domain of
@@ -62,8 +60,8 @@ EmailFailureKind ClassifyEmailFailure(const std::string &reason) {
 	// Answers about the address itself; everything else (timeouts, unreachable
 	// servers, temporary SMTP replies, local resolver/socket errors) is unknown.
 	static const std::unordered_set<std::string> DEFINITE_REASONS = {
-	    // regex stage and an unknown mode
-	    EMAIL_REASON_REGEX_FAIL, EMAIL_REASON_TOO_LONG, EMAIL_REASON_UNSUPPORTED,
+	    // regex stage
+	    EMAIL_REASON_REGEX_FAIL, EMAIL_REASON_TOO_LONG,
 	    // dns stage: authoritative negative answers and names never looked up
 	    EMAIL_REASON_DNS_FAIL, "dns_empty_domain", "dns_reserved_domain", "dns_domain_not_found", "dns_no_records",
 	    "dns_null_mx", "mx_record_absent",
@@ -95,6 +93,9 @@ bool IsSupportedValidationMode(const std::string &mode) {
 	return mode == EMAIL_STAGE_REGEX || mode == EMAIL_STAGE_DNS || mode == EMAIL_STAGE_SMTP;
 }
 
+//! Trims and lower-cases a validation mode ('full' is an alias of 'smtp').
+//! An unknown mode is an error rather than a per-row valid = false: a typo
+//! such as 'mx' would otherwise mark every address invalid without a hint.
 std::string NormalizeValidationMode(const std::string &value) {
 	auto cleaned = value;
 	StringUtil::Trim(cleaned);
@@ -102,8 +103,9 @@ std::string NormalizeValidationMode(const std::string &value) {
 	if (normalized == "full") {
 		return EMAIL_STAGE_SMTP;
 	}
-	if (!IsSupportedValidationMode(normalized) && normalized != EMAIL_STAGE_UNSUPPORTED) {
-		return EMAIL_STAGE_UNSUPPORTED;
+	if (!IsSupportedValidationMode(normalized)) {
+		EmailTrace(AnofoxLogLevel::Warn, "Rejecting unknown email validation mode '" + value + "'");
+		throw InvalidInputException("Unknown email validation mode: %s (expected regex, dns, smtp)", cleaned);
 	}
 	return normalized;
 }
@@ -129,9 +131,6 @@ public:
 
 	void SetDefaultValidation(const std::string &value) {
 		auto normalized = NormalizeValidationMode(value);
-		if (!IsSupportedValidationMode(normalized)) {
-			throw InvalidInputException("Unsupported email validation type: %s", value);
-		}
 		std::lock_guard<std::mutex> lock(config_mutex);
 		default_validation = normalized;
 	}
@@ -337,13 +336,6 @@ EmailValidationResult ValidateEmailAddress(std::string_view raw_email, const std
 			               (regex_result.reason.empty() ? std::string("<none>") : regex_result.reason));
 		}
 		return regex_result;
-	}
-
-	if (normalized_mode != EMAIL_STAGE_DNS && normalized_mode != EMAIL_STAGE_SMTP) {
-		EmailValidationResult result;
-		result.stage = EMAIL_STAGE_UNSUPPORTED;
-		result.reason = EMAIL_REASON_UNSUPPORTED;
-		return result;
 	}
 
 	auto domain = std::string(ExtractDomain(email));

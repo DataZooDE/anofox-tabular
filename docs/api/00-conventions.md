@@ -232,7 +232,7 @@ unknown currency code raises, because a money value without a valid currency can
 
 | Module | Bad value | Bad option |
 |--------|-----------|------------|
-| [Email](01-email.md) | `email_is_valid` is `false`; `email_validate` has `valid = false` and a `reason`. A DNS or SMTP check that gets no answer is `NULL` (`valid = NULL`) | An unknown mode is not an error: `valid = false`, `reason = 'validation_not_implemented'` |
+| [Email](01-email.md) | `email_is_valid` is `false`; `email_validate` has `valid = false` and a `reason`. A DNS or SMTP check that gets no answer is `NULL` (`valid = NULL`) | An unknown mode raises (`Unknown email validation mode: ...`) |
 | [Postal](02-postal.md) | No error: parts that libpostal does not find are `NULL` | none; missing data starts the download, and a failed download raises |
 | [Phone](03-phone.md) | `phonenumber_is_valid` is `false`; `phonenumber_format` and `phonenumber_region` are `NULL`; `phonenumber_parse` has `valid = false` and a `reason`. An unsupported `region` argument makes the row invalid (`unsupported_region`) | An unknown format raises; an unsupported code in `SET anofox_tab_phonenumber_default_region` raises |
 | [Money](04-money.md) | An unknown currency code raises in `money` and `money_from_cents`; arithmetic on two currencies raises | An unknown `money_format` style raises |

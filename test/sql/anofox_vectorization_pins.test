@@ -70,19 +70,16 @@ SELECT anofox_tab_email_is_valid('user@example.com', NULL);
 ----
 true
 
-# Unsupported mode: regex passes first, then stage becomes 'unsupported'
-query TTT
-SELECT (r).valid, (r).stage, (r).reason
-FROM (SELECT anofox_tab_email_validate('user@example.com', 'bogus-mode') AS r);
+# Unknown mode: an error, whatever the address (the regex stage does not hide it)
+statement error
+SELECT anofox_tab_email_validate('user@example.com', 'bogus-mode');
 ----
-false	unsupported	validation_not_implemented
+Unknown email validation mode: bogus-mode
 
-# Unsupported mode with a regex failure reports the regex stage
-query TTT
-SELECT (r).valid, (r).stage, (r).reason
-FROM (SELECT anofox_tab_email_validate('not-an-email', 'bogus-mode') AS r);
+statement error
+SELECT anofox_tab_email_validate('not-an-email', 'bogus-mode');
 ----
-false	regex	invalid_format
+Unknown email validation mode: bogus-mode
 
 # Struct shape pins for regex mode: empty mx_hosts and transcript lists
 query TTII

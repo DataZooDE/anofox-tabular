@@ -153,7 +153,7 @@ TEST_CASE("test/cpp/anofox_email_failure_classification", "[anofox_email]") {
 
 	SECTION("syntax and definite DNS/SMTP answers are definite") {
 		for (const char *reason :
-		     {"invalid_format", "invalid_length", "validation_not_implemented", "dns_resolution_failed",
+		     {"invalid_format", "invalid_length", "dns_resolution_failed",
 		      "dns_empty_domain", "dns_reserved_domain", "dns_domain_not_found", "dns_no_records", "dns_null_mx",
 		      "smtp_no_hosts", "smtp_dns_reserved_domain", "smtp_dns_domain_not_found", "smtp_dns_no_records",
 		      "smtp_dns_no_addresses", "smtp_recipient_rejected"}) {

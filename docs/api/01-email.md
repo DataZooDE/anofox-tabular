@@ -75,9 +75,10 @@ FROM (VALUES ('max.mustermann@web.de'), (' Max.Mustermann@Web.de '), ('max+news@
 └──────────────────────────────────────────────────────────────────────────┴─────────┴────────────────┘
 ```
 
-The mode argument is case-insensitive. When you omit it, or pass `NULL`, the function uses the
-setting `anofox_tab_email_default_validation`. An unknown mode does not raise an error: the
-result is invalid with stage `unsupported`.
+The mode argument is case-insensitive and surrounding spaces are ignored; `full` is an alias of
+`smtp`. When you omit it, or pass `NULL`, the function uses the setting
+`anofox_tab_email_default_validation`. An unknown mode raises an error, whatever the address, so
+a typo such as `'mx'` cannot mark every address invalid without a hint.
 
 ---
 
@@ -140,7 +141,7 @@ email_validate(email VARCHAR [, mode VARCHAR]) -> STRUCT(
 | Field | Type | Description |
 |-------|------|-------------|
 | `valid` | `BOOLEAN` | `true` when every stage of the mode passed, `false` for a definite failure, `NULL` when the check could not finish (see [Definite and unknown outcomes](#definite-and-unknown-outcomes)) |
-| `stage` | `VARCHAR` | The last stage that ran: `regex`, `dns`, `smtp`, or `unsupported` for an unknown mode |
+| `stage` | `VARCHAR` | The last stage that ran: `regex`, `dns` or `smtp` |
 | `reason` | `VARCHAR` | `NULL` when valid; otherwise a code from [Reason codes](#reason-codes), also when `valid` is `NULL` |
 | `mx_hosts` | `VARCHAR[]` | MX hosts found by the `dns` and `smtp` stages; empty for `regex` |
 | `smtp_debug.transcript` | `VARCHAR[]` | The SMTP conversation of the `smtp` stage; empty otherwise |
@@ -163,19 +164,14 @@ FROM (VALUES ('user@example.com'), ('not-an-email')) t(address);
 └──────────────────┴─────────┴─────────┴────────────────┘
 ```
 
-An unknown mode:
+An unknown mode raises an error:
 
 ```sql
-SELECT email_validate('user@example.com', 'bogus') AS result;
+SELECT email_validate('user@example.com', 'mx') AS result;
 ```
 
 ```text
-┌────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
-│                                                             result                                                             │
-│      struct("valid" boolean, stage varchar, reason varchar, mx_hosts varchar[], smtp_debug struct(transcript varchar[]))       │
-├────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┤
-│ {'valid': false, 'stage': unsupported, 'reason': validation_not_implemented, 'mx_hosts': [], 'smtp_debug': {'transcript': []}} │
-└────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+Invalid Input Error: Unknown email validation mode: mx (expected regex, dns, smtp)
 ```
 
 ### The `dns` stage
@@ -221,7 +217,6 @@ reason.
 |-------|--------|---------|---------|
 | `regex` | `invalid_format` | `false` | The address does not match the regex pattern |
 | `regex` | `invalid_length` | `false` | The address is longer than 254 characters, or its local part longer than 64 |
-| `unsupported` | `validation_not_implemented` | `false` | The mode is not `regex`, `dns`, `smtp` or `full` |
 | `dns` | `dns_resolution_failed` | `false` | No domain could be taken from the address |
 | `dns` | `dns_empty_domain` | `false` | The domain is empty |
 | `dns` | `dns_reserved_domain` | `false` | The domain is `localhost`, ends in `.localhost`, or is in the reserved top-level domain `example`, `invalid`, `test` or `local`; it is not looked up |
