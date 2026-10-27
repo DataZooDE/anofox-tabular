@@ -314,8 +314,9 @@ See [Postal addresses](../api/02-postal.md).
 ## 8. Recipe: check a CRM import in one query
 
 A CRM export usually arrives as text: every column `VARCHAR`, amounts in the format of the
-exporting system, a country column that is sometimes empty. One query gives each row the reason
-why a field fails, so the import can load the clean rows and route the rest to review:
+exporting system, a country column that is sometimes empty, contact fields that were never
+filled in. One query gives each row the reason why a field fails and a route, so the import can
+load the clean rows, send the failing ones to review and ask for the missing ones:
 
 ```sql
 CREATE TABLE crm_import AS SELECT * FROM (VALUES
@@ -323,34 +324,54 @@ CREATE TABLE crm_import AS SELECT * FROM (VALUES
   ('C-1002', 'GB', 'tom@example.co.uk',      '07400 123456',    'GB123456782',    '880.50',  'gbp'),
   ('C-1003', NULL, 'info@example.fr',        '01 23 45 67 89',  'FR40303265045',  '410',     'EUR'),
   ('C-1004', 'AT', 'eva@@example.at',        '01 5321234',      'ATU13585626',    '99.90',   'EURO'),
-  ('C-1005', 'NL', 'piet@example.nl',        '+31 20 123 4567', '004495445B01',   '1.250,00', 'EUR')
+  ('C-1005', 'NL', 'piet@example.nl',        '+31 20 123 4567', '004495445B01',   '1.250,00', 'EUR'),
+  ('C-1006', 'DE', NULL,                     NULL,              NULL,             '75.00',   'EUR')
 ) t(customer_ref, country, email, phone, vat_id, amount, currency);
 
+WITH checked AS (
+  SELECT customer_ref, amount,
+         email_validate(email) AS e,
+         phonenumber_parse(phone, country) AS p,
+         phonenumber_format(phone, country, 'E164') AS phone_e164,
+         vat_validate(vat_id) AS v,
+         TRY(money(TRY_CAST(amount AS DECIMAL(18, 2)), currency)) AS amount_money
+  FROM crm_import
+)
 SELECT customer_ref,
-       (email_validate(email)).reason AS email_reason,
-       phonenumber_format(phone, country, 'E164') AS phone_e164,
-       (phonenumber_parse(phone, country)).reason AS phone_reason,
-       (vat_validate(vat_id)).reason AS vat_reason,
-       TRY(money(TRY_CAST(amount AS DECIMAL(18, 2)), currency)) AS amount_money
-FROM crm_import
+       e.reason AS email_reason,
+       phone_e164,
+       p.reason AS phone_reason,
+       v.reason AS vat_reason,
+       amount_money,
+       CASE WHEN e.valid IS NULL OR p.valid IS NULL OR v.valid IS NULL OR amount IS NULL THEN 'missing'
+            WHEN e.valid AND p.valid AND v.valid AND amount_money IS NOT NULL THEN 'clean'
+            ELSE 'review' END AS route
+FROM checked
 ORDER BY customer_ref;
 ```
 
 ```text
-┌──────────────┬────────────────┬───────────────┬────────────────────┬───────────────────┬────────────────────────────────────────────────┐
-│ customer_ref │  email_reason  │  phone_e164   │    phone_reason    │    vat_reason     │                  amount_money                  │
-│   varchar    │    varchar     │    varchar    │      varchar       │      varchar      │ struct(amount decimal(18,3), currency varchar) │
-├──────────────┼────────────────┼───────────────┼────────────────────┼───────────────────┼────────────────────────────────────────────────┤
-│ C-1001       │ NULL           │ +49301234567  │ NULL               │ NULL              │ {'amount': 1250.000, 'currency': EUR}          │
-│ C-1002       │ NULL           │ +447400123456 │ NULL               │ NULL              │ {'amount': 880.500, 'currency': GBP}           │
-│ C-1003       │ NULL           │ NULL          │ region_missing     │ NULL              │ {'amount': 410.000, 'currency': EUR}           │
-│ C-1004       │ invalid_format │ NULL          │ unsupported_region │ checksum_mismatch │ NULL                                           │
-│ C-1005       │ NULL           │ +31201234567  │ NULL               │ missing_prefix    │ NULL                                           │
-└──────────────┴────────────────┴───────────────┴────────────────────┴───────────────────┴────────────────────────────────────────────────┘
+┌──────────────┬────────────────┬───────────────┬────────────────────┬───────────────────┬────────────────────────────────────────────────┬─────────┐
+│ customer_ref │  email_reason  │  phone_e164   │    phone_reason    │    vat_reason     │                  amount_money                  │  route  │
+│   varchar    │    varchar     │    varchar    │      varchar       │      varchar      │ struct(amount decimal(18,3), currency varchar) │ varchar │
+├──────────────┼────────────────┼───────────────┼────────────────────┼───────────────────┼────────────────────────────────────────────────┼─────────┤
+│ C-1001       │ NULL           │ +49301234567  │ NULL               │ NULL              │ {'amount': 1250.000, 'currency': EUR}          │ clean   │
+│ C-1002       │ NULL           │ +447400123456 │ NULL               │ NULL              │ {'amount': 880.500, 'currency': GBP}           │ clean   │
+│ C-1003       │ NULL           │ NULL          │ region_missing     │ NULL              │ {'amount': 410.000, 'currency': EUR}           │ review  │
+│ C-1004       │ invalid_format │ NULL          │ unsupported_region │ checksum_mismatch │ NULL                                           │ review  │
+│ C-1005       │ NULL           │ +31201234567  │ NULL               │ missing_prefix    │ NULL                                           │ review  │
+│ C-1006       │ NULL           │ NULL          │ NULL               │ NULL              │ {'amount': 75.000, 'currency': EUR}            │ missing │
+└──────────────┴────────────────┴───────────────┴────────────────────┴───────────────────┴────────────────────────────────────────────────┴─────────┘
 ```
 
-How each field is checked:
+How each field is checked, and how the route is chosen:
 
+- **Route on `valid`, not on `reason` alone**: `reason` is `NULL` for a valid value and also for
+  a `NULL` input, so a row without email, phone or VAT number (`C-1006`) would look clean.
+  `valid` tells the two apart: `true` for a valid value, `false` with a `reason` for an invalid
+  one, `NULL` when there was nothing to check. The query routes `valid IS NULL` to `missing`; in
+  `dns` or `smtp` mode an email's `valid` is also `NULL` when a lookup cannot finish, so such a
+  row is re-checked later rather than loaded.
 - **Email**: `(email_validate(email)).reason` is `NULL` for a valid address and names the rule
   otherwise. The query uses the default `regex` mode. With network access,
   `email_validate(email, 'dns')` also catches domains without mail servers; its `valid` is
