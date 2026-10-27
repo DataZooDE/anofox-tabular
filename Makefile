@@ -67,8 +67,14 @@ POSTAL_TEST_ENV := $(if $(POSTAL_AVAILABLE),POSTAL_AVAILABLE=1,)
 # This prevents local tests and CI/CD from polluting PostHog telemetry data
 # DNNL_MAX_CPU_ISA=AVX2: limits OneDNN (used by OpenVINO) to AVX2 at most,
 # preventing SIGILL in manylinux Docker containers that restrict AVX-512 CPUID
+# Tests that need a process in which libpostal was not initialised yet run on their own.
+POSTAL_FRESH_TESTS := test/sql/anofox_postal_data_path.test
+
 test_release_internal:
 	DATAZOO_DISABLE_TELEMETRY=1 DNNL_MAX_CPU_ISA=AVX2 $(POSTAL_TEST_ENV) ./build/release/test/unittest "test/*"
+	@for t in $(POSTAL_FRESH_TESTS); do \
+		DATAZOO_DISABLE_TELEMETRY=1 $(POSTAL_TEST_ENV) ANOFOX_TEST_POSTAL_FRESH_PROCESS=1 ./build/release/test/unittest "$$t" || exit 1; \
+	done
 
 test_debug_internal:
 	DATAZOO_DISABLE_TELEMETRY=1 DNNL_MAX_CPU_ISA=AVX2 $(POSTAL_TEST_ENV) ./build/debug/test/unittest "test/*"

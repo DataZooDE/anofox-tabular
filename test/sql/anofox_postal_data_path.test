@@ -8,6 +8,11 @@
 # The postal module is only compiled where libpostal is available (Linux).
 require-env POSTAL_AVAILABLE
 
+# libpostal is initialised once per process and its data path cannot change afterwards, so
+# this file needs a process in which no postal function ran yet: `make test` runs it on its
+# own with ANOFOX_TEST_POSTAL_FRESH_PROCESS=1 (in a full test/* run it is skipped).
+require-env ANOFOX_TEST_POSTAL_FRESH_PROCESS
+
 require anofox_tabular
 
 statement ok
