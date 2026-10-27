@@ -1,0 +1,73 @@
+# name: test/sql/anofox_postal_data_path.test
+# description: The libpostal data directory defaults to ~/.duckdb/extensions/libpostal
+#              (home-based, shared by every working directory) instead of a path
+#              relative to the working directory. Never downloads: no postal
+#              function that needs the data is called.
+# group: [anofox_tabular]
+
+# The postal module is only compiled where libpostal is available (Linux).
+require-env POSTAL_AVAILABLE
+
+require anofox_tabular
+
+statement ok
+LOAD anofox_tabular;
+
+statement ok
+SET anofox_tab_trace_level = 'warn';
+
+# The data path is process-wide state; start from the default.
+statement ok
+RESET anofox_tab_postal_data_path;
+
+# The setting shows the home-based default.
+query T
+SELECT current_setting('anofox_tab_postal_data_path');
+----
+~/.duckdb/extensions/libpostal
+
+# postal_status reports the expanded home path. home_directory pins the home
+# directory DuckDB expands '~' with, so the result does not depend on $HOME.
+statement ok
+SET home_directory = '/srv/etl-runner';
+
+query TTT
+SELECT initialized, data_present, data_dir FROM postal_status();
+----
+false	false	/srv/etl-runner/.duckdb/extensions/libpostal
+
+# The canonical name reports the same directory.
+query T
+SELECT data_dir FROM anofox_tab_postal_status();
+----
+/srv/etl-runner/.duckdb/extensions/libpostal
+
+# An explicit path is used as is ...
+statement ok
+SET anofox_tab_postal_data_path = '/opt/geo/libpostal';
+
+query TT
+SELECT data_present, data_dir FROM postal_status();
+----
+false	/opt/geo/libpostal
+
+# ... and '~' in an explicit path is expanded as well.
+statement ok
+SET anofox_tab_postal_data_path = '~/geo/libpostal';
+
+query T
+SELECT data_dir FROM postal_status();
+----
+/srv/etl-runner/geo/libpostal
+
+# RESET returns to the home-based default.
+statement ok
+RESET anofox_tab_postal_data_path;
+
+query TT
+SELECT current_setting('anofox_tab_postal_data_path'), data_dir FROM postal_status();
+----
+~/.duckdb/extensions/libpostal	/srv/etl-runner/.duckdb/extensions/libpostal
+
+statement ok
+RESET home_directory;

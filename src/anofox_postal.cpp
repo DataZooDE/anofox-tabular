@@ -1,4 +1,5 @@
 #include "anofox_postal.hpp"
+#include "anofox_postal_path.hpp"
 #include "anofox_tabular_banner.hpp"
 
 #if HAVE_LIBPOSTAL
@@ -46,7 +47,6 @@ namespace {
 constexpr const char *POSTAL_BASE_URL = "https://public-read-libpostal-data.s3.amazonaws.com/v1.1.0/";
 const std::vector<std::string> POSTAL_ASSETS = {"language_classifier.tar.gz", "libpostal_data.tar.gz",
                                                 "parser.tar.gz"};
-constexpr const char *DEFAULT_POSTAL_DIR = ".duckdb/extensions/libpostal";
 
 // Callback for libcurl to write data to file
 static size_t WriteDataToFile(void *ptr, size_t size, size_t nmemb, FILE *stream) {
@@ -129,6 +129,16 @@ static void ExtractTarball(const std::string &archive_path, const std::string &t
 	if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
 		throw IOException("tar failed to extract '" + archive_path + "' into '" + target_dir + "'");
 	}
+}
+//! A data directory is complete when the language classifier and the address
+//! parser model are present (what postal_status() reports as data_present).
+static bool IsPostalDataComplete(FileSystem &fs, const std::string &dir) {
+	if (!fs.DirectoryExists(dir)) {
+		return false;
+	}
+	std::ifstream classifier_stream(fs.JoinPath(dir, POSTAL_CLASSIFIER_FILE));
+	std::ifstream parser_stream(fs.JoinPath(dir, POSTAL_PARSER_FILE));
+	return classifier_stream.good() && parser_stream.good();
 }
 } // namespace
 
@@ -250,14 +260,36 @@ void PostalManager::LoadData(ClientContext &context) {
 	LoadDataInternal(context);
 }
 
-void PostalManager::LoadDataInternal(ClientContext &context) {
+std::string PostalManager::ResolveDataDirectory(ClientContext &context) const {
 	auto &fs = FileSystem::GetFileSystem(context);
-	auto data_dir = fs.ExpandPath(data_directory);
-	if (!fs.DirectoryExists(data_dir)) {
-		fs.CreateDirectoriesRecursive(data_dir);
+	auto is_complete = [&fs](const std::string &dir) { return IsPostalDataComplete(fs, dir); };
+	// ExpandPath("~") yields the home directory DuckDB uses (the home_directory
+	// setting, else HOME / USERPROFILE); empty means none is known.
+	const bool home_known = !fs.ExpandPath("~").empty();
+	auto resolved = ResolvePostalDataDirectory(
+	    data_directory, [&fs](const std::string &path) { return fs.ExpandPath(path); }, home_known, is_complete);
+	if (resolved.legacy_fallback && !legacy_notice_logged.exchange(true)) {
+		AnofoxTrace(AnofoxLogLevel::Info,
+		            "Postal using the libpostal data in '" + resolved.path +
+		                "' (relative to the working directory). The default data path is now home-based ('" +
+		                DEFAULT_POSTAL_DIR + "'); move the data there or SET anofox_tab_postal_data_path to keep it.");
 	}
+	if (resolved.no_home_directory && !no_home_notice_logged.exchange(true)) {
+		AnofoxTrace(AnofoxLogLevel::Warn, "Postal found no home directory to expand '" + std::string(DEFAULT_POSTAL_DIR) +
+		                                      "'; using '" + resolved.path + "' relative to the working directory");
+	}
+	AnofoxTrace(AnofoxLogLevel::Debug, "Postal data directory resolved to " + resolved.path);
+	return resolved.path;
+}
+
+void PostalManager::LoadDataInternal(ClientContext &context) {
 	if (GetStatusInternal(context).data_present) {
 		return;
+	}
+	auto &fs = FileSystem::GetFileSystem(context);
+	auto data_dir = ResolveDataDirectory(context);
+	if (!fs.DirectoryExists(data_dir)) {
+		fs.CreateDirectoriesRecursive(data_dir);
 	}
 
 	// Initialize libcurl global state once per process (RAII, process lifetime)
@@ -365,16 +397,8 @@ PostalStatus PostalManager::GetStatusInternal(ClientContext &context) const {
 	PostalStatus status;
 	status.initialized = initialized.load();
 	auto &fs = FileSystem::GetFileSystem(context);
-	status.data_dir = fs.ExpandPath(data_directory);
-	if (!fs.DirectoryExists(status.data_dir)) {
-		status.data_present = false;
-		return status;
-	}
-	const auto classifier_file = fs.JoinPath(status.data_dir, "language_classifier/language_classifier.dat");
-	const auto parser_file = fs.JoinPath(status.data_dir, "address_parser/address_parser_phrases.dat");
-	std::ifstream classifier_stream(classifier_file);
-	std::ifstream parser_stream(parser_file);
-	status.data_present = classifier_stream.good() && parser_stream.good();
+	status.data_dir = ResolveDataDirectory(context);
+	status.data_present = IsPostalDataComplete(fs, status.data_dir);
 	return status;
 }
 

@@ -48,16 +48,29 @@ FROM duckdb_functions() WHERE function_name = 'anofox_tab_postal_parse_address';
 
 ## Where the data goes
 
-The setting `anofox_tab_postal_data_path` sets the data directory. Its default,
-`.duckdb/extensions/libpostal`, is relative to the working directory of the DuckDB process.
-The directory and any missing parent directories are created. A path that starts
-with `~` is expanded to your home directory. Set the path before the first postal call:
+The setting `anofox_tab_postal_data_path` sets the data directory. Its default is
+`~/.duckdb/extensions/libpostal`, in your home directory, next to the NER model cache, so every
+working directory shares one copy. DuckDB expands `~` with its `home_directory` setting, else
+the environment variable `HOME` (`USERPROFILE` on Windows); a `~` in a path you set yourself is
+expanded the same way. The directory and any missing parent directories are created. Set the
+path before the first postal call:
 
 ```sql no-run
--- Keep the data in one place for every working directory
-SET anofox_tab_postal_data_path = '~/.duckdb/extensions/libpostal';
+-- A shared location for every user of the machine
+SET anofox_tab_postal_data_path = '/opt/libpostal';
 SELECT postal_load_data();
 ```
+
+**Data from older versions.** In release v2026.10.25 and older the default was
+`.duckdb/extensions/libpostal`, relative to the working directory of the DuckDB process, so each
+new working directory downloaded the data again. While the setting is at its default and the
+home directory holds no complete copy, the extension still uses a complete copy in
+`.duckdb/extensions/libpostal` under the current working directory and logs once, at level
+`info`, that the default is now home-based. `postal_status()` shows which directory is in use.
+To stop depending on the working directory, move that directory to
+`~/.duckdb/extensions/libpostal`, or set `anofox_tab_postal_data_path` to it. A directory counts
+as complete when it holds `language_classifier/language_classifier.dat` and
+`address_parser/address_parser_phrases.dat`.
 
 The files come from `https://public-read-libpostal-data.s3.amazonaws.com/v1.1.0/`:
 `language_classifier.tar.gz`, `libpostal_data.tar.gz` and `parser.tar.gz`.
@@ -96,19 +109,21 @@ postal_status() -> TABLE(initialized BOOLEAN, data_present BOOLEAN, data_dir VAR
 | `data_present` | `BOOLEAN` | the data files exist in `data_dir` |
 | `data_dir` | `VARCHAR` | the data directory in use |
 
-On a fresh installation:
+On a fresh installation, for a user whose home directory is `/home/analyst` (the `SET` only
+makes this example print the same path everywhere):
 
 ```sql
+SET home_directory = '/home/analyst';
 SELECT * FROM postal_status();
 ```
 
 ```text
-┌─────────────┬──────────────┬──────────────────────────────┐
-│ initialized │ data_present │           data_dir           │
-│   boolean   │   boolean    │           varchar            │
-├─────────────┼──────────────┼──────────────────────────────┤
-│ false       │ false        │ .duckdb/extensions/libpostal │
-└─────────────┴──────────────┴──────────────────────────────┘
+┌─────────────┬──────────────┬────────────────────────────────────────────┐
+│ initialized │ data_present │                  data_dir                  │
+│   boolean   │   boolean    │                  varchar                   │
+├─────────────┼──────────────┼────────────────────────────────────────────┤
+│ false       │ false        │ /home/analyst/.duckdb/extensions/libpostal │
+└─────────────┴──────────────┴────────────────────────────────────────────┘
 ```
 
 ---
@@ -117,8 +132,8 @@ SELECT * FROM postal_status();
 
 Canonical name: `anofox_tab_postal_parse_address`. Scalar function.
 
-Splits an address into its parts. libpostal lower-cases the parts. A part that libpostal does
-not find is `NULL`.
+Splits an address into its parts. libpostal lower-cases the parts and does not return an ISO
+country code (see below). A part that libpostal does not find is `NULL`.
 
 ```text
 postal_parse_address(address VARCHAR) -> STRUCT(
@@ -150,6 +165,11 @@ instead of hiding them. Results with the libpostal 1.1 data, from the test file
 | `Hauptstraße 5, 80331 München, Deutschland` | `5` | `hauptstraße` | `münchen` | `80331` | `deutschland` |
 | `10 Downing Street, London SW1A 2AA, United Kingdom` | `10` | `downing street` | `london` | `sw1a 2aa` | `united kingdom` |
 | `Flat 3, 12 High Street, Oxford OX1 4AA` | `12 4aa` | `high street ox1` | `oxford` | `NULL` | `NULL` |
+
+All parts are lower-cased, also the `country`, and `country` is the name as written in the
+address (`deutschland`, `united kingdom`), not an ISO code; it is `NULL` when the address names
+no country. To compare with an ISO country column, map the names yourself, or keep the country
+from another column of your data.
 
 libpostal splits the Dutch postcode `1016 GV` into `postcode` `1016` and `road` `gv`, and does
 not recognise the UK postcode `OX1 4AA` after `Oxford`. Writing the Dutch postcode without the

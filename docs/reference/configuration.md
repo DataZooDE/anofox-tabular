@@ -57,7 +57,7 @@ ORDER BY name;
 | `anofox_tab_email_smtp_helo_domain` | `VARCHAR` | `duckdb.local` | [Email](#email) |
 | `anofox_tab_email_smtp_mail_from` | `VARCHAR` | `validator@duckdb.local` | [Email](#email) |
 | `anofox_tab_phonenumber_default_region` | `VARCHAR` | `US` | [Phone](#phone) |
-| `anofox_tab_postal_data_path` | `VARCHAR` | `.duckdb/extensions/libpostal` | [Postal](#postal) |
+| `anofox_tab_postal_data_path` | `VARCHAR` | `~/.duckdb/extensions/libpostal` | [Postal](#postal) |
 | `anofox_tab_trace_enabled` | `BOOLEAN` | `true` | [Tracing](#tracing) |
 | `anofox_tab_trace_level` | `VARCHAR` | `info` | [Tracing](#tracing) |
 | `anofox_pii_enabled_types` | `VARCHAR` | empty (all types except `POSTAL_CODE`) | [PII](#pii) |
@@ -121,7 +121,7 @@ SELECT key, value FROM email_config() WHERE key LIKE 'dns%';
 
 | Setting | Effect |
 |---------|--------|
-| `anofox_tab_postal_data_path` | Directory of the libpostal data. The default is relative to the working directory of the process; `~` is expanded. See [Postal addresses](../api/02-postal.md#where-the-data-goes). |
+| `anofox_tab_postal_data_path` | Directory of the libpostal data. The default is in the home directory (`~` is expanded with DuckDB's `home_directory` setting, else `HOME`, or `USERPROFILE` on Windows). At the default, a complete copy in `.duckdb/extensions/libpostal` under the working directory, the default of v2026.10.25 and older, is still used when the home directory has none. `RESET` returns to the default. See [Postal addresses](../api/02-postal.md#where-the-data-goes). |
 
 ## Tracing
 

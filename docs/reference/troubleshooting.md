@@ -74,14 +74,18 @@ Most parameters are positional. Only a few accept `name := value`; the list is i
 SELECT postal_load_data();
 ```
 
-The data goes to `anofox_tab_postal_data_path`, by default relative to the working directory of
-the process. To keep one copy for every working directory, set an absolute path before the first
-postal call:
+The data goes to `anofox_tab_postal_data_path`, by default `~/.duckdb/extensions/libpostal` in
+your home directory. `postal_status()` shows the directory in use and whether the data is there:
 
 ```sql no-run
-SET anofox_tab_postal_data_path = '~/.duckdb/extensions/libpostal';
-SELECT postal_load_data();
+SELECT data_present, data_dir FROM postal_status();
 ```
+
+Release v2026.10.25 and older stored the data relative to the working directory, in
+`.duckdb/extensions/libpostal`, so every new working directory downloaded it again. A complete
+copy there is still used while the home directory has none; move it to
+`~/.duckdb/extensions/libpostal` to use it from every working directory. See
+[Postal addresses: where the data goes](../api/02-postal.md#where-the-data-goes).
 
 The postal functions are not available on Windows, and may be missing on macOS builds. See
 [Postal addresses](../api/02-postal.md).
@@ -148,8 +152,8 @@ Ubuntu or Arch, and the environment variables above have no effect on them. Upgr
   done
   ```
 
-  Then `SET anofox_tab_postal_data_path = '~/.duckdb/extensions/libpostal';` before the first
-  postal call.
+  `~/.duckdb/extensions/libpostal` is the default data path; if you unpack the data elsewhere,
+  `SET anofox_tab_postal_data_path` to that directory before the first postal call.
 
 ## Names, organizations or locations are not detected
 
