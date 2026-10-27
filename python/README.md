@@ -149,7 +149,8 @@ print(result.failures)    # DataFrame: column, row_id, value, rule
   `seed=` for reproducible scores (`isolation_forest_mv` also `ndim=`). The per-row modes
   are `"scores"` (isolation forest), `"clusters"` (DBSCAN; `"scores"` is accepted too) and
   `"outliers"` (outlier tree); an unknown `output_mode` raises `ValueError`. Column lists
-  can be a list or a comma-separated string (`"amount, items"`).
+  can be a list or a comma-separated string (`"amount, items"`). A column whose name contains
+  a comma cannot be selected and raises `ValueError`.
 
 ## Module overview
 

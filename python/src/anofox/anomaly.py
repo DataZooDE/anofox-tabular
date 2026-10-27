@@ -94,7 +94,7 @@ def isolation_forest_mv(
         Table name string or a pandas/polars DataFrame.
     columns:
         Column names as a list, or as one comma-separated string such as
-        ``"amount, items"``.
+        ``"amount, items"``. A name containing a comma raises ValueError.
     output_mode:
         ``"summary"`` → dict; ``"scores"`` → DataFrame.
     n_trees:
@@ -116,8 +116,8 @@ def isolation_forest_mv(
         Forest).
     """
     _check_output_mode("isolation_forest_mv", output_mode)
-    table_name, registered = resolve_table(conn, table_or_df)
     cols_csv = _columns_csv(columns)
+    table_name, registered = resolve_table(conn, table_or_df)
     try:
         params = [table_name, cols_csv, n_trees, sample_size, contamination, output_mode, seed, ndim]
         query = (
@@ -199,6 +199,7 @@ def dbscan_mv(
         Table name string or a pandas/polars DataFrame.
     columns:
         Numeric column names as a list, or as one comma-separated string.
+        A name containing a comma raises ValueError.
     output_mode:
         ``"summary"`` → dict; ``"scores"`` (or ``"clusters"``) → DataFrame
         with one row per analysed row; rows with a NULL feature are left out,
@@ -213,8 +214,8 @@ def dbscan_mv(
         ``output_mode="scores"``/``"clusters"``.
     """
     _check_output_mode("dbscan_mv", output_mode)
-    table_name, registered = resolve_table(conn, table_or_df)
     cols_csv = _columns_csv(columns)
+    table_name, registered = resolve_table(conn, table_or_df)
     sql_mode = "clusters" if output_mode == "scores" else output_mode
     try:
         params = [table_name, cols_csv, epsilon, min_points, sql_mode]
@@ -250,7 +251,8 @@ def outlier_tree(
     table_or_df:
         Table name string or a pandas/polars DataFrame.
     columns:
-        Column names as a list, or as one comma-separated string.
+        Column names as a list, or as one comma-separated string. A name
+        containing a comma raises ValueError.
     output_mode:
         ``"summary"`` → dict with counts; ``"outliers"`` → DataFrame with
         per-row explanations.
@@ -281,8 +283,8 @@ def outlier_tree(
     dict or DataFrame
     """
     _check_output_mode("outlier_tree", output_mode)
-    table_name, registered = resolve_table(conn, table_or_df)
     cols_csv = _columns_csv(columns)
+    table_name, registered = resolve_table(conn, table_or_df)
     try:
         params = [table_name, cols_csv, output_mode, max_depth, max_perc_outliers,
                   min_size_numeric, min_size_categ, z_norm, z_outlier]
@@ -297,9 +299,20 @@ def outlier_tree(
 
 
 def _columns_csv(columns: Union[str, Sequence[str]]) -> str:
-    """The comma-separated column list the extension expects, from a string or a sequence."""
+    """
+    The comma-separated column list the extension expects, from a string or a sequence.
+
+    The extension splits the list at every comma (there is no quoting), so a
+    column whose name contains a comma cannot be selected: it raises ValueError.
+    """
     if isinstance(columns, str):
         return columns
+    for column in columns:
+        if "," in column:
+            raise ValueError(
+                f"column {column!r} contains a comma; the multivariate anomaly functions "
+                "take a comma-separated column list and cannot select it. Rename the column."
+            )
     return ",".join(columns)
 
 

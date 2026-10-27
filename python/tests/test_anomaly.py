@@ -318,3 +318,27 @@ class TestColumnsArgument:
     def test_tuple_is_accepted(self, conn, orders_table):
         from anofox import anomaly
         assert anomaly.dbscan_mv(conn, orders_table, ("amount", "items"))["n_columns"] == 2
+
+
+class TestColumnNamesWithCommas:
+    """The SQL functions take a comma-separated column list, so a name with a comma cannot pass."""
+
+    def _readings(self):
+        import pandas as pd
+        return pd.DataFrame({
+            "sensor_id": range(1, 31),
+            "reading, c": [20.0 + (i % 4) for i in range(29)] + [80.0],
+            "humidity": [40.0 + (i % 3) for i in range(30)],
+        })
+
+    @pytest.mark.parametrize("function", ["isolation_forest_mv", "dbscan_mv", "outlier_tree"])
+    def test_comma_in_column_name_raises(self, conn, function):
+        from anofox import anomaly
+        with pytest.raises(ValueError, match=r"'reading, c'.*comma"):
+            getattr(anomaly, function)(conn, self._readings(), ["reading, c", "humidity"])
+
+    def test_comma_separated_string_still_works(self, conn):
+        from anofox import anomaly
+        df = self._readings().rename(columns={"reading, c": "temperature"})
+        result = anomaly.isolation_forest_mv(conn, df, "temperature, humidity", seed=7)
+        assert isinstance(result, dict)
