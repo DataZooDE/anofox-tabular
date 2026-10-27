@@ -125,8 +125,9 @@ SELECT 'avg amount', status FROM agg_check('orders', 'amount', 'avg', 20, 80);
 ## 2. Define a suite of checks
 
 When the list of checks grows, keep it in a table. Each row is one check; `run_checks` runs
-them all and returns the same columns for every check. The checks table must be a regular
-table, not a TEMP table. `check_name`, `check_type` and `table_name` are required; the other
+them all and returns the same columns for every check. The checks table may be a TEMP table,
+and `run_checks` reads it in your transaction: a threshold changed after `BEGIN` is used before
+the `COMMIT`. `check_name`, `check_type` and `table_name` are required; the other
 seven columns are optional and read as `NULL` when the table leaves them out.
 
 ```sql

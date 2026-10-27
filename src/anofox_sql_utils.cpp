@@ -264,15 +264,25 @@ ResolveViewColumns(ClientContext &, VIEW &view) {
 }
 } // namespace
 
-RelationInfo LookupRelation(ClientContext &context, const string &table_name) {
-	RelationInfo info;
+optional_ptr<CatalogEntry> LookupRelationEntry(ClientContext &context, const string &table_name) {
 	try {
 		auto qname = QualifiedName::Parse(table_name);
 		auto entry_name = duckdb_compat::QualifiedLocalName(qname);
 		EntryLookupInfo lookup_info(CatalogType::TABLE_ENTRY, duckdb_compat::EntryName(entry_name));
-		auto entry = Catalog::GetEntry(context, duckdb_compat::Ident(duckdb_compat::QualifiedCatalog(qname)),
-		                               duckdb_compat::Ident(duckdb_compat::QualifiedSchema(qname)), lookup_info,
-		                               OnEntryNotFound::RETURN_NULL);
+		return Catalog::GetEntry(context, duckdb_compat::Ident(duckdb_compat::QualifiedCatalog(qname)),
+		                         duckdb_compat::Ident(duckdb_compat::QualifiedSchema(qname)), lookup_info,
+		                         OnEntryNotFound::RETURN_NULL);
+	} catch (const std::exception &ex) {
+		// e.g. an unknown catalog/schema or a file path: not a catalog relation
+		AnofoxTrace(AnofoxLogLevel::Debug, "catalog lookup of '" + table_name + "' failed: " + ex.what());
+		return nullptr;
+	}
+}
+
+RelationInfo LookupRelation(ClientContext &context, const string &table_name) {
+	RelationInfo info;
+	try {
+		auto entry = LookupRelationEntry(context, table_name);
 		if (!entry) {
 			return info;
 		}

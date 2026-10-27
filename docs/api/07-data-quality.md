@@ -990,10 +990,17 @@ run_checks(checks_table VARCHAR)
 
 ### The checks table
 
-The checks table must be a regular table, not a TEMP table: `run_checks` reads it through a
-second connection when the query is bound. A TEMP checks table is the error
-`run_checks: the checks table 'my_checks' is a TEMP table; the checks table must be a regular, non-temporary table (...)`.
-The checked tables may be TEMP tables or views.
+`run_checks` reads a checks table in the caller's transaction when the query is bound, like a
+plain `SELECT` does: definitions inserted, updated or deleted inside `BEGIN ... COMMIT` are used
+before the commit, and a TEMP table works. This holds for every DuckDB table, also one of an
+attached DuckDB database. The checked tables may be TEMP tables or views.
+
+A checks *view* (or a table of another database type, such as an attached Postgres database) is
+read through a second connection, which sees only committed data. A TEMP view is therefore the
+error `run_checks: the checks view 'my_checks' is a TEMP view; ...`, and inside a transaction
+with uncommitted changes the view is refused instead of silently showing the committed
+definitions:
+`run_checks: the checks view 'my_checks' is read outside the current transaction, which has uncommitted changes; commit them before running it, or pass the checks table instead of a view`.
 
 Three columns are required; the other seven are optional, and a missing optional column reads
 as `NULL` (`monitor_only` as `false`). Further columns, such as an owner or a description, are

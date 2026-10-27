@@ -802,9 +802,9 @@ def define_checks(conn: Any, checks: list[dict], checks_table: str = "dq_checks"
     ``upper_threshold``, ``monitor_only``, ``identifier_column`` and ``filter_expr``.
 
     .. note::
-        The checks table must be a regular (non-temporary) table — it is read through a
-        separate connection at bind time. DataFrame *targets* must be registered as real
-        tables too (see :func:`anofox._utils.register_df_as_table`).
+        The checks table is read in the connection's current transaction at bind time, so
+        uncommitted changes to it are used; it may be a TEMP table. DataFrame *targets* must
+        be registered as real tables (see :func:`anofox._utils.register_df_as_table`).
 
     Returns the checks table name.
     """
@@ -864,8 +864,8 @@ def run_checks(
     conn:
         An :class:`~anofox.AnofoxConnection`.
     checks_table:
-        Name of the checks table (see :func:`define_checks` for the schema). Must be a
-        regular (non-temporary) table.
+        Name of the checks table (see :func:`define_checks` for the schema). A table
+        (TEMP too) or a regular, non-temporary view.
     result_table:
         When given, results are also appended to this table (created on first use),
         building a metric history that e.g. :func:`metric_anomaly_iqr` can analyze.

@@ -1,8 +1,8 @@
 # name: test/sql/anofox_check_suite_schema.test
 # description: run_checks validates the checks table before reading it: a missing required
 #              column is named (no binder error leaking the internal query), the optional
-#              columns may be left out (they default to NULL / false), a TEMP checks table gets
-#              the TEMP explanation first, and a check type that exists only as a direct
+#              columns may be left out (they default to NULL / false), a TEMP checks table works,
+#              and a check type that exists only as a direct
 #              function (zscore, iqr, schema_check, ...) is reported as such, not as a typo.
 # group: [anofox_tabular]
 
@@ -95,15 +95,11 @@ run_checks: checks table 'nightly_chekcs' does not exist
 statement ok
 CREATE TEMP TABLE temp_checks AS SELECT * FROM minimal_checks
 
-statement error
-SELECT * FROM run_checks('temp_checks')
+# A TEMP checks table is read in the caller's context
+query TT
+SELECT check_name, status FROM run_checks('temp_checks')
 ----
-run_checks: the checks table 'temp_checks' is a TEMP table; the checks table must be a regular, non-temporary table
-
-statement error
-SELECT * FROM run_checks('temp_checks')
-----
-<!REGEX>:.*Catalog Error.*
+orders_volume	pass
 
 # ===--------------------------------------------------------------------===
 # Check types that exist only as direct functions

@@ -13,8 +13,8 @@ statement ok
 SET anofox_tab_trace_enabled = false
 
 # ===--------------------------------------------------------------------===
-# Test Setup: a small e-commerce schema (targets may be TEMP; the checks
-# table itself must be a real table because it is read at bind time)
+# Test Setup: a small e-commerce schema (targets may be TEMP; so may the
+# checks table, which is read at bind time in the caller's transaction)
 # ===--------------------------------------------------------------------===
 
 statement ok
@@ -217,14 +217,14 @@ SELECT COUNT(*) FROM orders
 ----
 5
 
-# a TEMP checks table cannot be read at bind time -> clear error
+# a TEMP checks table is read in the caller's context
 statement ok
 CREATE TEMP TABLE dq_checks_temp AS SELECT * FROM dq_checks
 
-statement error
-SELECT * FROM run_checks('dq_checks_temp')
+query I
+SELECT count(*) FROM run_checks('dq_checks_temp')
 ----
-non-temporary
+11
 
 # alias fidelity
 query I

@@ -5,6 +5,11 @@
 #include "anofox_trace.hpp"
 #include "telemetry.hpp"
 #include "duckdb/catalog/catalog.hpp"
+#include "duckdb/catalog/catalog_entry/table_catalog_entry.hpp"
+#include "duckdb/storage/data_table.hpp"
+#include "duckdb/storage/table/scan_state.hpp"
+#include "duckdb/transaction/duck_transaction.hpp"
+#include "duckdb/transaction/meta_transaction.hpp"
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/function/table_function.hpp"
@@ -306,52 +311,27 @@ static string FirstLine(const string &message) {
 	return newline == string::npos ? message : message.substr(0, newline);
 }
 
-// The column names of the checks table, read before the table itself so a TEMP or missing table
-// and missing required columns get a clear error instead of the binder error of the read query
-static vector<string> ChecksTableColumns(ClientContext &context, Connection &con, const string &checks_table) {
-	auto relation = LookupRelation(context, checks_table);
-	if (relation.found && relation.is_temp) {
-		throw BinderException("run_checks: the checks table '%s' is a TEMP table; the checks table must be a "
-		                      "regular, non-temporary table (CREATE TABLE ... AS SELECT * FROM %s); the tables "
-		                      "it checks may be TEMP",
-		                      checks_table, checks_table);
-	}
-	vector<string> names;
-	if (relation.found && !relation.columns.empty()) {
-		for (auto &column : relation.columns) {
-			names.push_back(column.name);
-		}
-		return names;
-	}
-	auto result = con.Query("SELECT * FROM " + BuildQueryTableRef(checks_table) + " LIMIT 0");
-	if (result->HasError()) {
-		auto &error = result->GetErrorObject();
-		if (!relation.found && error.Type() == ExceptionType::CATALOG) {
-			throw BinderException("run_checks: checks table '%s' does not exist", checks_table);
-		}
-		throw BinderException("run_checks: cannot read checks table '%s': %s", checks_table,
-		                      FirstLine(error.RawMessage()));
-	}
-	auto result_names = duckdb_compat::ResultNames(*result);
-	names.assign(result_names.begin(), result_names.end());
-	return names;
-}
+// The columns run_checks reads from a checks table, in this order, with the type each is cast to
+struct ChecksColumn {
+	const char *name;
+	LogicalTypeId type;
+};
+static const vector<ChecksColumn> CHECKS_READ_COLUMNS = {
+    {"check_name", LogicalTypeId::VARCHAR},       {"check_type", LogicalTypeId::VARCHAR},
+    {"table_name", LogicalTypeId::VARCHAR},       {"column_name", LogicalTypeId::VARCHAR},
+    {"params", LogicalTypeId::VARCHAR},           {"lower_threshold", LogicalTypeId::DOUBLE},
+    {"upper_threshold", LogicalTypeId::DOUBLE},   {"monitor_only", LogicalTypeId::BOOLEAN},
+    {"identifier_column", LogicalTypeId::VARCHAR}, {"filter_expr", LogicalTypeId::VARCHAR}};
+static constexpr idx_t CHECKS_MONITOR_ONLY_COLUMN = 7;
+// The rows read from a checks table, one Value per CHECKS_READ_COLUMNS entry
+using ChecksRows = std::vector<std::vector<Value>>;
 
-// Read the checks table at bind time through a sibling connection. A sibling connection
-// cannot see TEMP tables or Python-registered views of the calling connection, which is
-// why the checks table must be a regular table; the *target* tables are referenced via
-// query_table() in the generated SQL and run in the calling connection, so they may be
-// temporary.
-static vector<CheckSpec> ReadCheckSpecs(ClientContext &context, const string &checks_table) {
-	Connection con(*context.db);
-	auto available = ChecksTableColumns(context, con, checks_table);
-	auto has_column = [&](const string &name) {
-		return std::any_of(available.begin(), available.end(),
-		                   [&](const string &candidate) { return StringUtil::CIEquals(candidate, name); });
-	};
+static void RequireChecksColumns(const string &checks_table, const vector<string> &available) {
 	vector<string> missing;
 	for (auto &name : REQUIRED_CHECKS_COLUMNS) {
-		if (!has_column(name)) {
+		auto found = std::any_of(available.begin(), available.end(),
+		                         [&](const string &candidate) { return StringUtil::CIEquals(candidate, name); });
+		if (!found) {
 			missing.push_back(name);
 		}
 	}
@@ -362,25 +342,172 @@ static vector<CheckSpec> ReadCheckSpecs(ClientContext &context, const string &ch
 		                      StringUtil::Join(REQUIRED_CHECKS_COLUMNS, ", "),
 		                      StringUtil::Join(OPTIONAL_CHECKS_COLUMNS, ", "));
 	}
-	// A missing optional column reads as NULL
-	auto column_or_null = [&](const string &name, const string &type) {
-		return "CAST(" + (has_column(name) ? QuoteSqlIdentifier(name) : string("NULL")) + " AS " + type + ")";
+}
+
+// Read the rows of a checks table that is a DuckDB table (regular, TEMP or of an attached DuckDB
+// database) directly from its storage, in the caller's transaction: definitions inserted, updated
+// or deleted in an open transaction (BEGIN ... run_checks ... COMMIT) are seen, like a plain
+// SELECT sees them. The bind holds the caller's context, so no query can run in it; a scan of the
+// table storage with the caller's DuckTransaction is what DuckDB's own table scan does.
+// Returns false when the entry is not a DuckDB table (a view, a table of another catalog type)
+// or reads a generated column; the caller then reads it through a second connection.
+static bool ScanChecksTableInTransaction(ClientContext &context, const string &checks_table, CatalogEntry &entry,
+                                         ChecksRows &rows) {
+	if (entry.type != CatalogType::TABLE_ENTRY) {
+		return false;
+	}
+	auto &table = entry.Cast<TableCatalogEntry>();
+	if (!table.IsDuckTable()) {
+		return false;
+	}
+	vector<string> available;
+	for (auto &col : table.GetColumns().Logical()) {
+		available.push_back(duckdb_compat::Str(col.Name()));
+	}
+	RequireChecksColumns(checks_table, available);
+
+	// The storage column of each read column; -1 for an optional column the table lacks (NULL)
+	vector<int64_t> scan_position;
+	vector<StorageIndex> storage_ids;
+	vector<LogicalType> scan_types;
+	for (auto &wanted : CHECKS_READ_COLUMNS) {
+		int64_t position = -1;
+		for (auto &col : table.GetColumns().Logical()) {
+			if (!StringUtil::CIEquals(duckdb_compat::Str(col.Name()), wanted.name)) {
+				continue;
+			}
+			if (col.Generated()) {
+				return false;
+			}
+			position = static_cast<int64_t>(storage_ids.size());
+			storage_ids.emplace_back(col.StorageOid());
+			scan_types.push_back(col.Type());
+			break;
+		}
+		scan_position.push_back(position);
+	}
+
+	auto &storage = table.GetStorage();
+	auto &transaction = DuckTransaction::Get(context, table.ParentCatalog());
+	TableScanState state;
+	storage.InitializeScan(context, transaction, state, storage_ids);
+	DataChunk chunk;
+	chunk.Initialize(Allocator::Get(context), scan_types);
+	while (true) {
+		chunk.Reset();
+		storage.Scan(transaction, chunk, state);
+		if (chunk.size() == 0) {
+			break;
+		}
+		for (idx_t row = 0; row < chunk.size(); row++) {
+			std::vector<Value> values;
+			for (idx_t col = 0; col < CHECKS_READ_COLUMNS.size(); col++) {
+				LogicalType target(CHECKS_READ_COLUMNS[col].type);
+				if (scan_position[col] < 0) {
+					values.emplace_back(target);
+					continue;
+				}
+				auto value = chunk.GetValue(static_cast<idx_t>(scan_position[col]), row);
+				try {
+					values.push_back(value.CastAs(context, target));
+				} catch (const std::exception &ex) {
+					throw BinderException("run_checks: cannot read checks table '%s': column '%s': %s",
+					                      checks_table, CHECKS_READ_COLUMNS[col].name,
+					                      FirstLine(ErrorData(ex).RawMessage()));
+				}
+			}
+			if (values[CHECKS_MONITOR_ONLY_COLUMN].IsNull()) {
+				values[CHECKS_MONITOR_ONLY_COLUMN] = Value::BOOLEAN(false);
+			}
+			rows.push_back(std::move(values));
+		}
+	}
+	// ORDER BY check_name, as the query of the second-connection path
+	std::stable_sort(rows.begin(), rows.end(), [](const std::vector<Value> &left, const std::vector<Value> &right) {
+		if (left[0].IsNull() || right[0].IsNull()) {
+			return !left[0].IsNull() && right[0].IsNull();
+		}
+		return StringValue::Get(left[0]) < StringValue::Get(right[0]);
+	});
+	AnofoxTrace(AnofoxLogLevel::Debug, "check_suite: read " + std::to_string(rows.size()) + " check(s) from '" +
+	                                       checks_table + "' in the caller's transaction");
+	return true;
+}
+
+// Read a checks table that is not a DuckDB table (a view, a table of another catalog type)
+// through a second connection. That connection sees only committed data and none of the
+// caller's TEMP objects, so a TEMP view is rejected, and so is a run inside a transaction with
+// uncommitted changes (the view would silently show the committed state).
+static ChecksRows ReadChecksThroughConnection(ClientContext &context, const string &checks_table,
+                                                         const RelationInfo &relation) {
+	if (relation.found && relation.is_temp) {
+		throw BinderException("run_checks: the checks view '%s' is a TEMP view; a checks view must be a regular, "
+		                      "non-temporary view, or use a table (TEMP tables work)",
+		                      checks_table);
+	}
+	if (relation.found && !context.transaction.IsAutoCommit() && context.transaction.HasActiveTransaction() &&
+	    MetaTransaction::Get(context).ModifiedDatabase()) {
+		throw BinderException("run_checks: the checks %s '%s' is read outside the current transaction, which has "
+		                      "uncommitted changes; commit them before running it, or pass the checks table "
+		                      "instead of a view",
+		                      relation.is_view ? "view" : "table", checks_table);
+	}
+	Connection con(*context.db);
+	vector<string> available;
+	if (relation.found && !relation.columns.empty()) {
+		for (auto &column : relation.columns) {
+			available.push_back(column.name);
+		}
+	} else {
+		auto probe = con.Query("SELECT * FROM " + BuildQueryTableRef(checks_table) + " LIMIT 0");
+		if (probe->HasError()) {
+			auto &error = probe->GetErrorObject();
+			if (!relation.found && error.Type() == ExceptionType::CATALOG) {
+				throw BinderException("run_checks: checks table '%s' does not exist", checks_table);
+			}
+			throw BinderException("run_checks: cannot read checks table '%s': %s", checks_table,
+			                      FirstLine(error.RawMessage()));
+		}
+		auto result_names = duckdb_compat::ResultNames(*probe);
+		available.assign(result_names.begin(), result_names.end());
+	}
+	RequireChecksColumns(checks_table, available);
+	auto has_column = [&](const string &name) {
+		return std::any_of(available.begin(), available.end(),
+		                   [&](const string &candidate) { return StringUtil::CIEquals(candidate, name); });
 	};
-	string sql = "SELECT CAST(check_name AS VARCHAR), CAST(check_type AS VARCHAR), CAST(table_name AS VARCHAR), " +
-	             column_or_null("column_name", "VARCHAR") + ", " + column_or_null("params", "VARCHAR") + ", " +
-	             column_or_null("lower_threshold", "DOUBLE") + ", " + column_or_null("upper_threshold", "DOUBLE") +
-	             ", COALESCE(" + column_or_null("monitor_only", "BOOLEAN") + ", false), " +
-	             column_or_null("identifier_column", "VARCHAR") + ", " + column_or_null("filter_expr", "VARCHAR") +
-	             " FROM " + BuildQueryTableRef(checks_table) + " ORDER BY 1";
-	AnofoxTrace(AnofoxLogLevel::Debug, "check_suite: reading checks from '" + checks_table + "'");
+	// A missing optional column reads as NULL
+	string select_list;
+	for (idx_t col = 0; col < CHECKS_READ_COLUMNS.size(); col++) {
+		auto &column = CHECKS_READ_COLUMNS[col];
+		string expr = "CAST(" + (has_column(column.name) ? QuoteSqlIdentifier(column.name) : string("NULL")) +
+		              " AS " + LogicalType(column.type).ToString() + ")";
+		if (col == CHECKS_MONITOR_ONLY_COLUMN) {
+			expr = "COALESCE(" + expr + ", false)";
+		}
+		select_list += (col > 0 ? ", " : "") + expr;
+	}
+	string sql = "SELECT " + select_list + " FROM " + BuildQueryTableRef(checks_table) + " ORDER BY 1";
+	AnofoxTrace(AnofoxLogLevel::Debug, "check_suite: reading checks from '" + checks_table +
+	                                       "' through a second connection");
 	auto result = con.Query(sql);
 	if (result->HasError()) {
 		throw BinderException("run_checks: cannot read checks table '%s': %s", checks_table,
 		                      FirstLine(result->GetErrorObject().RawMessage()));
 	}
+	return duckdb_compat::FetchRows(*result);
+}
+
+// Read the check definitions. A DuckDB table is read in the caller's transaction (uncommitted
+// definitions included); anything else through a second connection.
+static vector<CheckSpec> ReadCheckSpecs(ClientContext &context, const string &checks_table) {
+	ChecksRows rows;
+	auto entry = LookupRelationEntry(context, checks_table);
+	if (!entry || !ScanChecksTableInTransaction(context, checks_table, *entry, rows)) {
+		rows = ReadChecksThroughConnection(context, checks_table, LookupRelation(context, checks_table));
+	}
 
 	vector<CheckSpec> specs;
-	auto rows = duckdb_compat::FetchRows(*result);
 	auto value_at = [&](idx_t row, idx_t col) -> const Value & {
 		return rows[row][col];
 	};

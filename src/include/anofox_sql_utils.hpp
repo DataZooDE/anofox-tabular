@@ -99,6 +99,10 @@ struct RelationInfo {
 // Never throws: a missing relation, catalog or schema yields found = false.
 RelationInfo LookupRelation(ClientContext &context, const string &table_name);
 
+// The catalog entry (table or view) `table_name` resolves to in the caller's context, or
+// nullptr. Never throws.
+optional_ptr<CatalogEntry> LookupRelationEntry(ClientContext &context, const string &table_name);
+
 // The column `column_name` (case-insensitive) of `relation`, or nullptr.
 const ResolvedColumn *FindColumn(const RelationInfo &relation, const string &column_name);
 

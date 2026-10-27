@@ -136,7 +136,7 @@ it with [`run_checks`](07-data-quality.md#run_checks). It supports 14 check type
 `metric_anomaly_iqr` and `rolling_values_in_set`. `zscore`, `iqr` and `schema_check` are not
 available in a suite.
 
-The checks table must be a regular table (not TEMP):
+A checks table (TEMP tables work too):
 
 ```sql
 CREATE TABLE orders AS

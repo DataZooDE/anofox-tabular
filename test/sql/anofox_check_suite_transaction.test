@@ -1,0 +1,230 @@
+# name: test/sql/anofox_check_suite_transaction.test
+# description: run_checks reads the checks table in the caller's transaction: check definitions
+#              added, changed or deleted inside BEGIN ... COMMIT are used before the commit, a
+#              checks table created in the open transaction is found, ROLLBACK restores the
+#              committed definitions, and a TEMP checks table works. A checks view (read through
+#              a second connection) refuses to run while the transaction has uncommitted changes.
+# group: [anofox_tabular]
+
+require anofox_tabular
+
+statement ok
+LOAD anofox_tabular
+
+statement ok
+SET anofox_tab_trace_enabled = false
+
+# ===--------------------------------------------------------------------===
+# A nightly load job: support tickets land in a table, a checks table gates
+# the load, results go to a results table
+# ===--------------------------------------------------------------------===
+
+statement ok
+CREATE TABLE support_tickets (ticket_id INTEGER, customer_email VARCHAR, priority VARCHAR, opened_at TIMESTAMP)
+
+statement ok
+INSERT INTO support_tickets VALUES
+    (5001, 'anna.schmidt@example.de', 'high',   TIMESTAMP '2026-03-02 08:14:00'),
+    (5002, 'ben.mueller@example.de',  'low',    TIMESTAMP '2026-03-02 09:01:00'),
+    (5003, NULL,                      'medium', TIMESTAMP '2026-03-02 09:45:00'),
+    (5004, 'dora.keller@example.at',  'low',    TIMESTAMP '2026-03-02 10:20:00')
+
+statement ok
+CREATE TABLE job_checks (
+    check_name VARCHAR,
+    check_type VARCHAR,
+    table_name VARCHAR,
+    column_name VARCHAR,
+    params VARCHAR,
+    lower_threshold DOUBLE,
+    upper_threshold DOUBLE,
+    monitor_only BOOLEAN
+)
+
+statement ok
+INSERT INTO job_checks VALUES
+    ('tickets_dup_ids',    'duplicate_count', 'support_tickets', 'ticket_id',      NULL, NULL, 1,    false),
+    ('tickets_email_null', 'null_rate',       'support_tickets', 'customer_email', NULL, NULL, 0.25, false)
+
+statement ok
+CREATE TABLE job_results AS SELECT * FROM run_checks('job_checks') LIMIT 0
+
+query TRRT
+SELECT check_name, value, upper_threshold, status FROM run_checks('job_checks') ORDER BY check_name
+----
+tickets_dup_ids	0.0	1.0	pass
+tickets_email_null	0.25	0.25	pass
+
+# ===--------------------------------------------------------------------===
+# The gating transaction: load a batch with a known duplicate pair, relax
+# the duplicate threshold for this load, add a check — all uncommitted
+# ===--------------------------------------------------------------------===
+
+statement ok
+BEGIN
+
+statement ok
+INSERT INTO support_tickets VALUES
+    (5005, 'emil.huber@example.ch',   'high', TIMESTAMP '2026-03-03 07:55:00'),
+    (5005, 'emil.huber@example.ch',   'high', TIMESTAMP '2026-03-03 07:55:00'),
+    (5006, 'frieda.wolf@example.de',  'low',  TIMESTAMP '2026-03-03 08:30:00'),
+    (5007, 'gustav.berg@example.de',  'low',  TIMESTAMP '2026-03-03 08:42:00')
+
+statement ok
+UPDATE job_checks SET upper_threshold = 2 WHERE check_name = 'tickets_dup_ids'
+
+statement ok
+INSERT INTO job_checks VALUES
+    ('tickets_volume', 'volume', 'support_tickets', NULL, NULL, 1, 10000, false)
+
+# A plain SELECT sees the uncommitted definitions ...
+query TR
+SELECT check_name, upper_threshold FROM job_checks ORDER BY check_name
+----
+tickets_dup_ids	2.0
+tickets_email_null	0.25
+tickets_volume	10000.0
+
+# ... and so does run_checks (it used the committed threshold 1 and missed the new check)
+query TRRT
+SELECT check_name, value, upper_threshold, status FROM run_checks('job_checks') ORDER BY check_name
+----
+tickets_dup_ids	1.0	2.0	pass
+tickets_email_null	0.125	0.25	pass
+tickets_volume	8.0	10000.0	pass
+
+statement ok
+INSERT INTO job_results SELECT * FROM run_checks('job_checks')
+
+# Deleting a check inside the transaction removes it from the run
+statement ok
+DELETE FROM job_checks WHERE check_name = 'tickets_volume'
+
+query T
+SELECT check_name FROM run_checks('job_checks') ORDER BY check_name
+----
+tickets_dup_ids
+tickets_email_null
+
+# The gate: no failing blocking check, so the load is committed
+query I
+SELECT count(*) FROM job_results WHERE status IN ('fail', 'error')
+----
+0
+
+statement ok
+COMMIT
+
+query TR
+SELECT check_name, upper_threshold FROM run_checks('job_checks') ORDER BY check_name
+----
+tickets_dup_ids	2.0
+tickets_email_null	0.25
+
+# ===--------------------------------------------------------------------===
+# ROLLBACK restores the committed definitions
+# ===--------------------------------------------------------------------===
+
+statement ok
+BEGIN
+
+statement ok
+UPDATE job_checks SET upper_threshold = 0 WHERE check_name = 'tickets_dup_ids'
+
+query TT
+SELECT check_name, status FROM run_checks('job_checks') ORDER BY check_name
+----
+tickets_dup_ids	fail
+tickets_email_null	pass
+
+statement ok
+ROLLBACK
+
+query TT
+SELECT check_name, status FROM run_checks('job_checks') ORDER BY check_name
+----
+tickets_dup_ids	pass
+tickets_email_null	pass
+
+# ===--------------------------------------------------------------------===
+# A checks table created in the open transaction is found
+# ===--------------------------------------------------------------------===
+
+statement ok
+BEGIN
+
+statement ok
+CREATE TABLE onboarding_checks AS
+SELECT 'tickets_priority_set' AS check_name, 'values_in_set' AS check_type, 'support_tickets' AS table_name,
+       'priority' AS column_name, '{"allowed_values": ["low", "medium", "high"]}' AS params,
+       1.0 AS lower_threshold
+
+query TRT
+SELECT check_name, value, status FROM run_checks('onboarding_checks')
+----
+tickets_priority_set	1.0	pass
+
+statement ok
+ROLLBACK
+
+statement error
+SELECT * FROM run_checks('onboarding_checks')
+----
+run_checks: checks table 'onboarding_checks' does not exist
+
+# ===--------------------------------------------------------------------===
+# A TEMP checks table works (it is read in the caller's context)
+# ===--------------------------------------------------------------------===
+
+statement ok
+CREATE TEMP TABLE adhoc_checks AS SELECT * FROM job_checks WHERE check_name = 'tickets_email_null'
+
+query TRT
+SELECT check_name, value, status FROM run_checks('adhoc_checks')
+----
+tickets_email_null	0.125	pass
+
+# A TEMP view cannot be read
+statement ok
+CREATE TEMP VIEW adhoc_checks_view AS SELECT * FROM job_checks
+
+statement error
+SELECT * FROM run_checks('adhoc_checks_view')
+----
+run_checks: the checks view 'adhoc_checks_view' is a TEMP view
+
+# ===--------------------------------------------------------------------===
+# A checks view is read through a second connection: it works outside a
+# transaction, and refuses to run with uncommitted changes instead of
+# silently using the committed definitions
+# ===--------------------------------------------------------------------===
+
+statement ok
+CREATE VIEW blocking_checks AS SELECT * FROM job_checks WHERE NOT monitor_only
+
+query TT
+SELECT check_name, status FROM run_checks('blocking_checks') ORDER BY check_name
+----
+tickets_dup_ids	pass
+tickets_email_null	pass
+
+statement ok
+BEGIN
+
+# Only reads so far: the view runs
+query T
+SELECT check_name FROM run_checks('blocking_checks') ORDER BY check_name
+----
+tickets_dup_ids
+tickets_email_null
+
+statement ok
+UPDATE job_checks SET upper_threshold = 0 WHERE check_name = 'tickets_dup_ids'
+
+statement error
+SELECT * FROM run_checks('blocking_checks')
+----
+run_checks: the checks view 'blocking_checks' is read outside the current transaction, which has uncommitted changes; commit them before running it, or pass the checks table instead of a view
+
+statement ok
+ROLLBACK
