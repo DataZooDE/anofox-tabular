@@ -147,6 +147,26 @@ column  row_id value                         rule
  phone       2    12 phone(region_column=country)
 ```
 
+`row_id` is the index label of the failing row (its 0-based position for a polars DataFrame).
+To report the business key instead of looking the row up, pass `id_column=`: its value is added
+directly after `row_id`:
+
+```python
+contacts = pd.DataFrame({
+    "customer_id": ["C-1001", "C-1002", "C-1003"],
+    "phone": ["030 901820", "(650) 253-0000", "12"],
+    "country": ["DE", "US", "DE"],
+})
+result = conn.validate(contacts, {"phone": PhoneRule(region_column="country")},
+                       id_column="customer_id")
+print(result.failures.to_string(index=False))
+```
+
+```text
+column  row_id customer_id value                         rule
+ phone       2      C-1003    12 phone(region_column=country)
+```
+
 A missing value (`None`, `NaN`) is not a failure, as in SQL and in the row-wise helpers above.
 Pass `include_nulls=True` to report it too; its rule ends in `missing`. A schema key or
 `region_column` that is not a column of the DataFrame raises `ValueError` and lists the columns.

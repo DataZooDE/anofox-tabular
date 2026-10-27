@@ -441,3 +441,72 @@ class TestValidateUnknownColumn:
         from anofox.validate import EmailRule
         with pytest.raises(ValueError, match=r"column 'email' not found.*'contact_email'"):
             conn.validate(pl.from_pandas(self._orders()), {"email": EmailRule()})
+
+
+class TestValidateIdColumn:
+    """conn.validate(..., id_column=) carries the business key of each failing row."""
+
+    @staticmethod
+    def _rows():
+        return {
+            "customer_id": ["C-1001", "C-1002", "C-1003", "C-1004"],
+            "email": ["ana.lopez@example.com", "bad-email", None, "j.meyer@example.org"],
+            "phone": ["+49 30 901820", "+49 30 901821", "123", "+1 650-253-0000"],
+        }
+
+    @pytest.fixture(params=["pandas", "polars"])
+    def customers(self, request):
+        if request.param == "pandas":
+            import pandas as pd
+            # A non-default index: the failures still name the customer, not the label.
+            return pd.DataFrame(self._rows(), index=[10, 20, 30, 40])
+        import polars as pl
+        return pl.DataFrame(self._rows())
+
+    @staticmethod
+    def _records(frame):
+        if type(frame).__module__.startswith("polars"):
+            return frame.to_dicts()
+        return frame.to_dict("records")
+
+    def test_failures_carry_the_key(self, conn, customers):
+        from anofox.validate import EmailRule, PhoneRule
+        result = conn.validate(
+            customers, {"email": EmailRule(), "phone": PhoneRule(region="DE")}, id_column="customer_id"
+        )
+        assert result.passed is False
+        assert list(result.failures.columns) == ["column", "row_id", "customer_id", "value", "rule"]
+        records = self._records(result.failures)
+        assert [(r["column"], r["customer_id"], r["value"]) for r in records] == [
+            ("email", "C-1002", "bad-email"), ("phone", "C-1003", "123"),
+        ]
+        is_pandas = not type(customers).__module__.startswith("polars")
+        assert [r["row_id"] for r in records] == ([20, 30] if is_pandas else [1, 2])
+
+    def test_include_nulls_keyed(self, conn, customers):
+        from anofox.validate import EmailRule
+        result = conn.validate(customers, {"email": EmailRule()}, include_nulls=True,
+                               id_column="customer_id")
+        records = self._records(result.failures)
+        assert [(r["customer_id"], r["rule"]) for r in records] == [
+            ("C-1002", "email(regex)"), ("C-1003", "email(regex) missing"),
+        ]
+
+    def test_no_failures_keeps_the_columns(self, conn, customers):
+        from anofox.validate import EmailRule
+        ok = conn.validate(customers.head(1), {"email": EmailRule()}, id_column="customer_id")
+        assert ok.passed is True
+        assert list(ok.failures.columns) == ["column", "row_id", "customer_id", "value", "rule"]
+
+    def test_unknown_id_column(self, conn, customers):
+        from anofox.validate import EmailRule
+        with pytest.raises(ValueError, match="column 'cust_no' not found"):
+            conn.validate(customers, {"email": EmailRule()}, id_column="cust_no")
+
+    @pytest.mark.parametrize("name", ["column", "row_id", "value", "rule"])
+    def test_id_column_named_like_a_result_column(self, conn, name):
+        import pandas as pd
+        from anofox.validate import EmailRule
+        df = pd.DataFrame({name: ["K-1"], "email": ["bad"]})
+        with pytest.raises(ValueError, match="id_column"):
+            conn.validate(df, {"email": EmailRule()}, id_column=name)

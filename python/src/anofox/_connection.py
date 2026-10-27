@@ -198,7 +198,13 @@ class AnofoxConnection:
                 output_df_type(df_or_table),
             )
 
-    def validate(self, df: Any, schema: dict, include_nulls: bool = False) -> "ValidationResult":
+    def validate(
+        self,
+        df: Any,
+        schema: dict,
+        include_nulls: bool = False,
+        id_column: Optional[str] = None,
+    ) -> "ValidationResult":
         """
         Validate a DataFrame against a schema of rules.
 
@@ -221,22 +227,39 @@ class AnofoxConnection:
             and the row-wise helpers in :mod:`anofox.validate`. ``True``:
             report each missing value as a failure, with the rule name
             followed by ``" missing"`` (e.g. ``"email(regex) missing"``).
+        id_column:
+            Optional column of *df* holding the business key (e.g.
+            ``"customer_id"``). Its value of each failing row is added to the
+            failures in a column of that name, directly after ``row_id``. A
+            name that is not a column of *df*, or that is one of the failure
+            columns (``column``, ``row_id``, ``value``, ``rule``), raises
+            :class:`ValueError`.
 
         Returns
         -------
         ValidationResult
             Contains ``passed`` (bool) and ``failures``, a DataFrame (polars
             for a polars *df*, else pandas) with the
-            columns ``column``, ``row_id``, ``value`` and ``rule``. ``row_id``
-            identifies the failing row of *df*: its index label for a pandas
-            DataFrame, its 0-based row position for a polars DataFrame.
+            columns ``column``, ``row_id``, (*id_column*,) ``value`` and ``rule``.
+            ``row_id`` identifies the failing row of *df*: its index label for
+            a pandas DataFrame, its 0-based row position for a polars DataFrame.
             Failures are ordered by schema key, then row.
         """
         from .validate import EmailRule, PhoneRule
-        from ._table import check_columns
+        from ._table import check_columns, column_label
         from ._utils import detect_df_type, registered_view
 
         df_type = detect_df_type(df)
+        id_column = column_label(id_column)
+        result_columns = ["column", "row_id", "value", "rule"]
+        if id_column is not None:
+            if id_column in result_columns:
+                raise ValueError(
+                    f"id_column {id_column!r} has the name of a failure column "
+                    f"({', '.join(result_columns)}); rename it first"
+                )
+            check_columns(df, [id_column])
+            result_columns.insert(2, id_column)
         labels = list(df.index) if df_type == "pandas" else None
 
         # Resolve every rule before checking any, so a schema with an
@@ -267,13 +290,14 @@ class AnofoxConnection:
             for col, check_sql, param, rule_name, param_column in checks:
                 # The second argument is a bound value, or a column of the row.
                 argument, params = (quote_ident(param_column), []) if param_column else ("?", [param])
+                key_sql = quote_ident(id_column) if id_column is not None else "NULL"
                 results = self._conn.execute(
-                    f"SELECT {quote_ident(position_column)}, {quote_ident(col)}, "
+                    f"SELECT {quote_ident(position_column)}, {key_sql}, {quote_ident(col)}, "
                     f"{check_sql}({quote_ident(col)}, {argument}) AS valid "
                     f"FROM {quote_ident(view)} ORDER BY 1",
                     params,
                 ).fetchall()
-                for position, value, valid in results:
+                for position, key, value, valid in results:
                     if value is None:
                         # The check returns NULL for a missing value: not a failure
                         # unless asked for.
@@ -284,14 +308,17 @@ class AnofoxConnection:
                         continue
                     else:
                         rule = rule_name
-                    failure_rows.append({
+                    failure = {
                         "column": col,
                         "row_id": labels[position] if labels is not None else position,
                         "value": value,
                         "rule": rule,
-                    })
+                    }
+                    if id_column is not None:
+                        failure[id_column] = key
+                    failure_rows.append(failure)
 
-        failures_df = _rows_to_frame(failure_rows, ["column", "row_id", "value", "rule"], df_type)
+        failures_df = _rows_to_frame(failure_rows, result_columns, df_type)
         return ValidationResult(passed=len(failure_rows) == 0, failures=failures_df)
 
     def quality_check(self, df: Any, rules: dict) -> "QualityResult":

@@ -172,10 +172,12 @@ print(checks.checks["null_rate"]["null_rate"])
 - **`conn.profile(name)`** resolves a table name like a query does: with tables of the same
   name in several schemas it profiles the one the search path finds. Pass `"schema.table"`
   for another schema; an unknown table raises `duckdb.CatalogException`.
-- **`conn.validate(df, schema, include_nulls=False)`** returns `ValidationResult(passed, failures)`. `failures` has
+- **`conn.validate(df, schema, include_nulls=False, id_column=None)`** returns `ValidationResult(passed, failures)`. `failures` has
   one row per failing value with the columns `column`, `row_id`, `value` and `rule`. `row_id`
   is the index label of the failing row for a pandas DataFrame and its 0-based row position
-  for a polars DataFrame. Each rule is an `EmailRule(mode=...)` or a `PhoneRule` from
+  for a polars DataFrame. `id_column="customer_id"` adds that column's value of each failing
+  row (the business key) directly after `row_id`; a name that is no column of the DataFrame, or
+  that is one of the four failure columns, raises `ValueError`. Each rule is an `EmailRule(mode=...)` or a `PhoneRule` from
   `anofox.validate`; any other rule, such as the string `"email"`, raises `TypeError`.
   `PhoneRule(region="DE")` uses one region for all rows, `PhoneRule(region_column="country")`
   the region code in each row's `country` column (passing both raises `ValueError`), and
