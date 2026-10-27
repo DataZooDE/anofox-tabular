@@ -84,7 +84,7 @@ Used by [`email_is_valid` and `email_validate`](../api/01-email.md).
 | Setting | Effect |
 |---------|--------|
 | `anofox_tab_email_default_validation` | Mode used when the `mode` argument is omitted or `NULL`: `regex`, `dns` or `smtp` (`full` is stored as `smtp`); case-insensitive, an unknown mode raises an error |
-| `anofox_tab_email_regex_pattern` | Regular expression of the `regex` stage (ECMAScript syntax). Default: ``^[A-Za-z0-9!#$%&'*+/=?^_`{\|}~-]+(?:\.[A-Za-z0-9!#$%&'*+/=?^_`{\|}~-]+)*@(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)*(?![0-9]+$)[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$``; see [Syntax rules](../api/01-email.md#syntax-rules-of-the-regex-stage). The 254/64-character length limits apply to any pattern. `RESET` restores the default |
+| `anofox_tab_email_regex_pattern` | Regular expression of the `regex` stage, in [RE2 syntax](https://github.com/google/re2/wiki/Syntax) (linear-time matching; no backreferences, lookahead or lookbehind). It must match the whole address. An invalid or unsupported pattern is an error at `SET`, and the previous pattern stays. Default: ``^[A-Za-z0-9!#$%&'*+/=?^_`{\|}~-]+(?:\.[A-Za-z0-9!#$%&'*+/=?^_`{\|}~-]+)*@(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)*[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$``, plus the rule that the last domain label is not all digits; see [Syntax rules](../api/01-email.md#syntax-rules-of-the-regex-stage) and [Custom patterns](../api/01-email.md#custom-patterns). The 254/64-character length limits apply to any pattern. `RESET` restores the default |
 | `anofox_tab_email_dns_timeout_ms` | Timeout of one DNS query, in milliseconds (1 to 5000) |
 | `anofox_tab_email_dns_tries` | Number of DNS attempts before the stage fails (1 to 10) |
 | `anofox_tab_email_smtp_port` | Port of the MX host for the `smtp` stage (1 to 65535) |
@@ -177,6 +177,64 @@ SELECT pii_mask('Mail a@b.com or call (555) 123-4567') AS masked;
 │ Mail [EMAIL] or call (555) 123-4567 │
 └─────────────────────────────────────┘
 ```
+
+### An export preset
+
+The PII defaults are set for discovery: `anofox_pii_require_checksum = true` is deliberate, so a
+scan does not report every order or invoice number of the right length as an IBAN or card number.
+A masking run before an export has the opposite priority: a mistyped account number must be
+masked, and a false positive only masks a digit run. Set the run's settings explicitly instead
+of relying on whatever the session holds, including `anofox_pii_min_confidence`, which must stay
+at or below `0.6` or it drops the checksum-failing matches again:
+
+```sql
+SET anofox_pii_require_checksum = false;
+SET anofox_pii_min_confidence = 0.5;
+SET anofox_pii_enabled_types = 'EMAIL,PHONE,IBAN,CREDIT_CARD,NAME';
+SET anofox_pii_default_mask_strategy = 'redact';
+SELECT pii_mask('Refund to DE89 3704 0044 0532 0130 01, card 4111 1111 1111 1112') AS masked;
+```
+
+```text
+┌──────────────────────────────────────┐
+│                masked                │
+│               varchar                │
+├──────────────────────────────────────┤
+│ Refund to [IBAN], card [CREDIT_CARD] │
+└──────────────────────────────────────┘
+```
+
+Settings are process-wide and a later `SET` changes them for every connection, so record the
+effective values next to the scan or export they belong to:
+
+```sql
+SELECT current_setting('anofox_pii_require_checksum') AS require_checksum,
+       current_setting('anofox_pii_min_confidence') AS min_confidence,
+       current_setting('anofox_pii_enabled_types') AS enabled_types,
+       current_setting('anofox_pii_default_mask_strategy') AS mask_strategy,
+       current_setting('anofox_ner_model') AS ner_model;
+```
+
+```text
+┌──────────────────┬────────────────┬───────────────────────────────────┬───────────────┬────────────┐
+│ require_checksum │ min_confidence │           enabled_types           │ mask_strategy │ ner_model  │
+│     boolean      │     double     │              varchar              │    varchar    │  varchar   │
+├──────────────────┼────────────────┼───────────────────────────────────┼───────────────┼────────────┤
+│ false            │            0.5 │ EMAIL,PHONE,IBAN,CREDIT_CARD,NAME │ REDACT        │ bert-multi │
+└──────────────────┴────────────────┴───────────────────────────────────┴───────────────┴────────────┘
+```
+
+`pii_config()` returns the same values as rows. Reset the preset when the run is done:
+
+```sql
+RESET anofox_pii_require_checksum;
+RESET anofox_pii_min_confidence;
+RESET anofox_pii_enabled_types;
+RESET anofox_pii_default_mask_strategy;
+```
+
+Masking with this preset still leaves the PII that detection misses in clear text; see the
+residual-risk note in [`pii_audit_table`](../api/06-pii.md#pii_audit_table).
 
 ## NER
 

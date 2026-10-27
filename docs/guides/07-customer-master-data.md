@@ -8,6 +8,7 @@
 - Check EU VAT numbers that are stored without or with their country prefix
 - Turn amounts and currency codes into money values without failing on a bad code
 - Score each column so you know how clean the table is
+- Check a text CRM import field by field in one query (section 8)
 
 Every example creates its own data. Run them in order in one DuckDB session, after
 `LOAD anofox_tabular;`.
@@ -309,6 +310,73 @@ The parts are lower-cased, and `country` is the country name as written in the a
 address rather than replacing it.
 
 See [Postal addresses](../api/02-postal.md).
+
+## 8. Recipe: check a CRM import in one query
+
+A CRM export usually arrives as text: every column `VARCHAR`, amounts in the format of the
+exporting system, a country column that is sometimes empty. One query gives each row the reason
+why a field fails, so the import can load the clean rows and route the rest to review:
+
+```sql
+CREATE TABLE crm_import AS SELECT * FROM (VALUES
+  ('C-1001', 'DE', ' Jana.Koch@Example.de ', '030 1234567',     'DE 136 695 976', '1250.00', 'EUR'),
+  ('C-1002', 'GB', 'tom@example.co.uk',      '07400 123456',    'GB123456782',    '880.50',  'gbp'),
+  ('C-1003', NULL, 'info@example.fr',        '01 23 45 67 89',  'FR40303265045',  '410',     'EUR'),
+  ('C-1004', 'AT', 'eva@@example.at',        '01 5321234',      'ATU13585626',    '99.90',   'EURO'),
+  ('C-1005', 'NL', 'piet@example.nl',        '+31 20 123 4567', '004495445B01',   '1.250,00', 'EUR')
+) t(customer_ref, country, email, phone, vat_id, amount, currency);
+
+SELECT customer_ref,
+       (email_validate(email)).reason AS email_reason,
+       phonenumber_format(phone, country, 'E164') AS phone_e164,
+       (phonenumber_parse(phone, country)).reason AS phone_reason,
+       (vat_validate(vat_id)).reason AS vat_reason,
+       TRY(money(TRY_CAST(amount AS DECIMAL(18, 2)), currency)) AS amount_money
+FROM crm_import
+ORDER BY customer_ref;
+```
+
+```text
+┌──────────────┬────────────────┬───────────────┬────────────────────┬───────────────────┬────────────────────────────────────────────────┐
+│ customer_ref │  email_reason  │  phone_e164   │    phone_reason    │    vat_reason     │                  amount_money                  │
+│   varchar    │    varchar     │    varchar    │      varchar       │      varchar      │ struct(amount decimal(18,3), currency varchar) │
+├──────────────┼────────────────┼───────────────┼────────────────────┼───────────────────┼────────────────────────────────────────────────┤
+│ C-1001       │ NULL           │ +49301234567  │ NULL               │ NULL              │ {'amount': 1250.000, 'currency': EUR}          │
+│ C-1002       │ NULL           │ +447400123456 │ NULL               │ NULL              │ {'amount': 880.500, 'currency': GBP}           │
+│ C-1003       │ NULL           │ NULL          │ region_missing     │ NULL              │ {'amount': 410.000, 'currency': EUR}           │
+│ C-1004       │ invalid_format │ NULL          │ unsupported_region │ checksum_mismatch │ NULL                                           │
+│ C-1005       │ NULL           │ +31201234567  │ NULL               │ missing_prefix    │ NULL                                           │
+└──────────────┴────────────────┴───────────────┴────────────────────┴───────────────────┴────────────────────────────────────────────────┘
+```
+
+How each field is checked:
+
+- **Email**: `(email_validate(email)).reason` is `NULL` for a valid address and names the rule
+  otherwise. The query uses the default `regex` mode. With network access,
+  `email_validate(email, 'dns')` also catches domains without mail servers; its `valid` is
+  `NULL` when a lookup cannot finish, see [section 2](#2-emails).
+- **Phone**: the per-row `country` column is the region. A row whose country is `NULL` falls
+  back to `anofox_tab_phonenumber_default_region` (`US` unless set), and a local number then
+  fails with `region_missing` (`C-1003`), which tells a missing country from a bad number. A
+  country the module does not support gives `unsupported_region` for a local number (`C-1004`,
+  Austria) and `unsupported_country_code` for one written with `+43`.
+- **VAT**: `(vat_validate(vat_id)).reason` says why a number fails: `checksum_mismatch`,
+  `invalid_format`, `missing_prefix` (`C-1005`, add the country as in [section 4](#4-vat-numbers))
+  or `unsupported_country`.
+- **Money**: cast the text amount to a `DECIMAL` with `TRY_CAST`, so an amount in another format
+  (`'1.250,00'`, `C-1005`) becomes `NULL` instead of failing the query, and wrap `money` in
+  `TRY()` for unknown currency codes (`EURO`, `C-1004`). Do not pass the text itself:
+  `money('1250.00', 'EUR')` is a binder error (a string fits both the `DOUBLE` and the
+  `DECIMAL` variant), and `TRY()` cannot catch binder errors. Convert German-formatted amounts
+  first, e.g. `replace(replace(amount, '.', ''), ',', '.')`.
+- **Addresses**: set the libpostal data directory before the first postal call of the process
+  and check that the data is there before an import parses addresses (no network needed once
+  the data is present):
+
+  ```sql no-run
+  SET anofox_tab_postal_data_path = '/srv/libpostal';
+  SELECT data_present, data_dir FROM postal_status();
+  ```
 
 ## Next steps
 

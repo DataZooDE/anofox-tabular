@@ -165,7 +165,9 @@ types (email, credit card, IBAN, …) work without it, and the output above is t
 
 To try the Python example scripts, see [`examples/README.md`](examples/README.md).
 
-More: [Getting started](docs/guides/01-getting-started.md).
+More: [Getting started](docs/guides/01-getting-started.md). Importing CRM data? The
+[CRM import recipe](docs/guides/07-customer-master-data.md#8-recipe-check-a-crm-import-in-one-query)
+checks email, phone, VAT, amounts and currencies of a text import in one query.
 
 ## Conventions
 

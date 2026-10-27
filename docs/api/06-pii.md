@@ -911,6 +911,13 @@ pii_audit_table(table_name VARCHAR [, columns VARCHAR] [, id_column := VARCHAR])
 `original_value` and `matched_text` are raw PII, so the audit result contains the PII it reports. Select only
 `masked_value` when the result leaves the trusted environment.
 
+> **Residual risk:** `masked_value` is not proof that a cell is clean. It is the whole cell with
+> only the *detected* PII masked: PII that detection misses stays in it, such as a compact phone
+> number without a phone keyword (`01511234567`, a documented limit of `PHONE`). A second scan of
+> the masked values cannot prove them clean either, as it misses the same values. For columns
+> known to hold PII, mask the whole value with [`pii_mask_value`](#pii_mask_value), and review
+> free-text columns before you export them.
+
 ```sql
 SELECT row_id, column_name, pii_type, matched_text, masked_value, start_pos, end_pos
 FROM pii_audit_table('customers', 'ssn, note')
@@ -1254,6 +1261,15 @@ FROM (SELECT unnest(pii_detect('Erstattung auf DE89 3704 0044 0532 0130 01, Kart
 RESET anofox_pii_require_checksum;
 RESET anofox_pii_enabled_types;
 ```
+
+The checksum requirement is on by default on purpose: for discovery (`pii_scan_table`, audits)
+it keeps random digit runs such as order or invoice numbers from being reported as IBANs or card
+numbers. Turn it off only for a masking run, where a false positive costs a masked digit run and
+a miss leaks an account number. [Configuration](../reference/configuration.md#an-export-preset)
+has a preset for such a run and a query that records the effective settings next to the result.
+The same residual risk applies to masking with these settings: a value that is not detected
+stays in clear text, so mask columns known to hold PII with
+[`pii_mask_value`](#pii_mask_value).
 
 ## See also
 

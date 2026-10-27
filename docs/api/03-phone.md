@@ -228,6 +228,26 @@ FROM contacts ORDER BY id;
 └───────┴──────────────────┴─────────┴───────┴────────────┴──────────────────────┴────────────────┘
 ```
 
+A number of an unsupported country fails with one of two reasons, depending on how it is
+written. With `+43` the country code itself is unknown (`unsupported_country_code`); written
+nationally with `region := 'AT'` the region argument is unknown (`unsupported_region`). Check
+for both when you count the numbers this module cannot judge:
+
+```sql
+SELECT phone, region, (phonenumber_parse(phone, region)).reason AS reason
+FROM (VALUES ('+43 1 5321234', NULL), ('01 5321234', 'AT')) t(phone, region);
+```
+
+```text
+┌───────────────┬─────────┬──────────────────────────┐
+│     phone     │ region  │          reason          │
+│    varchar    │ varchar │         varchar          │
+├───────────────┼─────────┼──────────────────────────┤
+│ +43 1 5321234 │ NULL    │ unsupported_country_code │
+│ 01 5321234    │ AT      │ unsupported_region       │
+└───────────────┴─────────┴──────────────────────────┘
+```
+
 ---
 
 ## `phonenumber_is_valid`
