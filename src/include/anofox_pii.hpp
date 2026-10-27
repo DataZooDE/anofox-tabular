@@ -216,8 +216,14 @@ public:
     std::string GetPartialMask(const std::string &text) const override;
     std::vector<PIIMatch> FindChecksumFailures(const std::string &text) const override;
 
+    //! Length of an IBAN registered for the two-letter country code (SWIFT
+    //! IBAN registry), 0 for an unknown country
+    static size_t RegisteredLength(const std::string &country);
+
 private:
     static bool Mod97Check(const std::string &iban);
+    //! MOD-97 checksum plus a registered country and its IBAN length
+    static bool IsValidIban(const std::string &iban);
 };
 
 /**

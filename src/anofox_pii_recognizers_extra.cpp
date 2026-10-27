@@ -240,27 +240,6 @@ bool IsPlausibleBirthDate(int year, int month, int day) {
     return day <= today_day;
 }
 
-// ----------------------------------------------------------------------------
-// IBAN country lengths (SWIFT IBAN registry)
-// ----------------------------------------------------------------------------
-
-size_t IbanLengthForCountry(const std::string &country) {
-    static const std::unordered_map<std::string, size_t> lengths = {
-        {"AD", 24}, {"AE", 23}, {"AL", 28}, {"AT", 20}, {"AZ", 28}, {"BA", 20}, {"BE", 16}, {"BG", 22},
-        {"BH", 22}, {"BI", 27}, {"BR", 29}, {"BY", 28}, {"CH", 21}, {"CR", 22}, {"CY", 28}, {"CZ", 24},
-        {"DE", 22}, {"DJ", 27}, {"DK", 18}, {"DO", 28}, {"EE", 20}, {"EG", 29}, {"ES", 24}, {"FI", 18},
-        {"FK", 18}, {"FO", 18}, {"FR", 27}, {"GB", 22}, {"GE", 22}, {"GI", 23}, {"GL", 18}, {"GR", 27},
-        {"GT", 28}, {"HR", 21}, {"HU", 28}, {"IE", 22}, {"IL", 23}, {"IQ", 23}, {"IS", 26}, {"IT", 27},
-        {"JO", 30}, {"KW", 30}, {"KZ", 20}, {"LB", 28}, {"LC", 32}, {"LI", 21}, {"LT", 20}, {"LU", 20},
-        {"LV", 21}, {"LY", 25}, {"MC", 27}, {"MD", 24}, {"ME", 22}, {"MK", 19}, {"MN", 20}, {"MR", 27},
-        {"MT", 31}, {"MU", 30}, {"NI", 28}, {"NL", 18}, {"NO", 15}, {"OM", 23}, {"PK", 24}, {"PL", 28},
-        {"PS", 29}, {"PT", 25}, {"QA", 29}, {"RO", 24}, {"RS", 22}, {"RU", 33}, {"SA", 24}, {"SC", 31},
-        {"SD", 18}, {"SE", 24}, {"SI", 19}, {"SK", 24}, {"SM", 27}, {"SO", 23}, {"ST", 25}, {"SV", 28},
-        {"TL", 23}, {"TN", 24}, {"TR", 26}, {"UA", 29}, {"VA", 22}, {"VG", 24}, {"XK", 20}, {"YE", 30}};
-    auto it = lengths.find(country);
-    return it == lengths.end() ? 0 : it->second;
-}
-
 size_t CompactLength(const std::string &text) {
     return static_cast<size_t>(std::count_if(text.begin(), text.end(), [](char c) { return c != ' ' && c != '-'; }));
 }
@@ -356,6 +335,27 @@ bool EndsAddressPart(const std::string &text, size_t pos) {
 } // namespace
 
 // ============================================================================
+// IBAN country lengths (SWIFT IBAN registry)
+// ============================================================================
+
+size_t IBANRecognizer::RegisteredLength(const std::string &country) {
+    static const std::unordered_map<std::string, size_t> lengths = {
+        {"AD", 24}, {"AE", 23}, {"AL", 28}, {"AT", 20}, {"AZ", 28}, {"BA", 20}, {"BE", 16}, {"BG", 22},
+        {"BH", 22}, {"BI", 27}, {"BR", 29}, {"BY", 28}, {"CH", 21}, {"CR", 22}, {"CY", 28}, {"CZ", 24},
+        {"DE", 22}, {"DJ", 27}, {"DK", 18}, {"DO", 28}, {"EE", 20}, {"EG", 29}, {"ES", 24}, {"FI", 18},
+        {"FK", 18}, {"FO", 18}, {"FR", 27}, {"GB", 22}, {"GE", 22}, {"GI", 23}, {"GL", 18}, {"GR", 27},
+        {"GT", 28}, {"HR", 21}, {"HU", 28}, {"IE", 22}, {"IL", 23}, {"IQ", 23}, {"IS", 26}, {"IT", 27},
+        {"JO", 30}, {"KW", 30}, {"KZ", 20}, {"LB", 28}, {"LC", 32}, {"LI", 21}, {"LT", 20}, {"LU", 20},
+        {"LV", 21}, {"LY", 25}, {"MC", 27}, {"MD", 24}, {"ME", 22}, {"MK", 19}, {"MN", 20}, {"MR", 27},
+        {"MT", 31}, {"MU", 30}, {"NI", 28}, {"NL", 18}, {"NO", 15}, {"OM", 23}, {"PK", 24}, {"PL", 28},
+        {"PS", 29}, {"PT", 25}, {"QA", 29}, {"RO", 24}, {"RS", 22}, {"RU", 33}, {"SA", 24}, {"SC", 31},
+        {"SD", 18}, {"SE", 24}, {"SI", 19}, {"SK", 24}, {"SM", 27}, {"SO", 23}, {"ST", 25}, {"SV", 28},
+        {"TL", 23}, {"TN", 24}, {"TR", 26}, {"UA", 29}, {"VA", 22}, {"VG", 24}, {"XK", 20}, {"YE", 30}};
+    auto it = lengths.find(country);
+    return it == lengths.end() ? 0 : it->second;
+}
+
+// ============================================================================
 // Checksum failures for IBAN and CREDIT_CARD (anofox_pii_require_checksum)
 // ============================================================================
 
@@ -374,14 +374,14 @@ std::vector<PIIMatch> IBANRecognizer::FindChecksumFailures(const std::string &te
 
         // Skip what FindMatches reports (it trims trailing groups until the
         // checksum holds)
-        bool valid = Mod97Check(candidate);
+        bool valid = IsValidIban(candidate);
         for (std::string trimmed = candidate; !valid && !separator.empty();) {
             auto cut = trimmed.rfind(separator[0]);
             if (cut == std::string::npos || cut < 4) {
                 break;
             }
             trimmed.resize(cut);
-            valid = Mod97Check(trimmed);
+            valid = IsValidIban(trimmed);
         }
         if (valid) {
             continue;
@@ -389,7 +389,7 @@ std::vector<PIIMatch> IBANRecognizer::FindChecksumFailures(const std::string &te
 
         // Without a checksum, the length registered for the country decides
         // where the IBAN ends; unknown countries are not reported
-        const size_t expected = IbanLengthForCountry(UpperAscii(candidate.substr(0, 2)));
+        const size_t expected = RegisteredLength(UpperAscii(candidate.substr(0, 2)));
         if (expected == 0) {
             continue;
         }

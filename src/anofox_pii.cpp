@@ -989,14 +989,41 @@ std::vector<PIIMatch> IBANRecognizer::FindMatches(const std::string &text) const
         if (valid) {
             matches.emplace_back(type_, candidate, start, start + candidate.size(), 1.0);
         } else {
-            AnofoxTrace(AnofoxLogLevel::Trace, "pii: IBAN candidate failed MOD-97: " + match.str());
+            AnofoxTrace(AnofoxLogLevel::Trace, "pii: IBAN candidate failed validation: " + match.str());
         }
     }
     return matches;
 }
 
 bool IBANRecognizer::Validate(const std::string &text) const {
-    return Mod97Check(text);
+    return IsValidIban(text);
+}
+
+bool IBANRecognizer::IsValidIban(const std::string &iban) {
+    // MOD-97 alone accepts about 1 in 97 hex ids that start with two letters
+    // (md5 digests, object ids); a real IBAN also has a registered country
+    // code and exactly that country's length.
+    if (!Mod97Check(iban)) {
+        return false;
+    }
+    std::string country;
+    size_t length = 0;
+    for (char c : iban) {
+        if (c == ' ' || c == '-') {
+            continue;
+        }
+        if (country.size() < 2) {
+            country += static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+        }
+        length++;
+    }
+    const size_t expected = RegisteredLength(country);
+    if (expected == 0 || expected != length) {
+        AnofoxTrace(AnofoxLogLevel::Trace, "pii: IBAN candidate passes MOD-97 but has no registered country/length: " +
+                                               country + "/" + std::to_string(length));
+        return false;
+    }
+    return true;
 }
 
 bool IBANRecognizer::Mod97Check(const std::string &iban) {
