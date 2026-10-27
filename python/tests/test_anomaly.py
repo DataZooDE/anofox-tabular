@@ -387,6 +387,7 @@ class TestNanHandling:
                   float("nan"), None, float("inf")]
         return pl.DataFrame({"order_id": list(range(101, 112)), "amount": values})
 
+    @pytest.mark.filterwarnings("ignore:isolation_forest. only")
     def test_isolation_forest_skips_nan_like_null_and_flags_inf(self, conn, amounts):
         from anofox import anomaly
         scores = anomaly.isolation_forest(
@@ -406,6 +407,7 @@ class TestNanHandling:
         noise = clusters.filter(clusters["point_type"] == "NOISE")
         assert noise["order_id"].to_list() == [111]
 
+    @pytest.mark.filterwarnings("ignore:isolation_forest. only")
     def test_fill_nan_gives_the_same_rows_to_both(self, conn, amounts):
         from anofox import anomaly
         clean = amounts.fill_nan(None)
@@ -440,6 +442,7 @@ class TestEmptyAndAllMissingInput:
         assert result["total_count"] == 0
         assert result["avg_value"] is None
 
+    @pytest.mark.filterwarnings("ignore:isolation_forest. only")
     def test_scored_rows_keep_avg_value(self, conn):
         from anofox import anomaly
         df = self._payments([120.0, 80.0, 100.0, 100.0])

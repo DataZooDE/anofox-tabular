@@ -386,7 +386,10 @@ with a `NULL` in a selected column are left out; `row_id` is still the 1-based r
 the input, so the remaining rows keep their numbers. A `NaN` is left out like a `NULL`, also in
 a polars DataFrame; see [Missing values](#missing-values-nan-and-null). When no row is
 scored (an empty DataFrame, or only missing values), the `isolation_forest` summary has
-`total_count` 0 and `avg_value` `None`. A DataFrame column that holds only `None` has no type;
+`total_count` 0 and `avg_value` `None`, and a per-row output has no rows but the same columns
+and dtypes as one with rows. With 1 to 9 scored rows `isolation_forest` and
+`isolation_forest_mv` give a `UserWarning`: so few rows score alike and usually none is flagged
+(`anomaly.MIN_ISOLATION_FOREST_ROWS` is 10). A DataFrame column that holds only `None` has no type;
 the numeric detectors raise `ValueError: column 'amount' has no non-null values` for it.
 
 ### Join scores back to the rows
@@ -629,7 +632,8 @@ changed). An infinite value is kept:
 | `outlier_tree` | Left out | Can be flagged |
 
 ```python
-amounts = [49.9, 50.1, 50.0, 49.8, 50.2, 50.3, float("nan"), None]
+amounts = [49.9, 50.1, 50.0, 49.8, 50.2, 50.3, 49.7, 50.4, 50.0, 49.9, 50.1, 50.2,
+           float("nan"), None]
 for orders in (pd.DataFrame({"amount": amounts}), pl.DataFrame({"amount": amounts})):
     forest = anomaly.isolation_forest(conn, orders, "amount", seed=7)
     clusters = anomaly.dbscan(conn, orders, "amount", epsilon=0.5, min_points=3)
@@ -637,8 +641,8 @@ for orders in (pd.DataFrame({"amount": amounts}), pl.DataFrame({"amount": amount
 ```
 
 ```text
-6 6 0
-6 6 0
+12 12 0
+12 12 0
 ```
 
 In SQL a `NaN` in a table is a value: the Isolation Forest skips it, but DBSCAN calls it noise

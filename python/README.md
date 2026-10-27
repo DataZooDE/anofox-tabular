@@ -206,7 +206,11 @@ print(checks.checks["null_rate"]["null_rate"])
   `NULL` feature are not in the output and get `NaN`. `row_id` is the 1-based row number in
   the input. A polars output keeps the input's row order and `row_id`. A float `NaN` is left
   out like a `NULL` by every detector, also in a polars DataFrame, so pandas and polars give
-  the same result.
+  the same result. A per-row output without rows has the same columns and dtypes as one with
+  rows (`outlier_tree`'s `conditions` stays an `object` column, a `List` in polars).
+- `isolation_forest` and `isolation_forest_mv` warn (`UserWarning`) when 1 to 9 rows were
+  scored (`anomaly.MIN_ISOLATION_FOREST_ROWS` is 10): so few rows score alike, and usually
+  none is flagged.
 - The PII wrappers `pii_detect`, `pii_mask`, `pii_contains`, `pii_scan_table` and
   `pii_audit_table` take `types=` (a list or a comma-separated string) to detect only those
   types in the call; it sets `anofox_pii_enabled_types` and restores it afterwards

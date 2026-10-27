@@ -13,10 +13,18 @@ DataFrame is left out too, for pandas and polars alike (pandas copies it as
 
 from __future__ import annotations
 
+import warnings
 from typing import Any, Optional, Sequence, Union
 
 from ._sql import fetch_frame, id_column_arg, quote_ident
 from ._table import output_df_type, table_inputs
+
+
+#: Fewest scored rows for which ``isolation_forest`` and ``isolation_forest_mv``
+#: do not warn. With fewer rows the trees cannot tell an unusual value from a
+#: typical one: the scores are close to each other (two rows always score the
+#: same) and usually no row is flagged.
+MIN_ISOLATION_FOREST_ROWS = 10
 
 
 def isolation_forest(
@@ -63,7 +71,14 @@ def isolation_forest(
     dict or DataFrame
         The summary's ``avg_value`` is ``None`` when no row was scored
         (``total_count`` 0). A DataFrame column of only ``None`` raises
-        ValueError.
+        ValueError. The per-row output names the scored column ``value``,
+        as SQL does, whatever the input column is called.
+
+    Warns
+    -----
+    UserWarning
+        When 1 to ``MIN_ISOLATION_FOREST_ROWS - 1`` (9) rows were scored: so
+        few rows give scores that say little, and usually nothing is flagged.
     """
     _check_output_mode("isolation_forest", output_mode)
     _check_id_column("isolation_forest", output_mode, id_column)
@@ -75,7 +90,9 @@ def isolation_forest(
             "SELECT * FROM anofox_tab_isolation_forest(?, ?, ?::BIGINT, ?::BIGINT, ?::DOUBLE, ?, ?::BIGINT"
             f"{id_column_arg(id_column, params)})"
         )
-        return _execute_anomaly(conn, query, params, output_mode, table_or_df)
+        result = _execute_anomaly(conn, query, params, output_mode, table_or_df)
+    _warn_few_rows("isolation_forest", result)
+    return result
 
 
 def isolation_forest_mv(
@@ -121,6 +138,12 @@ def isolation_forest_mv(
         Columns combined per split (default ``None`` = the extension's 1).
         Above 1 the trees split on random hyperplanes (Extended Isolation
         Forest).
+
+    Warns
+    -----
+    UserWarning
+        When fewer than ``MIN_ISOLATION_FOREST_ROWS`` (10) rows were scored, as
+        :func:`isolation_forest`.
     """
     _check_output_mode("isolation_forest_mv", output_mode)
     _check_id_column("isolation_forest_mv", output_mode, id_column)
@@ -134,7 +157,9 @@ def isolation_forest_mv(
             "?, ?, ?::BIGINT, ?::BIGINT, ?::DOUBLE, ?, ?::BIGINT, ?::BIGINT"
             f"{id_column_arg(id_column, params)})"
         )
-        return _execute_anomaly(conn, query, params, output_mode, table_or_df)
+        result = _execute_anomaly(conn, query, params, output_mode, table_or_df)
+    _warn_few_rows("isolation_forest_mv", result)
+    return result
 
 
 def dbscan(
@@ -268,7 +293,8 @@ def outlier_tree(
         ``operator`` (``"<="``, ``">"``, ``"in"``), ``value`` (the numeric
         threshold, else ``None``) and ``values`` (the categories, else
         ``None``); in polars a ``List(Struct)``. SQL returns the same
-        conditions as JSON text.
+        conditions as JSON text. Without outliers the DataFrame has no rows
+        and the same dtypes (``conditions`` stays an ``object`` column).
     max_depth:
         Maximum tree depth.
     max_perc_outliers:
@@ -319,7 +345,12 @@ def outlier_tree(
         result = _execute_anomaly(conn, query, params, output_mode, table_or_df)
         if output_mode != "summary" and output_df_type(table_or_df) == "pandas":
             # DuckDB hands a LIST to pandas as a numpy array; give plain lists.
-            result["conditions"] = [list(c) if c is not None else None for c in result["conditions"]]
+            # An explicit object dtype: without rows pandas would make it float64.
+            import pandas as pd
+            result["conditions"] = pd.Series(
+                [list(c) if c is not None else None for c in result["conditions"]],
+                index=result.index, dtype=object,
+            )
         return result
 
 
@@ -404,6 +435,39 @@ def _is_untyped_all_missing(series: Any) -> bool:
     return series.dtype == object and bool(series.isna().all())
 
 
+def _warn_few_rows(function: str, result: Any) -> None:
+    """Warn when an Isolation Forest scored 1 to MIN_ISOLATION_FOREST_ROWS - 1 rows."""
+    scored = result.get("total_count") if isinstance(result, dict) else len(result)
+    if scored is None or not 0 < scored < MIN_ISOLATION_FOREST_ROWS:
+        return
+    warnings.warn(
+        f"{function}: only {scored} rows were scored; an Isolation Forest needs at least "
+        f"{MIN_ISOLATION_FOREST_ROWS} to tell an unusual value from a typical one, so the "
+        "scores are not meaningful (rows tend to score alike and none is flagged)",
+        UserWarning,
+        stacklevel=3,
+    )
+
+
+def _stable_empty_dtypes(result: Any) -> Any:
+    """
+    A pandas *result* without rows with the dtypes it would have with rows.
+
+    DuckDB gives a ``VARCHAR`` column without rows the dtype ``object``, while
+    pandas infers its string dtype for one with rows (``str`` on pandas 3). The
+    ``object`` columns of an empty result are text columns (outlier_tree's
+    ``conditions`` list column is fixed by its caller).
+    """
+    if len(result) > 0:
+        return result
+    import pandas as pd
+    text_dtype = pd.Series(["text"]).dtype
+    for column in result.columns:
+        if result[column].dtype == object:
+            result[column] = result[column].astype(text_dtype)
+    return result
+
+
 def _with_input_index(result: Any, table_or_df: Any) -> Any:
     """
     Give the per-row *result* of a pandas DataFrame input that input's index labels.
@@ -465,7 +529,10 @@ def _execute_anomaly(
     analysed row (polars for a polars input, else pandas).
     """
     if output_mode != "summary":
-        result = fetch_frame(conn, query, params, output_df_type(table_or_df))
+        df_type = output_df_type(table_or_df)
+        result = fetch_frame(conn, query, params, df_type)
+        if df_type == "pandas":
+            result = _stable_empty_dtypes(result)
         return _with_input_index(result, table_or_df)
 
     # summary — convert first row to dict using column names from description
