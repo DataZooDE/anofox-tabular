@@ -27,6 +27,7 @@
 
 #include <algorithm>
 #include <array>
+#include <map>
 #include <unordered_set>
 #include <sstream>
 #include <iomanip>
@@ -1135,14 +1136,19 @@ std::vector<PIIMatch> IBANRecognizer::FindMatches(const std::string &text) const
     // dashes until the length registered for the country is reached. The
     // value must end there (no letter or digit directly after it) and pass
     // the registered-length and MOD-97 checks, which keep random digit runs out.
+    // The pattern matches are disjoint and in text order; `next_known` is
+    // the first one that does not end before i
+    const size_t pattern_count = matches.size();
+    size_t next_known = 0;
     for (size_t i = 0; i + 4 <= text.size(); i++) {
         if (!std::isupper(static_cast<unsigned char>(text[i])) || !std::isupper(static_cast<unsigned char>(text[i + 1])) ||
             (i > 0 && std::isalnum(static_cast<unsigned char>(text[i - 1])))) {
             continue;
         }
-        const bool known = std::any_of(matches.begin(), matches.end(),
-                                       [i](const PIIMatch &m) { return i >= m.start_pos && i < m.end_pos; });
-        if (known) {
+        while (next_known < pattern_count && matches[next_known].end_pos <= i) {
+            next_known++;
+        }
+        if (next_known < pattern_count && matches[next_known].start_pos <= i) {
             continue;
         }
         const size_t expected = RegisteredLength(text.substr(i, 2));
@@ -2030,15 +2036,19 @@ std::vector<PIIMatch> PhoneRecognizer::FindMatches(const std::string &text) cons
         R"((?:^|[^A-Za-z0-9])(?:tel|telefon|telefonnummer|tel\.-?nr|mobil|mobilnummer|mobiltelefon|handy|handynummer|)"
         R"(phone|mobile|cell|fon|fax|telefax)(?:\.|-?nr\.?|\s+no\.?|\s+number)?\s*:?\s*(0[1-9][0-9]{5,13})(?![0-9A-Za-z]))",
         std::regex_constants::ECMAScript | std::regex_constants::icase);
+    // The main pattern's matches are disjoint and in text order: the first one
+    // ending after a keyword number's start is the only one it can overlap
+    const size_t main_count = matches.size();
     for (std::sregex_iterator iter(text.begin(), text.end(), keyword_number); iter != end; ++iter) {
         const auto start = static_cast<size_t>(iter->position(1));
         const std::string number = (*iter)[1].str();
         const size_t stop = start + number.size();
         // Skip numbers the main pattern found already (it never matches a compact one, but a
         // number inside a longer match must not be reported twice)
-        const bool known = std::any_of(matches.begin(), matches.end(), [&](const PIIMatch &m) {
-            return start < m.end_pos && m.start_pos < stop;
-        });
+        const auto main_end = matches.begin() + static_cast<std::ptrdiff_t>(main_count);
+        const auto candidate = std::partition_point(matches.begin(), main_end,
+                                                    [start](const PIIMatch &m) { return m.end_pos <= start; });
+        const bool known = candidate != main_end && candidate->start_pos < stop;
         if (known || !Validate(number)) {
             continue;
         }
@@ -3123,18 +3133,28 @@ std::vector<PIIMatch> PIIEngine::ResolveOverlaps(std::vector<PIIMatch> matches) 
     // IBAN or card numbers) are placed first; a NER span is kept only where it
     // overlaps none of them, so a NER guess like "IBAN DE" can never leave the
     // rest of an account number unmasked.
+    // The kept spans are disjoint, so they are ordered by start and by end
+    // alike: only the kept span that starts last before a match ends can
+    // overlap it. Looking that one up keeps the resolution O(n log n) for
+    // values with many matches (a mail export with 100,000 addresses).
     std::vector<PIIMatch> resolved;
     resolved.reserve(matches.size());
-    auto overlaps_kept = [&resolved](const PIIMatch &match) {
-        return std::any_of(resolved.begin(), resolved.end(), [&match](const PIIMatch &kept) {
-            return match.start_pos < kept.end_pos && kept.start_pos < match.end_pos;
-        });
+    std::map<size_t, size_t> kept_spans;  // start -> end of every kept match
+    auto overlaps_kept = [&kept_spans](const PIIMatch &match) {
+        auto next = kept_spans.lower_bound(match.end_pos);
+        if (next == kept_spans.begin()) {
+            return false;
+        }
+        const auto &previous = *std::prev(next);
+        return match.start_pos < previous.second && previous.first < match.end_pos;
     };
     for (bool ner_pass : {false, true}) {
         for (auto &match : matches) {
-            if (IsNERType(match.type) != ner_pass || overlaps_kept(match)) {
+            // An empty match covers nothing to mask
+            if (IsNERType(match.type) != ner_pass || match.start_pos >= match.end_pos || overlaps_kept(match)) {
                 continue;
             }
+            kept_spans.emplace(match.start_pos, match.end_pos);
             resolved.push_back(std::move(match));
         }
     }
@@ -3261,12 +3281,18 @@ std::string PIIEngine::Mask(
         return text;
     }
 
-    // Build result by replacing matches (process in reverse to maintain positions)
-    std::string result = text;
-    for (auto it = matches.rbegin(); it != matches.rend(); ++it) {
-        std::string replacement = ApplyMask(*it, strategy);
-        result.replace(it->start_pos, it->end_pos - it->start_pos, replacement);
+    // Build the result front to back: the text between matches, then each
+    // match's mask. Linear in the length of the value also for values with
+    // many matches (replacing in place moves the tail once per match).
+    std::string result;
+    result.reserve(text.size());
+    size_t copied = 0;
+    for (const auto &match : matches) {
+        result.append(text, copied, match.start_pos - copied);
+        result += ApplyMask(match, strategy);
+        copied = match.end_pos;
     }
+    result.append(text, copied, std::string::npos);
 
     return result;
 }

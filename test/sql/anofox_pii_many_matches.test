@@ -1,0 +1,74 @@
+# name: test/sql/anofox_pii_many_matches.test
+# description: Detecting and masking stays linear in the number of matches: a mail export with 200,000 addresses in one value, and long lists of phone numbers, IBANs and card numbers, are masked in moments and correctly
+# group: [anofox_tabular]
+
+require anofox_tabular
+
+statement ok
+LOAD anofox_tabular
+
+# Pattern types only; NER on long inputs is covered in anofox_pii_ner_long_inputs.test
+statement ok
+SET anofox_pii_enabled_types = 'EMAIL,PHONE,IBAN,CREDIT_CARD';
+
+# A newsletter bounce report: 200,000 addresses in one value (3.2 MB)
+statement ok
+CREATE TABLE bounce_report AS SELECT repeat('mail me a@b.com ', 200000) AS body;
+
+query I
+SELECT len(pii_detect(body)) FROM bounce_report;
+----
+200000
+
+query I
+SELECT pii_mask(body) = repeat('mail me [EMAIL] ', 200000) FROM bounce_report;
+----
+true
+
+# hash replaces each 7-character address with 16 hex characters
+query II
+SELECT len(masked), masked = repeat('mail me ' || left(sha256('a@b.com'), 16) || ' ', 200000)
+FROM (SELECT pii_mask(body, 'hash') AS masked FROM bounce_report);
+----
+5000000	true
+
+query I
+SELECT pii_mask(body, 'partial') = repeat('mail me ******* ', 200000) FROM bounce_report;
+----
+true
+
+# A call list export: 50,000 German phone numbers, half of them compact
+# numbers after a "Tel" keyword
+statement ok
+CREATE TABLE call_list AS
+SELECT string_agg('Kunde ' || i || ': +49 30 ' || (1000000 + i) || ', Tel 0170' || (1000000 + i) || ';', ' ' ORDER BY i) AS body
+FROM range(25000) r(i);
+
+query II
+SELECT len(pii_detect(body)), list_distinct(list_transform(pii_detect(body), lambda m: m.type)) FROM call_list;
+----
+50000	[PHONE]
+
+query I
+SELECT regexp_replace(pii_mask(body), 'Kunde \d+: \[PHONE\], Tel \[PHONE\];', '', 'g') = repeat(' ', 24999) FROM call_list;
+----
+true
+
+# A payment run: 20,000 lines with an IBAN and a card number each
+statement ok
+CREATE TABLE payment_run AS
+SELECT repeat('Zahlung an DE89 3704 0044 0532 0130 00 mit Karte 4111 1111 1111 1111. ', 20000) AS body;
+
+query I
+SELECT pii_mask(body) = repeat('Zahlung an [IBAN] mit Karte [CREDIT_CARD]. ', 20000) FROM payment_run;
+----
+true
+
+query I
+SELECT pii_mask(body, 'partial') = repeat('Zahlung an DE89**************3000 mit Karte 4111********1111. ', 20000) FROM payment_run;
+----
+true
+
+# Restore the process-wide PII settings for the tests that follow
+statement ok
+SET anofox_pii_enabled_types = '';
