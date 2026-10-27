@@ -820,6 +820,7 @@ bool OutlierTree::AddOrReplaceOutlier(
 struct OutlierTreeBindData : public TableFunctionData {
     std::string table_name;
     std::vector<std::string> column_names;
+    std::vector<FeatureType> column_types;  // resolved at bind: VARCHAR/ENUM categorical, else numeric
     std::string output_mode;  // "summary" or "outliers"
     OutlierTreeParams params;
     IdColumn id_column;       // optional pass-through identifier ('outliers' mode)
@@ -887,6 +888,28 @@ static unique_ptr<FunctionData> OutlierTreeBind(ClientContext &context, TableFun
 
     if (column_names.empty()) {
         throw BinderException("columns parameter must contain at least one column name");
+    }
+
+    // Resolve the feature columns now (case-insensitive, the table's spelling from here on) and
+    // check their types: numeric columns (BOOLEAN as 0/1) are read as DOUBLE, VARCHAR and ENUM
+    // as categories. Anything else (DATE, TIMESTAMP, LIST, ...) failed late with a cast error.
+    std::vector<FeatureType> column_types;
+    {
+        std::vector<std::string> resolved_names;
+        for (auto &column : ResolveColumns(context, "outlier_tree", table_name,
+                                                    vector<string>(column_names.begin(), column_names.end()))) {
+            auto type_id = column.type.id();
+            if (type_id == LogicalTypeId::VARCHAR || type_id == LogicalTypeId::ENUM) {
+                column_types.push_back(FeatureType::CATEGORICAL);
+            } else if (column.type.IsNumeric() || type_id == LogicalTypeId::BOOLEAN) {
+                column_types.push_back(FeatureType::NUMERIC);
+            } else {
+                throw BinderException("outlier_tree: column '%s' must be numeric or categorical (VARCHAR), got %s",
+                                      column.name, column.type.ToString());
+            }
+            resolved_names.push_back(std::move(column.name));
+        }
+        column_names = std::move(resolved_names);
     }
 
     // Parse optional parameters (read integral values as signed so that
@@ -985,6 +1008,7 @@ static unique_ptr<FunctionData> OutlierTreeBind(ClientContext &context, TableFun
 
     auto bind_data = make_uniq<OutlierTreeBindData>(table_name, column_names, output_mode, params);
     bind_data->id_column = std::move(id_column);
+    bind_data->column_types = std::move(column_types);
     return std::move(bind_data);
 }
 
@@ -999,35 +1023,14 @@ static void OutlierTreeExecute(ClientContext &context, TableFunctionInput &data_
 
         Connection con(*context.db);
 
-        // Detect column types first (LIMIT 0 only binds the query), so the
-        // data query below can cast every column to a known type
+        // Column types were resolved and checked at bind time
         const idx_t n_cols = bind_data.column_names.size();
         std::vector<ColumnInfo> column_info(n_cols);
         std::vector<ColumnData> data(n_cols);
-
-        {
-            std::string raw_column_list;
-            for (size_t i = 0; i < n_cols; ++i) {
-                if (i > 0) raw_column_list += ", ";
-                raw_column_list += QuoteSqlIdentifier(bind_data.column_names[i]);
-            }
-            std::string type_query = "SELECT " + raw_column_list + " FROM " +
-                                     BuildQueryTableRef(bind_data.table_name) + " LIMIT 0";
-            auto type_result = con.Query(type_query);
-            if (type_result->HasError()) {
-                throw InvalidInputException("Failed to query source table: %s", type_result->GetError());
-            }
-            for (size_t i = 0; i < n_cols; ++i) {
-                auto col_type = duckdb_compat::ResultTypes(*type_result)[i].id();
-                if (col_type == LogicalTypeId::VARCHAR || col_type == LogicalTypeId::ENUM) {
-                    column_info[i].type = FeatureType::CATEGORICAL;
-                    data[i].type = FeatureType::CATEGORICAL;
-                } else {
-                    column_info[i].type = FeatureType::NUMERIC;
-                    data[i].type = FeatureType::NUMERIC;
-                }
-                column_info[i].name = bind_data.column_names[i];
-            }
+        for (size_t i = 0; i < n_cols; ++i) {
+            column_info[i].type = bind_data.column_types[i];
+            data[i].type = bind_data.column_types[i];
+            column_info[i].name = bind_data.column_names[i];
         }
 
         // Build the data query: categorical columns as VARCHAR, numeric

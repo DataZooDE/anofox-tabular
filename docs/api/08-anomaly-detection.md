@@ -492,8 +492,21 @@ Canonical name: `anofox_tab_outlier_tree`. Table function.
 OutlierTree splits the rows into groups with decision-tree conditions (for example
 `level IN ('junior')`) and flags values that are far from the rest of their group. A salary
 that is normal across the table can be an outlier for a junior. Each outlier comes with the
-group's statistics and a sentence that explains it. Numeric and categorical (`VARCHAR`)
-columns are both supported. Rows with a `NULL` in any selected column are excluded.
+group's statistics and a sentence that explains it. Rows with a `NULL` in any selected column
+are excluded.
+
+Column names match case-insensitively. Supported column types:
+
+| Column type | Treated as |
+|-------------|-----------|
+| Numeric types (`INTEGER`, `BIGINT`, `DECIMAL`, `DOUBLE`, ...) | numeric |
+| `BOOLEAN` | numeric, `false` = 0 and `true` = 1 |
+| `VARCHAR`, `ENUM` | categorical |
+
+Any other type (`DATE`, `TIMESTAMP`, `LIST`, ...) is a binder error, for example
+`outlier_tree: column 'shipped_at' must be numeric or categorical (VARCHAR), got TIMESTAMP`. An
+unknown column is a binder error too. To analyze a date, pass a numeric derivative such as
+`epoch(shipped_at)` through a view.
 
 There are two forms: 3 arguments, or all 9. Other argument counts are a binder error.
 
