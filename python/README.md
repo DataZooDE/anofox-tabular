@@ -156,6 +156,9 @@ print(checks.checks["null_rate"]["null_rate"])
   Error messages and result messages name such a copy "the DataFrame" (`joindiff` /
   `hashdiff` / `diff_schema`: "the source DataFrame", "the target DataFrame"), not its
   temporary table name.
+- **`conn.profile(df_or_table)`** returns the columns `column`, `type`, `row_count`,
+  `null_count`, `null_rate`, `distinct_count`, `distinct_rate`; `anofox.profile.profile_table`
+  names the first two `column_name` and `column_type` (the others match).
 - **`conn.profile(name)`** resolves a table name like a query does: with tables of the same
   name in several schemas it profiles the one the search path finds. Pass `"schema.table"`
   for another schema; an unknown table raises `duckdb.CatalogException`.
@@ -184,8 +187,9 @@ print(checks.checks["null_rate"]["null_rate"])
   `DECIMAL` values are returned as `float`; `_raw` still holds the raw result row.
 - Values are passed to DuckDB as bound parameters and column names are quoted, so any text
   (`o'brien@example.ie`) is safe to pass.
-- The anomaly wrappers use the SQL defaults: a parameter you leave out is passed as `NULL`
-  and the extension applies its default. `isolation_forest` and `isolation_forest_mv` take
+- The anomaly wrappers use the SQL defaults: every tuning parameter defaults to `None`, is
+  passed as `NULL`, and the extension applies its default (`n_trees` 100, `contamination` 0.1,
+  `epsilon` 0.5, `min_points` 5, ...). `isolation_forest` and `isolation_forest_mv` take
   `seed=` for reproducible scores (`isolation_forest_mv` also `ndim=`). The per-row modes
   are `"scores"` (isolation forest), `"clusters"` (DBSCAN; `"scores"` is accepted too) and
   `"outliers"` (outlier tree); an unknown `output_mode` raises `ValueError`. Column lists
@@ -217,7 +221,7 @@ print(checks.checks["null_rate"]["null_rate"])
 
 | Module | Functions |
 |--------|-----------|
-| `anofox.validate` | `email_is_valid`, `email_validate`, `phone_is_valid`, `phone_parse`, `phone_format`, `phone_region` |
+| `anofox.validate` | `email_is_valid`, `email_validate`, `phone_is_valid`, `phone_parse`, `phone_format(conn, phone, region, format="E164")` (`fmt=` is a deprecated alias), `phone_region` |
 | `anofox.quality` | `volume`, `null_rate`, `distinct_count`, `freshness`, `zscore`, `iqr`, `schema_check`, `regex_match`, `values_in_set`, `agg_check`, `duplicate_count`, `occurrence`, `match_rate`, `compliance`, `rel_count_change`, `metric_anomaly_iqr`, `rolling_values_in_set`, `define_checks`, `run_checks` |
 | `anofox.anomaly` | `isolation_forest`, `isolation_forest_mv`, `dbscan`, `dbscan_mv`, `outlier_tree` |
 | `anofox.pii` | `pii_detect`, `pii_mask`, `pii_mask_value`, `pii_contains`, `pii_scan_table`, `pii_audit_table`, `enabled_types` |

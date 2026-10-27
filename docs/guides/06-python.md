@@ -99,7 +99,7 @@ cannot be parsed gives `None` (a missing value in a DataFrame):
 ```python
 phones = pd.DataFrame({"phone": ["030 901820", "(650) 253-0000", "12"],
                        "country": ["DE", "US", "DE"]})
-out = validate.phone_format(conn, phones, fmt="INTERNATIONAL", column="phone",
+out = validate.phone_format(conn, phones, format="INTERNATIONAL", column="phone",
                             region_column="country")
 print(out.to_string(index=False))
 ```
@@ -486,6 +486,17 @@ column  null_count  distinct_count
  email           1               3
   note           0               4
 ```
+
+The two name their first columns differently; the other five have the same names:
+
+| `conn.profile` | `profile_table` |
+|---|---|
+| `column` | `column_name` |
+| `type` | `column_type` |
+| `row_count`, `null_count`, `null_rate`, `distinct_count`, `distinct_rate` | same names |
+
+To combine them, rename first, e.g.
+`conn.profile(df).rename(columns={"column": "column_name", "type": "column_type"})`.
 
 ## Missing values: NaN and NULL
 
