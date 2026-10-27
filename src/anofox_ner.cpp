@@ -34,27 +34,6 @@ namespace duckdb {
 namespace anofox {
 
 // ============================================================================
-// Label definitions for DistilBERT NER (CoNLL 2003)
-// ============================================================================
-
-const std::vector<std::string>& NERModelManager::GetLabels() {
-    // Label order matches the DistilBERT NER model (dslim/distilbert-NER)
-    // The model uses: O, B-PER, I-PER, B-ORG, I-ORG, B-LOC, I-LOC, B-MISC, I-MISC
-    static std::vector<std::string> labels = {
-        "O",      // 0: Outside (not an entity)
-        "B-PER",  // 1: Begin Person
-        "I-PER",  // 2: Inside Person
-        "B-ORG",  // 3: Begin Organization
-        "I-ORG",  // 4: Inside Organization
-        "B-LOC",  // 5: Begin Location
-        "I-LOC",  // 6: Inside Location
-        "B-MISC", // 7: Begin Miscellaneous
-        "I-MISC"  // 8: Inside Miscellaneous
-    };
-    return labels;
-}
-
-// ============================================================================
 // Model Metadata Registry
 // ============================================================================
 
@@ -71,6 +50,7 @@ const std::vector<std::string>& NERModelManager::GetLabels() {
 struct ModelMetadata {
     std::string name;            // Short identifier (e.g., "distilbert-en")
     std::string display_name;    // Human-readable name
+    std::string licence;         // Licence of the model weights (SPDX-like)
     std::string model_url;       // URL to download ONNX model
     std::string tokenizer_url;   // URL to download tokenizer config
     std::string model_file;      // On-disk model file name inside the model directory
@@ -79,16 +59,28 @@ struct ModelMetadata {
     std::vector<std::string> languages;  // Supported languages
     size_t model_size_mb;        // Approximate model size in MB
     size_t max_seq_length;       // Maximum input sequence length (incl. special tokens)
+    // Output labels in model order (id2label of the model's config.json).
+    // B-/I- labels of the types PER, ORG, LOC and MISC become entities; other
+    // types (DATE of the multilingual models) are read as O, see
+    // IsReportedNEREntityType
+    std::vector<std::string> labels;
 };
 
 /**
  * Get list of all supported NER models
  */
 static const std::vector<ModelMetadata>& GetSupportedModels() {
+    // CoNLL-2003 (dslim/distilbert-NER, elastic/distilbert-base-cased-finetuned-conll03-english)
+    static const std::vector<std::string> conll03_labels = {"O",     "B-PER", "I-PER", "B-ORG", "I-ORG",
+                                                     "B-LOC", "I-LOC", "B-MISC", "I-MISC"};
+    // Davlan *-multilingual-cased-ner-hrl (10 high-resource languages)
+    static const std::vector<std::string> hrl_labels = {"O",     "B-DATE", "I-DATE", "B-PER", "I-PER",
+                                                 "B-ORG", "I-ORG",  "B-LOC",  "I-LOC"};
     static std::vector<ModelMetadata> models = {
         {
             "distilbert-en",
-            "DistilBERT English (Fast, 66MB)",
+            "DistilBERT English, CoNLL-2003",
+            "Apache-2.0",
             "https://huggingface.co/onnx-community/distilbert-base-cased-finetuned-conll03-english-ONNX/resolve/main/onnx/model_quantized.onnx",
             "https://huggingface.co/onnx-community/distilbert-base-cased-finetuned-conll03-english-ONNX/resolve/main/tokenizer.json",
             "model_quantized.onnx",
@@ -96,7 +88,36 @@ static const std::vector<ModelMetadata>& GetSupportedModels() {
             "wordpiece",
             {"en"},
             66,
-            NER_MAX_SEQ_LENGTH
+            NER_MAX_SEQ_LENGTH,
+            conll03_labels
+        },
+        {
+            "distilbert-multi",
+            "DistilBERT multilingual, Davlan NER-HRL",
+            "AFL-3.0",
+            "https://huggingface.co/Xenova/distilbert-base-multilingual-cased-ner-hrl/resolve/main/onnx/model_quantized.onnx",
+            "https://huggingface.co/Xenova/distilbert-base-multilingual-cased-ner-hrl/resolve/main/tokenizer.json",
+            "model_quantized.onnx",
+            "tokenizer.json",
+            "wordpiece",
+            {"ar", "de", "en", "es", "fr", "it", "lv", "nl", "pt", "zh"},
+            135,
+            NER_MAX_SEQ_LENGTH,
+            hrl_labels
+        },
+        {
+            "bert-multi",
+            "BERT-base multilingual, Davlan NER-HRL",
+            "AFL-3.0",
+            "https://huggingface.co/Xenova/bert-base-multilingual-cased-ner-hrl/resolve/main/onnx/model_quantized.onnx",
+            "https://huggingface.co/Xenova/bert-base-multilingual-cased-ner-hrl/resolve/main/tokenizer.json",
+            "model_quantized.onnx",
+            "tokenizer.json",
+            "wordpiece",
+            {"ar", "de", "en", "es", "fr", "it", "lv", "nl", "pt", "zh"},
+            178,
+            NER_MAX_SEQ_LENGTH,
+            hrl_labels
         }
     };
     return models;
@@ -129,8 +150,28 @@ static std::string GetValidModelNames() {
     return result;
 }
 
+/**
+ * One-line description of every model for the anofox_ner_model setting:
+ * "distilbert-en (en, 66 MB, Apache-2.0), ..."
+ */
+static std::string DescribeSupportedModels() {
+    std::string result;
+    for (const auto &model : GetSupportedModels()) {
+        if (!result.empty()) {
+            result += "; ";
+        }
+        std::string languages;
+        for (const auto &language : model.languages) {
+            languages += (languages.empty() ? "" : " ") + language;
+        }
+        result += model.name + " (" + languages + ", " + std::to_string(model.model_size_mb) + " MB, " +
+                  model.licence + ")";
+    }
+    return result;
+}
+
 // Current model configuration (thread-safe singleton)
-static std::string g_current_model_name = "distilbert-en";
+static std::string g_current_model_name = NER_DEFAULT_MODEL;
 static std::mutex g_model_config_mutex;
 
 static std::string GetCurrentModelName() {
@@ -695,10 +736,33 @@ void NERModelManager::LoadModel() {
         // Reshape model to accept dynamic batch and sequence length
         // The ONNX model has dynamic shapes, but OpenVINO needs explicit configuration
         AnofoxTrace(AnofoxLogLevel::Info, "ner: Configuring dynamic input shapes...");
+        // BERT exports also take token_type_ids, DistilBERT exports do not;
+        // the inputs are read from the model instead of the registry
         ov::PartialShape dynamic_shape = {1, ov::Dimension::dynamic()};  // batch=1, seq=dynamic
         std::map<std::string, ov::PartialShape> input_shapes;
-        input_shapes["input_ids"] = dynamic_shape;
-        input_shapes["attention_mask"] = dynamic_shape;
+        bool has_input_ids = false;
+        bool has_token_type_ids = false;
+        for (const auto &input : model->inputs()) {
+            const auto &names = input.get_names();
+            const std::string input_name = names.empty() ? std::string() : *names.begin();
+            if (names.count("input_ids")) {
+                has_input_ids = true;
+                input_shapes["input_ids"] = dynamic_shape;
+            } else if (names.count("attention_mask")) {
+                input_shapes["attention_mask"] = dynamic_shape;
+            } else if (names.count("token_type_ids")) {
+                has_token_type_ids = true;
+                input_shapes["token_type_ids"] = dynamic_shape;
+            } else {
+                throw std::runtime_error("NER model input '" + input_name +
+                                         "' is not supported (expected input_ids, attention_mask, token_type_ids)");
+            }
+        }
+        if (!has_input_ids || !input_shapes.count("attention_mask")) {
+            throw std::runtime_error("NER model must take input_ids and attention_mask");
+        }
+        AnofoxTrace(AnofoxLogLevel::Debug, std::string("ner: Model inputs: input_ids, attention_mask") +
+                                               (has_token_type_ids ? ", token_type_ids" : ""));
         model->reshape(input_shapes);
 
         // Log available devices for diagnostics
@@ -707,30 +771,11 @@ void NERModelManager::LoadModel() {
         for (const auto &d : available) dev_list += d + " ";
         AnofoxTrace(AnofoxLogLevel::Info, "ner: Available OpenVINO devices: " + dev_list);
 
-        // Compile model for configured device (default AUTO: selects GPU if available, falls back to CPU)
-        AnofoxTrace(AnofoxLogLevel::Info, "ner: Compiling model for device: " + device_name);
-        compiled_model_ = std::make_shared<ov::CompiledModel>(
-            core_->compile_model(model, device_name)
-        );
-
-        // Log the actual execution device(s) chosen by AUTO or by explicit selection
-        auto exec_devices = compiled_model_->get_property(ov::execution_devices);
-        std::string exec_dev_str;
-        for (size_t di = 0; di < exec_devices.size(); ++di) {
-            if (di > 0) exec_dev_str += ",";
-            exec_dev_str += exec_devices[di];
-        }
-        AnofoxTrace(AnofoxLogLevel::Info, "ner: Executing on: " + exec_dev_str);
-
-        // Note: inference requests are created per ExtractEntities call;
-        // a single ov::InferRequest is stateful and must not be shared
-        // across DuckDB worker threads (issue #50)
-
         // Create and load the tokenizer matching the model's metadata. A
         // model without a working tokenizer must not report LOADED, otherwise
         // inference silently returns no entities (issue #56)
         if (metadata->tokenizer_type == "wordpiece") {
-            // DistilBERT uses WordPiece tokenizer (tokenizer.json)
+            // BERT and DistilBERT use a WordPiece tokenizer (tokenizer.json)
             tokenizer_ = std::make_unique<WordPieceTokenizer>();
         }
 #if HAVE_SENTENCEPIECE
@@ -757,8 +802,58 @@ void NERModelManager::LoadModel() {
         }
 
         // Bound inputs at the model's maximum sequence length (issue #56);
-        // written before LOADED is published, immutable afterwards
+        // these are written before LOADED is published, immutable afterwards
         max_seq_length_ = metadata->max_seq_length;
+        labels_ = metadata->labels;
+        use_token_type_ids_ = has_token_type_ids;
+        fixed_seq_length_ = 0;
+
+        // Compile model for configured device (default AUTO: selects GPU if available, falls back to CPU)
+        AnofoxTrace(AnofoxLogLevel::Info, "ner: Compiling model for device: " + device_name);
+        compiled_model_ = std::make_shared<ov::CompiledModel>(
+            core_->compile_model(model, device_name)
+        );
+
+        // Some exports fail at inference time with a dynamic sequence
+        // length (the OpenVINO CPU plugin rejects the Xenova DistilBERT
+        // multilingual export with "bad mem size" in the first attention
+        // MatMul), while the same graph runs with a fixed length. Probe once
+        // and fall back to a fixed length instead of reporting LOADED for a
+        // model whose every inference fails.
+        std::string probe_error = ProbeInference();
+        if (!probe_error.empty()) {
+            const size_t fixed_length = std::min(NER_WINDOW_TOKENS, max_seq_length_);
+            AnofoxTrace(AnofoxLogLevel::Warn,
+                        "ner: inference with a dynamic sequence length failed for " + model_name + " (" +
+                            probe_error + "); compiling the model for a fixed length of " +
+                            std::to_string(fixed_length) + " tokens, which is slower for short texts");
+            for (auto &entry : input_shapes) {
+                entry.second = ov::PartialShape {1, static_cast<int64_t>(fixed_length)};
+            }
+            model->reshape(input_shapes);
+            compiled_model_ = std::make_shared<ov::CompiledModel>(core_->compile_model(model, device_name));
+            fixed_seq_length_ = fixed_length;
+            probe_error = ProbeInference();
+            if (!probe_error.empty()) {
+                throw std::runtime_error("NER model inference failed: " + probe_error);
+            }
+        }
+
+        // Log the actual execution device(s) chosen by AUTO or by explicit selection
+        auto exec_devices = compiled_model_->get_property(ov::execution_devices);
+        std::string exec_dev_str;
+        for (size_t di = 0; di < exec_devices.size(); ++di) {
+            if (di > 0) exec_dev_str += ",";
+            exec_dev_str += exec_devices[di];
+        }
+        AnofoxTrace(AnofoxLogLevel::Info, "ner: Executing on: " + exec_dev_str);
+        if (fixed_seq_length_ > 0) {
+            exec_dev_str += ", fixed length " + std::to_string(fixed_seq_length_);
+        }
+
+        // Note: inference requests are created per ExtractEntities call;
+        // a single ov::InferRequest is stateful and must not be shared
+        // across DuckDB worker threads (issue #50)
 
         {
             std::lock_guard<std::mutex> lock(state_mutex_);
@@ -929,6 +1024,28 @@ bool NERModelManager::DownloadModel(const ModelMetadata &metadata, const std::st
     return true;
 }
 
+std::string NERModelManager::ProbeInference() {
+#if HAVE_OPENVINO
+    // A short input (padded to the minimum length) and a longer one, so both
+    // the padded and the unpadded path run once before LOADED is published
+    static const std::vector<std::string> probes = {
+        "Sabine Weiß lives in Berlin.",
+        "Sabine Weiß from Allianz called about the claim of Jürgen Schäfer in München; please call her back "
+        "before Friday, the documents are complete."};
+    try {
+        for (const auto &probe : probes) {
+            InferSequence(tokenizer_->Encode(probe), probe);
+        }
+    } catch (const std::exception &e) {
+        std::string message = e.what();
+        // OpenVINO messages span several lines; keep the trace line on one
+        std::replace(message.begin(), message.end(), '\n', ' ');
+        return message;
+    }
+#endif
+    return "";
+}
+
 std::vector<NEREntity> NERModelManager::RunSingleInference(const std::string &text) {
 #if HAVE_OPENVINO
     // Check cache first. Get/Put are fully synchronized internally and Put is
@@ -1016,6 +1133,15 @@ std::vector<NEREntity> NERModelManager::InferSequence(TokenizedInput tokenized, 
     // with very short sequences in the quantized model
     static const size_t MIN_SEQ_LENGTH = 16;
     size_t seq_length = std::max(actual_length, MIN_SEQ_LENGTH);
+    if (fixed_seq_length_ > 0) {
+        // The model was compiled for one sequence length (see LoadModel);
+        // windows never exceed it
+        if (actual_length > fixed_seq_length_) {
+            throw std::runtime_error("NER input of " + std::to_string(actual_length) +
+                                     " tokens exceeds the fixed model length " + std::to_string(fixed_seq_length_));
+        }
+        seq_length = fixed_seq_length_;
+    }
 
     // Create attention mask (1 for real tokens, 0 for padding)
     std::vector<int64_t> attention_mask(seq_length, 0);
@@ -1031,6 +1157,7 @@ std::vector<NEREntity> NERModelManager::InferSequence(TokenizedInput tokenized, 
 
     ov::Tensor input_ids_tensor(ov::element::i64, input_shape);
     ov::Tensor attention_mask_tensor(ov::element::i64, input_shape);
+    const size_t num_labels = labels_.size();
 
     // Copy data to tensors
     int64_t* input_ids_data = input_ids_tensor.data<int64_t>();
@@ -1046,6 +1173,12 @@ std::vector<NEREntity> NERModelManager::InferSequence(TokenizedInput tokenized, 
     // Set input tensors
     infer_request.set_tensor("input_ids", input_ids_tensor);
     infer_request.set_tensor("attention_mask", attention_mask_tensor);
+    if (use_token_type_ids_) {
+        // A single segment: every token belongs to sentence A (type 0)
+        ov::Tensor token_type_ids_tensor(ov::element::i64, input_shape);
+        std::fill_n(token_type_ids_tensor.data<int64_t>(), seq_length, int64_t(0));
+        infer_request.set_tensor("token_type_ids", token_type_ids_tensor);
+    }
 
     // Run inference
     infer_request.infer();
@@ -1054,10 +1187,10 @@ std::vector<NEREntity> NERModelManager::InferSequence(TokenizedInput tokenized, 
     // a mismatch would mean an out-of-bounds read (issue #56)
     ov::Tensor output_tensor = infer_request.get_output_tensor(0);
     const ov::Shape &output_shape = output_tensor.get_shape();
-    ValidateLogitsShape(output_shape, seq_length, static_cast<size_t>(NUM_LABELS));
+    ValidateLogitsShape(output_shape, seq_length, num_labels);
     const float* logits_data = output_tensor.data<float>();
 
-    std::vector<float> logits(logits_data, logits_data + seq_length * NUM_LABELS);
+    std::vector<float> logits(logits_data, logits_data + seq_length * num_labels);
 
     return PostProcess(logits, seq_length, text, tokenized.offsets);
 #else
@@ -1085,7 +1218,8 @@ std::vector<NEREntity> NERModelManager::PostProcess(
     const std::vector<std::pair<size_t, size_t>> &offsets
 ) {
     std::vector<NEREntity> entities;
-    const auto& labels = GetLabels();
+    const auto &labels = labels_;
+    const size_t num_labels = labels.size();
 
     // Skip [CLS] and [SEP] tokens
     size_t start_idx = 1;
@@ -1100,18 +1234,18 @@ std::vector<NEREntity> NERModelManager::PostProcess(
 
     for (size_t i = start_idx; i < end_idx && i < offsets.size(); ++i) {
         // Get logits for this position
-        const float* pos_logits = &logits[i * NUM_LABELS];
+        const float* pos_logits = &logits[i * num_labels];
 
         // Apply softmax and find max
-        float max_logit = *std::max_element(pos_logits, pos_logits + NUM_LABELS);
+        float max_logit = *std::max_element(pos_logits, pos_logits + num_labels);
         float sum_exp = 0.0f;
-        for (int j = 0; j < NUM_LABELS; ++j) {
+        for (size_t j = 0; j < num_labels; ++j) {
             sum_exp += std::exp(pos_logits[j] - max_logit);
         }
 
-        int best_label_idx = 0;
+        size_t best_label_idx = 0;
         float best_prob = 0.0f;
-        for (int j = 0; j < NUM_LABELS; ++j) {
+        for (size_t j = 0; j < num_labels; ++j) {
             float prob = std::exp(pos_logits[j] - max_logit) / sum_exp;
             if (prob > best_prob) {
                 best_prob = prob;
@@ -1119,12 +1253,18 @@ std::vector<NEREntity> NERModelManager::PostProcess(
             }
         }
 
-        std::string label = labels[best_label_idx];
+        const std::string &label = labels[best_label_idx];
 
-        // Check if this is a B- (begin) or I- (inside) tag
+        // Check if this is a B- (begin) or I- (inside) tag; a tag of a type
+        // that is not reported (DATE) is read as O
         bool is_begin = label.size() > 2 && label[0] == 'B' && label[1] == '-';
         bool is_inside = label.size() > 2 && label[0] == 'I' && label[1] == '-';
         std::string entity_type = (is_begin || is_inside) ? label.substr(2) : "";
+        if (!entity_type.empty() && !IsReportedNEREntityType(entity_type)) {
+            is_begin = false;
+            is_inside = false;
+            entity_type.clear();
+        }
 
         if (is_begin) {
             // Save previous entity if exists
@@ -1378,13 +1518,14 @@ void RegisterNEROptions(ExtensionLoader &loader) {
                               SetNERCacheSizeOption);
 
     config.AddExtensionOption("anofox_ner_model",
-                              "NER model to use (supported: distilbert-en); must be set before the model is first loaded",
+                              "NER model to use: " + DescribeSupportedModels() +
+                                  "; must be set before the model is first loaded",
                               LogicalTypeId::VARCHAR,
-                              Value("distilbert-en"),
+                              Value(NER_DEFAULT_MODEL),
                               SetNERModelOption);
 
     config.AddExtensionOption("anofox_ner_auto_download",
-                              "Download the NER model (~66 MB) from Hugging Face on first use when it is not "
+                              "Download the NER model (66-178 MB, see anofox_ner_model) from Hugging Face on first use when it is not "
                               "on disk; false skips NER-based detection instead (offline use: NAME falls back to "
                               "a name dictionary, ORGANIZATION, LOCATION and MISC are not detected)",
                               LogicalTypeId::BOOLEAN,

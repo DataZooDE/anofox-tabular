@@ -199,7 +199,13 @@ distilbert-en
 statement error
 SET anofox_ner_model = 'invalid-model';
 ----
-Valid models: distilbert-en
+Unsupported NER model: invalid-model. Valid models: distilbert-en, distilbert-multi, bert-multi
+
+# 22b. The setting description lists every model with its languages, size and licence
+query T
+SELECT description FROM duckdb_settings() WHERE name = 'anofox_ner_model';
+----
+NER model to use: distilbert-en (en, 66 MB, Apache-2.0); distilbert-multi (ar de en es fr it lv nl pt zh, 135 MB, AFL-3.0); bert-multi (ar de en es fr it lv nl pt zh, 178 MB, AFL-3.0); must be set before the model is first loaded
 
 # 23. SET to 'DISTILBERT-EN' (wrong case) - throws (case-sensitive validation)
 statement error

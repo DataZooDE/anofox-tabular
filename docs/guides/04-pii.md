@@ -311,7 +311,8 @@ keyword or check digit are left alone. If mistyped IBANs and card numbers must b
 ## 6. Run without network access
 
 Names, organizations and places are found by a NER model. The first detection that needs it
-downloads the model (about 66 MB) from Hugging Face into `~/.duckdb/extensions/anofox/ner/`.
+downloads the model (66 MB to 178 MB, depending on `anofox_ner_model`) from Hugging Face into
+`~/.duckdb/extensions/anofox/ner/<model>/`.
 To prevent the download:
 
 ```sql no-run

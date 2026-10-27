@@ -52,7 +52,17 @@ SELECT list_contains(
 true
 
 # Re-setting the currently loaded model name after load stays a no-op success
-# (switching to a different model after load is rejected; only one supported
-# model exists today, see issue #56)
 statement ok
 SET anofox_ner_model = 'distilbert-en';
+
+# Switching to a different model after load is rejected (issue #56): compiled
+# model and tokenizer are immutable once loaded
+statement error
+SET anofox_ner_model = 'bert-multi';
+----
+anofox_ner_model cannot be changed after the NER model has been loaded (currently 'distilbert-en')
+
+query T
+SELECT current_setting('anofox_ner_model');
+----
+distilbert-en

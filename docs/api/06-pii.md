@@ -985,15 +985,42 @@ On a build with OpenVINO, after the model has been loaded, it reports `true`, `L
 
 ## NER model
 
-`NAME`, `ORGANIZATION`, `LOCATION` and `MISC` are found by a DistilBERT NER model (English,
-`distilbert-en`) that runs on OpenVINO.
+`NAME`, `ORGANIZATION`, `LOCATION` and `MISC` are found by a NER model that runs on OpenVINO.
+`anofox_ner_model` selects it:
 
-- **Language.** The model is trained on English text. It finds names and places in other
-  languages only partly: German free text, for example, is covered poorly (capitalised nouns are
-  taken for entities, German names and companies are missed). Review NER results on non-English
-  data, and do not rely on them alone.
-- **Download.** The first detection that needs the model downloads it (about 66 MB) from
-  Hugging Face into `~/.duckdb/extensions/anofox/ner/<model>/`. This applies to `pii_detect`,
+| Model | Languages | Entity types | Download | Licence | Hugging Face repository |
+|-------|-----------|--------------|----------|---------|-------------------------|
+| `distilbert-en` (default) | English | PER, ORG, LOC, MISC | 66 MB | Apache-2.0 | `onnx-community/distilbert-base-cased-finetuned-conll03-english-ONNX` |
+| `distilbert-multi` | German, English, French, Spanish, Italian, Dutch, Portuguese, Latvian, Arabic, Chinese | PER, ORG, LOC | 135 MB | AFL-3.0 | `Xenova/distilbert-base-multilingual-cased-ner-hrl` |
+| `bert-multi` | as `distilbert-multi` | PER, ORG, LOC | 178 MB | AFL-3.0 | `Xenova/bert-base-multilingual-cased-ner-hrl` |
+
+The multilingual models are the ONNX exports of Davlan's `*-multilingual-cased-ner-hrl` models.
+They tag no `MISC` entities; they also tag dates, which are not reported (dates of birth are the
+pattern type `DATE_OF_BIRTH`).
+
+```sql no-run
+-- before the first detection of the process
+SET anofox_ner_model = 'bert-multi';
+SELECT pii_mask('Mit freundlichen Grüßen Jürgen Schäfer, Allianz Versicherungs-AG, München');
+-- Mit freundlichen Grüßen [NAME], [ORGANIZATION], [LOCATION]
+```
+
+- **Language.** `distilbert-en` is trained on English text. It finds names and places in other
+  languages only partly: on German free text it takes capitalised nouns for entities and misses
+  German names and companies. For German and other European text use `bert-multi` or
+  `distilbert-multi`. On the benchmark in `test/ner_eval` (42 hand-annotated tickets and
+  letters, 24 of them German) `bert-multi` finds 93% of the person names at a precision of
+  0.94, `distilbert-en` 65% at 0.55; on the German texts alone 87% at 1.00 against 55% at 0.38.
+  Review NER results anyway, and do not rely on them alone.
+- **Choosing the model.** Set `anofox_ner_model` before the first detection that needs the
+  model. Once the model is loaded, switching to another one is an error (`anofox_ner_model
+  cannot be changed after the NER model has been loaded`) until the process restarts.
+- **Speed.** On a 16-core desktop CPU, `distilbert-en` takes about 20 ms per row of the
+  benchmark, `bert-multi` about 40 ms. `distilbert-multi` needs a fixed input length of 256
+  tokens with the OpenVINO version the extension is built with (the extension detects this when
+  it loads the model and logs a warning), which makes it slower than `bert-multi`: about 50 ms.
+- **Download.** The first detection that needs the model downloads it (66 MB to 178 MB, see
+  above) from Hugging Face into `~/.duckdb/extensions/anofox/ner/<model>/`. This applies to `pii_detect`,
   `pii_mask`, `pii_scan_table`, `pii_audit_table` and the other detection functions, unless
   `anofox_pii_enabled_types` lists only pattern-based types.
 - **Offline use.** `SET anofox_ner_auto_download = false` turns the download off. NER detection
@@ -1062,7 +1089,7 @@ need it, or on a sample first.
 | `anofox_pii_min_confidence` | Minimum confidence of a match; dictionary name matches have 0.5, pattern matches 1.0 |
 | `anofox_pii_deep_validation` | Validate detected phone numbers with the built-in phone module. A match is dropped only when the module can judge the number and finds its length impossible: a number with `+CC` (or the default region's international prefix) for that country, a national number for `anofox_tab_phonenumber_default_region`. A national number in another country's format, such as `0171 1234567` with the default region `US`, cannot be judged and stays a match. |
 | `anofox_ner_auto_download` | Download the NER model on first use |
-| `anofox_ner_model` | The NER model (`distilbert-en`); set it before the model is loaded |
+| `anofox_ner_model` | The NER model: `distilbert-en`, `distilbert-multi` or `bert-multi` (see [NER model](#ner-model)); set it before the model is loaded |
 | `anofox_ner_device` | OpenVINO device (`AUTO`, `CPU`, `GPU`, ...) |
 | `anofox_ner_cache_size` | LRU cache size for NER results; 0 disables it |
 

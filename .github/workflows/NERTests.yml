@@ -1,5 +1,5 @@
 #
-# Runs the NER sqllogictests (`make test_ner`). The distribution jobs skip
+# Runs the NER sqllogictests (`make test_ner`, `make test_ner_multi`). The distribution jobs skip
 # them: they guard on OPENVINO_AVAILABLE, and they download the NER model from
 # Hugging Face on first use, which the release pipeline must not depend on.
 # Here the extension is built with OpenVINO on linux_amd64 against the
@@ -90,3 +90,8 @@ jobs:
 
       - name: Test
         run: make test_ner
+
+      # distilbert-multi (135 MB) and bert-multi (178 MB); cached with the
+      # model directory above, one process per model
+      - name: Test multilingual models
+        run: make test_ner_multi

@@ -226,3 +226,14 @@ TEST_CASE("BasicWordSplit splits on Unicode punctuation and spaces like the BERT
     auto euro = BasicWordSplit("100\xE2\x82\xAC");
     REQUIRE(euro.size() == 1);
 }
+
+TEST_CASE("Only PER, ORG, LOC and MISC are reported NER entity types", "[ner][labels]") {
+    using duckdb::anofox::IsReportedNEREntityType;
+    REQUIRE(IsReportedNEREntityType("PER"));
+    REQUIRE(IsReportedNEREntityType("ORG"));
+    REQUIRE(IsReportedNEREntityType("LOC"));
+    REQUIRE(IsReportedNEREntityType("MISC"));
+    // The multilingual models also tag dates; they are read as O
+    REQUIRE_FALSE(IsReportedNEREntityType("DATE"));
+    REQUIRE_FALSE(IsReportedNEREntityType(""));
+}

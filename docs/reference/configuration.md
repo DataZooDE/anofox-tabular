@@ -185,8 +185,8 @@ uses an OpenVINO model that is downloaded on first use. See
 
 | Setting | Effect |
 |---------|--------|
-| `anofox_ner_auto_download` | `true` downloads the model (~66 MB) from Hugging Face when it is not on disk. `false` never downloads: NER detection is skipped, the pattern recognizers keep working, `NAME` falls back to a name dictionary, `anofox_ner_status()` reports `NOT_DOWNLOADED` while the model is not on disk, and `pii_scan_table` marks its status with `(NER unavailable)`. |
-| `anofox_ner_model` | Model name. Only `distilbert-en` is supported. Set it before the model is first loaded. |
+| `anofox_ner_auto_download` | `true` downloads the model (66-178 MB, see `anofox_ner_model`) from Hugging Face when it is not on disk. `false` never downloads: NER detection is skipped, the pattern recognizers keep working, `NAME` falls back to a name dictionary, `anofox_ner_status()` reports `NOT_DOWNLOADED` while the model is not on disk, and `pii_scan_table` marks its status with `(NER unavailable)`. |
+| `anofox_ner_model` | Model name: `distilbert-en` (English), `distilbert-multi` or `bert-multi` (German, English, French, Spanish, Italian, Dutch, Portuguese, Latvian, Arabic, Chinese). Set it before the model is first loaded; switching afterwards is an error until the process restarts. See [NER model](../api/06-pii.md#ner-model). |
 | `anofox_ner_device` | OpenVINO device: `AUTO`, `CPU`, `GPU`, `GPU.0`, ... Takes effect at the next model load. |
 | `anofox_ner_cache_size` | Number of NER results kept in an LRU cache; `0` disables the cache |
 

@@ -197,6 +197,21 @@ struct TokenizedInput {
 constexpr size_t NER_MAX_SEQ_LENGTH = 512;
 
 /**
+ * NER model used unless anofox_ner_model selects another one (the model
+ * registry is GetSupportedModels() in anofox_ner.cpp).
+ */
+constexpr const char *NER_DEFAULT_MODEL = "distilbert-en";
+
+/**
+ * Entity types the NER layer reports: PER, ORG, LOC (all models) and MISC
+ * (the CoNLL-2003 model). Other types a model tags (DATE of the multilingual
+ * models) are read as O: dates of birth are a pattern type of their own.
+ */
+inline bool IsReportedNEREntityType(const std::string &entity_type) {
+    return entity_type == "PER" || entity_type == "ORG" || entity_type == "LOC" || entity_type == "MISC";
+}
+
+/**
  * Window length (in tokens, including the two special tokens) for inputs
  * longer than this. The model accepts 512 tokens, but the bundled
  * DistilBERT (trained on short CoNLL sentences) misses entities at late
@@ -814,6 +829,13 @@ private:
     std::vector<NEREntity> InferSequence(TokenizedInput tokenized, const std::string &text);
 
     /**
+     * Run two sample texts through the freshly compiled model; returns the
+     * error message of a failed inference, empty when both succeed. Used by
+     * LoadModel() before LOADED is published.
+     */
+    std::string ProbeInference();
+
+    /**
      * Update status_message_ under state_mutex_
      */
     void SetStatusMessage(const std::string &message);
@@ -855,9 +877,14 @@ private:
     // Result cache for repeated texts
     std::unique_ptr<LRUCache<std::string, std::vector<NEREntity>>> result_cache_;
 
-    // DistilBERT NER labels: O, B-PER, I-PER, B-LOC, I-LOC, B-ORG, I-ORG, B-MISC, I-MISC
-    static constexpr int NUM_LABELS = 9;
-    static const std::vector<std::string>& GetLabels();
+    // Output labels of the loaded model (ModelMetadata::labels) and whether
+    // it takes token_type_ids (BERT does, DistilBERT does not); written by
+    // LoadModel() before LOADED is published, immutable afterwards
+    std::vector<std::string> labels_;
+    bool use_token_type_ids_ = false;
+    // Sequence length the model was compiled for when dynamic shapes fail
+    // (see ProbeInference); 0 means dynamic. Immutable after LOADED.
+    size_t fixed_seq_length_ = 0;
 };
 
 /**

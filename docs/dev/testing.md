@@ -34,11 +34,20 @@ DATAZOO_DISABLE_TELEMETRY=1 /path/to/build/release/test/unittest --test-dir "$PW
 
 | Tests | Guard | How to run |
 |-------|-------|------------|
-| NER: `anofox_pii_ner.test`, `anofox_ner_cache_zero.test`, `anofox_ner_truncation.test` | `require-env OPENVINO_AVAILABLE` | `make test_ner`. Needs a build with OpenVINO and downloads the NER model (~66 MB) on first run. |
+| NER: every test with `require-env OPENVINO_AVAILABLE` (`anofox_pii_ner*.test`, `anofox_ner_*.test`, ...) | `require-env OPENVINO_AVAILABLE` | `make test_ner`. Needs a build with OpenVINO and downloads the NER model `distilbert-en` (~66 MB) on first run. |
+| Multilingual NER: `anofox_ner_multilingual.test` (`bert-multi`), `anofox_ner_multilingual_distilbert.test` (`distilbert-multi`) | `require-env OPENVINO_AVAILABLE` and `require-env ANOFOX_TEST_NER_MULTI` | `make test_ner_multi`. Downloads 178 MB and 135 MB on first run. The NER model is chosen once per process, so each file runs in a process of its own; do not set `ANOFOX_TEST_NER_MULTI` for a whole-suite run. |
 | Postal: `anofox_postal_null.test` | `require-env POSTAL_AVAILABLE` | `make test` sets `POSTAL_AVAILABLE=1` when libpostal is installed |
 
 `test/sql/anofox_postal.test.disabled` and `anofox_postal.test_disabled` are not run, because
 they need the ~500 MB libpostal data.
+
+## NER model benchmark
+
+`test/ner_eval/` holds a manual benchmark of the NER models (precision and recall for person,
+organization and location names on 42 hand-annotated German, English, French, Spanish, Italian
+and Dutch texts, and the time per row). It is not run by any test target; see
+[`test/ner_eval/README.md`](../../test/ner_eval/README.md) for how to run it and the last
+results.
 
 ## Docs coverage test
 

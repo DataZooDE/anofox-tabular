@@ -81,12 +81,23 @@ test_reldebug_internal:
 # (~66 MB, cached in ~/.duckdb/extensions/anofox/ner). The regular test
 # targets skip them; this target runs them, and fails if the extension was
 # built without OpenVINO rather than letting every NER assertion degrade.
-NER_TESTS := test/sql/anofox_pii_ner.test test/sql/anofox_ner_cache_zero.test test/sql/anofox_ner_truncation.test
+# The tests of the multilingual models (test_ner_multi) also guard on
+# ANOFOX_TEST_NER_MULTI: the model is chosen once per process, so each of them
+# runs in a process of its own, and they download 135 MB and 178 MB.
+NER_MULTI_TESTS := test/sql/anofox_ner_multilingual.test test/sql/anofox_ner_multilingual_distilbert.test
+NER_TESTS := $(filter-out $(NER_MULTI_TESTS),$(shell grep -l 'require-env OPENVINO_AVAILABLE' test/sql/*.test))
+NER_CHECK_OPENVINO := $(PROJ_DIR)scripts/duckdb-dev.sh -noheader -list -c "SELECT onnx_available FROM anofox_ner_status()" 2>/dev/null | grep -qx true \
+		|| { echo "the extension was built without OpenVINO"; exit 1; }
 test_ner: release
-	@$(PROJ_DIR)scripts/duckdb-dev.sh -noheader -list -c "SELECT onnx_available FROM anofox_ner_status()" 2>/dev/null | grep -qx true \
-		|| { echo "test_ner: the extension was built without OpenVINO"; exit 1; }
+	@$(NER_CHECK_OPENVINO)
 	@for t in $(NER_TESTS); do \
 		DATAZOO_DISABLE_TELEMETRY=1 DNNL_MAX_CPU_ISA=AVX2 OPENVINO_AVAILABLE=1 ./build/release/test/unittest "$$t" || exit 1; \
 	done
 
-.PHONY: test_ner
+test_ner_multi: release
+	@$(NER_CHECK_OPENVINO)
+	@for t in $(NER_MULTI_TESTS); do \
+		DATAZOO_DISABLE_TELEMETRY=1 DNNL_MAX_CPU_ISA=AVX2 OPENVINO_AVAILABLE=1 ANOFOX_TEST_NER_MULTI=1 ./build/release/test/unittest "$$t" || exit 1; \
+	done
+
+.PHONY: test_ner test_ner_multi
