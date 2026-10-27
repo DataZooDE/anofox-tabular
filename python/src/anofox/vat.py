@@ -47,6 +47,18 @@ def vat_is_valid(conn: Any, vat_string: Union[str, Any], column: Optional[str] =
     return _vat_call(conn, vat_string, column, "anofox_tab_vat_is_valid", "vat_is_valid", _to_bool)
 
 
+def vat_validate(conn: Any, vat_string: Union[str, Any], column: Optional[str] = None) -> Union[Optional[dict], Any]:
+    """
+    Check a VAT number and say why it fails, like SQL ``vat_validate(vat)``.
+
+    Returns ``{"valid": bool, "country": str | None, "reason": str | None}``;
+    *reason* is ``missing_prefix``, ``unsupported_country``, ``invalid_format``
+    or ``checksum_mismatch``, and ``None`` for a valid number. ``None`` input
+    gives ``None``. Accepts a DataFrame with *column*.
+    """
+    return _vat_call(conn, vat_string, column, "anofox_tab_vat_validate", "vat_validate", _to_dict)
+
+
 def vat_is_valid_syntax(conn: Any, vat_string: Union[str, Any], column: Optional[str] = None) -> Union[bool, Any]:
     """
     Return True if *vat_string* passes the country-specific VAT syntax check
@@ -161,6 +173,10 @@ def _to_bool(raw: Any) -> Optional[bool]:
 
 def _to_str(raw: Any) -> Optional[str]:
     return None if raw is None else str(raw)
+
+
+def _to_dict(raw: Any) -> Optional[dict]:
+    return None if raw is None else dict(raw)
 
 
 def _to_vat_dict(raw: Any) -> Optional[dict]:

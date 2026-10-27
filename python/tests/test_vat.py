@@ -202,3 +202,22 @@ class TestVatDataFrame:
         out = vat.vat_is_valid(conn, pl.from_pandas(_suppliers()), column="vat_id")
         assert isinstance(out, pl.DataFrame)
         assert out["vat_is_valid"].to_list() == [True, False, False, False]
+
+
+class TestVatValidate:
+    def test_reason_for_a_wrong_check_digit(self, conn):
+        from anofox import vat
+        assert vat.vat_validate(conn, "DE123456789") == {
+            "valid": False, "country": "DE", "reason": "checksum_mismatch"}
+
+    def test_valid_number_has_no_reason(self, conn):
+        from anofox import vat
+        assert vat.vat_validate(conn, "DE111111125") == {"valid": True, "country": "DE", "reason": None}
+
+    def test_supplier_column(self, conn):
+        import pandas as pd
+        from anofox import vat
+        suppliers = pd.DataFrame({"vat_id": ["DE111111125", "123456789", "XX123", None]})
+        out = vat.vat_validate(conn, suppliers, column="vat_id")
+        reasons = [r["reason"] if isinstance(r, dict) else None for r in out["vat_validate"]]
+        assert reasons == [None, "missing_prefix", "unsupported_country", None]
