@@ -107,13 +107,45 @@ static string GenerateDistinctCountSQL(const string &table_ref, const string &co
 		"FROM (SELECT COUNT(DISTINCT " + col_id + ") AS distinct_count FROM " + table_ref + ")";
 }
 
+// The CTEs that read the non-NULL values of `col_id` as DOUBLE: `all_vals(val)` and, when the
+// column has an exact numeric type (integers, DECIMAL), a one-row `ref(r)` with the reference
+// value the values are centred on (see ExactCenteringType): val is then the exact difference to
+// it, so values above 2^53 stay distinct. `offset_sql` is the DOUBLE to add to a centred
+// location (mean, quantile, bound) to report it on the column's scale ("" when not centred).
+struct CenteredValuesSQL {
+	string ctes;
+	string offset_sql;
+};
+
+static CenteredValuesSQL BuildCenteredValuesSQL(const string &table_ref, const string &col_id,
+                                                const LogicalType &column_type) {
+	auto centering_type =
+	    column_type.id() == LogicalTypeId::INVALID ? string() : ExactCenteringType(column_type.ToString());
+	if (centering_type.empty()) {
+		return {"all_vals AS (SELECT CAST(" + col_id + " AS DOUBLE) AS val FROM " + table_ref + " WHERE " + col_id +
+		            " IS NOT NULL), ",
+		        ""};
+	}
+	return {"ref AS (SELECT " + CenteringReferenceSQL(col_id, centering_type) + " AS r FROM " + table_ref + "), "
+	        "all_vals AS (SELECT " + CenteredDoubleSQL(col_id, centering_type, "ref.r") + " AS val FROM " + table_ref +
+	            ", ref WHERE " + col_id + " IS NOT NULL), ",
+	        "(SELECT CAST(r AS DOUBLE) FROM ref)"};
+}
+
+// `centred_sql` shifted back by the offset of BuildCenteredValuesSQL
+static string Uncentered(const CenteredValuesSQL &values, const string &centred_sql) {
+	return values.offset_sql.empty() ? centred_sql : "(" + values.offset_sql + " + " + centred_sql + ")";
+}
+
 // Helper: Generate SQL for zscore metrics using CTE to avoid nested aggregates
-static string GenerateZscoreSQL(const string &table_ref, const string &column_name, const Value &threshold) {
+static string GenerateZscoreSQL(const string &table_ref, const string &column_name, const LogicalType &column_type,
+                                const Value &threshold) {
 	string thresh_val = DoubleThresholdSQL(threshold, "3.0");
 	string col_id = QuoteSqlIdentifier(column_name);
 
 	// Use CTEs to avoid nested aggregate error:
-	// 1. vals: the non-NULL values cast to DOUBLE
+	// 1. vals: the non-NULL values cast to DOUBLE (exact numeric types centred first, see
+	//    BuildCenteredValuesSQL; mean is reported on the column's scale)
 	// 2. stats: compute mean and stddev (always exactly one row)
 	// 3. with_zscore: compute z-score for each row; a constant column (stddev = 0)
 	//    or a single row (stddev NULL) yields z-score 0 instead of NaN/NULL
@@ -125,17 +157,16 @@ static string GenerateZscoreSQL(const string &table_ref, const string &column_na
 	const string nonfinite_note =
 	    "CASE WHEN nonfinite_count > 0 THEN '; ' || CAST(nonfinite_count AS VARCHAR) || ' NaN/Inf value(s) ignored' "
 	    "ELSE '' END";
-	return "WITH all_vals AS ("
-		"SELECT CAST(" + col_id + " AS DOUBLE) AS val FROM " + table_ref + " WHERE " + col_id + " IS NOT NULL"
-		"), "
+	auto values = BuildCenteredValuesSQL(table_ref, col_id, column_type);
+	return "WITH " + values.ctes +
 		"vals AS (SELECT val FROM all_vals WHERE isfinite(val)), "
 		"stats AS ("
-		"SELECT AVG(val) AS mean, STDDEV(val) AS stddev, COUNT(*) AS total_count, "
+		"SELECT AVG(val) AS centred_mean, " + Uncentered(values, "AVG(val)") + " AS mean, STDDEV(val) AS stddev, COUNT(*) AS total_count, "
 		"(SELECT COUNT(*) FROM all_vals WHERE NOT isfinite(val)) AS nonfinite_count FROM vals"
 		"), "
 		"with_zscore AS ("
 		"SELECT CASE WHEN s.stddev IS NULL OR s.stddev = 0 THEN 0.0 "
-		"            ELSE ABS((v.val - s.mean) / s.stddev) END AS abs_zscore "
+		"            ELSE ABS((v.val - s.centred_mean) / s.stddev) END AS abs_zscore "
 		"FROM vals v, stats s"
 		"), "
 		"summary AS ("
@@ -168,12 +199,14 @@ static string GenerateZscoreSQL(const string &table_ref, const string &column_na
 }
 
 // Helper: Generate SQL for IQR metrics using CTE to avoid nested aggregates
-static string GenerateIQRSQL(const string &table_ref, const string &column_name, const Value &iqr_multiplier) {
+static string GenerateIQRSQL(const string &table_ref, const string &column_name, const LogicalType &column_type,
+                             const Value &iqr_multiplier) {
 	string mult_val = DoubleThresholdSQL(iqr_multiplier, "1.5");
 	string col_id = QuoteSqlIdentifier(column_name);
 
 	// Use CTEs to avoid nested aggregate error:
-	// 1. vals: the finite non-NULL values cast to DOUBLE
+	// 1. vals: the finite non-NULL values cast to DOUBLE (exact numeric types centred first, see
+	//    BuildCenteredValuesSQL; quantiles and bounds are reported on the column's scale)
 	// 2. stats: compute Q1 and Q3 quantiles (always exactly one row)
 	// 3. bounds: derive the outlier bounds from the quantiles
 	// 4. summary: driven by bounds so exactly one row is returned even for empty input
@@ -184,9 +217,8 @@ static string GenerateIQRSQL(const string &table_ref, const string &column_name,
 	const string nonfinite_note =
 	    "CASE WHEN nonfinite_count > 0 THEN '; ' || CAST(nonfinite_count AS VARCHAR) || ' NaN/Inf value(s) ignored' "
 	    "ELSE '' END";
-	return "WITH all_vals AS ("
-		"SELECT CAST(" + col_id + " AS DOUBLE) AS val FROM " + table_ref + " WHERE " + col_id + " IS NOT NULL"
-		"), "
+	auto values = BuildCenteredValuesSQL(table_ref, col_id, column_type);
+	return "WITH " + values.ctes +
 		"vals AS (SELECT val FROM all_vals WHERE isfinite(val)), "
 		"stats AS ("
 		"SELECT QUANTILE_CONT(val, 0.25) AS q1, QUANTILE_CONT(val, 0.75) AS q3, COUNT(*) AS total_count, "
@@ -204,12 +236,13 @@ static string GenerateIQRSQL(const string &table_ref, const string &column_name,
 		"), "
 		"summary AS ("
 		"SELECT "
-		"  b.q1, "
-		"  b.q3, "
+		"  " + Uncentered(values, "b.q1") + " AS q1, "
+		"  " + Uncentered(values, "b.q3") + " AS q3, "
+		"  b.q3 - b.q1 AS iqr, "
 		"  b.total_count, "
 		"  b.nonfinite_count, "
-		"  b.lower_bound, "
-		"  b.upper_bound, "
+		"  " + Uncentered(values, "b.lower_bound") + " AS lower_bound, "
+		"  " + Uncentered(values, "b.upper_bound") + " AS upper_bound, "
 		"  (SELECT COUNT(*) FROM vals v, bounds b2 WHERE v.val < b2.lower_bound OR v.val > b2.upper_bound) AS outlier_count "
 		"FROM bounds b"
 		") "
@@ -217,7 +250,7 @@ static string GenerateIQRSQL(const string &table_ref, const string &column_name,
 		"CASE WHEN outlier_count = 0 THEN 'pass' ELSE 'fail' END AS status, "
 		"q1, "
 		"q3, "
-		"q3 - q1 AS iqr, "
+		"iqr, "
 		"lower_bound, "
 		"upper_bound, "
 		"outlier_count, "
@@ -389,7 +422,8 @@ static unique_ptr<TableRef> MetricZscoreBindReplace(ClientContext &context, Tabl
 	RequireRelationColumns(context, "zscore", table_name, {column_name});
 	RequireNumericColumn(context, "zscore", table_name, column_name);
 	string table_ref = BuildQueryTableRef(table_name);
-	string sql = GenerateZscoreSQL(table_ref, column_name, input.inputs[2]);
+	string sql = GenerateZscoreSQL(table_ref, column_name, LookupColumnType(context, table_name, column_name),
+	                               input.inputs[2]);
 	return ParseSubquery(sql, context, "Failed to parse zscore metric query");
 }
 
@@ -407,7 +441,8 @@ static unique_ptr<TableRef> MetricIQRBindReplace(ClientContext &context, TableFu
 	RequireRelationColumns(context, "iqr", table_name, {column_name});
 	RequireNumericColumn(context, "iqr", table_name, column_name);
 	string table_ref = BuildQueryTableRef(table_name);
-	string sql = GenerateIQRSQL(table_ref, column_name, input.inputs[2]);
+	string sql = GenerateIQRSQL(table_ref, column_name, LookupColumnType(context, table_name, column_name),
+	                            input.inputs[2]);
 	return ParseSubquery(sql, context, "Failed to parse IQR metric query");
 }
 

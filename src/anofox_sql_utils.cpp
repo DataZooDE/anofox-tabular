@@ -450,6 +450,39 @@ string UtcNowSQL() {
 	return "make_timestamp(epoch_us(now()))";
 }
 
+string ExactCenteringType(const string &type_name) {
+	auto upper = StringUtil::Upper(type_name);
+	static const char *const INTEGER_TYPES[] = {"TINYINT",  "SMALLINT",  "INTEGER", "BIGINT",  "HUGEINT",
+	                                            "UTINYINT", "USMALLINT", "UINTEGER", "UBIGINT"};
+	for (auto integer_type : INTEGER_TYPES) {
+		if (upper == integer_type) {
+			return "HUGEINT";
+		}
+	}
+	// DECIMAL(width,scale) as LogicalType::ToString renders it
+	if (StringUtil::StartsWith(upper, "DECIMAL(")) {
+		auto comma = upper.find(',');
+		auto close = upper.find(')');
+		if (comma != string::npos && close != string::npos && close > comma + 1) {
+			auto scale = StringUtil::Replace(upper.substr(comma + 1, close - comma - 1), " ", "");
+			return "DECIMAL(38," + scale + ")";
+		}
+	}
+	return "";
+}
+
+string CenteringReferenceSQL(const string &column_sql, const string &centering_type) {
+	string exact = "CAST(" + column_sql + " AS " + centering_type + ")";
+	if (centering_type == "HUGEINT") {
+		return "(MIN(" + exact + ") // 2 + MAX(" + exact + ") // 2)";
+	}
+	return "MIN(" + exact + ")";
+}
+
+string CenteredDoubleSQL(const string &column_sql, const string &centering_type, const string &reference_sql) {
+	return "CAST(CAST(" + column_sql + " AS " + centering_type + ") - " + reference_sql + " AS DOUBLE)";
+}
+
 string DoubleThresholdSQL(const Value &value, const string &null_default) {
 	string literal = value.IsNull() ? null_default : "'" + EscapeSqlStringLiteral(value.ToString()) + "'";
 	return "CAST(" + literal + " AS DOUBLE)";

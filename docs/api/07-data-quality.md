@@ -332,6 +332,12 @@ binder error. The mean, the standard deviation and the outliers use the finite v
 and `±Inf` values are left out (`total_count` does not count them) and the message ends with
 `; <n> NaN/Inf value(s) ignored`.
 
+Integer, `HUGEINT` and `DECIMAL` columns stay exact above 2^53: the values are centred on a
+reference value in their own type (the midpoint of the minimum and maximum for integers, the
+minimum for `DECIMAL`) before the cast to `DOUBLE`, so `9007199254740992` and `9007199254740993`
+are two values, not a constant column. `mean` is reported as a `DOUBLE`. `FLOAT`, `DOUBLE` and
+`UHUGEINT` columns are cast to `DOUBLE` directly.
+
 ```sql
 SELECT status, outlier_count, total_count, message FROM zscore('orders', 'amount', 3.0);
 ```
@@ -372,7 +378,10 @@ iqr(table_name VARCHAR, column_name VARCHAR, iqr_multiplier DOUBLE)
 
 The quartiles and the outliers use the finite values only. NaN and `±Inf` values are left out
 (`total_count` does not count them) and the message ends with `; <n> NaN/Inf value(s) ignored`,
-as in [`zscore`](#zscore). The column must be numeric (or `BOOLEAN`).
+as in [`zscore`](#zscore). The column must be numeric (or `BOOLEAN`). Integer, `HUGEINT` and
+`DECIMAL` columns are centred in their own type before the cast to `DOUBLE`, as in
+[`zscore`](#zscore), so the quartiles and fences compare exactly above 2^53; `iqr` is computed on
+the exact differences, the reported quartiles and bounds are `DOUBLE`s.
 
 ```sql
 SELECT status, lower_bound, upper_bound, outlier_count FROM iqr('orders', 'amount', 1.5);

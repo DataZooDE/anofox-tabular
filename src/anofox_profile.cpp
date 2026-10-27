@@ -410,6 +410,22 @@ static string BuildColumnProfileSQL(const string &col_name, const string &col_ty
 	string p75_sql     = num_dbl("PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY " + finite + ")");
 	string skewness_sql = num_dbl("SKEWNESS(" + finite + ")");
 	string kurtosis_sql = num_dbl("KURTOSIS(" + finite + ")");
+	// Integer and DECIMAL columns (always finite) are exact above 2^53 only before the DOUBLE
+	// cast: the mean and quantiles are taken on the column itself, and the spread and shape
+	// statistics on the exact differences to a reference value (ExactCenteringType), so
+	// 9007199254740992 and 9007199254740993 do not collapse into a constant column.
+	string centering_type = cat == ColumnCategory::NUMERIC ? ExactCenteringType(col_type) : "";
+	if (!centering_type.empty()) {
+		string centred =
+		    CenteredDoubleSQL(ec, centering_type, "(SELECT " + CenteringReferenceSQL(ec, centering_type) + " FROM src)");
+		mean_sql = "CAST(AVG(" + ec + ") AS DOUBLE)";
+		median_sql = "CAST(MEDIAN(" + ec + ") AS DOUBLE)";
+		p25_sql = "CAST(PERCENTILE_CONT(0.25) WITHIN GROUP (ORDER BY " + ec + ") AS DOUBLE)";
+		p75_sql = "CAST(PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY " + ec + ") AS DOUBLE)";
+		stddev_sql = "STDDEV_SAMP(" + centred + ")";
+		skewness_sql = "SKEWNESS(" + centred + ")";
+		kurtosis_sql = "KURTOSIS(" + centred + ")";
+	}
 	string nan_sql = num_bint("CAST(COUNT(*) FILTER (WHERE isnan(" + dbl + ")) AS BIGINT)");
 	string inf_sql = num_bint("CAST(COUNT(*) FILTER (WHERE isinf(" + dbl + ")) AS BIGINT)");
 
@@ -725,11 +741,22 @@ static void ProfileCorrelationsExecute(ClientContext &context, TableFunctionInpu
 
 		Connection con(*context.db);
 
-		// The numeric columns among the resolved ones
+		// The numeric columns among the resolved ones, with the SQL of their values as DOUBLE:
+		// integer and DECIMAL columns as the exact difference to a reference value
+		// (ExactCenteringType), so values above 2^53 stay distinct; Pearson's r does not
+		// change under the shift
 		vector<string> numeric_cols;
+		vector<string> numeric_vals;
 		for (auto &[name, type] : bind_data.columns) {
 			if (ClassifyColumn(type) == ColumnCategory::NUMERIC) {
+				string ec = EscapeIdentifier(name);
+				auto centering_type = ExactCenteringType(type);
 				numeric_cols.push_back(name);
+				numeric_vals.push_back(centering_type.empty()
+				                           ? "TRY_CAST(" + ec + " AS DOUBLE)"
+				                           : CenteredDoubleSQL(ec, centering_type,
+				                                               "(SELECT " + CenteringReferenceSQL(ec, centering_type) +
+				                                                   " FROM src)"));
 			}
 		}
 
@@ -767,12 +794,14 @@ static void ProfileCorrelationsExecute(ClientContext &context, TableFunctionInpu
 				       " CORR(a_rank, b_rank) AS spearman,"
 				       " CAST(COUNT(*) AS BIGINT) AS n"
 				       " FROM ("
+				       // ranks over the column itself: exact for large integers, the same
+				       // order as the DOUBLE cast otherwise
 				       "   SELECT"
-				       "     TRY_CAST(" + ea + " AS DOUBLE) AS a_val,"
-				       "     TRY_CAST(" + eb + " AS DOUBLE) AS b_val,"
-				       "     CAST(RANK() OVER (ORDER BY TRY_CAST(" + ea + " AS DOUBLE)) AS DOUBLE)"
+				       "     " + numeric_vals[i] + " AS a_val,"
+				       "     " + numeric_vals[j] + " AS b_val,"
+				       "     CAST(RANK() OVER (ORDER BY " + ea + ") AS DOUBLE)"
 				       "       AS a_rank,"
-				       "     CAST(RANK() OVER (ORDER BY TRY_CAST(" + eb + " AS DOUBLE)) AS DOUBLE)"
+				       "     CAST(RANK() OVER (ORDER BY " + eb + ") AS DOUBLE)"
 				       "       AS b_rank"
 				       "   FROM src"
 				       // finite pairs only: one NaN/Inf turns CORR into NaN

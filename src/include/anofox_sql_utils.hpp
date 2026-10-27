@@ -145,6 +145,25 @@ string UtcDateSQL(const string &column_sql, const LogicalType &type);
 // The current time as a plain UTC TIMESTAMP, independent of ICU and the session TimeZone.
 string UtcNowSQL();
 
+// Exact centring for spread statistics. A BIGINT or DECIMAL value above 2^53 loses its low
+// digits when cast to DOUBLE (9007199254740992 and 9007199254740993 become equal), so a mean,
+// standard deviation, quantile or correlation computed on the DOUBLE cast can report a
+// constant column. Subtracting a reference value in the column's exact type first keeps the
+// differences exact; the statistics are then computed on the DOUBLE differences (spread,
+// z-scores and correlations do not change under a shift) and a location is reference + result.
+//
+// The exact type to centre a column of type `type_name` in: "HUGEINT" for the signed and
+// unsigned integer types up to HUGEINT, "DECIMAL(38,<scale>)" for a DECIMAL, "" when the column
+// is cast to DOUBLE as it is (FLOAT, DOUBLE, UHUGEINT, unknown types).
+string ExactCenteringType(const string &type_name);
+// Aggregate SQL for the reference value of `column_sql` in `centering_type`: the midpoint of
+// MIN and MAX for HUGEINT (min // 2 + max // 2, which cannot overflow, so the differences fit),
+// MIN for DECIMAL.
+string CenteringReferenceSQL(const string &column_sql, const string &centering_type);
+// SQL for the difference of `column_sql` to `reference_sql`, computed in `centering_type` and
+// cast to DOUBLE.
+string CenteredDoubleSQL(const string &column_sql, const string &centering_type, const string &reference_sql);
+
 // Threshold literals of the check functions with a fixed output type: the value (or
 // `null_default` when the value is NULL) as CAST(... AS DOUBLE) / CAST(... AS BIGINT), so a
 // threshold column has the same type whatever literal the caller passed (0.015 would

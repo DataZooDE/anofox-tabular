@@ -97,6 +97,11 @@ NaN and `±Inf` values (for example `nan` and `inf` in a CSV file) are left out 
 `nan_count` and `inf_count` count them. A column with no finite value has `NULL` there.
 `distinct_count`, `is_unique` and `is_constant` still count NaN and `±Inf` as values.
 
+Integer, `HUGEINT` and `DECIMAL` columns stay exact above 2^53: `mean`, `median`, `p25` and `p75`
+are taken on the column itself, and `stddev`, `skewness` and `kurtosis` on the differences to a
+reference value computed in the column's own type, so `9007199254740992` and `9007199254740993`
+have a non-zero `stddev` (a `DOUBLE` cast would make them equal). The results are `DOUBLE`s.
+
 ```sql
 CREATE TABLE sensor_readings AS
 SELECT * FROM (VALUES (21.5::DOUBLE), ('nan'), (22.0), ('inf'), (19.5)) t(temperature);
@@ -269,6 +274,10 @@ profile_correlations(table_name VARCHAR [, columns VARCHAR[]])
 | `spearman` | `DOUBLE` | Spearman rank correlation, -1 to 1; `NULL` when undefined |
 | `n` | `BIGINT` | Rows where both values are finite (not `NULL`, NaN or `±Inf`) |
 
+Integer, `HUGEINT` and `DECIMAL` columns are correlated on the exact differences to a reference
+value in their own type, and Spearman ranks the column values themselves, so values above 2^53
+that are equal as `DOUBLE` still count as different.
+
 The function is tagged as a `matrix` producer of the
 [integration contract](11-integration-contract.md).
 
@@ -285,7 +294,7 @@ ORDER BY column_a, column_b;
 ├──────────┼──────────┼─────────┼──────────┼───────┤
 │ amount   │ quantity │   0.014 │    0.014 │   180 │
 │ order_id │ amount   │    0.01 │     0.01 │   180 │
-│ order_id │ quantity │     0.0 │      0.0 │   200 │
+│ order_id │ quantity │    -0.0 │      0.0 │   200 │
 └──────────┴──────────┴─────────┴──────────┴───────┘
 ```
 
