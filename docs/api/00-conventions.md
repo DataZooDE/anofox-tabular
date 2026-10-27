@@ -260,6 +260,34 @@ SELECT TRY(money(10, 'XYZ')) AS m;
 Validation functions such as `email_is_valid` or `phonenumber_is_valid` do not raise for bad
 values; they return `false`.
 
+### One raising call in two `TRY()`s
+
+DuckDB evaluates an expression that occurs more than once in a query only once (common
+subexpression elimination), in a step of its own before the expressions that use it. That step
+lies outside every `TRY()`: when two `TRY()`s share a call that raises, such as
+`TRY(money(amount, currency))` next to `TRY(money_format(money(amount, currency), 'symbol'))`,
+the first bad currency code stops the query although each `TRY()` alone works. This is DuckDB
+behaviour for every expression that can raise, a `CAST` as well. Call the function once and
+reuse its result by its alias (or in a CTE); a `NULL` passes through the other functions:
+
+```sql
+CREATE TABLE price_list(amount DECIMAL(10,2), currency VARCHAR);
+INSERT INTO price_list VALUES (1250.00, 'EUR'), (99.90, 'EURO');
+SELECT TRY(money(amount, currency)) AS price,
+       money_format(price, 'symbol') AS shown
+FROM price_list;
+```
+
+```text
+┌────────────────────────────────────────────────┬────────────┐
+│                     price                      │   shown    │
+│ struct(amount decimal(18,3), currency varchar) │  varchar   │
+├────────────────────────────────────────────────┼────────────┤
+│ {'amount': 1250.000, 'currency': EUR}          │ 1.250,00 € │
+│ NULL                                           │ NULL       │
+└────────────────────────────────────────────────┴────────────┘
+```
+
 ### NULL or error
 
 The rule of thumb: a bad *value* (a row of your data) gives `false`, `NULL` or a `reason`; a bad

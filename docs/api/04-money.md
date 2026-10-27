@@ -23,7 +23,9 @@ STRUCT(amount DECIMAL(18,3), currency VARCHAR)
   whitespace is ignored (`' eur '` is `EUR`).
 - 38 currencies are supported (see [Supported currencies](#supported-currencies)). Any other code
   raises `Invalid currency code`; wrap the call in `TRY(...)` to get `NULL` instead, e.g.
-  `TRY(money(100, 'XYZ'))` returns `NULL`.
+  `TRY(money(100, 'XYZ'))` returns `NULL`. Use one `TRY(money(...))` per value and pass its
+  result on: two `TRY()`s around the same `money(...)` call still raise, see
+  [one raising call in two `TRY()`s](00-conventions.md#one-raising-call-in-two-trys).
 - A `NULL` argument returns `NULL`.
 
 ## Supported currencies

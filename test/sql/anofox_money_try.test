@@ -1,0 +1,81 @@
+# name: test/sql/anofox_money_try.test
+# description: TRY() around money(): an unknown currency code gives NULL in each TRY() alone and in the documented pattern for two uses of one money value (alias or CTE); two TRY()s around one shared money(...) call raise because DuckDB's common subexpression elimination evaluates the shared call outside both TRY()s
+# group: [anofox_tabular]
+
+require anofox_tabular
+
+statement ok
+LOAD anofox_tabular
+
+# An order import with one misspelled currency code
+statement ok
+CREATE TABLE order_import(order_ref VARCHAR, amount DECIMAL(10,2), currency VARCHAR);
+
+statement ok
+INSERT INTO order_import VALUES ('A-1001', 1250.00, 'EUR'), ('A-1002', 99.90, 'EURO'), ('A-1003', 880.50, 'gbp'), ('A-1004', NULL, 'EUR');
+
+# Each TRY() on its own
+query TT
+SELECT order_ref, TRY(money(amount, currency)) FROM order_import ORDER BY order_ref;
+----
+A-1001	{'amount': 1250.000, 'currency': EUR}
+A-1002	NULL
+A-1003	{'amount': 880.500, 'currency': GBP}
+A-1004	NULL
+
+query TT
+SELECT order_ref, TRY(money_format(money(amount, currency), 'symbol')) FROM order_import ORDER BY order_ref;
+----
+A-1001	1.250,00 €
+A-1002	NULL
+A-1003	£880.50
+A-1004	NULL
+
+# The documented pattern: one TRY(money(...)), its result reused by its alias
+query TTT
+SELECT order_ref, TRY(money(amount, currency)) AS price, money_format(price, 'symbol') AS shown
+FROM order_import ORDER BY order_ref;
+----
+A-1001	{'amount': 1250.000, 'currency': EUR}	1.250,00 €
+A-1002	NULL	NULL
+A-1003	{'amount': 880.500, 'currency': GBP}	£880.50
+A-1004	NULL	NULL
+
+# ... or in a CTE
+query TTT
+WITH priced AS (SELECT order_ref, TRY(money(amount, currency)) AS price FROM order_import)
+SELECT order_ref, money_format(price, 'symbol'), money_is_positive(price) FROM priced ORDER BY order_ref;
+----
+A-1001	1.250,00 €	true
+A-1002	NULL	NULL
+A-1003	£880.50	true
+A-1004	NULL	NULL
+
+# Two TRY()s around one shared money(...) call: DuckDB evaluates the shared
+# call once, outside both TRY()s, so the bad code raises. DuckDB does the same
+# for any raising expression (a CAST as well, see the query after it).
+statement error
+SELECT TRY(money(amount, currency)), TRY(money_format(money(amount, currency), 'symbol')) FROM order_import;
+----
+Invalid currency code: EURO
+
+statement error
+SELECT TRY(CAST(currency AS INTEGER)), TRY(CAST(currency AS INTEGER) + 1) FROM order_import;
+----
+Could not convert string
+
+# Without common subexpression elimination the same query gives NULL for the bad row
+statement ok
+SET disabled_optimizers = 'common_subexpressions';
+
+query TTT
+SELECT order_ref, TRY(money(amount, currency)), TRY(money_format(money(amount, currency), 'symbol'))
+FROM order_import ORDER BY order_ref;
+----
+A-1001	{'amount': 1250.000, 'currency': EUR}	1.250,00 €
+A-1002	NULL	NULL
+A-1003	{'amount': 880.500, 'currency': GBP}	£880.50
+A-1004	NULL	NULL
+
+statement ok
+RESET disabled_optimizers;
