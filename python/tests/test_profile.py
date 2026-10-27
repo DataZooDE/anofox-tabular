@@ -289,3 +289,26 @@ class TestProfileSqlBinding:
 
         assert "bad'table" not in conn.native.last_query
         assert conn.native.last_params == ["bad'table", ["a'b"]]
+
+
+class TestDocstringsListEveryColumn:
+    """The Returns section of each profile wrapper names every SQL output column."""
+
+    @pytest.fixture
+    def invoices(self, conn):
+        import pandas as pd
+        return pd.DataFrame({
+            "invoice_no": ["INV-1001", "INV-1002", "INV-1003"],
+            "net_amount": [1200.0, 89.5, 430.25],
+            "vat_amount": [228.0, 17.0, 81.75],
+        })
+
+    @pytest.mark.parametrize("name", ["profile_table", "profile_summary", "profile_correlations"])
+    def test_columns_in_docstring(self, conn, invoices, name):
+        import re
+        from anofox import profile
+        func = getattr(profile, name)
+        returns = func.__doc__.split("Returns")[1]
+        documented = set(re.findall(r"[a-z_0-9]+", returns))
+        missing = [c for c in func(conn, invoices).columns if c not in documented]
+        assert missing == []
