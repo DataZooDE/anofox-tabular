@@ -194,6 +194,7 @@ set(EXTENSION_SOURCES
         src/anofox_vat_checksum.cpp
         src/anofox_pii.cpp
         src/anofox_pii_recognizers_extra.cpp
+        src/anofox_pii_names.cpp
         src/anofox_ner.cpp
         src/anofox_curl_ca.cpp
 )
@@ -353,6 +354,7 @@ if(NOT CLANG_TIDY AND NOT EMSCRIPTEN AND CMAKE_VERSION VERSION_GREATER_EQUAL "3.
         test/cpp/test_anofox_outlier_tree.cpp
         test/cpp/test_email_internal.cpp
         test/cpp/test_curl_ca.cpp
+        test/cpp/test_pii_name_dictionary.cpp
     )
     target_compile_features(anofox_tabular_unittest_tests PRIVATE cxx_std_17)
     target_include_directories(anofox_tabular_unittest_tests PRIVATE

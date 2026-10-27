@@ -431,9 +431,14 @@ public:
     bool Validate(const std::string &text) const override;
     std::string GetPartialMask(const std::string &text) const override;
 
-private:
-    std::vector<PIIMatch> ExtractWithDictionary(const std::string &text) const;
-    std::regex pattern_;
+    /**
+     * The dictionary fallback used when the NER model is not available or
+     * finds no person: a capitalised given name from the dictionary
+     * (CommonGivenNames) plus up to two following capitalised words.
+     * Unicode-aware (Latin letters with diacritics), whole words only;
+     * matches have confidence 0.5.
+     */
+    static std::vector<PIIMatch> ExtractWithDictionary(const std::string &text);
 };
 
 /**

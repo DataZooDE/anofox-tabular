@@ -322,8 +322,11 @@ SELECT model_status FROM anofox_ner_status();
 
 `anofox_ner_status()` reports `NOT_DOWNLOADED` as soon as the setting is off and the model is
 missing, before any detection runs. The pattern-based types keep working, and `NAME` falls back
-to a name dictionary.
-`ORGANIZATION`, `LOCATION` and `MISC` are not detected. This snippet is not run as part of the
+to a dictionary of common given names (with German, Austrian and Swiss names; `Sabine Weiß` and
+`Peter Müller` are found as whole names).
+`ORGANIZATION`, `LOCATION` and `MISC` are not detected. `pii_scan_table` says so in its status:
+`scanned (NER unavailable)` or `no_match (NER unavailable)` instead of `scanned` or `no_match`,
+so an audit can see that the NER types were not checked. This snippet is not run as part of the
 docs because its result depends on whether the model is already on disk.
 
 To keep detection fully pattern-based, restrict the types instead:

@@ -1,5 +1,6 @@
 #include "anofox_pii.hpp"
 #include "anofox_ner.hpp"
+#include "anofox_pii_names.hpp"
 #include "anofox_sql_utils.hpp"
 #include "anofox_trace.hpp"
 #include "anofox_function_alias.hpp"
@@ -50,6 +51,28 @@ bool IsNERType(PIIType type) {
     return type == PIIType::NAME || type == PIIType::ORGANIZATION || type == PIIType::LOCATION ||
            type == PIIType::MISC;
 }
+
+// Whether a detection over effective_types (empty = the default set, which
+// includes the NER types) runs the NER recognizers
+bool WantsNERTypes(const std::vector<PIIType> &effective_types) {
+    return effective_types.empty() || std::any_of(effective_types.begin(), effective_types.end(), IsNERType);
+}
+
+// Whether the NER model cannot run: not downloaded (offline), failed to
+// download or load, or a build without OpenVINO. NAME then falls back to the
+// name dictionary and ORGANIZATION, LOCATION and MISC are not detected.
+bool NERUnavailable() {
+#if HAVE_OPENVINO
+    const auto status = NERModelManager::Instance().GetStatusSnapshot().status;
+    return status == NERStatus::NOT_DOWNLOADED || status == NERStatus::FAILED || status == NERStatus::NOT_AVAILABLE;
+#else
+    return true;
+#endif
+}
+
+// Values a pii_scan_table run may push through the NER model before it logs a
+// warning that the scan will take long
+constexpr int64_t NER_LARGE_SCAN_VALUES = 100000;
 
 // A byte that belongs to a word: ASCII letters and digits, any byte of a
 // multi-byte UTF-8 character, and the joiners '-' and '\'' ("Klaus-Peter").
@@ -2169,74 +2192,6 @@ std::string CryptoAddressRecognizer::GetPartialMask(const std::string &text) con
 
 namespace {
 
-// Common first names dictionary (top names from US, UK, EU census data)
-// Stored in lowercase for case-insensitive matching
-const std::unordered_set<std::string>& GetCommonNames() {
-    static std::unordered_set<std::string> names = {
-        // Male names (US/UK/EU common)
-        "james", "john", "robert", "michael", "david", "william", "richard", "joseph",
-        "thomas", "charles", "christopher", "daniel", "matthew", "anthony", "mark",
-        "donald", "steven", "paul", "andrew", "joshua", "kenneth", "kevin", "brian",
-        "george", "timothy", "ronald", "edward", "jason", "jeffrey", "ryan", "jacob",
-        "gary", "nicholas", "eric", "jonathan", "stephen", "larry", "justin", "scott",
-        "brandon", "benjamin", "samuel", "raymond", "gregory", "frank", "alexander",
-        "patrick", "jack", "dennis", "jerry", "tyler", "aaron", "jose", "adam", "nathan",
-        "henry", "douglas", "zachary", "peter", "kyle", "noah", "ethan", "jeremy",
-        "walter", "christian", "keith", "roger", "terry", "austin", "sean", "gerald",
-        "carl", "harold", "dylan", "arthur", "lawrence", "jordan", "jesse", "bryan",
-        "billy", "bruce", "gabriel", "joe", "logan", "albert", "willie", "alan", "eugene",
-        "ralph", "roy", "louis", "russell", "philip", "harry", "vincent", "bobby", "johnny", "bob",
-        "martin", "oliver", "charlie", "lucas", "mason", "liam", "aiden", "jackson",
-        // Female names (US/UK/EU common)
-        "mary", "patricia", "jennifer", "linda", "barbara", "elizabeth", "susan",
-        "jessica", "sarah", "karen", "lisa", "nancy", "betty", "margaret", "sandra",
-        "ashley", "kimberly", "emily", "donna", "michelle", "dorothy", "carol", "amanda",
-        "melissa", "deborah", "stephanie", "rebecca", "sharon", "laura", "cynthia",
-        "kathleen", "amy", "angela", "shirley", "anna", "brenda", "pamela", "emma",
-        "nicole", "helen", "samantha", "katherine", "christine", "debra", "rachel",
-        "carolyn", "janet", "catherine", "maria", "heather", "diane", "ruth", "julie",
-        "olivia", "joyce", "virginia", "victoria", "kelly", "lauren", "christina", "joan",
-        "evelyn", "judith", "megan", "andrea", "cheryl", "hannah", "jacqueline", "martha",
-        "gloria", "teresa", "ann", "sara", "madison", "frances", "kathryn", "janice",
-        "jean", "abigail", "alice", "judy", "sophia", "grace", "denise", "amber", "doris",
-        "marilyn", "danielle", "beverly", "isabella", "theresa", "diana", "natalie",
-        "brittany", "charlotte", "marie", "kayla", "alexis", "lori", "jane", "claire",
-        "julia", "lucy", "ella", "chloe", "mia", "ava", "lily", "zoe", "molly", "ruby",
-        // Surnames commonly used as first names
-        "taylor", "morgan", "jordan", "cameron", "bailey", "parker", "hunter", "carter",
-        "riley", "mason", "tyler", "logan", "dylan", "blake", "ryan", "austin", "evan",
-        // International common names (EU)
-        "hans", "franz", "klaus", "andreas", "stefan", "peter", "martin", "thomas",
-        "marie", "anna", "sophie", "laura", "julia", "sarah", "emma", "max", "paul",
-        "pierre", "jean", "michel", "marie", "sophie", "camille", "lea", "chloe",
-        "marco", "luca", "matteo", "giulia", "francesca", "elena", "maria", "giuseppe",
-        "pablo", "carlos", "juan", "jose", "antonio", "maria", "carmen", "lucia",
-        // Additional UK common names
-        "alfie", "archie", "freddie", "oscar", "george", "harry", "leo", "teddy",
-        "poppy", "isla", "jessica", "emily", "daisy", "freya", "florence", "elsie"
-    };
-    return names;
-}
-
-// Helper: convert string to lowercase
-std::string ToLowerCase(const std::string &str) {
-    std::string result;
-    result.reserve(str.size());
-    for (char c : str) {
-        result += static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-    }
-    return result;
-}
-
-// Helper: extract first word from a string
-std::string ExtractFirstWord(const std::string &str) {
-    size_t end = str.find(' ');
-    if (end == std::string::npos) {
-        return str;
-    }
-    return str.substr(0, end);
-}
-
 // Helper: split string into words
 std::vector<std::string> SplitIntoWords(const std::string &str) {
     std::vector<std::string> words;
@@ -2248,18 +2203,136 @@ std::vector<std::string> SplitIntoWords(const std::string &str) {
     return words;
 }
 
+// Byte length of the UTF-8 character at text[pos] if it is a letter, else 0.
+// ASCII letters and non-ASCII characters count as letters, except the Latin-1
+// punctuation and symbols (U+00A0-U+00BF, U+00D7, U+00F7) and the general
+// punctuation block U+2000-U+206F (dashes, quotes, ...).
+size_t Utf8LetterLength(const std::string &text, size_t pos) {
+    const auto c = static_cast<unsigned char>(text[pos]);
+    if (c < 0x80) {
+        return std::isalpha(c) ? 1 : 0;
+    }
+    size_t len = (c & 0xE0) == 0xC0 ? 2 : (c & 0xF0) == 0xE0 ? 3 : (c & 0xF8) == 0xF0 ? 4 : 0;
+    if (len == 0 || pos + len > text.size()) {
+        return 0;
+    }
+    const auto c1 = static_cast<unsigned char>(text[pos + 1]);
+    if ((c == 0xC2 && c1 >= 0xA0) || (c == 0xC3 && (c1 == 0x97 || c1 == 0xB7)) ||
+        (c == 0xE2 && (c1 == 0x80 || c1 == 0x81))) {
+        return 0;
+    }
+    return len;
+}
+
+// Whether the UTF-8 character at text[pos] is an uppercase letter: A-Z, the
+// Latin-1 capitals (U+00C0-U+00DE without U+00D7) and the capitals of Latin
+// Extended-A (U+0100-U+017F; even code points, odd ones in U+0139-U+0148 and
+// U+0179-U+017E).
+bool IsUpperLetterAt(const std::string &text, size_t pos) {
+    const auto c = static_cast<unsigned char>(text[pos]);
+    if (c < 0x80) {
+        return c >= 'A' && c <= 'Z';
+    }
+    if (pos + 1 >= text.size()) {
+        return false;
+    }
+    const auto c1 = static_cast<unsigned char>(text[pos + 1]);
+    if (c == 0xC3) {
+        return c1 >= 0x80 && c1 <= 0x9E && c1 != 0x97;
+    }
+    if (c == 0xC4 || c == 0xC5) {
+        const unsigned cp = ((c & 0x1Fu) << 6) | (c1 & 0x3Fu);
+        if ((cp >= 0x139 && cp <= 0x148) || (cp >= 0x179 && cp <= 0x17E)) {
+            return cp % 2 == 1;
+        }
+        return cp % 2 == 0 && cp != 0x138;
+    }
+    return false;
+}
+
+// Lowercase ASCII and Latin-1 capitals (U+00C0-U+00DE), enough to look a
+// name up in the lowercase dictionary ("JÜRGEN" -> "jürgen")
+std::string LowerLatin(const std::string &str) {
+    std::string result = str;
+    for (size_t i = 0; i < result.size(); ++i) {
+        const auto c = static_cast<unsigned char>(result[i]);
+        if (c < 0x80) {
+            result[i] = static_cast<char>(std::tolower(c));
+        } else if (c == 0xC3 && i + 1 < result.size()) {
+            const auto c1 = static_cast<unsigned char>(result[i + 1]);
+            if (c1 >= 0x80 && c1 <= 0x9E && c1 != 0x97) {
+                result[i + 1] = static_cast<char>(c1 + 0x20);
+            }
+            ++i;
+        }
+    }
+    return result;
+}
+
+// A word of the text for the name fallback: a maximal run of letters, digits
+// and the inner joiners '-' and '\'' ("Klaus-Peter", "O'Brien")
+struct FallbackWord {
+    std::string text;
+    size_t start;
+    size_t end;
+    bool capitalised;  // letters only, uppercase first letter, a lowercase letter after it
+};
+
+std::vector<FallbackWord> SplitFallbackWords(const std::string &text) {
+    std::vector<FallbackWord> words;
+    size_t pos = 0;
+    while (pos < text.size()) {
+        const auto c = static_cast<unsigned char>(text[pos]);
+        const size_t letter = Utf8LetterLength(text, pos);
+        if (letter == 0 && !std::isdigit(c)) {
+            // Skip a separator (one whole UTF-8 character)
+            const size_t len = (c & 0xE0) == 0xC0 ? 2 : (c & 0xF0) == 0xE0 ? 3 : (c & 0xF8) == 0xF0 ? 4 : 1;
+            pos += std::min(len, text.size() - pos);
+            continue;
+        }
+        const size_t start = pos;
+        bool letters_only = true;
+        bool has_lower = false;
+        size_t chars = 0;
+        while (pos < text.size()) {
+            const auto b = static_cast<unsigned char>(text[pos]);
+            const size_t len = Utf8LetterLength(text, pos);
+            if (len > 0) {
+                if (chars > 0 && !IsUpperLetterAt(text, pos)) {
+                    has_lower = true;
+                }
+                chars++;
+                pos += len;
+            } else if (std::isdigit(b)) {
+                letters_only = false;
+                chars++;
+                pos++;
+            } else if ((b == '-' || b == '\'') && pos + 1 < text.size() && Utf8LetterLength(text, pos + 1) > 0 &&
+                       pos > start) {
+                // An inner joiner; the following part restarts the case check
+                pos++;
+            } else {
+                break;
+            }
+        }
+        FallbackWord word {text.substr(start, pos - start), start, pos, false};
+        word.capitalised = letters_only && has_lower && chars >= 2 && chars <= 30 && IsUpperLetterAt(text, start);
+        words.push_back(std::move(word));
+    }
+    return words;
+}
+
+// Lowercase name particles that may sit between a given name and a surname
+// ("Ursula von der Leyen", "Vincent van Gogh")
+bool IsNameParticle(const std::string &word) {
+    static const std::unordered_set<std::string> particles = {"von", "van", "der", "den", "de",  "zu",
+                                                              "vom", "zum", "zur", "di",  "da", "del"};
+    return particles.count(word) > 0;
+}
+
 } // anonymous namespace
 
-NameRecognizer::NameRecognizer() {
-    try {
-        // Match capitalized words (potential names): 1-3 consecutive capitalized words
-        // Pattern: Starts with uppercase, followed by lowercase letters (2-20 chars per word)
-        pattern_ = std::regex(R"(\b([A-Z][a-z]{1,19})(?:\s+([A-Z][a-z]{1,19})){0,2}\b)",
-                              std::regex_constants::ECMAScript);
-    } catch (const std::regex_error &e) {
-        throw InvalidInputException("Invalid regex pattern for NameRecognizer: %s", e.what());
-    }
-}
+NameRecognizer::NameRecognizer() = default;
 
 NameRecognizer::~NameRecognizer() = default;
 
@@ -2315,71 +2388,58 @@ std::vector<PIIMatch> NameRecognizer::FindMatches(const std::string &text) const
     return ExtractWithDictionary(text);
 }
 
-std::vector<PIIMatch> NameRecognizer::ExtractWithDictionary(const std::string &text) const {
+std::vector<PIIMatch> NameRecognizer::ExtractWithDictionary(const std::string &text) {
+    // A capitalised word whose given name is in the dictionary starts a name
+    // ("Sabine", "Jürgen", "Klaus-Peter"); up to two following capitalised
+    // words separated by single spaces, optionally behind name particles
+    // ("von der"), extend it to the full name ("Sabine Weiß", "Peter Müller").
+    // Words are whole words (no match inside "Annabelle") and Unicode-aware.
     std::vector<PIIMatch> matches;
+    const auto words = SplitFallbackWords(text);
+    const auto &given_names = CommonGivenNames();
 
-    // First, find all individual capitalized words with their positions
-    std::regex word_pattern(R"(\b([A-Z][a-z]{1,19})\b)", std::regex_constants::ECMAScript);
-    std::vector<std::tuple<std::string, size_t, size_t>> words; // (word, start, end)
-
-    std::sregex_iterator iter(text.begin(), text.end(), word_pattern);
-    std::sregex_iterator end;
-
-    while (iter != end) {
-        std::smatch match = *iter;
-        words.emplace_back(
-            match.str(),
-            static_cast<size_t>(match.position()),
-            static_cast<size_t>(match.position() + match.length())
-        );
-        ++iter;
-    }
-
-    // Now scan through words looking for dictionary matches
-    const auto& name_dict = GetCommonNames();
-    std::unordered_set<size_t> used_positions; // Track positions we've already included in a match
+    auto is_given_name = [&given_names](const FallbackWord &word) {
+        if (!word.capitalised) {
+            return false;
+        }
+        const auto lower = LowerLatin(word.text);
+        if (given_names.count(lower) > 0) {
+            return true;
+        }
+        // Double names: the first part decides ("Klaus-Peter", "Anna-Lena")
+        const auto hyphen = lower.find('-');
+        return hyphen != std::string::npos && given_names.count(lower.substr(0, hyphen)) > 0;
+    };
+    auto single_space_between = [&text](size_t end, size_t next_start) {
+        return next_start == end + 1 && text[end] == ' ';
+    };
 
     for (size_t i = 0; i < words.size(); ++i) {
-        const auto& [word, start, word_end] = words[i];
-
-        // Skip if this word is already part of a previous match
-        if (used_positions.count(start) > 0) {
+        if (!is_given_name(words[i])) {
             continue;
         }
-
-        std::string lower_word = ToLowerCase(word);
-
-        // Check if this word is a name in our dictionary
-        if (name_dict.count(lower_word) > 0) {
-            // Found a name! Now extend to include consecutive capitalized words
-            std::string full_name = word;
-            size_t name_end = word_end;
-            used_positions.insert(start);
-
-            // Look ahead for consecutive capitalized words (with single space between)
-            for (size_t j = i + 1; j < words.size() && j < i + 3; ++j) { // Max 3 words total
-                const auto& [next_word, next_start, next_end] = words[j];
-
-                // Check if next word immediately follows (single space between)
-                // The space should be at name_end, and next_start should be name_end + 1
-                if (next_start == name_end + 1) {
-                    full_name += " " + next_word;
-                    name_end = next_end;
-                    used_positions.insert(next_start);
-                } else {
-                    break; // Not consecutive
-                }
+        size_t name_end = words[i].end;
+        size_t last = i;
+        size_t surnames = 0;
+        size_t j = i + 1;
+        while (j < words.size() && surnames < 2 && single_space_between(words[j - 1].end, words[j].start)) {
+            // Skip particles, but only when a capitalised word follows them
+            size_t k = j;
+            while (k < words.size() && IsNameParticle(words[k].text) && k + 1 < words.size() &&
+                   single_space_between(words[k].end, words[k + 1].start)) {
+                k++;
             }
-
-            PIIMatch pii_match(
-                PIIType::NAME,
-                full_name,
-                start,
-                name_end,
-                0.5  // Lower confidence for dictionary-based detection
-            );
-            matches.push_back(pii_match);
+            if (!words[k].capitalised) {
+                break;
+            }
+            name_end = words[k].end;
+            last = k;
+            surnames++;
+            j = k + 1;
         }
+        matches.emplace_back(PIIType::NAME, text.substr(words[i].start, name_end - words[i].start), words[i].start,
+                             name_end, 0.5);  // lower confidence for dictionary-based detection
+        i = last;
     }
 
     return matches;
@@ -2836,8 +2896,7 @@ std::vector<std::vector<PIIMatch>> PIIEngine::DetectBatch(
     // This ensures subsequent Detect calls hit the cache instead of re-running inference.
     // Skipped when no NER type is requested, so regex-only scans never pay for inference
     const std::vector<PIIType> &effective_types = !types.empty() ? types : config.enabled_types;
-    const bool wants_ner = effective_types.empty() ||
-                           std::any_of(effective_types.begin(), effective_types.end(), IsNERType);
+    const bool wants_ner = WantsNERTypes(effective_types);
     auto &ner = NERModelManager::Instance();
     if (wants_ner && ner.IsAvailable()) {
         AnofoxTrace(AnofoxLogLevel::Debug,
@@ -4116,6 +4175,11 @@ struct PIIScanTableState : public GlobalTableFunctionState {
     // Aggregated results of scanned columns that have not been emitted yet
     std::vector<PIIScanTableResult> pending;
     idx_t pending_offset = 0;
+    // Whether the configured types include NER types, and the values scanned
+    // so far (for the large-scan warning, logged once per scan)
+    bool wants_ner = false;
+    int64_t total_values = 0;
+    bool large_scan_warned = false;
 };
 
 unique_ptr<GlobalTableFunctionState> PIIScanTableInit(ClientContext &, TableFunctionInitInput &) {
@@ -4191,6 +4255,7 @@ void PIIScanTableFunction(ClientContext &context, TableFunctionInput &input, Dat
             // configuration once for the whole scan
             state.columns_to_scan = ResolvePIIScanPlan(context, "pii_scan_table", bind_data.table_name, bind_data.column_filter);
             state.config = PIIConfig::Get().Snapshot();
+            state.wants_ner = WantsNERTypes(state.config.enabled_types);
         }
 
         // Scan one source column at a time until at least one aggregate row
@@ -4252,6 +4317,17 @@ void PIIScanTableFunction(ClientContext &context, TableFunctionInput &input, Dat
                 // Run batch detection (pre-warms NER cache)
                 auto batch_matches = engine.DetectBatch(batch_texts, {}, state.config);
                 values_scanned += static_cast<int64_t>(batch_texts.size());
+                state.total_values += static_cast<int64_t>(batch_texts.size());
+                if (state.wants_ner && !state.large_scan_warned && state.total_values > NER_LARGE_SCAN_VALUES &&
+                    !NERUnavailable()) {
+                    state.large_scan_warned = true;
+                    AnofoxTrace(AnofoxLogLevel::Warn,
+                                "pii_scan_table: '" + bind_data.table_name + "' has more than " +
+                                    std::to_string(NER_LARGE_SCAN_VALUES) +
+                                    " values to scan with the NER model (NAME, ORGANIZATION, LOCATION, MISC), "
+                                    "which takes tens of milliseconds per distinct text value. To scan faster, "
+                                    "restrict anofox_pii_enabled_types to the pattern-based types you need");
+                }
 
                 // Process results
                 for (size_t i = 0; i < batch_matches.size(); i++) {
@@ -4270,11 +4346,14 @@ void PIIScanTableFunction(ClientContext &context, TableFunctionInput &input, Dat
             }
             if (result->HasError()) {
                 AnofoxTrace(AnofoxLogLevel::Warn, "pii_scan_table: Error querying column " + col_name);
-                state.pending.push_back(MakePIIScanStatusRow(col_name, values_scanned, "error (" + result->GetError() + ")"));
+                state.pending.push_back(MakePIIScanStatusRow(col_name, values_scanned, "error (" + QueryErrorText(result->GetErrorObject()) + ")"));
                 continue;
             }
+            // NER types were requested but the model could not run: say so in
+            // the status, so a clean result is not mistaken for "no names"
+            const std::string ner_note = state.wants_ner && NERUnavailable() ? " (NER unavailable)" : "";
             if (col_results.empty()) {
-                state.pending.push_back(MakePIIScanStatusRow(col_name, values_scanned, "no_match"));
+                state.pending.push_back(MakePIIScanStatusRow(col_name, values_scanned, "no_match" + ner_note));
                 continue;
             }
 
@@ -4286,6 +4365,7 @@ void PIIScanTableFunction(ClientContext &context, TableFunctionInput &input, Dat
             for (auto &[type, res] : col_results) {
                 res.confidence = res.confidence_sum / static_cast<double>(res.match_count);
                 res.values_scanned = values_scanned;
+                res.status += ner_note;
                 state.pending.push_back(std::move(res));
             }
             std::sort(state.pending.begin() + static_cast<std::ptrdiff_t>(first_pending), state.pending.end(),

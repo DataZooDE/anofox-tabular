@@ -716,14 +716,15 @@ pii_scan_table(table_name VARCHAR [, columns VARCHAR]) -> TABLE(
 | `sample_values` | `VARCHAR[]` | Up to 5 matched values; empty on a row without a match |
 | `confidence` | `DOUBLE` | Mean confidence of the matches: `1.0` for pattern types (lower when `anofox_pii_require_checksum = false` adds checksum failures at `0.6`), the mean model score for NER types; `NULL` on a row without a match |
 | `values_scanned` | `BIGINT` | Number of non-`NULL` values of the column that were scanned; `0` for a skipped column |
-| `status` | `VARCHAR` | `scanned`: the row reports a PII type found in the column. `no_match`: the column was scanned and nothing was found. `skipped (<type>)`, e.g. `skipped (DATE)`: the column was not scanned because it is not `VARCHAR`; name it in `columns` to scan it. `error (<message>)`: the column could not be read |
+| `status` | `VARCHAR` | `scanned`: the row reports a PII type found in the column. `no_match`: the column was scanned and nothing was found. `skipped (<type>)`, e.g. `skipped (DATE)`: the column was not scanned because it is not `VARCHAR`; name it in `columns` to scan it. `error (<message>)`: the column could not be read. `scanned (NER unavailable)` and `no_match (NER unavailable)`: as `scanned` and `no_match`, but the NER types (`NAME`, `ORGANIZATION`, `LOCATION`, `MISC`) are enabled and the model could not run (status `NOT_DOWNLOADED`, `FAILED` or `NOT_AVAILABLE` in [`anofox_ner_status`](#anofox_ner_status)): `NAME` was checked with the name dictionary only, and organizations, locations and other entities were not checked at all |
 
 Rows come in table column order and, within a column, ordered by `pii_type`. Without `columns`
 every column of the table appears; with `columns` exactly the named columns appear.
 `WHERE pii_type IS NOT NULL` keeps only the PII findings.
 
 `no_match` means that detection found nothing, not that the column holds no personal data:
-detection misses values it cannot recognise, such as a two-letter first name. Mask columns known
+detection misses values it cannot recognise, such as a two-letter first name. Without the NER
+model the status says `(NER unavailable)`, so a scan run offline is not mistaken for a full one. Mask columns known
 to hold PII with [`pii_mask_value`](#pii_mask_value).
 
 `sample_values` holds matched values as they are, that is raw PII. Treat the scan result like
@@ -996,7 +997,8 @@ On a build with OpenVINO, after the model has been loaded, it reports `true`, `L
   `anofox_pii_enabled_types` lists only pattern-based types.
 - **Offline use.** `SET anofox_ner_auto_download = false` turns the download off. NER detection
   is then skipped, the status becomes `NOT_DOWNLOADED`, `NAME` falls back to the name dictionary,
-  and the pattern-based types keep working. To install the model by hand, place
+  and the pattern-based types keep working. `pii_scan_table` then reports
+  `scanned (NER unavailable)` or `no_match (NER unavailable)` (see [`pii_scan_table`](#pii_scan_table)). To install the model by hand, place
   `model_quantized.onnx` and `tokenizer.json` in the model directory.
 - **Platforms.** Per `vcpkg.json`, OpenVINO is built only for x64 Linux and x64 macOS, and
   `CMakeLists.txt` disables it on musl. On other builds `onnx_available` is `false` and the status
