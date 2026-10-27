@@ -188,7 +188,8 @@ instant and bucketed by its UTC date, with or without the ICU extension and what
   summary row or one row per input row. The module pages list both shapes. `output_mode` and
   the other option strings (`agg`, `mode`) are case-insensitive: `'SCORES'` works like `'scores'`.
 - NaN and `±Inf` values in numeric columns are counted, not averaged: `profile_table` reports
-  them in `nan_count` / `inf_count` and computes its statistics over the finite values, the
+  them in `nan_count` / `inf_count` and computes its statistics, `min_val`, `max_val` and
+  `top_values` over the finite values, the
   statistical checks `zscore` and `iqr` and `profile_correlations` leave them out (the checks
   name how many in the message), and `agg_check` fails with a `NaN` value.
 

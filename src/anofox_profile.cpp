@@ -404,9 +404,12 @@ static string BuildColumnProfileSQL(const string &col_name, const string &col_ty
 	string nan_sql = num_bint("CAST(COUNT(*) FILTER (WHERE isnan(" + dbl + ")) AS BIGINT)");
 	string inf_sql = num_bint("CAST(COUNT(*) FILTER (WHERE isinf(" + dbl + ")) AS BIGINT)");
 
-	// min_val / max_val — guard against MIN/MAX on complex types (undefined ordering)
-	string min_val_sql = is_complex ? "NULL::VARCHAR" : "CAST(MIN(" + ec + ") AS VARCHAR)";
-	string max_val_sql = is_complex ? "NULL::VARCHAR" : "CAST(MAX(" + ec + ") AS VARCHAR)";
+	// min_val / max_val — guard against MIN/MAX on complex types (undefined ordering). Numeric
+	// columns take the finite values only: DuckDB orders NaN above +Inf, so MAX would be 'nan'.
+	// The value keeps its own type (DECIMAL scale, integer) in the VARCHAR rendering.
+	string min_max_input = (cat == ColumnCategory::NUMERIC) ? "(CASE WHEN isfinite(" + dbl + ") THEN " + ec + " END)" : ec;
+	string min_val_sql = is_complex ? "NULL::VARCHAR" : "CAST(MIN(" + min_max_input + ") AS VARCHAR)";
+	string max_val_sql = is_complex ? "NULL::VARCHAR" : "CAST(MAX(" + min_max_input + ") AS VARCHAR)";
 
 	// distinct_count — cast complex types to VARCHAR for GROUP BY consistency
 	string dc = is_complex ? "CAST(" + ec + " AS VARCHAR)" : ec;
@@ -480,11 +483,13 @@ static string BuildColumnProfileSQL(const string &col_name, const string &col_ty
 	    " AS BIGINT)");
 
 	// top_values — cast column to VARCHAR to handle all types uniformly;
-	// ties in count are ordered by value so the result is deterministic
+	// ties in count are ordered by value so the result is deterministic. Numeric columns list
+	// finite values only (NaN/Inf are in nan_count / inf_count)
+	string top_val_filter = (cat == ColumnCategory::NUMERIC) ? "isfinite(" + dbl + ")" : ec + " IS NOT NULL";
 	string top_val_sql =
 	    "(SELECT LIST({'value': CAST(v AS VARCHAR), 'count': cnt})"
 	    " FROM (SELECT CAST(" + ec + " AS VARCHAR) AS v, COUNT(*) AS cnt FROM src"
-	    "       WHERE " + ec + " IS NOT NULL"
+	    "       WHERE " + top_val_filter +
 	    "       GROUP BY CAST(" + ec + " AS VARCHAR)"
 	    "       ORDER BY cnt DESC, v LIMIT 5))";
 

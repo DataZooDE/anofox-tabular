@@ -69,8 +69,8 @@ Output columns:
 | `null_rate` | `DOUBLE` | `null_count / row_count` |
 | `distinct_count` | `BIGINT` | Distinct non-`NULL` values |
 | `distinct_rate` | `DOUBLE` | `distinct_count / row_count` |
-| `min_val` | `VARCHAR` | Minimum as text; `NULL` for `STRUCT`, `MAP` and `UNION` |
-| `max_val` | `VARCHAR` | Maximum as text; `NULL` for `STRUCT`, `MAP` and `UNION` |
+| `min_val` | `VARCHAR` | Minimum as text; finite values only for numeric columns; `NULL` for `STRUCT`, `MAP` and `UNION` |
+| `max_val` | `VARCHAR` | Maximum as text; finite values only for numeric columns; `NULL` for `STRUCT`, `MAP` and `UNION` |
 | `mean` | `DOUBLE` | Numeric columns only; finite values only |
 | `median` | `DOUBLE` | Numeric columns only; finite values only |
 | `stddev` | `DOUBLE` | Numeric columns only; finite values only |
@@ -78,7 +78,7 @@ Output columns:
 | `p75` | `DOUBLE` | 75th percentile, numeric columns only; finite values only |
 | `skewness` | `DOUBLE` | Numeric columns only; finite values only |
 | `kurtosis` | `DOUBLE` | Numeric columns only; finite values only |
-| `top_values` | `STRUCT(value VARCHAR, count BIGINT)[]` | The 5 most frequent values, most frequent first; values with equal counts in ascending order (compared as text) |
+| `top_values` | `STRUCT(value VARCHAR, count BIGINT)[]` | The 5 most frequent values, most frequent first; values with equal counts in ascending order (compared as text); finite values only for numeric columns |
 | `avg_length` | `DOUBLE` | String length; element count for lists; cardinality for maps |
 | `min_length` | `BIGINT` | As `avg_length` |
 | `max_length` | `BIGINT` | As `avg_length` |
@@ -92,25 +92,27 @@ Output columns:
 | `nan_count` | `BIGINT` | `NaN` values, numeric columns only |
 | `inf_count` | `BIGINT` | `Inf` and `-Inf` values, numeric columns only |
 
-NaN and `±Inf` values (for example `nan` and `inf` in a CSV file) are left out of `mean`,
-`median`, `stddev`, `p25`, `p75`, `skewness` and `kurtosis`; `nan_count` and `inf_count` count
-them. `min_val` and `max_val` are taken over all values, so they can be `nan` or `inf`.
+NaN and `±Inf` values (for example `nan` and `inf` in a CSV file) are left out of `min_val`,
+`max_val`, `mean`, `median`, `stddev`, `p25`, `p75`, `skewness`, `kurtosis` and `top_values`;
+`nan_count` and `inf_count` count them. A column with no finite value has `NULL` there.
+`distinct_count`, `is_unique` and `is_constant` still count NaN and `±Inf` as values.
 
 ```sql
 CREATE TABLE sensor_readings AS
 SELECT * FROM (VALUES (21.5::DOUBLE), ('nan'), (22.0), ('inf'), (19.5)) t(temperature);
 
-SELECT column_name, round(mean, 2) AS mean, round(stddev, 2) AS stddev, nan_count, inf_count, max_val
+SELECT column_name, round(mean, 2) AS mean, round(stddev, 2) AS stddev, nan_count, inf_count,
+       min_val, max_val
 FROM profile_table('sensor_readings');
 ```
 
 ```text
-┌─────────────┬────────┬────────┬───────────┬───────────┬─────────┐
-│ column_name │  mean  │ stddev │ nan_count │ inf_count │ max_val │
-│   varchar   │ double │ double │   int64   │   int64   │ varchar │
-├─────────────┼────────┼────────┼───────────┼───────────┼─────────┤
-│ temperature │   21.0 │   1.32 │         1 │         1 │ nan     │
-└─────────────┴────────┴────────┴───────────┴───────────┴─────────┘
+┌─────────────┬────────┬────────┬───────────┬───────────┬─────────┬─────────┐
+│ column_name │  mean  │ stddev │ nan_count │ inf_count │ min_val │ max_val │
+│   varchar   │ double │ double │   int64   │   int64   │ varchar │ varchar │
+├─────────────┼────────┼────────┼───────────┼───────────┼─────────┼─────────┤
+│ temperature │   21.0 │   1.32 │         1 │         1 │ 19.5    │ 22.0    │
+└─────────────┴────────┴────────┴───────────┴───────────┴─────────┴─────────┘
 ```
 
 `pattern_summary` for string columns is the first of `email`, `phone`, `uuid`, `url`,
