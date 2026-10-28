@@ -386,7 +386,7 @@ inline std::vector<NEREntity> CombineWindowEntities(std::vector<NEREntity> entit
                 kept.end_pos = entity.end_pos;
                 kept.text = text.substr(kept.start_pos, kept.end_pos - kept.start_pos);
             }
-            kept.confidence = std::max(kept.confidence, entity.confidence);
+            kept.confidence = (std::max)(kept.confidence, entity.confidence);
         } else if (entity.confidence > kept.confidence) {
             kept = std::move(entity);
         }

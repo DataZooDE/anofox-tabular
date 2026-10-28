@@ -1452,7 +1452,7 @@ std::string NERModelManager::NormalizeDeviceName(const std::string &device_name)
             valid = !list.empty();
             size_t start = 0;
             while (valid && start <= list.size()) {
-                const size_t comma = std::min(list.find(',', start), list.size());
+                const size_t comma = (std::min)(list.find(',', start), list.size());
                 valid = IsPhysicalDeviceName(list.substr(start, comma - start));
                 start = comma + 1;
             }
