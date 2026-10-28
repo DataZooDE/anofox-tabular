@@ -1248,8 +1248,10 @@ static CheckBranch BuildCheckBranch(ClientContext &context, const CheckSpec &spe
 			// One outcome per row: TRUE compliant, FALSE not (also for a NULL result), NULL where
 			// the expression fails (TRY). The expression appears only once: DuckDB's common
 			// subexpression elimination would move a repeated one out of the TRY().
-			source_sql = "(SELECT *, TRY(COALESCE((" + expression + "), FALSE)) AS __anofox_outcome FROM " +
-			             table_ref + where_clause + ") __src";
+			// CASE, not COALESCE: on DuckDB v1.5.6 TRY(COALESCE(...)) over rows that fail writes
+			// past the end of a vector (an assertion in debug builds, a crash on macOS/Windows).
+			source_sql = "(SELECT *, TRY(CASE WHEN (" + expression +
+			             ") THEN TRUE ELSE FALSE END) AS __anofox_outcome FROM " + table_ref + where_clause + ") __src";
 			value_expr = "CAST(SUM(CASE WHEN __anofox_outcome THEN 1 ELSE 0 END) AS DOUBLE) / NULLIF(COUNT(*), 0)";
 			branch.unevaluated_expr = "COUNT(*) FILTER (WHERE __anofox_outcome IS NULL)";
 		} else {
