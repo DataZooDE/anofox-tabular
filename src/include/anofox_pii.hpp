@@ -259,6 +259,7 @@ class URLRecognizer : public RegexRecognizer {
 public:
     URLRecognizer();
     ~URLRecognizer() override;
+    std::vector<PIIMatch> FindMatches(const std::string &text) const override;
     std::string GetPartialMask(const std::string &text) const override;
 };
 

@@ -1782,10 +1782,49 @@ URLRecognizer::URLRecognizer()
     : RegexRecognizer(
         PIIType::URL,
         "URL",
-        R"(\b(?:https?|ftps?)://[^\s<>\"\{\}\|\\\^\[\]`]+\b)"
+        // Only the scheme: FindMatches extends the match over the rest of the URL in a loop.
+        // A regex repetition over the URL body ([^...]+) recursed once per character in
+        // libstdc++ before GCC 15 and overflowed the stack on very long URLs.
+        R"(\b(?:https?|ftps?)://)"
     ) {}
 
 URLRecognizer::~URLRecognizer() {}
+
+std::vector<PIIMatch> URLRecognizer::FindMatches(const std::string &text) const {
+    // Characters a URL cannot contain; the URL ends before the first of them
+    auto ends_url = [](unsigned char c) {
+        return std::isspace(c) || c == '<' || c == '>' || c == '"' || c == '{' || c == '}' || c == '|' ||
+               c == '\\' || c == '^' || c == '[' || c == ']' || c == '`';
+    };
+    // The match ends on a word character, as the former trailing \b did
+    auto is_word = [](unsigned char c) { return std::isalnum(c) || c == '_'; };
+
+    std::vector<PIIMatch> matches;
+    std::smatch scheme;
+    auto search_from = text.cbegin();
+    while (std::regex_search(search_from, text.cend(), scheme, pattern_,
+                             search_from == text.cbegin() ? std::regex_constants::match_default
+                                                          : std::regex_constants::match_prev_avail)) {
+        const size_t start = static_cast<size_t>(scheme[0].first - text.cbegin());
+        const size_t body = start + static_cast<size_t>(scheme.length(0));
+        size_t stop = body;
+        while (stop < text.size() && !ends_url(static_cast<unsigned char>(text[stop]))) {
+            stop++;
+        }
+        while (stop > body && !is_word(static_cast<unsigned char>(text[stop - 1]))) {
+            stop--;
+        }
+        if (stop > body) {
+            std::string matched_text = text.substr(start, stop - start);
+            if (Validate(matched_text)) {
+                matches.emplace_back(type_, matched_text, start, stop, 1.0);
+            }
+        }
+        // Continue after the URL (a scheme inside its query belongs to it), or after the scheme
+        search_from = text.cbegin() + static_cast<std::ptrdiff_t>((std::max)(stop, body));
+    }
+    return matches;
+}
 
 std::string URLRecognizer::GetPartialMask(const std::string &text) const {
     // Keep the scheme and the top-level domain; mask every other host label
@@ -2038,7 +2077,10 @@ MACAddressRecognizer::MACAddressRecognizer()
         // (4111.1111.1111.1111), not MACs.
         R"(\b(?:[0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}\b|)"
         R"(\b(?=[0-9.]{0,13}[A-Fa-f])(?:[0-9A-Fa-f]{4}\.){2}[0-9A-Fa-f]{4}\b(?!\.[0-9A-Fa-f])|)"
-        R"(\b(?!\d{9}B\d{2}\b)(?=[0-9A-F]*[A-F])(?=[A-F]*\d)[0-9A-F]{12}\b)"
+        // The lookaheads are bounded to the 12 characters of the token: an unbounded
+        // [0-9A-F]* ran over a whole long hex or digit run and, in libstdc++ before GCC 15,
+        // recursed once per character until the stack overflowed.
+        R"(\b(?!\d{9}B\d{2}\b)(?=[0-9A-F]{0,11}[A-F])(?=[A-F]{0,11}\d)[0-9A-F]{12}\b)"
     ) {}
 
 MACAddressRecognizer::~MACAddressRecognizer() {
