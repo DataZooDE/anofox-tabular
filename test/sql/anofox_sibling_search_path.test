@@ -76,12 +76,14 @@ SELECT status, outlier_count, total_count FROM isolation_forest('orders', 'amoun
 ----
 fail	2	30
 
-query I
-SELECT order_id FROM isolation_forest('orders', 'amount', 100, 256, 0.05, 'scores', 42, id_column := 'order_id')
-WHERE is_anomaly ORDER BY order_id
+# 5% of 30 rows flags two: the 9800.00 order and one ordinary amount; which ordinary amount
+# depends on the platform's random number distributions, so only the real outlier is pinned
+query II
+SELECT count(*), bool_or(order_id = 4117)
+FROM isolation_forest('orders', 'amount', 100, 256, 0.05, 'scores', 42, id_column := 'order_id')
+WHERE is_anomaly
 ----
-4100
-4117
+2	true
 
 query TIII
 SELECT status, cluster_count, noise_count, total_count FROM dbscan('orders', 'amount', 10.0, 3, 'summary')

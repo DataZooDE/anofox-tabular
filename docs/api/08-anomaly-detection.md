@@ -89,7 +89,9 @@ The trees are built from the finite values only:
 - `avg_value` is the mean of the finite values, and `NULL` when no scored row has a finite value.
 
 Without a `seed` the trees are random and scores change between runs. Pass a `seed` for
-reproducible results.
+reproducible results. A seed reproduces the scores on the same platform; Linux, macOS and Windows
+builds draw different random numbers from the same seed, so scores (and which ordinary rows fall
+inside the contamination share) can differ between them, while clear outliers are flagged on all.
 
 ---
 

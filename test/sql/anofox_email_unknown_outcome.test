@@ -18,9 +18,10 @@ statement ok
 SET anofox_tab_email_dns_tries=1;
 
 # A newsletter sign-up list: one address per outcome. Row 4's domain is random per
-# run, so no resolver (and not the extension's DNS cache) can know it
+# query (a view), so no resolver can know it: not the extension's DNS cache, and not an
+# operating system cache such as the Windows DNS client, which keeps negative answers
 statement ok
-CREATE TABLE signups AS SELECT * FROM (VALUES
+CREATE VIEW signups AS SELECT * FROM (VALUES
     (1, 'max..muster@web.de'),
     (2, 'jana@printer.local'),
     (3, 'ops@ci.test'),
