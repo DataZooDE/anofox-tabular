@@ -73,7 +73,8 @@ jobs:
       exclude_archs: wasm_mvp;wasm_eh;wasm_threads;windows_amd64_mingw;linux_amd64_musl;linux_arm64
 
   # The stock DuckDB 2.0.0 CLI (a tar.gz release asset) installs and loads
-  # each 2.0 artifact before it is deployed, as for v1.5.6.
+  # each 2.0 artifact before it is deployed, as for v1.5.6. On pull requests the
+  # v2.0-cyanoptera build skips macOS, so there is no macOS artifact to test.
   duckdb-next-smoke-test:
     name: Smoke test (v2.0.0)
     needs: duckdb-next-build
@@ -82,7 +83,7 @@ jobs:
       duckdb_version: v2.0.0
       extension_name: anofox_tabular
       artifact_postfix: _v2.0
-      exclude_archs: 'wasm_mvp;wasm_eh;wasm_threads;windows_amd64_mingw;linux_amd64_musl;linux_arm64'
+      exclude_archs: ${{ github.event_name == 'pull_request' && 'wasm_mvp;wasm_eh;wasm_threads;windows_amd64_mingw;linux_amd64_musl;linux_arm64;osx_arm64;osx_amd64' || 'wasm_mvp;wasm_eh;wasm_threads;windows_amd64_mingw;linux_amd64_musl;linux_arm64' }}
 
   # Publishes the 2.0 builds to get.erpl.io/v2.0.0/<platform>/ (and the
   # versioned path on tags) under the same rules as the v1.5.6 deploy. The
