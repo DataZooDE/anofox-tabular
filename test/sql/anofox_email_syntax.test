@@ -1,0 +1,138 @@
+# name: test/sql/anofox_email_syntax.test
+# description: Default email syntax rules on a messy customer column: dot-atom
+#              local part, RFC 5321 length limits, DNS label rules, non-numeric
+#              TLD; reserved domains (localhost, .example, .invalid, .test,
+#              .local) fail the dns stage without a lookup. Network-free.
+# group: [anofox_tabular]
+
+require anofox_tabular
+
+statement ok
+LOAD anofox_tabular;
+
+statement ok
+SET anofox_tab_trace_level='warn';
+
+# Other test files share the process-wide email settings
+statement ok
+RESET anofox_tab_email_regex_pattern;
+
+statement ok
+SET anofox_tab_email_default_validation='regex';
+
+statement ok
+CREATE TABLE customers AS SELECT * FROM (VALUES
+    (1,  'max.mustermann@web.de'),
+    (2,  'max+news@web.de'),
+    (3,  'Info@Firma-GmbH.DE'),
+    (4,  'max_muster-1@sub.domain.co.uk'),
+    (5,  'o''brien@example.ie'),
+    (6,  'max@xn--mller-kva.de'),
+    (7,  '.max@web.de'),
+    (8,  'max.@web.de'),
+    (9,  'max..muster@web.de'),
+    (10, 'max@-web.de'),
+    (11, 'max@web-.de'),
+    (12, 'max@web.123'),
+    (13, 'max@web..de'),
+    (14, 'max@web.de.'),
+    (15, ' max@web.de'),                -- surrounding whitespace is ignored
+    (16, 'max @web.de'),
+    (17, 'max@web,de'),
+    (18, 'max@@web.de'),
+    (19, '"max muster"@web.de'),
+    (20, 'max@müller.de'),
+    (21, 'max@123'),
+    (22, 'max@localhost'),
+    (23, repeat('a', 64) || '@web.de'),
+    (24, repeat('a', 65) || '@web.de'),
+    (25, repeat('a', 100000) || '@web.de'),
+    (26, repeat('a', 64) || '@' || repeat('b', 63) || '.' || repeat('c', 63) || '.' || repeat('d', 58) || '.de'),
+    (27, repeat('a', 64) || '@' || repeat('b', 63) || '.' || repeat('c', 63) || '.' || repeat('d', 59) || '.de'),
+    (28, 'max@' || repeat('x', 63) || '.de'),
+    (29, 'max@' || repeat('x', 64) || '.de'),
+    (30, '')
+) t(id, email);
+
+query ITTT
+SELECT id, length(email), email_is_valid(email), (email_validate(email)).reason
+FROM customers ORDER BY id;
+----
+1	21	true	NULL
+2	15	true	NULL
+3	18	true	NULL
+4	29	true	NULL
+5	18	true	NULL
+6	20	true	NULL
+7	11	false	invalid_format
+8	11	false	invalid_format
+9	18	false	invalid_format
+10	11	false	invalid_format
+11	11	false	invalid_format
+12	11	false	invalid_format
+13	11	false	invalid_format
+14	11	false	invalid_format
+15	11	true	NULL
+16	11	false	invalid_format
+17	10	false	invalid_format
+18	11	false	invalid_format
+19	19	false	invalid_format
+20	13	false	invalid_format
+21	7	false	invalid_format
+22	13	true	NULL
+23	71	true	NULL
+24	72	false	invalid_length
+25	100007	false	invalid_length
+26	254	true	NULL
+27	255	false	invalid_length
+28	70	true	NULL
+29	71	false	invalid_format
+30	0	false	empty
+
+# The length limits also apply to a custom pattern
+statement ok
+SET anofox_tab_email_regex_pattern='^.+@.+$';
+
+query TTT
+SELECT email_is_valid('.max@web.de'), email_is_valid(repeat('a', 65) || '@web.de'),
+       (email_validate(repeat('a', 100000) || '@web.de')).reason;
+----
+true	false	invalid_length
+
+statement ok
+RESET anofox_tab_email_regex_pattern;
+
+# The default pattern is reported by email_config
+query T
+SELECT value FROM email_config() WHERE key = 'regex_pattern';
+----
+^[A-Za-z0-9!#$%&'*+/=?^_`{|}~-]+(?:\.[A-Za-z0-9!#$%&'*+/=?^_`{|}~-]+)*@(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)*[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$
+
+#----------------------------------------------------------------------------------------------------------------------
+# Reserved domains fail the dns stage without a lookup (and so never reach SMTP)
+#----------------------------------------------------------------------------------------------------------------------
+
+query TTTTT
+SELECT email, (r).valid, (r).stage, (r).reason, len((r).mx_hosts)
+FROM (SELECT email, email_validate(email, mode) AS r
+      FROM (VALUES ('max@localhost', 'dns'),
+                   ('max@LOCALHOST', 'smtp'),
+                   ('max@dev.localhost', 'dns'),
+                   ('max@shop.example', 'dns'),
+                   ('max@nonexistent.invalid', 'smtp'),
+                   ('max@ci.test', 'dns'),
+                   ('max@printer.local', 'dns')) t(email, mode))
+ORDER BY email;
+----
+max@LOCALHOST	false	dns	dns_reserved_domain	0
+max@ci.test	false	dns	dns_reserved_domain	0
+max@dev.localhost	false	dns	dns_reserved_domain	0
+max@localhost	false	dns	dns_reserved_domain	0
+max@nonexistent.invalid	false	dns	dns_reserved_domain	0
+max@printer.local	false	dns	dns_reserved_domain	0
+max@shop.example	false	dns	dns_reserved_domain	0
+
+query I
+SELECT count(*) FILTER (WHERE email_is_valid(email, 'dns')) FROM customers WHERE id = 22;
+----
+0

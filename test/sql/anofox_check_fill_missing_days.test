@@ -1,0 +1,154 @@
+# name: test/sql/anofox_check_fill_missing_days.test
+# description: rel_count_change(fill_missing_days := true), its _events companion and the
+#              run_checks params key fill_missing_days count calendar days without rows as 0 in
+#              the baseline (from the first day with data on), so an outage of several days is
+#              not averaged away. The default (only days with rows) is unchanged.
+# group: [anofox_tabular]
+
+require anofox_tabular
+
+statement ok
+LOAD anofox_tabular
+
+statement ok
+SET anofox_tab_trace_enabled = false
+
+# Goods receipts of a warehouse: about 30 a day from 2026-04-01, then the scanner integration
+# broke: nothing from 2026-04-08 to 2026-04-11 except a manual catch-up on 2026-04-07, and
+# 2026-04-12 is the first day after the fix
+statement ok
+CREATE TABLE goods_receipts AS
+SELECT row_number() OVER () AS receipt_id,
+       'SUP-' || lpad(CAST(i % 7 AS VARCHAR), 3, '0') AS supplier_id,
+       CAST(day AS TIMESTAMP) + INTERVAL (i * 13) MINUTE AS received_at
+FROM generate_series(DATE '2026-04-01', DATE '2026-04-06', INTERVAL 1 DAY) d(day), range(30) r(i)
+UNION ALL
+SELECT 1000 + i, 'SUP-001', TIMESTAMP '2026-04-07 16:00:00' + INTERVAL (i) MINUTE FROM range(30) r(i)
+UNION ALL
+SELECT 2000 + i, 'SUP-002', TIMESTAMP '2026-04-12 08:00:00' + INTERVAL (i * 7) MINUTE FROM range(30) r(i)
+
+# Default: the four silent days are skipped, 2026-04-12 is compared with 2026-04-07 alone
+query TIRRIR
+SELECT status, reference_date, reference_count, baseline_avg, baseline_days, rel_change
+FROM rel_count_change('goods_receipts', 'received_at', NULL, 5, -0.5, 0.5)
+----
+pass	2026-04-12	30.0	30.0	1	0.0
+
+# fill_missing_days: the five calendar days count, four of them as 0
+query TIRRIR
+SELECT status, reference_date, reference_count, baseline_avg, baseline_days, rel_change
+FROM rel_count_change('goods_receipts', 'received_at', NULL, 5, -0.5, 0.5, fill_missing_days := true)
+----
+fail	2026-04-12	30.0	6.0	5	4.0
+
+query T
+SELECT message FROM rel_count_change('goods_receipts', 'received_at', NULL, 5, -0.5, 0.5, fill_missing_days := true)
+----
+Count 30 on 2026-04-12 deviates by 4.0 from baseline average 6.0
+
+# false and NULL keep the default
+query IR
+SELECT baseline_days, baseline_avg FROM rel_count_change('goods_receipts', 'received_at', NULL, 5, fill_missing_days := false)
+----
+1	30.0
+
+query IR
+SELECT baseline_days, baseline_avg FROM rel_count_change('goods_receipts', 'received_at', NULL, 5, fill_missing_days := NULL)
+----
+1	30.0
+
+# The days before the first receipt are not filled: 2026-04-03 has two days of history
+query IRR
+SELECT baseline_days, baseline_avg, rel_change
+FROM rel_count_change('goods_receipts', 'received_at', NULL, 7, -0.5, 0.5, DATE '2026-04-03', fill_missing_days := true)
+----
+2	30.0	0.0
+
+# The first day has no history: a trivial pass, as without the option
+query TIT
+SELECT status, baseline_days, message
+FROM rel_count_change('goods_receipts', 'received_at', NULL, 7, -0.5, 0.5, DATE '2026-04-01', fill_missing_days := true)
+----
+pass	0	No baseline days before 2026-04-01; check passed trivially
+
+# A date range: the outage days fail in both modes (0 receipts); the baselines differ
+query TRRIR
+SELECT reference_date, reference_count, baseline_avg, baseline_days, rel_change
+FROM rel_count_change('goods_receipts', 'received_at', NULL, 5, -0.5, 0.5,
+                      start_date := DATE '2026-04-09', end_date := DATE '2026-04-12', fill_missing_days := true)
+----
+2026-04-09	0.0	24.0	5	-1.0
+2026-04-10	0.0	18.0	5	-1.0
+2026-04-11	0.0	12.0	5	-1.0
+2026-04-12	30.0	6.0	5	4.0
+
+query TRRIR
+SELECT reference_date, reference_count, baseline_avg, baseline_days, rel_change
+FROM rel_count_change('goods_receipts', 'received_at', NULL, 5, -0.5, 0.5,
+                      start_date := DATE '2026-04-09', end_date := DATE '2026-04-12')
+----
+2026-04-09	0.0	30.0	4	-1.0
+2026-04-10	0.0	30.0	3	-1.0
+2026-04-11	0.0	30.0	2	-1.0
+2026-04-12	30.0	30.0	1	0.0
+
+# The events companion takes the same option
+query TTRR
+SELECT ds, severity, value, threshold
+FROM rel_count_change_events('goods_receipts', 'received_at', NULL, 5, -0.5, 0.5,
+                             start_date := DATE '2026-04-11', end_date := DATE '2026-04-12', fill_missing_days := true)
+----
+2026-04-11	alarm	-1.0	-0.5
+2026-04-12	alarm	4.0	0.5
+
+query T
+SELECT ds FROM rel_count_change_events('goods_receipts', 'received_at', NULL, 5, -0.5, 0.5,
+                                       start_date := DATE '2026-04-11', end_date := DATE '2026-04-12')
+----
+2026-04-11
+
+# The other time-aware checks do not take the option
+statement error
+SELECT * FROM metric_anomaly_iqr('goods_receipts', 'received_at', fill_missing_days := true)
+----
+fill_missing_days
+
+# ===--------------------------------------------------------------------===
+# run_checks: params.fill_missing_days
+# ===--------------------------------------------------------------------===
+
+statement ok
+CREATE TABLE receipt_checks (check_name VARCHAR, check_type VARCHAR, table_name VARCHAR, column_name VARCHAR,
+                             params VARCHAR, lower_threshold DOUBLE, upper_threshold DOUBLE)
+
+statement ok
+INSERT INTO receipt_checks VALUES
+    ('receipts_days_with_rows', 'rel_count_change', 'goods_receipts', NULL,
+     '{"date_column": "received_at", "window_days": 5}', -0.5, 0.5),
+    ('receipts_calendar_days', 'rel_count_change', 'goods_receipts', NULL,
+     '{"date_column": "received_at", "window_days": 5, "fill_missing_days": true}', -0.5, 0.5),
+    ('receipts_explicit_false', 'rel_count_change', 'goods_receipts', NULL,
+     '{"date_column": "received_at", "window_days": 5, "fill_missing_days": false}', -0.5, 0.5),
+    ('receipts_bad_flag', 'rel_count_change', 'goods_receipts', NULL,
+     '{"date_column": "received_at", "fill_missing_days": "yes"}', -0.5, 0.5),
+    ('receipts_wrong_type', 'volume', 'goods_receipts', NULL,
+     '{"fill_missing_days": true}', 1, NULL)
+
+query TRT
+SELECT check_name, value, status FROM run_checks('receipt_checks') ORDER BY check_name
+----
+receipts_bad_flag	NULL	error
+receipts_calendar_days	4.0	fail
+receipts_days_with_rows	0.0	pass
+receipts_explicit_false	0.0	pass
+receipts_wrong_type	NULL	error
+
+query T
+SELECT message FROM run_checks('receipt_checks') WHERE check_name = 'receipts_bad_flag'
+----
+check 'receipts_bad_flag' (rel_count_change) cannot run: params.fill_missing_days must be true or false
+
+query T
+SELECT message LIKE '%unknown params key ''fill_missing_days''%' FROM run_checks('receipt_checks') WHERE check_name = 'receipts_wrong_type'
+----
+true

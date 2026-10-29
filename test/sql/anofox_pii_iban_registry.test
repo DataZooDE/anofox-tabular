@@ -1,0 +1,110 @@
+# name: test/sql/anofox_pii_iban_registry.test
+# description: An IBAN needs a registered country code and that country's length
+#              besides the MOD-97 checksum; hex ids and digests whose checksum
+#              happens to hold are no IBANs
+# group: [sql]
+
+require anofox_tabular
+
+statement ok
+LOAD anofox_tabular;
+
+statement ok
+SET anofox_pii_enabled_types = 'IBAN';
+
+# Real IBANs from 17 countries stay valid and are detected
+statement ok
+CREATE TABLE payouts AS SELECT * FROM (VALUES
+    ('DE', 'DE89370400440532013000'),
+    ('GB', 'GB82WEST12345698765432'),
+    ('FR', 'FR1420041010050500013M02606'),
+    ('ES', 'ES9121000418450200051332'),
+    ('IT', 'IT60X0542811101000000123456'),
+    ('NL', 'NL91ABNA0417164300'),
+    ('BE', 'BE68539007547034'),
+    ('AT', 'AT611904300234573201'),
+    ('CH', 'CH9300762011623852957'),
+    ('PL', 'PL61109010140000071219812874'),
+    ('SE', 'SE4550000000058398257466'),
+    ('DK', 'DK5000400440116243'),
+    ('NO', 'NO9386011117947'),
+    ('FI', 'FI2112345600000785'),
+    ('PT', 'PT50000201231234567890154'),
+    ('IE', 'IE29AIBK93115212345678'),
+    ('LU', 'LU280019400644750000')
+) t(country, iban);
+
+query II
+SELECT count(*) FILTER (WHERE pii_is_valid_iban(iban)),
+       count(*) FILTER (WHERE pii_mask('Auszahlung an ' || iban || ' am Freitag') = 'Auszahlung an [IBAN] am Freitag')
+FROM payouts;
+----
+17	17
+
+# Lower case and grouped spelling are still accepted
+query TT
+SELECT pii_is_valid_iban('de89 3704 0044 0532 0130 00'), pii_is_valid_iban('GB82-WEST-1234-5698-7654-32');
+----
+true	true
+
+# A valid MOD-97 checksum with the wrong length for the country is no IBAN
+query IT
+SELECT i, pii_is_valid_iban(s) FROM (VALUES
+    (1, 'DE543704004405320130001'),
+    (2, 'DE41370400440532013'),
+    (3, 'GB49WEST123456987654321'),
+    (4, 'NL06ABNA04171643001')
+) t(i, s) ORDER BY i;
+----
+1	false
+2	false
+3	false
+4	false
+
+query I
+SELECT len(pii_detect('Konto DE543704004405320130001 und NL06ABNA04171643001'));
+----
+0
+
+# Hex ids whose MOD-97 checksum holds by chance: unknown country (CE, DB) or
+# the wrong length for a registered one (BA has 20 characters)
+query IT
+SELECT i, pii_is_valid_iban(s) FROM (VALUES
+    (1, 'ce78d1da254c0843eb23951ae077ff5f'),
+    (2, 'ba4373f8884dc4addea4ef0b5bbe9fd4'),
+    (3, 'ce4812694c8a4543b0d07dbf81193b39'),
+    (4, 'ba642cc487d1847f4e06973cd38f77a8'),
+    (5, 'db0455826a82337fec05f2f501e6a6f4')
+) t(i, s) ORDER BY i;
+----
+1	false
+2	false
+3	false
+4	false
+5	false
+
+# A log of object ids and checksums yields no IBAN
+statement ok
+CREATE TABLE object_log AS SELECT * FROM (VALUES
+    (1, 'upload ok object=ce78d1da254c0843eb23951ae077ff5f size=18233'),
+    (2, 'upload ok object=ba4373f8884dc4addea4ef0b5bbe9fd4 size=901'),
+    (3, 'etag "ce4812694c8a4543b0d07dbf81193b39"'),
+    (4, 'md5:ba642cc487d1847f4e06973cd38f77a8'),
+    (5, 'request_id=db0455826a82337fec05f2f501e6a6f4'),
+    (6, 'trace 6513270e-269e-4d37-b2a7-4de452e6b438'),
+    (7, 'sha1 cce6750044f00f3b00844d6ffe59affc64e51b05')
+) t(id, line);
+
+query I
+SELECT count(*) FROM object_log WHERE len(pii_detect(line)) > 0 OR pii_mask(line) <> line;
+----
+0
+
+statement ok
+SET anofox_pii_enabled_types = '';
+
+# pii_status describes the full IBAN rule: registered country, its length and the checksum
+query T
+SELECT pattern_info FROM pii_status() WHERE pii_type = 'IBAN';
+----
+ISO 13616: registered country, its length and MOD-97 checksum

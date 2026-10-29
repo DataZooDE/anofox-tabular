@@ -1,0 +1,37 @@
+# name: test/sql/anofox_pii_scan_record_ner.test
+# description: pii_scan_table names the NER model in ner_model when the model ran on a
+#              column, and leaves it NULL when only pattern types were applied (F2)
+# group: [sql]
+
+require-env OPENVINO_AVAILABLE
+
+require anofox_tabular
+
+statement ok
+LOAD anofox_tabular;
+
+statement ok
+CREATE TABLE crm_notes AS
+SELECT * FROM (VALUES
+    (1, 'Termin mit Klaus Fischer von der Deutschen Bahn in Berlin vereinbart'),
+    (2, 'Kundin wünscht Rückruf, Zahlung per Rechnung')
+) t(note_id, note);
+
+statement ok
+SET anofox_pii_enabled_types = 'NAME,EMAIL';
+
+query TTTT
+SELECT column_name, pii_type, checked_types, ner_model FROM pii_scan_table('crm_notes', columns := 'note');
+----
+note	NAME	[EMAIL, NAME]	bert-multi
+
+statement ok
+SET anofox_pii_enabled_types = 'EMAIL';
+
+query TTTT
+SELECT column_name, status, checked_types, ner_model FROM pii_scan_table('crm_notes', columns := 'note');
+----
+note	no_match	[EMAIL]	NULL
+
+statement ok
+RESET anofox_pii_enabled_types;

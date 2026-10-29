@@ -1,0 +1,186 @@
+# name: test/sql/anofox_diff_output_names.test
+# description: diff_joindiff / diff_hashdiff add the output columns diff_type and changed_columns.
+#              A target column (key or compared column) with one of these names (any case) would
+#              collide with them, so the diff raises a binder error naming the column and the
+#              table instead of an ambiguous-column error or a silently renamed
+#              changed_columns_1. A source-only column of that name is not in the output and must
+#              not change the result (the generated filter used to read s.diff_type).
+# group: [anofox_tabular]
+
+require anofox_tabular
+
+statement ok
+LOAD anofox_tabular
+
+statement ok
+SET anofox_tab_trace_enabled = false
+
+# A ticket export whose own 'diff_type' column records the kind of change a support agent made
+statement ok
+CREATE TABLE tickets_v1 (ticket_id INTEGER, subject VARCHAR, diff_type VARCHAR, priority VARCHAR);
+
+statement ok
+INSERT INTO tickets_v1 VALUES
+    (7001, 'Invoice 2026-0412 missing VAT ID', 'edit', 'high'),
+    (7002, 'Password reset link expired', 'create', 'low'),
+    (7003, 'Delivery to Hamburg delayed', 'edit', 'medium');
+
+statement ok
+CREATE TABLE tickets_v2 (ticket_id INTEGER, subject VARCHAR, diff_type VARCHAR, priority VARCHAR);
+
+statement ok
+INSERT INTO tickets_v2 VALUES
+    (7001, 'Invoice 2026-0412 missing VAT ID', 'edit', 'urgent'),
+    (7002, 'Password reset link expired', 'create', 'low'),
+    (7004, 'Wrong shipping address on order 88213', 'create', 'high');
+
+statement error
+SELECT * FROM diff_joindiff('tickets_v1', 'tickets_v2', 'ticket_id');
+----
+diff_joindiff: column 'diff_type' of target table 'tickets_v2' has the name of a diff output column
+
+statement error
+SELECT * FROM diff_hashdiff('tickets_v1', 'tickets_v2', 'ticket_id');
+----
+diff_hashdiff: column 'diff_type' of target table 'tickets_v2' has the name of a diff output column
+
+# The message tells how to get out of it: a view that renames the column
+statement error
+SELECT * FROM diff_joindiff('tickets_v1', 'tickets_v2', 'ticket_id', ['priority']);
+----
+RENAME (diff_type AS
+
+# Case-insensitive, also as a key column
+statement ok
+CREATE TABLE kv_v1 (DIFF_TYPE VARCHAR, amount DECIMAL(10, 2));
+
+statement ok
+INSERT INTO kv_v1 VALUES ('refund', 10.00);
+
+statement error
+SELECT * FROM diff_joindiff('kv_v1', 'kv_v1', 'DIFF_TYPE');
+----
+column 'DIFF_TYPE' of target table 'kv_v1' has the name of a diff output column
+
+# The renaming view the message suggests works
+statement ok
+CREATE VIEW tickets_v1_r AS SELECT * RENAME (diff_type AS change_kind) FROM tickets_v1;
+
+statement ok
+CREATE VIEW tickets_v2_r AS SELECT * RENAME (diff_type AS change_kind) FROM tickets_v2;
+
+query TITTT
+SELECT diff_type, ticket_id, change_kind, priority, changed_columns
+FROM diff_joindiff('tickets_v1_r', 'tickets_v2_r', 'ticket_id')
+ORDER BY ticket_id;
+----
+changed	7001	edit	urgent	[priority]
+removed	7003	NULL	NULL	NULL
+added	7004	create	high	NULL
+
+# A CRM table with a free-text 'changed_columns' note column
+statement ok
+CREATE TABLE crm_v1 (customer_id INTEGER, email VARCHAR, changed_columns VARCHAR);
+
+statement ok
+INSERT INTO crm_v1 VALUES (1001, 'anna.schmidt@web.de', 'email'), (1002, 'j.meyer@gmx.de', NULL);
+
+statement ok
+CREATE TABLE crm_v2 (customer_id INTEGER, email VARCHAR, changed_columns VARCHAR);
+
+statement ok
+INSERT INTO crm_v2 VALUES (1001, 'anna.schmidt@posteo.de', 'email'), (1002, 'j.meyer@gmx.de', 'none');
+
+statement error
+SELECT * FROM diff_joindiff('crm_v1', 'crm_v2', 'customer_id');
+----
+diff_joindiff: column 'changed_columns' of target table 'crm_v2' has the name of a diff output column
+
+statement error
+SELECT * FROM diff_hashdiff('crm_v1', 'crm_v2', 'customer_id');
+----
+diff_hashdiff: column 'changed_columns' of target table 'crm_v2' has the name of a diff output column
+
+statement error
+SELECT * FROM diff_joindiff('crm_v1', 'crm_v2', 'customer_id', compare_columns := ['email']);
+----
+column 'changed_columns' of target table 'crm_v2' has the name of a diff output column
+
+# A column named like the diff's internal presence markers is rejected too, on either side
+statement ok
+CREATE TABLE marker_v1 (id INTEGER, __anofox_diff_s_present BOOLEAN);
+
+statement ok
+INSERT INTO marker_v1 VALUES (1, true);
+
+statement ok
+CREATE TABLE marker_v2 (id INTEGER, note VARCHAR);
+
+statement ok
+INSERT INTO marker_v2 VALUES (1, 'x');
+
+statement error
+SELECT * FROM diff_joindiff('marker_v1', 'marker_v2', 'id');
+----
+column '__anofox_diff_s_present' of source table 'marker_v1' has the name of a diff output column
+
+# A source-only 'diff_type' column is not part of the output: the result is the same as without it
+statement ok
+CREATE TABLE orders_v1 (order_id INTEGER, diff_type VARCHAR, status VARCHAR);
+
+statement ok
+INSERT INTO orders_v1 VALUES (5001, 'unchanged', 'open'), (5002, 'added', 'shipped'), (5003, 'x', 'open');
+
+statement ok
+CREATE TABLE orders_v2 (order_id INTEGER, status VARCHAR);
+
+statement ok
+INSERT INTO orders_v2 VALUES (5001, 'shipped'), (5002, 'shipped'), (5004, 'open');
+
+query ITT
+SELECT order_id, diff_type, changed_columns FROM diff_joindiff('orders_v1', 'orders_v2', 'order_id') ORDER BY order_id;
+----
+5001	changed	[status]
+5003	removed	NULL
+5004	added	NULL
+
+query ITT
+SELECT order_id, diff_type, changed_columns FROM diff_hashdiff('orders_v1', 'orders_v2', 'order_id') ORDER BY order_id;
+----
+5001	changed	[status]
+5003	removed	NULL
+5004	added	NULL
+
+query IT
+SELECT order_id, diff_type FROM diff_joindiff('orders_v1', 'orders_v2', 'order_id', include_all := true) ORDER BY order_id;
+----
+5001	changed
+5002	unchanged
+5003	removed
+5004	added
+
+# Key columns named like the internal aliases of the generated query still work
+statement ok
+CREATE TABLE shipments_v1 (side VARCHAR, msg INTEGER, s VARCHAR, t VARCHAR);
+
+statement ok
+INSERT INTO shipments_v1 VALUES ('north', 1, 'DHL', 'packed'), ('south', 2, 'UPS', 'packed');
+
+statement ok
+CREATE TABLE shipments_v2 (side VARCHAR, msg INTEGER, s VARCHAR, t VARCHAR);
+
+statement ok
+INSERT INTO shipments_v2 VALUES ('north', 1, 'DHL', 'shipped'), ('south', 2, 'UPS', 'packed');
+
+query TITTT
+SELECT diff_type, msg, s, t, changed_columns FROM diff_joindiff('shipments_v1', 'shipments_v2', ['side', 'msg']);
+----
+changed	1	DHL	shipped	[t]
+
+statement ok
+INSERT INTO shipments_v2 VALUES ('south', 2, 'UPS', 'lost');
+
+statement error
+SELECT * FROM diff_joindiff('shipments_v1', 'shipments_v2', ['side', 'msg']);
+----
+primary key is not unique in target table 'shipments_v2' (side = south, msg = 2 appears 2 times)

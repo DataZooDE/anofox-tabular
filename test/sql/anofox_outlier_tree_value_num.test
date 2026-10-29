@@ -33,6 +33,8 @@ outlier_value	VARCHAR
 outlier_value_num	DOUBLE
 cluster_mean	DOUBLE
 cluster_sd	DOUBLE
+cluster_median	DOUBLE
+cluster_mad	DOUBLE
 cluster_size	BIGINT
 z_score	DOUBLE
 lower_bound	DOUBLE
@@ -58,3 +60,13 @@ FROM anofox_tab_outlier_tree('ot_num', 'grp,val', 'outliers')
 WHERE column_name = 'val'
 ----
 true
+
+# A categorical outlier has no numeric group statistics: mean, sd, median, mad
+# and bounds are NULL (not 0.0); z_score keeps the rarity score
+query TTTTTTTT
+SELECT outlier_value, cluster_mean IS NULL, cluster_sd IS NULL, cluster_median IS NULL,
+       cluster_mad IS NULL, lower_bound IS NULL, upper_bound IS NULL, z_score > 0
+FROM outlier_tree('ot_num', 'grp,val', 'outliers')
+WHERE column_name = 'grp'
+----
+A	true	true	true	true	true	true	true

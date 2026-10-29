@@ -74,6 +74,79 @@ SET anofox_ner_device = NULL;
 ----
 anofox_ner_device cannot be NULL
 
+# 8b. Device names are validated at SET time. Accepted: AUTO, CPU, GPU, NPU,
+# an indexed GPU or NPU (GPU.1), and AUTO:/HETERO:/MULTI: with a device list;
+# names are upper-cased the way OpenVINO spells them
+statement ok
+SET anofox_ner_device = 'npu';
+
+query T
+SELECT current_setting('anofox_ner_device');
+----
+NPU
+
+statement ok
+SET anofox_ner_device = 'multi:gpu.1, cpu';
+
+query T
+SELECT current_setting('anofox_ner_device');
+----
+MULTI:GPU.1,CPU
+
+statement ok
+SET anofox_ner_device = 'AUTO:GPU,CPU';
+
+query T
+SELECT current_setting('anofox_ner_device');
+----
+AUTO:GPU,CPU
+
+statement error
+SET anofox_ner_device = 'NPU2';
+----
+Unsupported anofox_ner_device 'NPU2'. Use AUTO, CPU, GPU, NPU, an indexed device such as GPU.0, or AUTO:, HETERO: or MULTI: followed by a comma-separated device list (HETERO:GPU,CPU)
+
+statement error
+SET anofox_ner_device = 'TPU';
+----
+Unsupported anofox_ner_device 'TPU'
+
+statement error
+SET anofox_ner_device = 'GPU.';
+----
+Unsupported anofox_ner_device 'GPU.'
+
+statement error
+SET anofox_ner_device = 'CPU.0';
+----
+Unsupported anofox_ner_device 'CPU.0'
+
+statement error
+SET anofox_ner_device = 'HETERO:';
+----
+Unsupported anofox_ner_device 'HETERO:'
+
+statement error
+SET anofox_ner_device = 'HETERO:GPU,,CPU';
+----
+Unsupported anofox_ner_device 'HETERO:GPU,,CPU'
+
+statement error
+SET anofox_ner_device = 'HETERO:AUTO';
+----
+Unsupported anofox_ner_device 'HETERO:AUTO'
+
+statement error
+SET anofox_ner_device = '';
+----
+Unsupported anofox_ner_device ''
+
+# A rejected value leaves the previous setting in place
+query T
+SELECT current_setting('anofox_ner_device');
+----
+AUTO:GPU,CPU
+
 # 9. Reset to AUTO; verify setting is stored correctly
 statement ok
 SET anofox_ner_device = 'AUTO';
@@ -160,26 +233,28 @@ SELECT current_setting('anofox_ner_cache_size');
 # anofox_ner_model option tests
 # ============================================================================
 
-# 18. Default value is 'distilbert-en'
+# 18. Default value is 'bert-multi'
 query T
 SELECT current_setting('anofox_ner_model');
 ----
-distilbert-en
+bert-multi
 
 # 19. Visible in duckdb_settings() with correct default
 query I
-SELECT COUNT(*) FROM duckdb_settings() WHERE name = 'anofox_ner_model' AND value = 'distilbert-en';
+SELECT COUNT(*) FROM duckdb_settings() WHERE name = 'anofox_ner_model' AND value = 'bert-multi';
 ----
 1
 
-# 20. SET to 'distilbert-en' (valid, round-trip) - accepted
+# 20. SET to 'bert-multi' (valid, round-trip) - accepted. Only the default is
+# set here: in a test run with OpenVINO the default model may already be
+# loaded, and switching to another model is then an error
 statement ok
-SET anofox_ner_model = 'distilbert-en';
+SET anofox_ner_model = 'bert-multi';
 
 query T
 SELECT current_setting('anofox_ner_model');
 ----
-distilbert-en
+bert-multi
 
 # 21. SET to 'xlm-roberta-multi' - rejected: no downloadable assets exist for
 # this model, so advertising it would be a silent no-op (issue #56). The error
@@ -192,14 +267,20 @@ Unsupported NER model
 query T
 SELECT current_setting('anofox_ner_model');
 ----
-distilbert-en
+bert-multi
 
 # 22. SET to 'invalid-model' - throws (model name validated at SET time);
 # the error message lists the valid model names
 statement error
 SET anofox_ner_model = 'invalid-model';
 ----
-Valid models: distilbert-en
+Unsupported NER model: invalid-model. Valid models: distilbert-en, distilbert-multi, bert-multi
+
+# 22b. The setting description lists every model with its languages, size and licence
+query T
+SELECT description FROM duckdb_settings() WHERE name = 'anofox_ner_model';
+----
+NER model to use: distilbert-en (en, 66 MB, Apache-2.0); distilbert-multi (ar de en es fr it lv nl pt zh, 135 MB, AFL-3.0); bert-multi (ar de en es fr it lv nl pt zh, 178 MB, AFL-3.0); must be set before the model is first loaded
 
 # 23. SET to 'DISTILBERT-EN' (wrong case) - throws (case-sensitive validation)
 statement error
@@ -221,19 +302,63 @@ anofox_ner_model cannot be NULL
 
 # Reset model to default
 statement ok
-SET anofox_ner_model = 'distilbert-en';
+SET anofox_ner_model = 'bert-multi';
 
 query T
 SELECT current_setting('anofox_ner_model');
 ----
-distilbert-en
+bert-multi
+
+# ============================================================================
+# anofox_ner_required option tests
+# ============================================================================
+
+# 26. Default false: without the model, detection falls back silently
+query T
+SELECT current_setting('anofox_ner_required');
+----
+false
+
+statement ok
+SET anofox_ner_required = true;
+
+query T
+SELECT current_setting('anofox_ner_required');
+----
+true
+
+statement error
+SET anofox_ner_required = NULL;
+----
+anofox_ner_required cannot be NULL
+
+statement ok
+SET anofox_ner_required = false;
+
+# Pattern-only detection never needs the model, also when it is required
+statement ok
+SET anofox_ner_required = true;
+
+statement ok
+SET anofox_pii_enabled_types = 'EMAIL,IBAN';
+
+query T
+SELECT pii_mask('Ticket 4711: refund to anna.berger@example.de, IBAN DE89 3704 0044 0532 0130 00');
+----
+Ticket 4711: refund to [EMAIL], IBAN [IBAN]
+
+statement ok
+SET anofox_pii_enabled_types = '';
+
+statement ok
+SET anofox_ner_required = false;
 
 # ============================================================================
 # Global option count
 # ============================================================================
 
-# 26. Exactly 4 anofox_ner% options registered in duckdb_settings()
+# 27. Exactly 5 anofox_ner% options registered in duckdb_settings()
 query I
 SELECT COUNT(*) FROM duckdb_settings() WHERE name LIKE 'anofox_ner%';
 ----
-4
+5

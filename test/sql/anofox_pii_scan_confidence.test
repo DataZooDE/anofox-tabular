@@ -1,0 +1,35 @@
+# name: test/sql/anofox_pii_scan_confidence.test
+# description: pii_scan_table reports the mean match confidence per (column, type) and
+#              emits rows ordered by column (table order) and then pii_type
+# group: [sql]
+
+require anofox_tabular
+
+statement ok
+LOAD anofox_tabular;
+
+# Regex recognizers only: every match has confidence 1.0
+statement ok
+SET anofox_pii_enabled_types = 'EMAIL,PHONE,US_SSN,CREDIT_CARD';
+
+statement ok
+CREATE TABLE sc AS SELECT * FROM (VALUES
+    ('ssn 123-45-6789 mail x@y.com', 'call +49 30 12345678 or card 4111111111111111'),
+    ('mail a@b.com card 4111 1111 1111 1111', 'nothing here'),
+    ('phone +1 212 555 0100', 'mail c@d.com')
+) t(zeta, alpha);
+
+# No ORDER BY: the function's own row order is part of the contract
+query TTIR
+SELECT column_name, pii_type, match_count, confidence FROM pii_scan_table('sc');
+----
+zeta	CREDIT_CARD	1	1.0
+zeta	EMAIL	2	1.0
+zeta	PHONE	1	1.0
+zeta	US_SSN	1	1.0
+alpha	CREDIT_CARD	1	1.0
+alpha	EMAIL	1	1.0
+alpha	PHONE	1	1.0
+
+statement ok
+SET anofox_pii_enabled_types = '';

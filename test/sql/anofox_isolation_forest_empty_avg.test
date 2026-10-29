@@ -1,0 +1,35 @@
+# name: test/sql/anofox_isolation_forest_empty_avg.test
+# description: The isolation_forest summary reports avg_value NULL when no row was scored (an
+#              empty table or a column without any value), as documented; it used to report 0.0
+# group: [anofox_tabular]
+
+require anofox_tabular
+
+statement ok
+LOAD anofox_tabular
+
+# A night shift that recorded no readings yet, and a sensor that never reported a value
+statement ok
+CREATE TABLE night_readings (sensor_id VARCHAR, temperature DOUBLE)
+
+statement ok
+CREATE TABLE dead_sensor AS SELECT 'S-' || i AS sensor_id, NULL::DOUBLE AS temperature FROM range(1, 6) t(i)
+
+query TIIT
+SELECT status, outlier_count, total_count, avg_value IS NULL FROM isolation_forest('night_readings', 'temperature');
+----
+pass	0	0	true
+
+query TIIT
+SELECT status, outlier_count, total_count, avg_value IS NULL FROM isolation_forest('dead_sensor', 'temperature');
+----
+pass	0	0	true
+
+# With values, avg_value stays the mean of the finite values
+statement ok
+CREATE TABLE day_readings AS SELECT 'S-' || i AS sensor_id, 20.0 + (i % 3) AS temperature FROM range(1, 31) t(i)
+
+query R
+SELECT round(avg_value, 3) FROM isolation_forest('day_readings', 'temperature', 100, 256, 0.1, 'summary', 42);
+----
+21.0

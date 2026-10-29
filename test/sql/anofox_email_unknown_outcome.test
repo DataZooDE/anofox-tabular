@@ -1,0 +1,71 @@
+# name: test/sql/anofox_email_unknown_outcome.test
+# description: a DNS check that cannot finish (timeout, unreachable server) gives valid = NULL with
+#              the reason kept; definite answers (bad syntax, reserved or non-existent domain) stay false.
+#              The timeout is forced with a 1 ms DNS budget and a random, uncached domain, so the
+#              test needs no network: without one the lookup fails with an unreachable server,
+#              with one it cannot answer in 1 ms.
+# group: [anofox_tabular]
+
+require anofox_tabular
+
+statement ok
+LOAD anofox_tabular;
+
+statement ok
+SET anofox_tab_email_dns_timeout_ms=1;
+
+statement ok
+SET anofox_tab_email_dns_tries=1;
+
+# A newsletter sign-up list: one address per outcome. Row 4's domain is random per
+# query (a view), so no resolver can know it: not the extension's DNS cache, and not an
+# operating system cache such as the Windows DNS client, which keeps negative answers
+statement ok
+CREATE VIEW signups AS SELECT * FROM (VALUES
+    (1, 'max..muster@web.de'),
+    (2, 'jana@printer.local'),
+    (3, 'ops@ci.test'),
+    (4, 'lena@' || md5(random()::VARCHAR) || '-anofox-unknown.com')
+) t(id, email);
+
+query ITTT
+SELECT id, (r).valid, (r).stage, (r).reason IN ('dns_timeout', 'dns_server_unreachable')
+           OR (r).reason LIKE 'dns_error_%' OR (r).reason LIKE 'dns_poll_failed_%'
+FROM (SELECT id, email_validate(email, 'dns') AS r FROM signups)
+ORDER BY id;
+----
+1	false	regex	false
+2	false	dns	false
+3	false	dns	false
+4	NULL	dns	true
+
+# email_is_valid agrees: false for definite answers, NULL for the unknown one
+query IT
+SELECT id, email_is_valid(email, 'dns') FROM signups ORDER BY id;
+----
+1	false
+2	false
+3	false
+4	NULL
+
+# The smtp mode stops at the same DNS stage and also reports NULL
+query TT
+SELECT (r).valid, (r).stage
+FROM (SELECT email_validate(email, 'smtp') AS r FROM signups WHERE id = 4);
+----
+NULL	dns
+
+# Unknown outcomes can be told apart from invalid ones: count them separately
+query III
+SELECT count(*) FILTER (WHERE v),
+       count(*) FILTER (WHERE NOT v),
+       count(*) FILTER (WHERE v IS NULL)
+FROM (SELECT email_is_valid(email, 'dns') AS v FROM signups);
+----
+0	3	1
+
+# The regex mode never touches the network and is never NULL for a non-NULL address
+query I
+SELECT count(*) FROM signups WHERE email_is_valid(email) IS NULL;
+----
+0

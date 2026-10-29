@@ -1,0 +1,86 @@
+# name: test/sql/anofox_function_parameter_names.test
+# description: duckdb_functions() and binder hints show the real parameter names of every
+#              anofox function: no generated colN names, and names in signature order
+# group: [anofox_tabular]
+
+require anofox_tabular
+
+statement ok
+LOAD anofox_tabular;
+
+# No anofox function (canonical name or short alias) has a generated colN parameter name.
+# DuckDB v1.5 lists a table function's named parameters after the positional ones under
+# generated names (col5, ...); there the check covers scalar functions only.
+query I
+SELECT count(*)
+FROM duckdb_functions()
+WHERE (function_name LIKE 'anofox\_%' ESCAPE '\' OR alias_of LIKE 'anofox\_%' ESCAPE '\')
+  AND (function_type <> 'table' OR NOT starts_with(version(), 'v1.'))
+  AND len(list_filter(parameters, lambda p: regexp_matches(p, '^col[0-9]+$'))) > 0;
+----
+0
+
+# Phone numbers: the region hint is the second argument, the format the third
+query TT
+SELECT function_name, parameters::VARCHAR
+FROM duckdb_functions()
+WHERE function_name LIKE 'anofox\_tab\_phonenumber\_%' ESCAPE '\' AND function_type = 'scalar'
+ORDER BY function_name;
+----
+anofox_tab_phonenumber_example	[region]
+anofox_tab_phonenumber_format	[phone, region, format]
+anofox_tab_phonenumber_is_possible	[phone, region]
+anofox_tab_phonenumber_is_valid	[phone, region]
+anofox_tab_phonenumber_is_valid_for_region	[phone, region]
+anofox_tab_phonenumber_match	[phone1, phone2, region]
+anofox_tab_phonenumber_parse	[phone, region]
+anofox_tab_phonenumber_region	[phone, region]
+
+# The short aliases carry the same names
+query T
+SELECT parameters::VARCHAR FROM duckdb_functions() WHERE function_name = 'phonenumber_format';
+----
+[phone, region, format]
+
+# VAT: the country functions take a country code, the others a VAT number
+query TT
+SELECT function_name, parameters::VARCHAR
+FROM duckdb_functions()
+WHERE function_name IN ('anofox_tab_vat_is_eu_member', 'anofox_tab_vat_country_name',
+                        'anofox_tab_is_valid_vat_country', 'anofox_tab_vat_exists', 'anofox_tab_vat_format')
+ORDER BY function_name;
+----
+anofox_tab_is_valid_vat_country	[country_code]
+anofox_tab_vat_country_name	[country_code]
+anofox_tab_vat_exists	[vat_number]
+anofox_tab_vat_format	[vat_number, format_style]
+anofox_tab_vat_is_eu_member	[country_code]
+
+# PII table functions: the optional second argument is the column list
+query TT
+SELECT DISTINCT function_name, parameters[1:2]::VARCHAR
+FROM duckdb_functions()
+WHERE function_name IN ('anofox_tab_pii_scan_table', 'anofox_tab_pii_audit_table') AND len(parameters) >= 2
+  AND parameters[2] <> 'id_column'
+ORDER BY function_name;
+----
+anofox_tab_pii_audit_table	[table_name, columns]
+anofox_tab_pii_scan_table	[table_name, columns]
+
+# Diff functions: every positional parameter is named after what it takes
+query I
+SELECT count(*)
+FROM duckdb_functions()
+WHERE function_name IN ('anofox_tab_diff_joindiff', 'anofox_tab_diff_hashdiff')
+  -- v1.5 lists named parameters under generated names (see above)
+  AND NOT starts_with(version(), 'v1.')
+  AND NOT list_has_all(['source_table', 'target_table', 'primary_key', 'primary_keys', 'compare_columns',
+                        'include_all', 'bisection_threshold', 'bisection_factor'], parameters);
+----
+0
+
+# The binder hint lists the real names for a wrong call (DuckDB v1.5 prints the types only)
+statement error
+SELECT phonenumber_format('+4930901820');
+----
+<REGEX>:.*phonenumber_format\((phone VARCHAR, region VARCHAR, format VARCHAR|VARCHAR, VARCHAR, VARCHAR)(, /)?\).*

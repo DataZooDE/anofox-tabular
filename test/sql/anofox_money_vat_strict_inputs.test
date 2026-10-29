@@ -1,0 +1,68 @@
+# name: test/sql/anofox_money_vat_strict_inputs.test
+# description: money_format styles are case-insensitive and an unknown style is an error;
+#              vat_exists needs a supported prefix followed by a number, not a bare country code
+# group: [money]
+
+require anofox_tabular
+
+statement ok
+LOAD anofox_tabular;
+
+# An invoice export with amounts in three currencies
+statement ok
+CREATE TABLE invoices AS SELECT * FROM (VALUES
+    ('INV-2024-0117', money(1234.5, 'EUR')),
+    ('INV-2024-0118', money(-42.5, 'USD')),
+    ('INV-2024-0119', money(980, 'GBP'))
+) t(invoice_no, total);
+
+# Style names are case-insensitive: 'Symbol' and 'SYMBOL' format like 'symbol'
+query TTTT
+SELECT invoice_no, money_format(total, 'Symbol'), money_format(total, 'LONG'), money_format(total, 'Code')
+FROM invoices ORDER BY invoice_no;
+----
+INV-2024-0117	1.234,50 €	1.234,50 Euro	1234.50 EUR
+INV-2024-0118	-$42.50	-42.50 United States Dollar	-42.50 USD
+INV-2024-0119	£980.00	980.00 British Pound	980.00 GBP
+
+# An unknown style is an error instead of a silent fallback to 'code'
+statement error
+SELECT money_format(total, 'bogus') FROM invoices;
+----
+Unsupported money format style: bogus (expected 'symbol', 'long' or 'code')
+
+statement error
+SELECT money_format(money(19.99, 'EUR'), 'symbols');
+----
+Unsupported money format style: symbols
+
+# A NULL style or NULL money stays NULL
+query TT
+SELECT money_format(money(19.99, 'EUR'), NULL), money_format(NULL, 'symbol');
+----
+NULL	NULL
+
+# vat_exists: a supplier list where some rows hold only the country
+statement ok
+CREATE TABLE suppliers AS SELECT * FROM (VALUES
+    (1, 'DE136695976'),
+    (2, 'DE'),
+    (3, 'de '),
+    (4, 'ATU13585627'),
+    (5, 'DE ABC'),
+    (6, 'XX123456789'),
+    (7, 'NL004495445B01'),
+    (8, 'EL1')
+) t(id, vat_id);
+
+query IT
+SELECT id, vat_exists(vat_id) FROM suppliers ORDER BY id;
+----
+1	true
+2	false
+3	false
+4	true
+5	false
+6	false
+7	true
+8	true

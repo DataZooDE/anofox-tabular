@@ -1,0 +1,79 @@
+# name: test/sql/anofox_check_suite_text_offset.test
+# description: A VARCHAR timestamp or date column honours a UTC offset in the text ('+02',
+#              '+02:00', 'Z'); text without an offset is read as UTC. Freshness and the
+#              time-aware checks (run_checks and the direct functions) work without ICU (the
+#              unittest runner has none loaded); unparsable text is skipped as before.
+# group: [anofox_tabular]
+
+require anofox_tabular
+
+statement ok
+LOAD anofox_tabular
+
+statement ok
+SET anofox_tab_trace_enabled = false
+
+# A partner feed delivers its export times as text in the partner's local time with offset
+statement ok
+CREATE TABLE partner_feed AS SELECT * FROM (VALUES
+  ('FEED-0001', '2026-10-29 03:30:00+02'),
+  ('FEED-0002', '2026-10-29 04:00:00+02:00'),
+  ('FEED-0003', '2026-10-29T01:15:00Z'),
+  ('FEED-0004', '2026-10-29 01:45:00'),
+  ('FEED-0005', 'n/a'),
+  ('FEED-0006', NULL)
+) t(export_id, exported_at)
+
+statement ok
+CREATE TABLE feed_checks(check_name VARCHAR, check_type VARCHAR, table_name VARCHAR,
+  column_name VARCHAR, params VARCHAR, lower_threshold DOUBLE, upper_threshold DOUBLE,
+  monitor_only BOOLEAN, identifier_column VARCHAR, filter_expr VARCHAR)
+
+# The newest export is 04:00+02 = 02:00 UTC (01:45 without offset is UTC): 2 hours before
+# the 04:00 UTC reference
+statement ok
+INSERT INTO feed_checks VALUES
+  ('feed_fresh', 'freshness', 'partner_feed', 'exported_at',
+     '{"reference_time": "2026-10-29 04:00:00"}', NULL, 3600, false, NULL, NULL)
+
+query TR
+SELECT status, value FROM run_checks('feed_checks')
+----
+fail	7200.0
+
+# The direct function reads the text the same way (it raises a conversion error on text that
+# is no timestamp, so it reads the parseable rows)
+statement ok
+CREATE VIEW partner_feed_parsed AS SELECT * FROM partner_feed WHERE exported_at <> 'n/a'
+
+query TI
+SELECT status, age_seconds
+FROM freshness('partner_feed_parsed', 'exported_at', INTERVAL '1 hour', TIMESTAMP '2026-10-29 04:00:00')
+----
+fail	7200
+
+# Order times as text: 22:30-05 on 2026-10-25 is 03:30 UTC on 2026-10-26
+statement ok
+CREATE TABLE web_orders AS
+SELECT 'ORD-' || i AS order_id, '2026-10-2' || (i % 5) || ' 12:00:00' AS ordered_at
+FROM range(0, 50) t(i)
+UNION ALL
+SELECT 'ORD-LATE-' || i, '2026-10-25 22:30:00-05' FROM range(0, 30) t(i)
+UNION ALL
+SELECT 'ORD-BAD', 'unknown'
+
+statement ok
+INSERT INTO feed_checks VALUES
+  ('late_orders', 'rel_count_change', 'web_orders', NULL,
+     '{"date_column": "ordered_at", "window_days": 5, "reference_date": "2026-10-26"}', -0.5, 0.5, false, NULL, NULL)
+
+query TRT
+SELECT status, value, message FROM run_checks('feed_checks') WHERE check_name = 'late_orders'
+----
+fail	2.0	rel_count_change value 2.0 violates thresholds (2.0 > upper 0.5); 1 row(s) skipped (ordered_at is not a date)
+
+query TRI
+SELECT status, reference_count, baseline_days
+FROM rel_count_change('web_orders', 'ordered_at', NULL, 5, -0.5, 0.5, DATE '2026-10-26')
+----
+fail	30.0	4

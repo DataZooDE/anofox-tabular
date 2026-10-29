@@ -220,3 +220,127 @@ class TestMoneyFormatting:
         from anofox import money
         result = money.money_format(conn, {"amount": 1234567.89, "currency": "USD"}, "symbol")
         assert result == "$1,234,567.89"
+
+
+class TestMoneyFormatStyles:
+    """money_format takes the SQL format styles: symbol, long, code (the default)."""
+
+    def test_default_is_code_style(self, conn):
+        from anofox import money
+        m = {"amount": 1234.5, "currency": "EUR"}
+        assert money.money_format(conn, m) == "1234.50 EUR"
+        assert money.money_format(conn, m) == money.money_format(conn, m, "code")
+
+    def test_long_style(self, conn):
+        from anofox import money
+        assert money.money_format(conn, {"amount": 1234.5, "currency": "EUR"}, "long") == "1.234,50 Euro"
+
+    def test_default_is_documented_as_code(self):
+        import inspect
+        from anofox import money
+        assert inspect.signature(money.money_format).parameters["fmt"].default == "code"
+
+
+def _invoices():
+    import pandas as pd
+    return pd.DataFrame({
+        "invoice_no": ["INV-2026-0141", "INV-2026-0142", "INV-2026-0143", "INV-2026-0144"],
+        "total": [1249.5, 89.99, None, 15000.0],
+        "currency": ["EUR", "usd", "EUR", "JPY"],
+    }, index=[3, 1, 4, 2])
+
+
+class TestMakeMoneyApi:
+    def test_null_amount_is_none(self, conn):
+        from anofox import money
+        assert money.make_money(conn, None, "EUR") is None
+
+    def test_scalar_needs_currency(self, conn):
+        from anofox import money
+        with pytest.raises(ValueError, match="currency"):
+            money.make_money(conn, 12.5)
+
+    def test_dataframe_currency_column(self, conn):
+        import pandas as pd
+        from anofox import money
+        df = _invoices()
+        out = money.make_money(conn, df, column="total", currency_column="currency")
+        assert out.index.tolist() == [3, 1, 4, 2]
+        assert out["invoice_no"].tolist() == df["invoice_no"].tolist()
+        values = out["make_money"].tolist()
+        assert values[0] == {"amount": Decimal("1249.500"), "currency": "EUR"}
+        assert values[1] == {"amount": Decimal("89.990"), "currency": "USD"}
+        assert pd.isna(values[2])  # missing amount -> missing money value
+        assert values[3] == {"amount": Decimal("15000.000"), "currency": "JPY"}
+
+    def test_dataframe_one_currency(self, conn):
+        from anofox import money
+        out = money.make_money(conn, _invoices().head(2), "EUR", column="total")
+        assert [v["currency"] for v in out["make_money"]] == ["EUR", "EUR"]
+        assert out["make_money"].tolist()[1]["amount"] == Decimal("89.990")
+
+    def test_currency_and_currency_column_conflict(self, conn):
+        from anofox import money
+        with pytest.raises(ValueError, match="currency_column"):
+            money.make_money(conn, _invoices(), "EUR", column="total", currency_column="currency")
+
+    def test_polars(self, conn):
+        pl = pytest.importorskip("polars")
+        from anofox import money
+        out = money.make_money(conn, pl.from_pandas(_invoices()), column="total", currency_column="currency")
+        assert isinstance(out, pl.DataFrame)
+        assert out["make_money"].to_list()[2] is None
+
+    def test_series_is_a_type_error(self, conn):
+        import pandas as pd
+        from anofox import money
+        with pytest.raises(TypeError, match=r"Series.*to_frame"):
+            money.make_money(conn, pd.Series([12.5], name="total"), "EUR")
+
+
+class TestMakeMoneyBadRows:
+    """On a DataFrame, a row the extension rejects gives a missing value (python/README.md)."""
+
+    def test_unknown_currency_code_gives_none(self, conn):
+        import pandas as pd
+        from anofox import money
+        df = pd.DataFrame({
+            "invoice_no": ["INV-2026-0201", "INV-2026-0202", "INV-2026-0203"],
+            "total": [99.5, 12.0, 450.25],
+            "currency": ["EUR", "EUR?", "chf"],
+        })
+        out = money.make_money(conn, df, column="total", currency_column="currency")
+        values = out["make_money"].tolist()
+        assert values[0] == {"amount": Decimal("99.500"), "currency": "EUR"}
+        assert pd.isna(values[1])
+        assert values[2] == {"amount": Decimal("450.250"), "currency": "CHF"}
+
+    def test_polars_nan_amount_gives_none(self, conn):
+        pl = pytest.importorskip("polars")
+        from anofox import money
+        df = pl.DataFrame({"total": [12.5, float("nan"), None]})
+        out = money.make_money(conn, df, "USD", column="total")
+        assert out["make_money"].to_list() == [
+            {"amount": Decimal("12.500"), "currency": "USD"}, None, None,
+        ]
+
+    def test_scalar_unknown_currency_still_raises(self, conn):
+        import duckdb
+        from anofox import money
+        with pytest.raises(duckdb.Error, match="currency"):
+            money.make_money(conn, 10.0, "EUR?")
+
+
+class TestMoneyFromCentsRange:
+    def test_beyond_bigint_raises_value_error(self, conn):
+        from anofox import money
+        with pytest.raises(ValueError, match="BIGINT"):
+            money.money_from_cents(conn, 2**63, "EUR")
+        with pytest.raises(ValueError, match="BIGINT"):
+            money.money_from_cents(conn, -(2**63) - 1, "EUR")
+
+    def test_largest_amount_still_works(self, conn):
+        import numpy as np
+        from anofox import money
+        largest = money.money_from_cents(conn, np.int64(99_999_999_999_999_999), "USD")
+        assert largest == {"amount": Decimal("999999999999999.99"), "currency": "USD"}

@@ -1,0 +1,96 @@
+# name: test/sql/anofox_phonenumber_region_missing.test
+# description: phonenumber_parse shows the region it used for a national number and
+#              says region_missing when a national number without region argument
+#              fails under the default region; full-width digits are read as digits;
+#              the format argument is trimmed.
+# group: [anofox_tabular]
+
+require anofox_tabular
+
+statement ok
+LOAD anofox_tabular;
+
+# A German customer export without a country column: national numbers, an
+# international one, the German international prefix 00, a Japanese web-form
+# entry typed with full-width digits, and some junk.
+statement ok
+CREATE TABLE customer_phones AS SELECT * FROM (VALUES
+    (501, 'Kaufhaus Weber',     '030 12345678',             NULL),
+    (502, 'Autohaus Becker',    '0171 1234567',             ''),
+    (503, 'Praxis Dr. Wolf',    '+49 30 12345678',          NULL),
+    (504, 'Spedition Keller',   '0049 30 12345678',         NULL),
+    (505, 'Bistro Lange',       '030 12345678',             'DE'),
+    (506, 'Pacific Imports',    '(650) 253-0000',           NULL),
+    (507, 'Tanaka Shoji',       '＋８１ ３ １２３４ ５６７８', NULL),
+    (508, 'Hotel Sonne',        '０３０ １２３４５６７８',   'DE'),
+    (509, 'Testkunde',          '12',                       NULL),
+    (510, 'Testkunde 2',        '12',                       'US'),
+    (511, 'Unbekannt',          'n/a',                      NULL),
+    (512, 'Wiener Kaffeehaus',  '01 58800',                 'AT'),
+    (513, 'Fake Inc',           '123 456 7890',             NULL)
+) t(customer_id, customer_name, phone, region);
+
+# region: the region the number was read in, also for an invalid number; NULL
+# when no region could be determined. region_missing: a national number, no
+# region argument, invalid under the default region (US here).
+query ITTTT
+SELECT customer_id, (p).valid, (p).region, (p).reason, phonenumber_format(phone, region, 'E164')
+FROM (SELECT customer_id, phone, region, phonenumber_parse(phone, region) AS p FROM customer_phones)
+ORDER BY customer_id;
+----
+501	false	US	region_missing	NULL
+502	false	US	region_missing	NULL
+503	true	DE	NULL	+493012345678
+504	false	US	region_missing	NULL
+505	true	DE	NULL	+493012345678
+506	true	US	NULL	+16502530000
+507	true	JP	NULL	+81312345678
+508	true	DE	NULL	+493012345678
+509	false	US	region_missing	NULL
+510	false	US	invalid_length	NULL
+511	false	NULL	not_a_number	NULL
+512	false	NULL	unsupported_region	NULL
+513	false	US	region_missing	NULL
+
+# With the default region set to DE the German national numbers are valid, and
+# a failing national number names DE as the region it was read in.
+statement ok
+SET anofox_tab_phonenumber_default_region = 'DE';
+
+query ITTT
+SELECT customer_id, (p).valid, (p).region, (p).reason
+FROM (SELECT customer_id, phonenumber_parse(phone, region) AS p FROM customer_phones)
+WHERE customer_id IN (501, 502, 504, 509) ORDER BY customer_id;
+----
+501	true	DE	NULL
+502	true	DE	NULL
+504	true	DE	NULL
+509	false	DE	region_missing
+
+statement ok
+RESET anofox_tab_phonenumber_default_region;
+
+# An explicit region keeps the precise reason
+query TT
+SELECT (phonenumber_parse('030 1234', 'DE')).reason, (phonenumber_parse('030 1234', 'DE')).region;
+----
+invalid_pattern	DE
+
+# Full-width digits, plus sign and spaces are read like their ASCII forms
+query TTT
+SELECT phonenumber_is_valid('０３０　１２３４５６７８', 'DE'),
+       phonenumber_format('＋４４ ２０ ７９４６ ００１８', NULL, 'E164'),
+       phonenumber_region('＋１ ６５０ ２５３ ００００', NULL);
+----
+true	+442079460018	US
+
+# The format argument is trimmed and case-insensitive
+query TT
+SELECT phonenumber_format('030 12345678', 'DE', ' e164 '), phonenumber_format('030 12345678', 'DE', 'National ');
+----
++493012345678	030 12345678
+
+statement error
+SELECT phonenumber_format('030 12345678', 'DE', ' dotted ');
+----
+Unknown phone number format 'dotted'

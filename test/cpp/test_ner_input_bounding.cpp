@@ -2,13 +2,15 @@
 // Catch2 unit tests for NER input bounding (issue #56).
 //
 // Covers the header-only helpers used by NERModelManager::RunSingleInference:
-//  - TruncateTokenizedInput: bounds token sequences at the model's maximum
-//    sequence length while keeping the trailing special token well-formed
+//  - PlanNERWindows / SliceTokenizedWindow / CombineWindowEntities: split
+//    inputs longer than the model's maximum sequence length into overlapping
+//    windows and combine their entities
+//  - HasNaturalLanguageWord: which values NER skips
 //  - ValidateLogitsShape: rejects output tensors whose shape does not match
 //    seq_length x NUM_LABELS before any logits are read
-//  - BasicWordSplit: documents the current ASCII-focused word splitting of
-//    the hand-written WordPiece tokenizer (UTF-8 bytes are kept intact inside
-//    words, but non-ASCII punctuation/whitespace is NOT recognized)
+//  - BasicWordSplit: the BERT-style (Unicode-aware) word splitting of
+//    the hand-written WordPiece tokenizer (UTF-8 sequences stay intact inside
+//    words; Unicode punctuation, spaces and CJK ideographs split words)
 //
 // Built into anofox_tabular_cpp_tests; no OpenVINO runtime required.
 //===----------------------------------------------------------------------===//
@@ -22,114 +24,136 @@
 #include <vector>
 
 using duckdb::anofox::BasicWordSplit;
-using duckdb::anofox::NER_MAX_SEQ_LENGTH;
+using duckdb::anofox::CombineWindowEntities;
+using duckdb::anofox::HasNaturalLanguageWord;
+using duckdb::anofox::NER_WINDOW_OVERLAP;
+using duckdb::anofox::NEREntity;
+using duckdb::anofox::NERWindow;
+using duckdb::anofox::PlanNERWindows;
+using duckdb::anofox::SliceTokenizedWindow;
 using duckdb::anofox::TokenizedInput;
-using duckdb::anofox::TruncateTokenizedInput;
 using duckdb::anofox::ValidateLogitsShape;
 
 namespace {
 
 constexpr int64_t SEP_ID = 102;
 
-/// Build a tokenized input of `count` tokens with contiguous one-byte offsets,
-/// mimicking [CLS] tok ... tok [SEP] produced by the WordPiece tokenizer.
-TokenizedInput MakeSequence(size_t count) {
-    TokenizedInput input;
-    for (size_t i = 0; i < count; ++i) {
-        input.ids.push_back(static_cast<int64_t>(1000 + i));
-        input.offsets.push_back({i, i + 1});
-    }
-    if (!input.ids.empty()) {
-        input.ids.back() = SEP_ID;
-        input.offsets.back() = {count, count};
-    }
-    return input;
-}
-
 } // namespace
 
-TEST_CASE("TruncateTokenizedInput leaves short sequences untouched", "[ner][bounding]") {
-    auto input = MakeSequence(10);
-    auto expected_ids = input.ids;
-    auto expected_offsets = input.offsets;
+TEST_CASE("PlanNERWindows keeps inputs that fit into one window", "[ner][windows]") {
+    auto windows = PlanNERWindows(100, 254, NER_WINDOW_OVERLAP);
+    REQUIRE(windows.size() == 1);
+    REQUIRE(windows[0].begin == 0);
+    REQUIRE(windows[0].end == 100);
+    REQUIRE(windows[0].own_begin == 0);
+    REQUIRE(windows[0].own_end == 100);
 
-    TruncateTokenizedInput(input, NER_MAX_SEQ_LENGTH, SEP_ID);
-
-    REQUIRE(input.ids == expected_ids);
-    REQUIRE(input.offsets == expected_offsets);
+    // Exactly one window's worth, and "unbounded"
+    REQUIRE(PlanNERWindows(254, 254, NER_WINDOW_OVERLAP).size() == 1);
+    REQUIRE(PlanNERWindows(5000, 0, NER_WINDOW_OVERLAP).size() == 1);
 }
 
-TEST_CASE("TruncateTokenizedInput leaves exactly-max sequences untouched", "[ner][bounding]") {
-    auto input = MakeSequence(NER_MAX_SEQ_LENGTH);
-    auto expected_ids = input.ids;
-
-    TruncateTokenizedInput(input, NER_MAX_SEQ_LENGTH, SEP_ID);
-
-    REQUIRE(input.ids == expected_ids);
-    REQUIRE(input.offsets.size() == input.ids.size());
-}
-
-TEST_CASE("TruncateTokenizedInput bounds long sequences at max length", "[ner][bounding]") {
-    auto input = MakeSequence(NER_MAX_SEQ_LENGTH + 300);
-    auto original = input;
-
-    TruncateTokenizedInput(input, NER_MAX_SEQ_LENGTH, SEP_ID);
-
-    // Bounded to the model limit, ids and offsets stay aligned
-    REQUIRE(input.ids.size() == NER_MAX_SEQ_LENGTH);
-    REQUIRE(input.offsets.size() == NER_MAX_SEQ_LENGTH);
-
-    // The kept prefix is unchanged (truncation drops whole tokens only)
-    for (size_t i = 0; i + 1 < NER_MAX_SEQ_LENGTH; ++i) {
-        REQUIRE(input.ids[i] == original.ids[i]);
-        REQUIRE(input.offsets[i] == original.offsets[i]);
+TEST_CASE("PlanNERWindows covers long inputs with overlapping windows", "[ner][windows]") {
+    for (size_t content : {255, 866, 1200, 5000}) {
+        auto windows = PlanNERWindows(content, 254, NER_WINDOW_OVERLAP);
+        REQUIRE(windows.size() >= 2);
+        REQUIRE(windows.front().begin == 0);
+        REQUIRE(windows.back().end == content);
+        size_t expected_own_begin = 0;
+        for (size_t i = 0; i < windows.size(); ++i) {
+            const auto &w = windows[i];
+            // Model-sized windows
+            REQUIRE(w.end - w.begin == 254);
+            // Owned ranges partition the input and lie inside the window
+            REQUIRE(w.own_begin == expected_own_begin);
+            REQUIRE(w.own_begin < w.own_end);
+            REQUIRE(w.own_begin >= w.begin);
+            REQUIRE(w.own_end <= w.end);
+            expected_own_begin = w.own_end;
+            if (i > 0) {
+                // Neighbours overlap by at least the configured overlap, and
+                // each window keeps half of it as context on either side
+                REQUIRE(windows[i - 1].end >= w.begin + NER_WINDOW_OVERLAP);
+                REQUIRE(w.own_begin - w.begin >= NER_WINDOW_OVERLAP / 2);
+                REQUIRE(windows[i - 1].end - windows[i - 1].own_end >= NER_WINDOW_OVERLAP / 2);
+            }
+        }
+        REQUIRE(expected_own_begin == content);
     }
-
-    // The sequence still ends with the special end-of-sequence token, carrying
-    // an empty offset range (special tokens have no text position)
-    REQUIRE(input.ids.back() == SEP_ID);
-    REQUIRE(input.offsets.back().first == input.offsets.back().second);
 }
 
-TEST_CASE("TruncateTokenizedInput with max length 0 is a no-op", "[ner][bounding]") {
-    auto input = MakeSequence(8);
-    auto expected_ids = input.ids;
+TEST_CASE("SliceTokenizedWindow keeps special tokens and original offsets", "[ner][windows]") {
+    // [CLS] t0 .. t29 [SEP] with offsets into a 7-byte-per-token UTF-8 text
+    TokenizedInput full;
+    full.ids.push_back(101);
+    full.offsets.push_back({0, 0});
+    for (size_t i = 0; i < 30; ++i) {
+        full.ids.push_back(static_cast<int64_t>(2000 + i));
+        full.offsets.push_back({i * 7, i * 7 + 6});
+    }
+    full.ids.push_back(SEP_ID);
+    full.offsets.push_back({210, 210});
 
-    TruncateTokenizedInput(input, 0, SEP_ID);
-
-    REQUIRE(input.ids == expected_ids);
+    NERWindow window {10, 20, 12, 18};
+    auto slice = SliceTokenizedWindow(full, window);
+    REQUIRE(slice.ids.size() == 12);
+    REQUIRE(slice.offsets.size() == 12);
+    REQUIRE(slice.ids.front() == 101);
+    REQUIRE(slice.ids.back() == SEP_ID);
+    for (size_t i = 0; i < 10; ++i) {
+        REQUIRE(slice.ids[i + 1] == full.ids[window.begin + i + 1]);
+        REQUIRE(slice.offsets[i + 1] == full.offsets[window.begin + i + 1]);
+    }
+    // The trailing special token has an empty range
+    REQUIRE(slice.offsets.back().first == slice.offsets.back().second);
 }
 
-TEST_CASE("TruncateTokenizedInput is UTF-8 safe with multibyte offsets", "[ner][bounding][utf8]") {
-    // Offsets as produced for multibyte text: each token spans a multibyte
-    // character sequence; truncation must never invent offsets that cut into
-    // these spans — every retained offset pair must already exist in the input.
-    TokenizedInput input;
-    input.ids.push_back(101); // [CLS]
-    input.offsets.push_back({0, 0});
-    size_t pos = 0;
-    const size_t token_bytes = 7; // e.g. "Müller " = 7 bytes (ü is 2 bytes)
-    const size_t max_len = 16;
-    for (size_t i = 0; i < 40; ++i) {
-        input.ids.push_back(static_cast<int64_t>(2000 + i));
-        input.offsets.push_back({pos, pos + token_bytes});
-        pos += token_bytes;
-    }
-    input.ids.push_back(SEP_ID);
-    input.offsets.push_back({pos, pos});
+TEST_CASE("CombineWindowEntities removes duplicates from overlapping windows", "[ner][windows]") {
+    const std::string text = "Hello Jennifer Wilson from Acme Corp in Berlin";
+    // The same name seen by two windows, once cut short at a window edge
+    std::vector<NEREntity> entities = {
+        NEREntity("Jennifer Wilson", "PER", 6, 21, 0.97),
+        NEREntity("Jennifer", "PER", 6, 14, 0.80),
+        NEREntity("Acme Corp", "ORG", 27, 36, 0.90),
+        NEREntity("Acme", "LOC", 27, 31, 0.75),
+        NEREntity("Berlin", "LOC", 40, 46, 0.99),
+        NEREntity("Berlin", "LOC", 40, 46, 0.98),
+    };
+    auto combined = CombineWindowEntities(entities, text);
+    REQUIRE(combined.size() == 3);
+    REQUIRE(combined[0].text == "Jennifer Wilson");
+    REQUIRE(combined[0].confidence == 0.97);
+    REQUIRE(combined[1].text == "Acme Corp");
+    REQUIRE(combined[1].label == "ORG");
+    REQUIRE(combined[2].text == "Berlin");
 
-    auto original_offsets = input.offsets;
-    TruncateTokenizedInput(input, max_len, SEP_ID);
+    // Partial spans of one type are united to the outermost span
+    auto united = CombineWindowEntities({NEREntity("Jennifer", "PER", 6, 14, 0.9),
+                                         NEREntity("Jennifer Wilson", "PER", 6, 21, 0.8),
+                                         NEREntity("Wilson", "PER", 15, 21, 0.95)},
+                                        text);
+    REQUIRE(united.size() == 1);
+    REQUIRE(united[0].text == "Jennifer Wilson");
+    REQUIRE(united[0].start_pos == 6);
+    REQUIRE(united[0].end_pos == 21);
+}
 
-    REQUIRE(input.ids.size() == max_len);
-    REQUIRE(input.offsets.size() == max_len);
-    // All content offsets are unchanged token-boundary pairs from the input
-    for (size_t i = 0; i + 1 < max_len; ++i) {
-        REQUIRE(input.offsets[i] == original_offsets[i]);
-    }
-    // Final token is the end-of-sequence marker with an empty range
-    REQUIRE(input.ids.back() == SEP_ID);
-    REQUIRE(input.offsets.back().first == input.offsets.back().second);
+TEST_CASE("HasNaturalLanguageWord tells text from technical values", "[ner][skip]") {
+    // Natural language and names
+    REQUIRE(HasNaturalLanguageWord("Anna Schmidt"));
+    REQUIRE(HasNaturalLanguageWord("Li"));
+    REQUIRE(HasNaturalLanguageWord("J. Smith"));
+    REQUIRE(HasNaturalLanguageWord("M\xC3\xBCller"));
+    REQUIRE(HasNaturalLanguageWord("order 4711 shipped"));
+    REQUIRE(HasNaturalLanguageWord("ID: 12345"));
+    // No word of two or more letters
+    REQUIRE_FALSE(HasNaturalLanguageWord(""));
+    REQUIRE_FALSE(HasNaturalLanguageWord("d41d8cd98f00b204e9800998ecf8427e"));
+    REQUIRE_FALSE(HasNaturalLanguageWord("550e8400-e29b-41d4-a716-446655440000"));
+    REQUIRE_FALSE(HasNaturalLanguageWord("4711.00"));
+    REQUIRE_FALSE(HasNaturalLanguageWord("+49 171 1234567"));
+    REQUIRE_FALSE(HasNaturalLanguageWord("A-12 / B-7"));
+    REQUIRE_FALSE(HasNaturalLanguageWord("Zm9vYmFy0x9"));
 }
 
 TEST_CASE("ValidateLogitsShape accepts matching shapes", "[ner][bounding]") {
@@ -165,21 +189,51 @@ TEST_CASE("BasicWordSplit splits ASCII words and punctuation", "[ner][tokenizer]
     REQUIRE(words == expected);
 }
 
-TEST_CASE("BasicWordSplit keeps UTF-8 multibyte sequences intact (documented limitation)",
-          "[ner][tokenizer][utf8]") {
-    // The splitter classifies single bytes with std::isspace/std::ispunct, so
-    // it only understands ASCII separators. UTF-8 continuation bytes are
-    // never split apart — multibyte words survive as complete byte sequences.
+TEST_CASE("BasicWordSplit keeps UTF-8 multibyte sequences intact", "[ner][tokenizer][utf8]") {
     auto words = BasicWordSplit("Herr Müller wohnt in Köln");
     std::vector<std::string> expected = {"Herr", "M\xC3\xBCller", "wohnt", "in", "K\xC3\xB6ln"};
     REQUIRE(words == expected);
 
-    // Documented limitation: non-ASCII punctuation (here U+00AB) is NOT a
-    // word boundary — the surrounding text stays one token.
-    // Split the literal so the \xAB hex escape does not greedily absorb the
-    // following 'b' (also a hex digit) into an out-of-range \xABb escape, which
-    // clang rejects as a hard error.
-    auto guillemet = BasicWordSplit("a\xC2\xAB" "b");
-    REQUIRE(guillemet.size() == 1);
-    REQUIRE(guillemet[0] == "a\xC2\xAB" "b");
+    // A broken UTF-8 sequence stays in its word; no byte is dropped
+    auto broken = BasicWordSplit("ab\xC3" "x \xFF");
+    std::vector<std::string> expected_broken = {"ab\xC3" "x", "\xFF"};
+    REQUIRE(broken == expected_broken);
+}
+
+TEST_CASE("BasicWordSplit splits on Unicode punctuation and spaces like the BERT pre-tokenizer",
+          "[ner][tokenizer][utf8]") {
+    // German quotes and the en dash are punctuation: the name is a word of its
+    // own, as the multilingual models were trained on
+    auto quoted = BasicWordSplit("\xE2\x80\x9ESabine Wei\xC3\x9F\xE2\x80\x9C \xE2\x80\x93 Allianz");
+    std::vector<std::string> expected_quoted = {"\xE2\x80\x9E", "Sabine", "Wei\xC3\x9F", "\xE2\x80\x9C",
+                                                "\xE2\x80\x93", "Allianz"};
+    REQUIRE(quoted == expected_quoted);
+
+    // Guillemets (U+00AB) separate words; no-break space (U+00A0) is a space
+    auto guillemet = BasicWordSplit("a\xC2\xAB" "b\xC2\xA0" "c");
+    std::vector<std::string> expected_guillemet = {"a", "\xC2\xAB", "b", "c"};
+    REQUIRE(guillemet == expected_guillemet);
+
+    // Inverted question mark (Spanish) and CJK ideographs are single words
+    auto spanish = BasicWordSplit("\xC2\xBF" "Dónde?");
+    std::vector<std::string> expected_spanish = {"\xC2\xBF", "D\xC3\xB3nde", "?"};
+    REQUIRE(spanish == expected_spanish);
+    auto chinese = BasicWordSplit("\xE5\x8C\x97\xE4\xBA\xAC" "AB");
+    std::vector<std::string> expected_chinese = {"\xE5\x8C\x97", "\xE4\xBA\xAC", "AB"};
+    REQUIRE(chinese == expected_chinese);
+
+    // The euro sign is a symbol, not punctuation, in BERT as here
+    auto euro = BasicWordSplit("100\xE2\x82\xAC");
+    REQUIRE(euro.size() == 1);
+}
+
+TEST_CASE("Only PER, ORG, LOC and MISC are reported NER entity types", "[ner][labels]") {
+    using duckdb::anofox::IsReportedNEREntityType;
+    REQUIRE(IsReportedNEREntityType("PER"));
+    REQUIRE(IsReportedNEREntityType("ORG"));
+    REQUIRE(IsReportedNEREntityType("LOC"));
+    REQUIRE(IsReportedNEREntityType("MISC"));
+    // The multilingual models also tag dates; they are read as O
+    REQUIRE_FALSE(IsReportedNEREntityType("DATE"));
+    REQUIRE_FALSE(IsReportedNEREntityType(""));
 }

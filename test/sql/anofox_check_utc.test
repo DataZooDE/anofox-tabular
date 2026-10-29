@@ -1,0 +1,93 @@
+# name: test/sql/anofox_check_utc.test
+# description: The standalone checks evaluate TIMESTAMP WITH TIME ZONE columns in UTC:
+#              freshness compares the UTC instant against a UTC reference, and the
+#              time-aware checks (rel_count_change, metric_anomaly_iqr,
+#              rolling_values_in_set and their _events companions) bucket rows by their
+#              UTC date. Works without the ICU extension (the unittest runner has none).
+#              A latest timestamp in the future is called out in the freshness message.
+# group: [anofox_tabular]
+
+require anofox_tabular
+
+statement ok
+LOAD anofox_tabular
+
+statement ok
+SET anofox_tab_trace_enabled = false
+
+# Orders of a webshop, stored with time zone: four paid orders a day from 1 to 4 October,
+# then two on 5 October, one of them lost. 2026-10-05 23:30 UTC belongs to the 5th in UTC.
+statement ok
+CREATE TABLE shop_orders (order_id INTEGER, status VARCHAR, amount DOUBLE, placed_at TIMESTAMPTZ)
+
+statement ok
+INSERT INTO shop_orders
+SELECT 7000 + d * 10 + j, 'paid', 40.0 + j,
+       CAST(strftime(TIMESTAMP '2026-10-01 08:00:00' + INTERVAL (d - 1) DAY + INTERVAL (j) HOUR,
+                     '%Y-%m-%d %H:%M:%S') || '+00' AS TIMESTAMPTZ)
+FROM range(1, 5) t1(d), range(0, 4) t2(j)
+
+statement ok
+INSERT INTO shop_orders VALUES
+    (8001, 'paid', 41.0, TIMESTAMPTZ '2026-10-05 08:00:00+00'),
+    (8002, 'lost', 12.0, TIMESTAMPTZ '2026-10-05 23:30:00+00')
+
+query TR
+SELECT reference_date, reference_count FROM rel_count_change('shop_orders', 'placed_at', NULL, 3)
+----
+2026-10-05	2.0
+
+query TI
+SELECT reference_date, baseline_days FROM metric_anomaly_iqr('shop_orders', 'placed_at', 'amount', 7)
+----
+2026-10-05	4
+
+query TRI
+SELECT reference_date, in_set_rate, total_count
+FROM rolling_values_in_set('shop_orders', 'status', ['paid'], 'placed_at', 1)
+----
+2026-10-05	0.5	2
+
+query TT
+SELECT ds, severity FROM rolling_values_in_set_events('shop_orders', 'status', ['paid'], 'placed_at', 1,
+    start_date := DATE '2026-10-04', end_date := DATE '2026-10-05')
+----
+2026-10-05	alarm
+
+query TR
+SELECT ds, value FROM rel_count_change_events('shop_orders', 'placed_at', NULL, 3, -0.4, 0.4)
+----
+2026-10-05	-0.5
+
+# freshness on TIMESTAMPTZ: the latest instant as a UTC TIMESTAMP
+query TTI
+SELECT status, metric_value, age_seconds
+FROM freshness('shop_orders', 'placed_at', INTERVAL '1 hour', TIMESTAMP '2026-10-06 00:00:00')
+----
+pass	2026-10-05 23:30:00	1800
+
+# without a reference time the reference is now() in UTC: the data is long stale
+query T
+SELECT status FROM freshness('shop_orders', 'placed_at', INTERVAL '1 day')
+----
+fail
+
+# A latest timestamp after the reference time (clock skew, wrong time zone at load)
+query TIT
+SELECT status, age_seconds, message
+FROM freshness('shop_orders', 'placed_at', INTERVAL '1 hour', TIMESTAMP '2026-10-05 22:30:00')
+----
+pass	-3600	Data is fresh. Latest update: 2026-10-05 23:30:00 (age: -3600s). Warning: the latest timestamp is 3600s after the reference time; check for clock skew or a time zone mismatch
+
+# plain TIMESTAMP columns are read as UTC as they are
+statement ok
+CREATE TABLE sensor_readings (sensor VARCHAR, read_at TIMESTAMP)
+
+statement ok
+INSERT INTO sensor_readings VALUES ('boiler-1', TIMESTAMP '2026-10-05 23:30:00')
+
+query TI
+SELECT metric_value, age_seconds
+FROM freshness('sensor_readings', 'read_at', INTERVAL '1 hour', TIMESTAMP '2026-10-06 00:00:00')
+----
+2026-10-05 23:30:00	1800

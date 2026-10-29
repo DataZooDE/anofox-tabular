@@ -1,0 +1,537 @@
+# name: test/sql/anofox_pii_extra_types.test
+# description: PII types for German insurance data (DATE_OF_BIRTH, DE_SVNR, DE_ID_CARD, POSTAL_CODE) and anofox_pii_require_checksum (F24)
+# group: [anofox_tabular]
+
+require anofox_tabular
+
+statement ok
+LOAD anofox_tabular
+
+# All pattern types, NER types left out so the results do not depend on the model
+statement ok
+SET anofox_pii_enabled_types = 'EMAIL,PHONE,CREDIT_CARD,US_SSN,IP_ADDRESS,IBAN,DE_TAX_ID,URL,US_PASSPORT,CRYPTO_ADDRESS,UK_NINO,MAC_ADDRESS,API_KEY,DATE_OF_BIRTH,DE_SVNR,DE_ID_CARD';
+
+statement ok
+CREATE MACRO found(t) AS array_to_string(list_transform(pii_detect(t), lambda m: m.type || ':' || m.text), ' ; ');
+
+# ============================================================================
+# DATE_OF_BIRTH: a date after a birth keyword
+# ============================================================================
+
+query I
+SELECT found('Schadenmeldung: VN Hans Meier, geb. 12.03.1985, meldet Wasserschaden vom 15.08.2024.');
+----
+DATE_OF_BIRTH:12.03.1985
+
+query I
+SELECT found('Geburtsdatum: 1985-03-12');
+----
+DATE_OF_BIRTH:1985-03-12
+
+query I
+SELECT found('Kunde geboren am 3.7.1962 in Köln');
+----
+DATE_OF_BIRTH:3.7.1962
+
+query I
+SELECT found('Geburtsdatum der versicherten Person: 12. März 1985');
+----
+DATE_OF_BIRTH:12. März 1985
+
+query I
+SELECT found('Policyholder born on March 12, 1985; policy start 01/04/2023');
+----
+DATE_OF_BIRTH:March 12, 1985
+
+query I
+SELECT found('DOB: 12/03/1985');
+----
+DATE_OF_BIRTH:12/03/1985
+
+query I
+SELECT found('Claimant (D.O.B. 07/11/1974) reported the theft');
+----
+DATE_OF_BIRTH:07/11/1974
+
+query I
+SELECT found('Date of birth 29.02.1988, leap year');
+----
+DATE_OF_BIRTH:29.02.1988
+
+query I
+SELECT found('Geburtstag 1. Januar 1950');
+----
+DATE_OF_BIRTH:1. Januar 1950
+
+# Invoice and claim dates without a birth keyword are not dates of birth
+query I
+SELECT found('Rechnung vom 12.03.2024, fällig am 26.03.2024, Betrag 1.234,56 EUR');
+----
+(empty)
+
+query I
+SELECT found('Termin am 12.03.1985 um 10:00');
+----
+(empty)
+
+query I
+SELECT found('Invoice date 2024-03-12, due 2024-04-11');
+----
+(empty)
+
+# Only the date right after the keyword: the claim date further on stays
+query I
+SELECT found('Geburtsdatum: 12.03.1985, Schadentag 15.08.2024');
+----
+DATE_OF_BIRTH:12.03.1985
+
+# A comma or a sentence end between keyword and date breaks the link
+query I
+SELECT found('Frau Schmidt geb. Müller, Vertrag seit 01.01.2010');
+----
+(empty)
+
+query I
+SELECT found('Kunde ist geboren. Vertrag vom 01.01.1990 bis heute');
+----
+(empty)
+
+# Keyword inside a longer word does not count
+query I
+SELECT found('Geburtstagsfeier am 12.03.1985 in der Kantine');
+----
+(empty)
+
+# Impossible calendar dates and implausible years
+query I
+SELECT found('Geburtsdatum: 31.02.1985');
+----
+(empty)
+
+query I
+SELECT found('Geburtsdatum: 12.13.1985');
+----
+(empty)
+
+query I
+SELECT found('geb. 12.03.1885');
+----
+(empty)
+
+query I
+SELECT found('Geburtsdatum: 01.01.2099');
+----
+(empty)
+
+# Masking: redact, partial keeps the year, hash
+query I
+SELECT pii_mask('VN geb. 12.03.1985, Schaden vom 15.08.2024');
+----
+VN geb. [DATE_OF_BIRTH], Schaden vom 15.08.2024
+
+query I
+SELECT pii_mask_column('VN geb. 12.03.1985, Schaden vom 15.08.2024', 'DATE_OF_BIRTH', 'partial');
+----
+VN geb. **.**.1985, Schaden vom 15.08.2024
+
+query I
+SELECT pii_mask_column('Geburtsdatum: 1985-03-12', 'DATE_OF_BIRTH', 'partial');
+----
+Geburtsdatum: 1985-**-**
+
+query I
+SELECT pii_mask_column('Geburtsdatum: 12. März 1985', 'DATE_OF_BIRTH', 'partial');
+----
+Geburtsdatum: **. **** 1985
+
+query I
+SELECT pii_mask_column('born on March 12, 1985', 'DATE_OF_BIRTH', 'partial');
+----
+born on ***** **, 1985
+
+query I
+SELECT regexp_matches(pii_mask_column('geb. 12.03.1985', 'DATE_OF_BIRTH', 'hash'), '^geb\. [0-9a-f]{16}$');
+----
+true
+
+# ============================================================================
+# DE_SVNR: Rentenversicherungsnummer with check digit
+# ============================================================================
+
+# 65 170839 J 003 is the published example; 65 120385 M 03 4 is computed
+query I
+SELECT found('Rentenversicherungsnummer 65 170839 J 003 laut Bescheid');
+----
+DE_SVNR:65 170839 J 003
+
+query I
+SELECT found('SV-Nr.: 65120385M034');
+----
+DE_SVNR:65120385M034
+
+query I
+SELECT found('Versicherungsnummer 65 120385 M 03 4, Arbeitgeber Muster GmbH');
+----
+DE_SVNR:65 120385 M 03 4
+
+# Lower-case letter
+query I
+SELECT found('svnr 65120385m034');
+----
+DE_SVNR:65120385m034
+
+# Wrong check digit, impossible birth date
+query I
+SELECT found('SV-Nr.: 65 120385 M 03 5');
+----
+(empty)
+
+query I
+SELECT found('SV-Nr.: 65 121385 M 03 4');
+----
+(empty)
+
+query I
+SELECT pii_mask('Bitte SV-Nr. 65 170839 J 003 ergänzen');
+----
+Bitte SV-Nr. [DE_SVNR] ergänzen
+
+query I
+SELECT pii_mask_column('SV-Nr. 65 170839 J 003', 'DE_SVNR', 'partial');
+----
+SV-Nr. 65 ****** * ***
+
+# Hash ignores the spacing, so both spellings give the same pseudonym
+query I
+SELECT pii_mask_column('65 170839 J 003', 'DE_SVNR', 'hash') = pii_mask_column('65170839j003', 'DE_SVNR', 'hash');
+----
+true
+
+# ============================================================================
+# DE_ID_CARD: Personalausweis / Reisepass number
+# ============================================================================
+
+# With check digit (Mustermann specimen T22000129 + 3)
+query I
+SELECT found('Personalausweis-Nr. T220001293 liegt in Kopie vor');
+----
+DE_ID_CARD:T220001293
+
+# With check digit, no keyword
+query I
+SELECT found('Dokument T220001293 eingescannt');
+----
+DE_ID_CARD:T220001293
+
+# Keyword, no check digit (also the shape of a US passport: the keyword decides)
+query I
+SELECT found('Ausweisnummer: T22000129');
+----
+DE_ID_CARD:T22000129
+
+query I
+SELECT found('Reisepass C01X00T478, gültig bis 2031');
+----
+DE_ID_CARD:C01X00T478
+
+query I
+SELECT found('Passport no. C01X00T47 (German)');
+----
+DE_ID_CARD:C01X00T47
+
+# No keyword and no check digit: not an ID card number
+query I
+SELECT found('Vorgang L01X00T47 erledigt');
+----
+(empty)
+
+# Check digit wrong, no keyword
+query I
+SELECT found('Ticket T220001294 geschlossen');
+----
+(empty)
+
+# Keyword but wrong check digit
+query I
+SELECT found('Personalausweis T220001294');
+----
+(empty)
+
+# Order numbers: ten digits, no letter in front
+query I
+SELECT found('Bestellnummer 4711081512 vom 12.03.2024');
+----
+(empty)
+
+# A US passport number without keyword stays US_PASSPORT
+query I
+SELECT found('US passport holder, document A12345678');
+----
+US_PASSPORT:A12345678
+
+query I
+SELECT pii_mask('Ausweis-Nr. T220001293');
+----
+Ausweis-Nr. [DE_ID_CARD]
+
+query I
+SELECT pii_mask_column('Ausweis-Nr. T220001293', 'DE_ID_CARD', 'partial');
+----
+Ausweis-Nr. T*********
+
+# ============================================================================
+# POSTAL_CODE: off by default, address context required
+# ============================================================================
+
+# Not in the default set: nothing is reported with the default configuration
+statement ok
+RESET anofox_pii_enabled_types;
+
+query I
+SELECT list_filter(pii_detect('Musterstraße 12, 80331 München'), lambda m: m.type = 'POSTAL_CODE');
+----
+[]
+
+query III
+SELECT pii_type, enabled, pattern_info FROM pii_status() WHERE pii_type = 'POSTAL_CODE';
+----
+POSTAL_CODE	false	DE/AT/CH, NL and UK postcodes next to an address (off by default)
+
+# An explicit type argument still works
+query I
+SELECT pii_mask_column('Musterstraße 12, 80331 München', 'POSTAL_CODE', 'redact');
+----
+Musterstraße 12, [POSTAL_CODE] München
+
+statement ok
+SET anofox_pii_enabled_types = 'POSTAL_CODE';
+
+query I
+SELECT enabled FROM pii_status() WHERE pii_type = 'POSTAL_CODE';
+----
+true
+
+query I
+SELECT found('Musterstraße 12, 80331 München');
+----
+POSTAL_CODE:80331
+
+query I
+SELECT found('Anschrift: Hauptstr. 5, 1010 Wien');
+----
+POSTAL_CODE:1010
+
+query I
+SELECT found('Bahnhofstrasse 1, CH-8001 Zürich');
+----
+POSTAL_CODE:8001
+
+query I
+SELECT found('80331 München');
+----
+POSTAL_CODE:80331
+
+query I
+SELECT found('PLZ 50667, Ort unbekannt');
+----
+POSTAL_CODE:50667
+
+query I
+SELECT found('Keizersgracht 123, 1015 CJ Amsterdam');
+----
+POSTAL_CODE:1015 CJ
+
+query I
+SELECT found('10 Downing Street, London SW1A 2AA');
+----
+POSTAL_CODE:SW1A 2AA
+
+# Plain numbers, amounts, quantities, years, phone numbers
+query I
+SELECT found('Auftrag 12345 Stück geliefert');
+----
+(empty)
+
+query I
+SELECT found('Schadenhöhe 25000 Euro laut Gutachten');
+----
+(empty)
+
+query I
+SELECT found('Vertragsnummer 80331');
+----
+(empty)
+
+query I
+SELECT found('Kundennr. 12345 Meier');
+----
+(empty)
+
+query I
+SELECT found('Im Jahr 2024 Schäden gemeldet');
+----
+(empty)
+
+query I
+SELECT found('Rückruf unter 089 1234567');
+----
+(empty)
+
+query I
+SELECT pii_mask('Musterstraße 12, 80331 München');
+----
+Musterstraße 12, [POSTAL_CODE] München
+
+# ============================================================================
+# anofox_pii_require_checksum
+# ============================================================================
+
+statement ok
+SET anofox_pii_enabled_types = 'IBAN,CREDIT_CARD';
+
+# Default: a mistyped IBAN or card number fails its checksum and is not found
+query I
+SELECT found('Erstattung auf IBAN DE89 3704 0044 0532 0130 01, Karte 4111 1111 1111 1112');
+----
+(empty)
+
+query I
+SELECT current_setting('anofox_pii_require_checksum');
+----
+true
+
+statement ok
+SET anofox_pii_require_checksum = false;
+
+query IIR
+SELECT m.type, m.text, m.confidence FROM (SELECT unnest(pii_detect('Erstattung auf IBAN DE89 3704 0044 0532 0130 01, Karte 4111 1111 1111 1112')) AS m);
+----
+IBAN	DE89 3704 0044 0532 0130 01	0.6
+CREDIT_CARD	4111 1111 1111 1112	0.6
+
+query I
+SELECT pii_mask('Erstattung auf IBAN DE89 3704 0044 0532 0130 01, Karte 4111 1111 1111 1112');
+----
+Erstattung auf IBAN [IBAN], Karte [CREDIT_CARD]
+
+query I
+SELECT pii_mask_column('IBAN DE89370400440532013001', 'IBAN', 'partial');
+----
+IBAN DE89**************3001
+
+# Valid values keep confidence 1.0
+query IR
+SELECT m.text, m.confidence FROM (SELECT unnest(pii_detect('IBAN DE89 3704 0044 0532 0130 00')) AS m);
+----
+DE89 3704 0044 0532 0130 00	1.0
+
+# A failing IBAN is cut to its country length (AT: 20): the trailing word stays
+query I
+SELECT pii_mask('IBAN AT61 1904 3002 3457 3202 und Name');
+----
+IBAN [IBAN] und Name
+
+# Unknown country or wrong length for the country: still not an IBAN
+query I
+SELECT found('Ref XX89 3704 0044 0532 0130 01');
+----
+(empty)
+
+query I
+SELECT found('IBAN DE89 3704 0044 0532 0130 0');
+----
+(empty)
+
+# The validation functions stay strict
+query II
+SELECT pii_is_valid_iban('DE89370400440532013001'), pii_is_valid_credit_card('4111111111111112');
+----
+false	false
+
+# min_confidence above 0.6 drops the unverified matches again
+statement ok
+SET anofox_pii_min_confidence = 0.7;
+
+query I
+SELECT pii_mask('IBAN DE89 3704 0044 0532 0130 01');
+----
+IBAN DE89 3704 0044 0532 0130 01
+
+statement ok
+RESET anofox_pii_min_confidence;
+
+query II
+SELECT option_name, option_value FROM pii_config() WHERE option_name = 'anofox_pii_require_checksum';
+----
+anofox_pii_require_checksum	false
+
+statement error
+SET anofox_pii_require_checksum = NULL;
+----
+anofox_pii_require_checksum cannot be NULL
+
+statement ok
+RESET anofox_pii_require_checksum;
+
+query I
+SELECT found('IBAN DE89 3704 0044 0532 0130 01');
+----
+(empty)
+
+# ============================================================================
+# pii_status lists the new types
+# ============================================================================
+
+statement ok
+RESET anofox_pii_enabled_types;
+
+query IIII
+SELECT pii_type, recognizer_name, enabled, pattern_info FROM pii_status()
+WHERE pii_type IN ('DATE_OF_BIRTH', 'DE_SVNR', 'DE_ID_CARD', 'POSTAL_CODE') ORDER BY pii_type;
+----
+DATE_OF_BIRTH	Date of Birth	true	Date after a birth keyword (geb., Geburtsdatum, DOB, born on), real calendar date
+DE_ID_CARD	German ID Card / Passport	true	9-character document number; check digit or keyword (Personalausweis, Reisepass) required
+DE_SVNR	German Social Insurance Number	true	Rentenversicherungsnummer with check digit
+POSTAL_CODE	Postal Code	false	DE/AT/CH, NL and UK postcodes next to an address (off by default)
+
+# ============================================================================
+# pii_scan_table and pii_audit_table on a CRM extract
+# ============================================================================
+
+statement ok
+SET anofox_pii_enabled_types = 'EMAIL,PHONE,CREDIT_CARD,US_SSN,IBAN,DE_TAX_ID,US_PASSPORT,DATE_OF_BIRTH,DE_SVNR,DE_ID_CARD,POSTAL_CODE';
+
+statement ok
+CREATE TABLE crm_kunden AS SELECT * FROM (VALUES
+    (1001, 'Hans Meier', 'Musterstraße 12, 80331 München', 'VN geb. 12.03.1985, Kfz-Schaden vom 15.08.2024, Rückruf 089 1234567'),
+    (1002, 'Erika Mustermann', 'Heidestraße 17, 51147 Köln', 'Ausweis-Nr. T220001293 geprüft, SV-Nr. 65 170839 J 003'),
+    (1003, 'John Smith', '10 Downing Street, London SW1A 2AA', 'Policyholder born on March 12, 1985; invoice 2024-03-12 paid'),
+    (1004, 'Muster GmbH', 'Industriestr. 4, 1010 Wien', 'Rechnung 4711081512 über 25000 Euro, Lieferung 12345 Stück')
+) t(kunden_nr, name, anschrift, notiz);
+
+query IIIT
+SELECT column_name, pii_type, match_count, array_to_string(sample_values, ' ; ') FROM pii_scan_table('crm_kunden') WHERE pii_type IS NOT NULL ORDER BY column_name, pii_type;
+----
+anschrift	POSTAL_CODE	4	80331 ; 51147 ; SW1A 2AA ; 1010
+notiz	DATE_OF_BIRTH	2	12.03.1985 ; March 12, 1985
+notiz	DE_ID_CARD	1	T220001293
+notiz	DE_SVNR	1	65 170839 J 003
+notiz	PHONE	1	089 1234567
+
+statement ok
+SET anofox_pii_default_mask_strategy = 'partial';
+
+query ITT
+SELECT row_id, pii_type, masked_value FROM pii_audit_table('crm_kunden', 'notiz') ORDER BY row_id, start_pos;
+----
+1	DATE_OF_BIRTH	VN geb. **.**.1985, Kfz-Schaden vom 15.08.2024, Rückruf ***-***-4567
+1	PHONE	VN geb. **.**.1985, Kfz-Schaden vom 15.08.2024, Rückruf ***-***-4567
+2	DE_ID_CARD	Ausweis-Nr. T********* geprüft, SV-Nr. 65 ****** * ***
+2	DE_SVNR	Ausweis-Nr. T********* geprüft, SV-Nr. 65 ****** * ***
+3	DATE_OF_BIRTH	Policyholder born on ***** **, 1985; invoice 2024-03-12 paid
+
+statement ok
+RESET anofox_pii_default_mask_strategy;
+
+statement ok
+RESET anofox_pii_enabled_types;

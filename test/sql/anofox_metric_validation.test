@@ -123,10 +123,11 @@ SELECT * FROM isolation_forest('val_numeric', 'v', 100, 256, 0.1, 'score')
 ----
 output_mode must be 'summary' or 'scores'
 
-statement error
-SELECT * FROM isolation_forest_mv('val_mv', 'a,b', 100, 256, 0.1, 'SUMMARY')
+# output_mode is case-insensitive
+query I
+SELECT COUNT(*) FROM isolation_forest_mv('val_mv', 'a,b', 100, 256, 0.1, 'SUMMARY')
 ----
-output_mode must be 'summary' or 'scores'
+1
 
 # ===--------------------------------------------------------------------===
 # DBSCAN: non-finite eps must be rejected at bind

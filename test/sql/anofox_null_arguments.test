@@ -1,0 +1,264 @@
+# name: test/sql/anofox_null_arguments.test
+# description: A NULL table, column or key argument is a clear bind error naming the
+#              function and the argument (`<function>: <argument> must not be NULL`) in every
+#              table function, instead of looking up a table literally named NULL. The same
+#              applies to prepared statements executed with NULL parameters.
+# group: [anofox_tabular]
+
+require anofox_tabular
+
+statement ok
+LOAD anofox_tabular
+
+statement ok
+SET anofox_tab_trace_enabled = false
+
+# A support-desk ticket table
+statement ok
+CREATE TABLE tickets (ticket_id VARCHAR, status VARCHAR, priority INTEGER, agent_id INTEGER,
+                      resolution_hours DOUBLE, opened_at TIMESTAMP)
+
+statement ok
+INSERT INTO tickets VALUES
+    ('T-1001', 'closed', 2, 7, 4.5,  TIMESTAMP '2026-10-20 09:15:00'),
+    ('T-1002', 'open',   1, 3, NULL, TIMESTAMP '2026-10-21 14:02:00'),
+    ('T-1003', 'closed', 3, 7, 26.0, TIMESTAMP '2026-10-22 08:40:00')
+
+statement ok
+CREATE TABLE agents (agent_id INTEGER, name VARCHAR)
+
+statement ok
+INSERT INTO agents VALUES (3, 'Mara'), (7, 'Tobias')
+
+statement error
+SELECT * FROM volume(NULL, 1, 10)
+----
+volume: table_name must not be NULL
+
+statement error
+SELECT * FROM null_rate(NULL, NULL, 0.1)
+----
+null_rate: table_name must not be NULL
+
+statement error
+SELECT * FROM null_rate('tickets', NULL, 0.1)
+----
+null_rate: column_name must not be NULL
+
+statement error
+SELECT * FROM distinct_count('tickets', NULL, 1, 10)
+----
+distinct_count: column_name must not be NULL
+
+statement error
+SELECT * FROM zscore(NULL, 'resolution_hours', 3.0)
+----
+zscore: table_name must not be NULL
+
+statement error
+SELECT * FROM zscore('tickets', NULL, 3.0)
+----
+zscore: column_name must not be NULL
+
+statement error
+SELECT * FROM iqr('tickets', NULL, 1.5)
+----
+iqr: column_name must not be NULL
+
+statement error
+SELECT * FROM schema_check(NULL, ['ticket_id'])
+----
+schema_check: table_name must not be NULL
+
+statement error
+SELECT * FROM freshness(NULL, 'opened_at', INTERVAL '1 day')
+----
+freshness: table_name must not be NULL
+
+statement error
+SELECT * FROM freshness('tickets', NULL, INTERVAL '1 day')
+----
+freshness: timestamp_column must not be NULL
+
+statement error
+SELECT * FROM regex_match('tickets', NULL, '^T-', 0.9)
+----
+regex_match: column_name must not be NULL
+
+statement error
+SELECT * FROM values_in_set('tickets', NULL, ['open', 'closed'])
+----
+values_in_set: column_name must not be NULL
+
+statement error
+SELECT * FROM values_in_set('tickets', 'status', NULL)
+----
+values_in_set: allowed_values must not be NULL
+
+statement error
+SELECT * FROM agg_check(NULL, 'resolution_hours', 'avg', 0, 10)
+----
+agg_check: table_name must not be NULL
+
+statement error
+SELECT * FROM duplicate_count('tickets', NULL)
+----
+duplicate_count: column_names must not be NULL
+
+statement error
+SELECT * FROM occurrence('tickets', NULL, 'max', NULL, 3)
+----
+occurrence: column_name must not be NULL
+
+statement error
+SELECT * FROM match_rate('tickets', NULL, 'agent_id', 'agent_id')
+----
+match_rate: right_table must not be NULL
+
+statement error
+SELECT * FROM match_rate('tickets', 'agents', NULL, 'agent_id')
+----
+match_rate: left_keys must not be NULL
+
+statement error
+SELECT * FROM compliance(NULL, 'resolution_hours >= 0')
+----
+compliance: table_name must not be NULL
+
+statement error
+SELECT * FROM rel_count_change('tickets', NULL)
+----
+rel_count_change: date_column must not be NULL
+
+statement error
+SELECT * FROM rel_count_change_events(NULL, 'opened_at')
+----
+rel_count_change_events: table_name must not be NULL
+
+statement error
+SELECT * FROM metric_anomaly_iqr(NULL, 'opened_at')
+----
+metric_anomaly_iqr: table_name must not be NULL
+
+statement error
+SELECT * FROM rolling_values_in_set('tickets', 'status', ['open'], NULL)
+----
+rolling_values_in_set: date_column must not be NULL
+
+statement error
+SELECT * FROM run_checks(NULL)
+----
+run_checks: checks_table must not be NULL
+
+statement error
+SELECT * FROM profile_table(NULL)
+----
+profile_table: table_name must not be NULL
+
+statement error
+SELECT * FROM profile_summary(NULL)
+----
+profile_summary: table_name must not be NULL
+
+statement error
+SELECT * FROM profile_correlations(NULL)
+----
+profile_correlations: table_name must not be NULL
+
+statement error
+SELECT * FROM isolation_forest(NULL, 'resolution_hours')
+----
+isolation_forest: table_name must not be NULL
+
+statement error
+SELECT * FROM isolation_forest('tickets', NULL)
+----
+isolation_forest: column_name must not be NULL
+
+statement error
+SELECT * FROM isolation_forest_mv('tickets', NULL)
+----
+isolation_forest_mv: column_names must not be NULL
+
+statement error
+SELECT * FROM dbscan(NULL, 'resolution_hours')
+----
+dbscan: table_name must not be NULL
+
+statement error
+SELECT * FROM dbscan_mv('tickets', NULL)
+----
+dbscan_mv: column_names must not be NULL
+
+statement error
+SELECT * FROM outlier_tree(NULL, 'resolution_hours, priority', 'summary')
+----
+outlier_tree: table_name must not be NULL
+
+statement error
+SELECT * FROM outlier_tree('tickets', NULL, 'summary')
+----
+outlier_tree: columns must not be NULL
+
+statement error
+SELECT * FROM diff_joindiff(NULL, 'tickets', 'ticket_id')
+----
+diff_joindiff: source_table must not be NULL
+
+statement error
+SELECT * FROM diff_joindiff('tickets', 'tickets', NULL)
+----
+diff_joindiff: primary_key must not be NULL
+
+statement error
+SELECT * FROM diff_hashdiff('tickets', NULL, 'ticket_id')
+----
+diff_hashdiff: target_table must not be NULL
+
+statement error
+SELECT * FROM pii_scan_table(NULL)
+----
+pii_scan_table: table_name must not be NULL
+
+statement error
+SELECT * FROM pii_audit_table(NULL)
+----
+pii_audit_table: table_name must not be NULL
+
+# prepared statements: NULL parameters hit the same check
+statement ok
+PREPARE null_rate_check AS SELECT status FROM null_rate(?, ?, 0.1)
+
+statement error
+EXECUTE null_rate_check(NULL, NULL)
+----
+null_rate: table_name must not be NULL
+
+statement error
+EXECUTE null_rate_check('tickets', NULL)
+----
+null_rate: column_name must not be NULL
+
+query T
+EXECUTE null_rate_check('tickets', 'resolution_hours')
+----
+fail
+
+statement ok
+PREPARE profile_check AS SELECT count(*) FROM profile_table(?)
+
+statement error
+EXECUTE profile_check(NULL)
+----
+profile_table: table_name must not be NULL
+
+query I
+EXECUTE profile_check('tickets')
+----
+6
+
+# the canonical name reports the same message
+statement error
+SELECT * FROM anofox_tab_volume(NULL, 1, 10)
+----
+volume: table_name must not be NULL

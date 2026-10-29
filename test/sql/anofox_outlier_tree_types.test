@@ -1,0 +1,57 @@
+# name: test/sql/anofox_outlier_tree_types.test
+# description: outlier_tree resolves its feature columns at bind time: numeric columns (BOOLEAN as
+#              0/1), VARCHAR and ENUM are accepted, names match case-insensitively, any other type
+#              (DATE, TIMESTAMP, ...) and unknown columns are binder errors instead of a late cast
+#              error ("Attempting to fetch from an unsuccessful query result").
+# group: [anofox_tabular]
+
+require anofox_tabular
+
+statement ok
+LOAD anofox_tabular
+
+statement ok
+SET anofox_tab_trace_enabled = false
+
+# ===--------------------------------------------------------------------===
+# Column types are checked at bind time
+# ===--------------------------------------------------------------------===
+
+statement ok
+CREATE TABLE shipments AS
+SELECT i AS shipment_id,
+       TIMESTAMP '2026-03-01 08:00:00' + INTERVAL (i) HOUR AS shipped_at,
+       DATE '2026-03-01' + CAST(i AS INTEGER) AS delivery_date,
+       i % 9 = 0 AS express,
+       CAST(19.99 + (i % 4) AS DECIMAL(10, 2)) AS freight_eur,
+       CASE WHEN i % 2 = 0 THEN 'DHL' ELSE 'UPS' END AS carrier
+FROM range(1, 101) t(i)
+
+statement error
+SELECT * FROM outlier_tree('shipments', 'freight_eur, shipped_at', 'summary')
+----
+outlier_tree: column 'shipped_at' must be numeric or categorical (VARCHAR), got TIMESTAMP
+
+statement error
+SELECT * FROM outlier_tree('shipments', 'delivery_date', 'summary')
+----
+outlier_tree: column 'delivery_date' must be numeric or categorical (VARCHAR), got DATE
+
+statement error
+SELECT * FROM outlier_tree('shipments', 'freight_eur, weight_kg', 'summary')
+----
+outlier_tree: column 'weight_kg' not found in table 'shipments'
+
+# BOOLEAN (as 0/1), DECIMAL, VARCHAR and ENUM columns are accepted; names match case-insensitively
+statement ok
+CREATE TYPE carrier_enum AS ENUM ('DHL', 'UPS')
+
+statement ok
+CREATE TABLE shipments_typed AS
+SELECT shipment_id, express, freight_eur, carrier, carrier::carrier_enum AS carrier_code FROM shipments
+
+query TI
+SELECT status, columns_analyzed
+FROM outlier_tree('shipments_typed', 'Express, FREIGHT_EUR, carrier, carrier_code', 'summary')
+----
+pass	4

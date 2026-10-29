@@ -1,0 +1,46 @@
+# name: test/sql/anofox_profile_sample.test
+# description: profile_table samples a table larger than sample_size when exact is false
+#              (the generated SQL used to fail with a syntax error at REPEATABLE)
+# group: [sql]
+
+require anofox_tabular
+
+statement ok
+LOAD anofox_tabular;
+
+statement ok
+CREATE TABLE ps AS SELECT i AS id, (i % 13)::DOUBLE AS v FROM range(1, 1001) r(i);
+
+# the sampled profile reads sample_size rows
+query TTI
+SELECT column_name, is_sampled, actual_sample_size FROM profile_table('ps', ['v'], 50, false);
+----
+v	true	50
+
+# REPEATABLE (42): two runs profile the same sample
+# (top_values is left out: its order among tied counts is not fixed)
+query I
+SELECT count(*) FROM (
+  SELECT column_name, row_count, null_count, distinct_count, min_val, max_val, mean
+  FROM profile_table('ps', NULL, 50, false)
+  EXCEPT
+  SELECT column_name, row_count, null_count, distinct_count, min_val, max_val, mean
+  FROM profile_table('ps', NULL, 50, false)
+);
+----
+0
+
+# exact = true still reads every row
+query TITI
+SELECT column_name, row_count, is_sampled, actual_sample_size FROM profile_table('ps', ['v'], 50, true);
+----
+v	1000	false	1000
+
+# top_values breaks ties in count by value, so the result is the same on every run
+statement ok
+CREATE TABLE pt AS SELECT chr(122 - i::INT) AS s FROM range(0, 20) r(i);
+
+query T
+SELECT list_transform(top_values, lambda x: x.value) FROM profile_table('pt');
+----
+[g, h, i, j, k]

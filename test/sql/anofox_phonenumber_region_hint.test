@@ -1,0 +1,112 @@
+# name: test/sql/anofox_phonenumber_region_hint.test
+# description: Region hints are trimmed and case-insensitive, and 'UK' is accepted
+#              as an alias of 'GB' wherever a region is accepted (hints and the
+#              default-region setting)
+# group: [anofox_tabular]
+
+require anofox_tabular
+
+statement ok
+LOAD anofox_tabular;
+
+statement ok
+SET anofox_tab_trace_level='warn';
+
+statement ok
+SET anofox_tab_phonenumber_default_region='US';
+
+# A CRM export: country column typed by hand, with stray spaces and 'UK'
+statement ok
+CREATE TABLE contacts AS SELECT * FROM (VALUES
+    (1, '020 7946 0958',   'UK'),
+    (2, '020 7946 0958',   ' gb '),
+    (3, '07700 900123',    'uk '),
+    (4, '030 12345678',    ' DE'),
+    (5, '(202) 555-0179',  'us'),
+    (6, '0161 496 0000',   'GB')
+) t(id, phone, country);
+
+query ITTTT
+SELECT id,
+       phonenumber_is_valid(phone, country),
+       phonenumber_format(phone, country, 'E164'),
+       phonenumber_region(phone, country),
+       (phonenumber_parse(phone, country)).region
+FROM contacts ORDER BY id;
+----
+1	true	+442079460958	GB	GB
+2	true	+442079460958	GB	GB
+3	true	+447700900123	GB	GB
+4	true	+493012345678	DE	DE
+5	true	+12025550179	US	US
+6	true	+441614960000	GB	GB
+
+# Normalize to E.164 first so the region of each number is fixed, then ask
+# whether it is a UK number
+query IT
+SELECT id, phonenumber_is_valid_for_region(phonenumber_format(phone, country, 'E164'), 'UK')
+FROM contacts ORDER BY id;
+----
+1	true
+2	true
+3	true
+4	false
+5	false
+6	true
+
+query TT
+SELECT phonenumber_is_possible('020 7946 0958', ' uk'), phonenumber_is_valid_for_region('+44 20 7946 0958', ' GB ');
+----
+true	true
+
+query T
+SELECT phonenumber_match('020 7946 0958', '+44 20 7946 0958', 'UK');
+----
+EXACT_MATCH
+
+query TT
+SELECT phonenumber_example('UK') = phonenumber_example('GB'), phonenumber_example(' gb ') = phonenumber_example('GB');
+----
+true	true
+
+# A whitespace-only hint counts as no hint: the default region applies
+query T
+SELECT phonenumber_format('(202) 555-0179', '  ', 'E164');
+----
++12025550179
+
+# The default-region setting accepts the same spellings
+statement ok
+SET anofox_tab_phonenumber_default_region=' uk ';
+
+query T
+SELECT current_setting('anofox_tab_phonenumber_default_region');
+----
+GB
+
+query TT
+SELECT phonenumber_format('020 7946 0958', NULL, 'E164'), phonenumber_region('07700 900123', NULL);
+----
++442079460958	GB
+
+statement ok
+SET anofox_tab_phonenumber_default_region='de ';
+
+query T
+SELECT phonenumber_format('030 12345678', NULL, 'INTERNATIONAL');
+----
++49 30 12345678
+
+# Unknown codes are still rejected
+statement error
+SET anofox_tab_phonenumber_default_region='XX';
+----
+Unknown region code 'XX'
+
+query TT
+SELECT (phonenumber_parse('020 7946 0958', 'ENG')).valid, (phonenumber_parse('020 7946 0958', 'ENG')).reason;
+----
+false	unsupported_region
+
+statement ok
+SET anofox_tab_phonenumber_default_region='US';

@@ -1,0 +1,66 @@
+# name: test/sql/anofox_email_dns_cache.test
+# description: DNS results are cached per domain (process-wide, bounded, TTL).
+#              Uses the reserved .invalid TLD (RFC 2606) so the check fails
+#              without requiring a working network (since the reserved-domain
+#              rule these rows stop with dns_reserved_domain before the lookup
+#              and the cache, so this file pins stable per-domain results; the
+#              cacheability rule is unit-tested in test/cpp/test_email_internal.cpp).
+# group: [anofox_tabular]
+
+require anofox_tabular
+
+statement ok
+LOAD anofox_tabular;
+
+statement ok
+SET anofox_tab_email_dns_timeout_ms=500;
+
+# The email configuration is process-wide; other test files may leave a custom
+# regex behind, so pin the default pattern.
+statement ok
+RESET anofox_tab_email_regex_pattern;
+
+# The cache bounds are reported by email_config
+query TT
+SELECT key, value FROM email_config()
+WHERE key IN ('dns_cache_ttl_s', 'dns_cache_max_entries')
+ORDER BY key;
+----
+dns_cache_max_entries	10000
+dns_cache_ttl_s	300
+
+# Many rows over two domains: every row gets the same outcome as a single lookup
+statement ok
+CREATE TABLE addresses AS
+SELECT 'user' || i || '@' || (CASE WHEN i % 2 = 0 THEN 'cache-a-zzz.invalid' ELSE 'CACHE-B-ZZZ.invalid' END) AS address
+FROM range(40) t(i);
+
+query IIII
+SELECT count(*),
+       count(*) FILTER (WHERE (r).valid),
+       count(*) FILTER (WHERE (r).stage = 'dns'),
+       count(*) FILTER (WHERE len((r).mx_hosts) = 0)
+FROM (SELECT email_validate(address, 'dns') AS r FROM addresses);
+----
+40	0	40	40
+
+# The reason code is stable across repeated lookups of the same domain
+# (case-insensitive domain key)
+query I
+SELECT count(DISTINCT (email_validate(address, 'dns')).reason) FROM addresses;
+----
+1
+
+query T
+SELECT (email_validate('a@cache-a-zzz.invalid', 'dns')).reason
+     = (email_validate('b@CACHE-A-ZZZ.INVALID', 'dns')).reason;
+----
+true
+
+query T
+SELECT bool_or(email_is_valid(address, 'dns')) FROM addresses;
+----
+false
+
+statement ok
+SET anofox_tab_email_dns_timeout_ms=1000;

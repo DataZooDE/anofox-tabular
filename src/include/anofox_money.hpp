@@ -157,7 +157,9 @@ inline void IterateCurrencyCode(DataChunk& args, Vector& result, Op op) {
     if (!code_data.validity.RowIsValid(idx)) {
       FlatVector::SetNull(result, i, true);
     } else {
+      // Codes are matched without surrounding whitespace (' eur ' == 'EUR').
       auto currency_code = code_values[idx].GetString();
+      StringUtil::Trim(currency_code);
       op(currency_code, i);
     }
   }

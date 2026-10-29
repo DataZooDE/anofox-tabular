@@ -1,0 +1,120 @@
+# name: test/sql/anofox_pii_ner_offline.test
+# description: Without the NER model (offline, anofox_ner_auto_download = false) NAME falls back to a Unicode-aware name dictionary with German, Austrian and Swiss given names, and pii_scan_table marks its status with "(NER unavailable)"
+# group: [anofox_tabular]
+
+# Needs a process in which the NER model is NOT on disk, so it does not run in
+# the normal suite (where the model is cached). Run it by hand with an empty
+# home directory:
+#   HOME=$(mktemp -d) ANOFOX_TEST_NER_OFFLINE=1 build/release/test/unittest test/sql/anofox_pii_ner_offline.test
+require-env ANOFOX_TEST_NER_OFFLINE
+
+require anofox_tabular
+
+statement ok
+LOAD anofox_tabular
+
+statement ok
+SET anofox_ner_auto_download = false;
+
+query T
+SELECT model_status FROM anofox_ner_status();
+----
+NOT_DOWNLOADED
+
+# The message and the path name the directory of the default model bert-multi
+query TT
+SELECT regexp_matches(status_message, 'or place model_quantized\.onnx and tokenizer\.json in .*/\.duckdb/extensions/anofox/ner/bert-multi$'),
+       ends_with(model_path, '/.duckdb/extensions/anofox/ner/bert-multi/model_quantized.onnx')
+FROM anofox_ner_status();
+----
+true	true
+
+# Names with umlauts and ß are found as whole names
+query T
+SELECT pii_mask('Joachim Sauer, Sabine Weiß, Peter Müller');
+----
+[NAME], [NAME], [NAME]
+
+query T
+SELECT pii_mask('Rückfrage von Jürgen Schäfer und Björn Großmann an Klaus-Peter Öztürk');
+----
+Rückfrage von [NAME] und [NAME] an [NAME]
+
+query T
+SELECT pii_mask('Grüezi, hier ist Urs Brändli aus Zürich, und Ursula von der Leyen.');
+----
+Grüezi, hier ist [NAME] aus Zürich, und [NAME].
+
+# Whole words only: no match inside a longer word or in lowercase text
+query T
+SELECT pii_mask('Annabelle bestellt Sabinenkraut; peter müller schreibt klein.');
+----
+Annabelle bestellt Sabinenkraut; peter müller schreibt klein.
+
+# pii_scan_table says that the NER types could not be checked
+statement ok
+CREATE TABLE crm_contacts AS SELECT * FROM (VALUES
+    (1, 'Sabine Weiß', 'sabine.weiss@example.de', 'Bitte Rückruf am Vormittag'),
+    (2, 'Peter Müller', 'p.mueller@example.ch', 'Lieferung an die Filiale'),
+    (3, 'Jörg Brandt', 'joerg.brandt@example.at', 'Rechnung per Post')
+) t(contact_id, full_name, email, remark);
+
+query TTIT
+SELECT column_name, pii_type, match_count, status FROM pii_scan_table('crm_contacts') ORDER BY column_name, pii_type;
+----
+contact_id	NULL	0	skipped (INTEGER)
+email	EMAIL	3	scanned (NER unavailable)
+full_name	NAME	3	scanned (NER unavailable)
+remark	NULL	0	no_match (NER unavailable)
+
+# Without NER types the status is the plain one: nothing was left out
+statement ok
+SET anofox_pii_enabled_types = 'EMAIL';
+
+query TTIT
+SELECT column_name, pii_type, match_count, status FROM pii_scan_table('crm_contacts') ORDER BY column_name, pii_type;
+----
+contact_id	NULL	0	skipped (INTEGER)
+email	EMAIL	3	scanned
+full_name	NULL	0	no_match
+remark	NULL	0	no_match
+
+statement ok
+SET anofox_pii_enabled_types = '';
+
+# anofox_ner_required = true: a detection that needs the model raises an
+# error naming the status and the fix instead of falling back silently
+statement ok
+SET anofox_ner_required = true;
+
+statement error
+SELECT pii_mask('Rückruf bitte an Sabine Weiß, Filiale Graz');
+----
+anofox_ner_required is true but the NER model is not available (status NOT_DOWNLOADED: NER model not downloaded: anofox_ner_auto_download is false. SET anofox_ner_auto_download = true to download it from Hugging Face
+
+statement error
+SELECT column_name, pii_type FROM pii_scan_table('crm_contacts');
+----
+SET anofox_ner_required = false to fall back to the name dictionary
+
+# Only pattern-based types: the model is not needed, so no error
+statement ok
+SET anofox_pii_enabled_types = 'EMAIL';
+
+query TTIT
+SELECT column_name, pii_type, match_count, status FROM pii_scan_table('crm_contacts') ORDER BY column_name, pii_type;
+----
+contact_id	NULL	0	skipped (INTEGER)
+email	EMAIL	3	scanned
+full_name	NULL	0	no_match
+remark	NULL	0	no_match
+
+statement ok
+SET anofox_ner_required = false;
+
+# Restore the process-wide settings for the tests that follow
+statement ok
+SET anofox_pii_enabled_types = '';
+
+statement ok
+SET anofox_ner_auto_download = true;

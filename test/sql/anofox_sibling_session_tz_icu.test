@@ -1,0 +1,54 @@
+# name: test/sql/anofox_sibling_session_tz_icu.test
+# description: profile_table reads its input through a second connection. That connection uses
+#              the caller's session TimeZone, so min_val, max_val and top_values of a
+#              TIMESTAMPTZ column render like the caller's own CAST(... AS VARCHAR).
+# group: [anofox_tabular]
+
+require anofox_tabular
+
+require icu
+
+statement ok
+LOAD anofox_tabular
+
+statement ok
+SET anofox_tab_trace_enabled = false
+
+# Dispatch scans of a parcel hub: three parcels left the hub on the morning of 2026-10-20 (UTC)
+statement ok
+CREATE TABLE parcel_scans (parcel_id VARCHAR, scanned_at TIMESTAMPTZ)
+
+statement ok
+INSERT INTO parcel_scans VALUES
+    ('DE-7731-0042', TIMESTAMPTZ '2026-10-20 06:05:00+00'),
+    ('DE-7731-0043', TIMESTAMPTZ '2026-10-20 06:05:00+00'),
+    ('DE-7731-0044', TIMESTAMPTZ '2026-10-20 08:15:00+00')
+
+statement ok
+SET TimeZone = 'UTC'
+
+query TTTT
+SELECT min_val, max_val, top_values[1].value, (SELECT CAST(min(scanned_at) AS VARCHAR) FROM parcel_scans)
+FROM profile_table('parcel_scans', ['scanned_at'])
+----
+2026-10-20 06:05:00+00	2026-10-20 08:15:00+00	2026-10-20 06:05:00+00	2026-10-20 06:05:00+00
+
+statement ok
+SET TimeZone = 'Asia/Tokyo'
+
+query TTTT
+SELECT min_val, max_val, top_values[1].value, (SELECT CAST(min(scanned_at) AS VARCHAR) FROM parcel_scans)
+FROM profile_table('parcel_scans', ['scanned_at'])
+----
+2026-10-20 15:05:00+09	2026-10-20 17:15:00+09	2026-10-20 15:05:00+09	2026-10-20 15:05:00+09
+
+statement ok
+SET TimeZone = 'America/New_York'
+
+query TT
+SELECT min_val, max_val FROM profile_table('parcel_scans', ['scanned_at'])
+----
+2026-10-20 02:05:00-04	2026-10-20 04:15:00-04
+
+statement ok
+RESET TimeZone

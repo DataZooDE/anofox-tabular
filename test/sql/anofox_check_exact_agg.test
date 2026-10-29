@@ -1,0 +1,165 @@
+# name: test/sql/anofox_check_exact_agg.test
+# description: agg_check and the run_checks 'agg' type aggregate DECIMAL and integer columns
+#              in their exact type: the sum of a DECIMAL(10,2) ledger equals the reconciled
+#              total, and a BIGINT id above 2^53 is compared without rounding to DOUBLE.
+# group: [anofox_tabular]
+
+require anofox_tabular
+
+statement ok
+LOAD anofox_tabular
+
+statement ok
+SET anofox_tab_trace_enabled = false
+
+# An invoice ledger of 5000 lines; the reconciled total from the bank statement is 918624.95
+statement ok
+CREATE TABLE invoice_lines AS
+SELECT 'INV-' || lpad(CAST(100000 + i AS VARCHAR), 7, '0') AS invoice_no,
+       ['DE', 'AT', 'CH', 'FR'][(i % 4) + 1] AS country,
+       ((i % 997) * 0.37 + 0.01)::DECIMAL(10,2) AS amount
+FROM range(5000) t(i)
+
+query R
+SELECT sum(amount) FROM invoice_lines
+----
+918624.95
+
+# lower = upper = the exact total passes (a DOUBLE sum is 918624.9499999994)
+query TRT
+SELECT status, value, message FROM agg_check('invoice_lines', 'amount', 'sum', 918624.95, 918624.95)
+----
+pass	918624.95	sum value 918624.95 is within acceptable range
+
+query TT
+SELECT status, message FROM agg_check('invoice_lines', 'amount', 'sum', NULL, 918624.94)
+----
+fail	sum value 918624.95 exceeds maximum 918624.94
+
+query TT
+SELECT status, message FROM agg_check('invoice_lines', 'amount', 'sum', 918624.96, NULL)
+----
+fail	sum value 918624.95 is below minimum 918624.96
+
+# A threshold finer than the column's scale compares exactly too
+query TT
+SELECT status, message FROM agg_check('invoice_lines', 'amount', 'sum', NULL, 918624.949)
+----
+fail	sum value 918624.95 exceeds maximum 918624.949
+
+query TT
+SELECT status, message FROM agg_check('invoice_lines', 'amount', 'sum', 918624.949, 918624.951)
+----
+pass	sum value 918624.95 is within acceptable range
+
+query TT
+SELECT status, message FROM agg_check('invoice_lines', 'amount', 'min', 0.01, 0.01)
+----
+pass	min value 0.01 is within acceptable range
+
+query TT
+SELECT status, message FROM agg_check('invoice_lines', 'amount', 'max', NULL, 368.52)
+----
+fail	max value 368.53 exceeds maximum 368.52
+
+# median of a DECIMAL column is a DECIMAL as well
+query TT
+SELECT status, message FROM agg_check('invoice_lines', 'amount', 'median', 183.0, 184.0)
+----
+pass	median value 183.71 is within acceptable range
+
+# avg and stddev are DOUBLE aggregates
+query T
+SELECT status FROM agg_check('invoice_lines', 'amount', 'avg', 183.72, 183.73)
+----
+pass
+
+# negative thresholds finer than the scale
+statement ok
+CREATE TABLE refunds AS SELECT * FROM (VALUES ('RF-1', -0.01::DECIMAL(6,2)), ('RF-2', -12.50::DECIMAL(6,2))) t(refund_no, amount)
+
+query TT
+SELECT status, message FROM agg_check('refunds', 'amount', 'max', NULL, -0.005)
+----
+pass	max value -0.01 is within acceptable range
+
+query TT
+SELECT status, message FROM agg_check('refunds', 'amount', 'max', NULL, -0.015)
+----
+fail	max value -0.01 exceeds maximum -0.015
+
+query TT
+SELECT status, message FROM agg_check('refunds', 'amount', 'max', -0.015, NULL)
+----
+pass	max value -0.01 is within acceptable range
+
+query TT
+SELECT status, message FROM agg_check('refunds', 'amount', 'min', -12.505, -12.495)
+----
+pass	min value -12.50 is within acceptable range
+
+# A BIGINT payment id above 2^53: max 9007199254740993 exceeds the upper bound 9007199254740992
+statement ok
+CREATE TABLE payments AS SELECT * FROM (VALUES
+    (9007199254740991::BIGINT, 'SEPA'),
+    (9007199254740993::BIGINT, 'SEPA'),
+    (9007199254740992::BIGINT, 'CARD')) t(payment_id, method)
+
+query TT
+SELECT status, message FROM agg_check('payments', 'payment_id', 'max', NULL, 9007199254740992)
+----
+fail	max value 9007199254740993 exceeds maximum 9007199254740992
+
+query TT
+SELECT status, message FROM agg_check('payments', 'payment_id', 'min', 9007199254740991, NULL)
+----
+pass	min value 9007199254740991 is within acceptable range
+
+# sum of a BIGINT column is a HUGEINT
+query TT
+SELECT status, message FROM agg_check('payments', 'payment_id', 'sum', 27021597764222976, 27021597764222976)
+----
+pass	sum value 27021597764222976 is within acceptable range
+
+# a DOUBLE column keeps its NaN/Inf guard
+statement ok
+CREATE TABLE sensor_readings AS SELECT * FROM (VALUES (21.5::DOUBLE), (22.0), ('nan'::DOUBLE)) t(celsius)
+
+query TT
+SELECT status, message FROM agg_check('sensor_readings', 'celsius', 'max', NULL, 30)
+----
+fail	max value is NaN: the column contains 1 NaN/Inf value(s)
+
+# ===--------------------------------------------------------------------===
+# run_checks: the 'agg' type compares exactly as well
+# ===--------------------------------------------------------------------===
+
+statement ok
+CREATE TABLE ledger_checks (
+    check_name VARCHAR, check_type VARCHAR, table_name VARCHAR, column_name VARCHAR, params VARCHAR,
+    lower_threshold DOUBLE, upper_threshold DOUBLE, monitor_only BOOLEAN, identifier_column VARCHAR,
+    filter_expr VARCHAR)
+
+statement ok
+INSERT INTO ledger_checks VALUES
+    ('ledger_total', 'agg', 'invoice_lines', 'amount', '{"agg": "sum"}', 918624.95, 918624.95, false, NULL, NULL),
+    ('ledger_total_low', 'agg', 'invoice_lines', 'amount', '{"agg": "sum"}', NULL, 918624.94, false, NULL, NULL),
+    ('payment_id_max', 'agg', 'payments', 'payment_id', '{"agg": "max"}', NULL, 9007199254740992, false, NULL, NULL),
+    ('ledger_by_country', 'agg', 'invoice_lines', 'amount', '{"agg": "sum"}', 229610.82, 229610.82, false, 'country', NULL)
+
+query TTTT
+SELECT check_name, identifier, status, message FROM run_checks('ledger_checks') ORDER BY check_name, identifier
+----
+ledger_by_country	AT	fail	agg value 229517.21 violates thresholds (229517.21 < lower 229610.82)
+ledger_by_country	CH	pass	agg value 229610.82 is within thresholds
+ledger_by_country	DE	fail	agg value 229792.49 violates thresholds (229792.49 > upper 229610.82)
+ledger_by_country	FR	fail	agg value 229704.43 violates thresholds (229704.43 > upper 229610.82)
+ledger_total	NULL	pass	agg value 918624.95 is within thresholds
+ledger_total_low	NULL	fail	agg value 918624.95 violates thresholds (918624.95 > upper 918624.94)
+payment_id_max	NULL	fail	agg value 9007199254740993 violates thresholds (9007199254740993 > upper 9007199254740992)
+
+# the value column stays DOUBLE
+query TR
+SELECT typeof(value), value FROM run_checks('ledger_checks') WHERE check_name = 'ledger_total'
+----
+DOUBLE	918624.95

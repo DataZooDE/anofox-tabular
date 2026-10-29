@@ -1,0 +1,230 @@
+# name: test/sql/anofox_check_thresholds.test
+# description: Threshold validation with clear errors (min > max, negative counts, rates
+#              outside 0..1) in the check functions and run_checks; output_mode accepted
+#              case-insensitively; rates in check messages rounded to three decimals.
+# group: [anofox_tabular]
+
+require anofox_tabular
+
+statement ok
+LOAD anofox_tabular
+
+statement ok
+SET anofox_tab_trace_enabled = false
+
+# An invoice table with a few data issues
+statement ok
+CREATE TABLE invoices (invoice_no VARCHAR, customer VARCHAR, vat_id VARCHAR, net_amount DOUBLE, currency VARCHAR)
+
+statement ok
+INSERT INTO invoices VALUES
+    ('INV-2026-0001', 'Brauhaus Mueller GmbH', 'DE811569869', 1250.00, 'EUR'),
+    ('INV-2026-0002', 'Kaffeeroesterei Wien',  NULL,          89.90,   'EUR'),
+    ('INV-2026-0003', 'Alpine Outdoor AG',     'CHE-116.281.710', 420.00, 'CHF'),
+    ('INV-2026-0004', 'Nordsee Fisch KG',      NULL,          -35.00,  'EUR'),
+    ('INV-2026-0005', 'Brauhaus Mueller GmbH', 'DE811569869', 310.50,  'EUR'),
+    ('INV-2026-0006', 'Atelier Lumiere SARL',  'FR40303265045', 77.00, 'EUR')
+
+# ===--------------------------------------------------------------------===
+# min > max
+# ===--------------------------------------------------------------------===
+
+statement error
+SELECT * FROM volume('invoices', 100, 10)
+----
+volume: min_rows (100) must not be greater than max_rows (10)
+
+statement error
+SELECT * FROM distinct_count('invoices', 'customer', 5, 2)
+----
+distinct_count: min_distinct (5) must not be greater than max_distinct (2)
+
+statement error
+SELECT * FROM regex_match('invoices', 'invoice_no', '^INV-', 0.9, 0.5)
+----
+regex_match: min_match_rate (0.9) must not be greater than max_match_rate (0.5)
+
+statement error
+SELECT * FROM agg_check('invoices', 'net_amount', 'avg', 500, 100)
+----
+agg_check: lower_threshold (500.0) must not be greater than upper_threshold (100.0)
+
+statement error
+SELECT * FROM occurrence('invoices', 'customer', 'max', 3, 1)
+----
+occurrence: lower_threshold (3) must not be greater than upper_threshold (1)
+
+statement error
+SELECT * FROM rel_count_change('invoices', 'invoice_no', NULL, 7, 0.5, -0.5)
+----
+rel_count_change: lower_threshold (0.5) must not be greater than upper_threshold (-0.5)
+
+# ===--------------------------------------------------------------------===
+# negative counts and multipliers
+# ===--------------------------------------------------------------------===
+
+statement error
+SELECT * FROM volume('invoices', -1, NULL)
+----
+volume: min_rows must not be negative (got -1)
+
+statement error
+SELECT * FROM distinct_count('invoices', 'customer', NULL, -3)
+----
+distinct_count: max_distinct must not be negative (got -3)
+
+statement error
+SELECT * FROM zscore('invoices', 'net_amount', -2.0)
+----
+zscore: threshold must be positive (got -2.0)
+
+statement error
+SELECT * FROM iqr('invoices', 'net_amount', -1.5)
+----
+iqr: iqr_multiplier must not be negative (got -1.5)
+
+# ===--------------------------------------------------------------------===
+# rates outside 0..1
+# ===--------------------------------------------------------------------===
+
+statement error
+SELECT * FROM null_rate('invoices', 'vat_id', 1.5)
+----
+null_rate: max_null_rate must be between 0 and 1 (got 1.5)
+
+statement error
+SELECT * FROM null_rate('invoices', 'vat_id', -0.1)
+----
+null_rate: max_null_rate must be between 0 and 1 (got -0.1)
+
+statement error
+SELECT * FROM regex_match('invoices', 'invoice_no', '^INV-', 95)
+----
+regex_match: min_match_rate must be between 0 and 1 (got 95.0)
+
+statement error
+SELECT * FROM values_in_set('invoices', 'currency', ['EUR', 'CHF'], 2.0)
+----
+values_in_set: min_rate must be between 0 and 1 (got 2.0)
+
+statement error
+SELECT * FROM match_rate('invoices', 'invoices', 'invoice_no', 'invoice_no', -1)
+----
+match_rate: min_rate must be between 0 and 1 (got -1.0)
+
+statement error
+SELECT * FROM compliance('invoices', 'net_amount > 0', 1.01)
+----
+compliance: min_rate must be between 0 and 1 (got 1.01)
+
+# valid boundaries still work
+query T
+SELECT status FROM null_rate('invoices', 'vat_id', 1.0)
+----
+pass
+
+query T
+SELECT status FROM compliance('invoices', 'net_amount > 0', 0)
+----
+pass
+
+# ===--------------------------------------------------------------------===
+# rounded rates in messages
+# ===--------------------------------------------------------------------===
+
+query T
+SELECT message FROM null_rate('invoices', 'vat_id', 0.1)
+----
+Null rate 0.333 (2/6) exceeds maximum 0.1
+
+query T
+SELECT message FROM compliance('invoices', 'net_amount > 0', 0.9)
+----
+Compliance rate 0.833 (5/6) is below minimum 0.9
+
+query T
+SELECT message FROM regex_match('invoices', 'vat_id', '^DE[0-9]{9}$', 0.9)
+----
+Match rate 0.5 (2/4) is below minimum 0.9
+
+query T
+SELECT message FROM values_in_set('invoices', 'currency', ['EUR'], 0.9)
+----
+In-set rate 0.833 (5/6) is below minimum 0.9
+
+# the value column keeps full precision
+query R
+SELECT round(null_rate, 10) FROM null_rate('invoices', 'vat_id', 0.1)
+----
+0.3333333333
+
+# ===--------------------------------------------------------------------===
+# run_checks: invalid thresholds become error rows; messages are rounded
+# ===--------------------------------------------------------------------===
+
+statement ok
+CREATE TABLE invoice_checks (
+    check_name VARCHAR, check_type VARCHAR, table_name VARCHAR, column_name VARCHAR,
+    params VARCHAR, lower_threshold DOUBLE, upper_threshold DOUBLE,
+    monitor_only BOOLEAN, identifier_column VARCHAR, filter_expr VARCHAR
+)
+
+statement ok
+INSERT INTO invoice_checks VALUES
+    ('i1_volume_swapped', 'volume',     'invoices', NULL,     NULL, 100, 10, false, NULL, NULL),
+    ('i2_vat_null_rate',  'null_rate',  'invoices', 'vat_id', NULL, NULL, 40, false, NULL, NULL),
+    ('i3_vat_null',       'null_rate',  'invoices', 'vat_id', NULL, NULL, 0.1, false, NULL, NULL),
+    ('i4_positive',       'compliance', 'invoices', NULL,     '{"expression": "net_amount > 0"}', 0.9, NULL, false, NULL, NULL)
+
+query TT
+SELECT check_name, status FROM run_checks('invoice_checks')
+----
+i1_volume_swapped	error
+i2_vat_null_rate	error
+i3_vat_null	fail
+i4_positive	fail
+
+query T
+SELECT message FROM run_checks('invoice_checks')
+----
+check 'i1_volume_swapped' (volume) cannot run: lower_threshold (100.0) must not be greater than upper_threshold (10.0)
+check 'i2_vat_null_rate' (null_rate) cannot run: upper_threshold must be between 0 and 1 for a null_rate check (got 40.0)
+null_rate value 0.333 violates thresholds (0.333 > upper 0.1)
+compliance value 0.833 violates thresholds (0.833 < lower 0.9)
+
+# ===--------------------------------------------------------------------===
+# output_mode is case-insensitive
+# ===--------------------------------------------------------------------===
+
+statement ok
+CREATE TABLE invoice_amounts AS SELECT range AS id, CAST(range % 17 AS DOUBLE) AS amount, CAST(range % 5 AS DOUBLE) AS qty FROM range(60)
+
+query I
+SELECT COUNT(*) FROM isolation_forest('invoice_amounts', 'amount', 50, 32, 0.1, 'SCORES', 42)
+----
+60
+
+query I
+SELECT COUNT(*) FROM isolation_forest_mv('invoice_amounts', 'amount, qty', 50, 32, 0.1, 'Scores', 42)
+----
+60
+
+query I
+SELECT COUNT(*) FROM dbscan('invoice_amounts', 'amount', 1.0, 3, 'CLUSTERS')
+----
+60
+
+query I
+SELECT COUNT(*) FROM dbscan_mv('invoice_amounts', 'amount, qty', 1.0, 3, 'Clusters')
+----
+60
+
+query I
+SELECT COUNT(*) > 0 FROM outlier_tree('invoice_amounts', 'amount, qty', 'SUMMARY')
+----
+1
+
+query I
+SELECT COUNT(*) FROM isolation_forest('invoice_amounts', 'amount', 50, 32, 0.1, 'Summary', 42)
+----
+1

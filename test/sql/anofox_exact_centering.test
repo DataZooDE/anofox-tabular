@@ -1,0 +1,111 @@
+# name: test/sql/anofox_exact_centering.test
+# description: zscore, iqr, profile_table and profile_correlations keep integer, HUGEINT and
+#              DECIMAL columns exact above 2^53: the values are centred on a reference value in
+#              their own type before the cast to DOUBLE, so 9007199254740992 and
+#              9007199254740993 stay different (they are equal as DOUBLE, which made the column
+#              look constant).
+# group: [anofox_tabular]
+
+require anofox_tabular
+
+statement ok
+LOAD anofox_tabular
+
+statement ok
+SET anofox_tab_trace_enabled = false
+
+# Cumulative smart-meter counters in mWh: 15 readings at 2^53 and one a step higher
+statement ok
+CREATE TABLE meter_readings AS
+SELECT 'MTR-' || lpad(CAST(i AS VARCHAR), 4, '0') AS meter_id,
+       CASE WHEN i = 16 THEN 9007199254740993 ELSE 9007199254740992 END::BIGINT AS counter_mwh
+FROM range(1, 17) r(i)
+
+query TIIR
+SELECT status, outlier_count, total_count, round(stddev, 4)
+FROM zscore('meter_readings', 'counter_mwh', 3.0)
+----
+fail	1	16	0.25
+
+query T
+SELECT message FROM zscore('meter_readings', 'counter_mwh', 3.0)
+----
+1 outlier(s) detected (6.25% of 16 rows)
+
+# The same readings as HUGEINT, DECIMAL(38,0) and UBIGINT around 2^100 / 2^53
+statement ok
+CREATE TABLE meter_readings_wide AS
+SELECT meter_id,
+       CAST(counter_mwh AS HUGEINT) + '1267650600228229401496703205376'::HUGEINT - 9007199254740992 AS counter_huge,
+       CAST(counter_mwh AS DECIMAL(38, 0)) * 1000000 AS counter_dec,
+       CAST(counter_mwh AS UBIGINT) AS counter_u
+FROM meter_readings
+
+query TII
+SELECT status, outlier_count, total_count FROM zscore('meter_readings_wide', 'counter_huge', 3.0)
+----
+fail	1	16
+
+query TII
+SELECT status, outlier_count, total_count FROM zscore('meter_readings_wide', 'counter_dec', 3.0)
+----
+fail	1	16
+
+query TII
+SELECT status, outlier_count, total_count FROM zscore('meter_readings_wide', 'counter_u', 3.0)
+----
+fail	1	16
+
+# Small values keep their usual result
+statement ok
+CREATE TABLE order_lines AS SELECT * FROM (VALUES (1, 2), (2, 3), (3, 2), (4, 4), (5, 3), (6, 2), (7, 40)) t(line_id, qty)
+
+query TRRI
+SELECT status, round(mean, 4), round(stddev, 4), outlier_count FROM zscore('order_lines', 'qty', 2.0)
+----
+fail	8.0	14.0357	1
+
+# iqr: transaction ids 2^53+10 / 2^53+11 and one at 2^53+14. Exact: Q1 10, Q3 11, IQR 1,
+# upper bound 12.5, so 2^53+14 is an outlier (as DOUBLE 2^53+11 rounds to 2^53+12 and hid it)
+statement ok
+CREATE TABLE ledger AS SELECT * FROM (VALUES
+    ('TX-01', 9007199254741002::BIGINT), ('TX-02', 9007199254741003), ('TX-03', 9007199254741002),
+    ('TX-04', 9007199254741003), ('TX-05', 9007199254741002), ('TX-06', 9007199254741003),
+    ('TX-07', 9007199254741002), ('TX-08', 9007199254741003), ('TX-09', 9007199254741006)
+) t(tx, seq_no)
+
+query TRII
+SELECT status, iqr, outlier_count, total_count FROM iqr('ledger', 'seq_no', 1.5)
+----
+fail	1.0	1	9
+
+# profile_table: two distinct values have a non-zero spread
+statement ok
+CREATE TABLE device_ids AS SELECT * FROM (VALUES
+    (9007199254740992::BIGINT, 9007199254740993::BIGINT, 90071992547409.92::DECIMAL(16, 2)),
+    (9007199254740993, 9007199254740992, 90071992547409.93),
+    (9007199254740992, 9007199254740993, 90071992547409.92),
+    (9007199254740993, 9007199254740992, 90071992547409.93)
+) t(serial_a, serial_b, amount)
+
+query TIRRR
+SELECT column_name, distinct_count, round(stddev, 4), round(skewness, 4), round(kurtosis, 4)
+FROM profile_table('device_ids', ['serial_a', 'serial_b']) ORDER BY column_name
+----
+serial_a	2	0.5774	0.0	-6.0
+serial_b	2	0.5774	0.0	-6.0
+
+query TIR
+SELECT column_name, distinct_count, round(stddev, 6)
+FROM profile_table('device_ids', ['amount'])
+----
+amount	2	0.005774
+
+# profile_correlations: serial_b = 2^54 + 1 - serial_a, a perfect negative correlation
+query TTRRI
+SELECT column_a, column_b, round(pearson, 4), round(spearman, 4), n
+FROM profile_correlations('device_ids') ORDER BY column_a, column_b
+----
+serial_a	amount	1.0	1.0	4
+serial_a	serial_b	-1.0	-1.0	4
+serial_b	amount	-1.0	-1.0	4

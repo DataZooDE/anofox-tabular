@@ -54,6 +54,9 @@ private:
 	void Initialize(ClientContext &context);
 	//! Downloads and extracts the data bundle. Caller must hold init_lock.
 	void LoadDataInternal(ClientContext &context);
+	//! Expands the configured directory; at the default, falls back to a
+	//! complete cwd-relative copy of older versions. Caller must hold init_lock.
+	std::string ResolveDataDirectory(ClientContext &context) const;
 	//! Computes the current status. Caller must hold init_lock.
 	PostalStatus GetStatusInternal(ClientContext &context) const;
 	//! Tears down exactly the libpostal stages that completed setup.
@@ -64,6 +67,9 @@ private:
 	//! Mutable so const accessors can lock it.
 	mutable std::mutex init_lock;
 	std::string data_directory;
+	//! The legacy-directory and missing-home notices are logged once per process.
+	mutable std::atomic<bool> legacy_notice_logged {false};
+	mutable std::atomic<bool> no_home_notice_logged {false};
 	//! Per-stage setup tracking so a failed initialization only rolls back
 	//! the stages that actually completed.
 	bool core_ready = false;

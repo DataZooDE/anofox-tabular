@@ -6,6 +6,9 @@
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/common/vector_operations/vector_operations.hpp"
 
+#include <algorithm>
+#include <cctype>
+
 namespace duckdb {
 
 // ============================================================================
@@ -94,7 +97,13 @@ static void VATExistsFunc(DataChunk& args, ExpressionState& state,
                          Vector& result) {
   auto& registry = VATRegistry::Instance();
   IterateSingleStringInput(args, result, [&](std::string_view input, size_t idx) {
-    SetBoolResult(result, idx, registry.SplitVAT(input).has_value());
+    // A supported prefix followed by a number: a bare country code ('DE') or a
+    // prefix with letters only is not a VAT number
+    auto split_result = registry.SplitVAT(input);
+    bool has_number = split_result.has_value() &&
+                      std::any_of(split_result->second.begin(), split_result->second.end(),
+                                  [](char c) { return c >= '0' && c <= '9'; });
+    SetBoolResult(result, idx, has_number);
   });
 }
 
@@ -126,7 +135,9 @@ static void VATCountryNameFunc(DataChunk& args, ExpressionState& state,
 }
 
 // anofox_vat_format(vat, style) -> VARCHAR
-// Style: 'plain' = digits only, 'iso' = VAT country prefix (EL/XI) + digits
+// Style: 'plain' = the national part after the country prefix (normalized; it keeps the
+// letters some countries use, e.g. ATU..., NL...B01), 'iso' = VAT country prefix (EL for
+// Greece) + national part. Neither style validates the number.
 static void VATFormatFunc(DataChunk& args, ExpressionState& state,
                          Vector& result) {
   auto& registry = VATRegistry::Instance();
@@ -169,6 +180,73 @@ static void VATIsValidFunc(DataChunk& args, ExpressionState& state,
     auto [country, digits] = split_result.value();
     SetBoolResult(result, idx, registry.IsValidSyntax(country, digits) &&
                                    registry.IsValidChecksum(country, digits));
+  });
+}
+
+// anofox_vat_validate(vat) -> STRUCT(valid, country, reason)
+// The same check as vat_is_valid, with the reason a number is rejected.
+// country is the ISO code of a supported prefix (as in vat_split), else NULL.
+static constexpr const char* VAT_REASON_EMPTY = "empty";
+static constexpr const char* VAT_REASON_MISSING_PREFIX = "missing_prefix";
+static constexpr const char* VAT_REASON_UNSUPPORTED_COUNTRY = "unsupported_country";
+static constexpr const char* VAT_REASON_INVALID_FORMAT = "invalid_format";
+static constexpr const char* VAT_REASON_CHECKSUM_MISMATCH = "checksum_mismatch";
+
+static LogicalType GetVATValidateType() {
+  child_list_t<LogicalType> struct_children;
+  struct_children.push_back(make_pair("valid", LogicalTypeId::BOOLEAN));
+  struct_children.push_back(make_pair("country", LogicalTypeId::VARCHAR));
+  struct_children.push_back(make_pair("reason", LogicalTypeId::VARCHAR));
+  return LogicalType::STRUCT(struct_children);
+}
+
+static void VATValidateFunc(DataChunk& args, ExpressionState& state,
+                            Vector& result) {
+  auto& registry = VATRegistry::Instance();
+  auto& entries = StructVector::GetEntries(result);
+  auto& valid_vec = anofox::VectorRef(entries[0]);
+  auto& country_vec = anofox::VectorRef(entries[1]);
+  auto& reason_vec = anofox::VectorRef(entries[2]);
+  auto valid_data = duckdb_compat::FlatData<bool>(valid_vec);
+  auto country_data = duckdb_compat::FlatData<string_t>(country_vec);
+  auto reason_data = duckdb_compat::FlatData<string_t>(reason_vec);
+
+  IterateSingleStringInput(args, result, [&](std::string_view input, size_t idx) {
+    const char* reason = nullptr;
+    std::string country;
+    auto normalized = registry.NormalizeVAT(input);
+    bool has_letter_prefix = normalized.size() >= 2 && std::isalpha(static_cast<unsigned char>(normalized[0])) &&
+                             std::isalpha(static_cast<unsigned char>(normalized[1]));
+    auto split_result = registry.SplitVAT(input);
+    // A blank field (empty or whitespace only) is a missing value, not a number without prefix
+    const bool blank = std::all_of(input.begin(), input.end(), [](char c) {
+      return c == ' ' || c == '\t' || c == '\r' || c == '\n' || c == '\v' || c == '\f';
+    });
+    if (blank) {
+      reason = VAT_REASON_EMPTY;
+    } else if (!has_letter_prefix) {
+      reason = VAT_REASON_MISSING_PREFIX;
+    } else if (!split_result.has_value()) {
+      reason = VAT_REASON_UNSUPPORTED_COUNTRY;
+    } else {
+      country = split_result->first;
+      const auto& digits = split_result->second;
+      if (!registry.IsValidSyntax(country, digits)) {
+        reason = VAT_REASON_INVALID_FORMAT;
+      } else if (!registry.IsValidChecksum(country, digits)) {
+        reason = VAT_REASON_CHECKSUM_MISMATCH;
+      }
+    }
+    valid_data[idx] = reason == nullptr;
+    FlatVector::SetNull(valid_vec, idx, false);
+    FlatVector::SetNull(country_vec, idx, country.empty());
+    if (!country.empty()) {
+      country_data[idx] = StringVector::AddString(country_vec, country);
+    }
+    FlatVector::SetNull(reason_vec, idx, reason == nullptr);
+    if (reason) {
+      reason_data[idx] = StringVector::AddString(reason_vec, reason);
+    }
   });
 }
 
@@ -219,6 +297,11 @@ unique_ptr<FunctionData> VatCountryNameBind(ClientContext &) {
 
 unique_ptr<FunctionData> VatFormatBind(ClientContext &) {
   PostHogTelemetry::Instance().RecordFunctionCall("vat_format");
+  return nullptr;
+}
+
+unique_ptr<FunctionData> VatValidateBind(ClientContext &) {
+  PostHogTelemetry::Instance().RecordFunctionCall("vat_validate");
   return nullptr;
 }
 
@@ -289,7 +372,7 @@ void RegisterVATFunctions(ExtensionLoader& loader) {
   }
   {
     FunctionDescription desc;
-    desc.description = "Returns TRUE if the country prefix of the VAT number exists in the supported country list.";
+    desc.description = "Returns TRUE if the VAT number starts with a supported country prefix followed by a number (at least one digit); no length, pattern or check-digit validation.";
     desc.parameter_names = {"vat_number"};
     desc.parameter_types = {LogicalType::VARCHAR};
     desc.examples = {"SELECT vat_exists('DE123456789');"};
@@ -300,10 +383,10 @@ void RegisterVATFunctions(ExtensionLoader& loader) {
   }
   {
     FunctionDescription desc;
-    desc.description = "Returns TRUE if the VAT number belongs to an EU member state.";
-    desc.parameter_names = {"vat_number"};
+    desc.description = "Returns TRUE if the 2-letter country code (ISO, or the VAT prefix 'EL' for Greece) is an EU member state.";
+    desc.parameter_names = {"country_code"};
     desc.parameter_types = {LogicalType::VARCHAR};
-    desc.examples = {"SELECT vat_is_eu_member('DE123456789');"};
+    desc.examples = {"SELECT vat_is_eu_member('DE');"};
     desc.categories = {"vat", "utility"};
     ScalarFunction is_eu_member_func("anofox_tab_vat_is_eu_member", {LogicalTypeId::VARCHAR}, LogicalTypeId::BOOLEAN, VATIsEUMemberFunc);
     is_eu_member_func.SetBindCallback(&anofox::ScalarContextBind<VatIsEuMemberBind>::Bind);
@@ -311,10 +394,10 @@ void RegisterVATFunctions(ExtensionLoader& loader) {
   }
   {
     FunctionDescription desc;
-    desc.description = "Returns the English country name for the VAT number's country prefix (e.g., 'Germany').";
-    desc.parameter_names = {"vat_number"};
+    desc.description = "Returns the English country name for a 2-letter country code (e.g., 'Germany' for 'DE'), or NULL for an unsupported code.";
+    desc.parameter_names = {"country_code"};
     desc.parameter_types = {LogicalType::VARCHAR};
-    desc.examples = {"SELECT vat_country_name('DE123456789');"};
+    desc.examples = {"SELECT vat_country_name('DE');"};
     desc.categories = {"vat", "utility"};
     ScalarFunction country_name_func("anofox_tab_vat_country_name", {LogicalTypeId::VARCHAR}, LogicalTypeId::VARCHAR, VATCountryNameFunc);
     country_name_func.SetBindCallback(&anofox::ScalarContextBind<VatCountryNameBind>::Bind);
@@ -322,7 +405,7 @@ void RegisterVATFunctions(ExtensionLoader& loader) {
   }
   {
     FunctionDescription desc;
-    desc.description = "Formats a VAT number using the specified style: 'plain' (digits only) or 'iso' (VAT country prefix + digits).";
+    desc.description = "Formats a VAT number using the specified style: 'plain' (the national part without the country prefix, letters included, e.g. U13585627 for ATU13585627) or 'iso' (VAT country prefix + national part). Does not validate.";
     desc.parameter_names = {"vat_number", "format_style"};
     desc.parameter_types = {LogicalType::VARCHAR, LogicalType::VARCHAR};
     desc.examples = {"SELECT vat_format('DE123456789', 'iso');"};
@@ -341,6 +424,17 @@ void RegisterVATFunctions(ExtensionLoader& loader) {
     ScalarFunction is_valid_func("anofox_tab_vat_is_valid", {LogicalTypeId::VARCHAR}, LogicalTypeId::BOOLEAN, VATIsValidFunc);
     is_valid_func.SetBindCallback(&anofox::ScalarContextBind<VatIsValidBind>::Bind);
     anofox::RegisterScalarFunctionWithAlias(loader, is_valid_func, "vat_is_valid", {std::move(desc)});
+  }
+  {
+    FunctionDescription desc;
+    desc.description = "Validates a VAT number like vat_is_valid and says why it is rejected: a struct with valid, country (ISO code of a supported prefix, else NULL) and reason (empty for a blank value, missing_prefix, unsupported_country, invalid_format, checksum_mismatch; NULL when valid). Runs locally; does not query VIES.";
+    desc.parameter_names = {"vat"};
+    desc.parameter_types = {LogicalType::VARCHAR};
+    desc.examples = {"SELECT vat_validate('ATU13585627');", "SELECT (vat_validate('DE 811 128 136')).reason;"};
+    desc.categories = {"vat", "validation"};
+    ScalarFunction validate_func("anofox_tab_vat_validate", {LogicalTypeId::VARCHAR}, GetVATValidateType(), VATValidateFunc);
+    validate_func.SetBindCallback(&anofox::ScalarContextBind<VatValidateBind>::Bind);
+    anofox::RegisterScalarFunctionWithAlias(loader, validate_func, "vat_validate", {std::move(desc)});
   }
 }
 

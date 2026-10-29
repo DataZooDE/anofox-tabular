@@ -1,0 +1,150 @@
+# name: test/sql/anofox_check_suite_robustness.test
+# description: A run_checks check configured with an out-of-range window_days, an expression
+#              that does not parse or an invalid regular expression is an error row with a
+#              clear message; a duplicate_count key may be a JSON array; a table whose name
+#              contains a dot or a double quote is named as a quoted identifier.
+# group: [anofox_tabular]
+
+require anofox_tabular
+
+statement ok
+LOAD anofox_tabular
+
+statement ok
+SET anofox_tab_trace_enabled = false
+
+statement ok
+CREATE TABLE web_orders (
+    order_id    INTEGER,
+    customer_id INTEGER,
+    region      VARCHAR,
+    order_date  DATE,
+    amount      DECIMAL(10,2),
+    email       VARCHAR
+)
+
+statement ok
+INSERT INTO web_orders VALUES
+    (7001, 501, 'EU',   DATE '2026-10-19',  89.90, 'anna.schmidt@example.de'),
+    (7002, 502, 'US',   DATE '2026-10-19', 249.00, 'j.miller@example.com'),
+    (7003, 503, 'APAC', DATE '2026-10-20',  35.50, 'kenji.sato@example.jp'),
+    (7004, 501, 'EU',   DATE '2026-10-20',  12.00, 'anna.schmidt@example.de'),
+    (7005, 504, NULL,   DATE '2026-10-21', 120.00, 'noreply'),
+    (7005, 504, NULL,   DATE '2026-10-21', 120.00, 'noreply'),
+    (7006, 505, 'US',   DATE '2026-10-21',  64.20, 'l.garcia@example.com')
+
+statement ok
+CREATE TABLE order_checks (
+    check_name VARCHAR, check_type VARCHAR, table_name VARCHAR, column_name VARCHAR, params VARCHAR,
+    lower_threshold DOUBLE, upper_threshold DOUBLE, monitor_only BOOLEAN, identifier_column VARCHAR,
+    filter_expr VARCHAR)
+
+statement ok
+INSERT INTO order_checks VALUES
+    ('order_key_dupes', 'duplicate_count', 'web_orders', '["order_id", "customer_id"]', NULL, NULL, 0, false, NULL, NULL),
+    ('order_key_dupes_csv', 'duplicate_count', 'web_orders', 'order_id, customer_id', NULL, NULL, 0, false, NULL, NULL),
+    ('order_key_bad_json', 'duplicate_count', 'web_orders', '["order_id", 7]', NULL, NULL, 0, false, NULL, NULL)
+
+# A duplicate_count key may be a JSON array, like params.left_keys of match_rate
+query TTT
+SELECT check_name, status, message FROM run_checks('order_checks') ORDER BY check_name
+----
+order_key_bad_json	error	check 'order_key_bad_json' (duplicate_count) cannot run: column_name '["order_id", 7]' must be a comma-separated list or a JSON array of column names
+order_key_dupes	fail	duplicate_count value 1.0 violates thresholds (1.0 > upper 0.0); samples: '(7005, 504)'
+order_key_dupes_csv	fail	duplicate_count value 1.0 violates thresholds (1.0 > upper 0.0); samples: '(7005, 504)'
+
+# ===--------------------------------------------------------------------===
+# Configuration errors are error rows with a clear message
+# ===--------------------------------------------------------------------===
+
+statement ok
+CREATE TABLE broken_checks AS SELECT * FROM order_checks LIMIT 0
+
+statement ok
+INSERT INTO broken_checks VALUES
+    ('orders_window', 'rel_count_change', 'web_orders', NULL, '{"date_column": "order_date", "window_days": 999999999999}', -0.5, 0.5, false, NULL, NULL),
+    ('orders_iqr_window', 'metric_anomaly_iqr', 'web_orders', NULL, '{"date_column": "order_date", "window_days": 36501}', NULL, NULL, false, NULL, NULL),
+    ('orders_amount_rule', 'compliance', 'web_orders', NULL, '{"expression": "amount >"}', 1.0, NULL, false, NULL, NULL),
+    ('orders_email_format', 'regex_match', 'web_orders', 'email', '{"pattern": "[a-z"}', 0.9, NULL, false, NULL, NULL),
+    ('orders_window_ok', 'rel_count_change', 'web_orders', NULL, '{"date_column": "order_date", "window_days": 36500}', NULL, NULL, false, NULL, NULL)
+
+# The parser's wording after "syntax error" differs between DuckDB versions
+query TTT
+SELECT check_name, status, regexp_replace(message, 'syntax error .*$', 'syntax error') FROM run_checks('broken_checks')
+----
+orders_amount_rule	error	check 'orders_amount_rule' (compliance) cannot run: params.expression: failed to parse expression 'amount >': syntax error
+orders_email_format	error	check 'orders_email_format' (regex_match) cannot run: params.pattern '[a-z' is not a valid regular expression: missing ]: [a-z
+orders_iqr_window	error	check 'orders_iqr_window' (metric_anomaly_iqr) cannot run: params.window_days '36501' must be at most 36500
+orders_window	error	check 'orders_window' (rel_count_change) cannot run: params.window_days '999999999999' must be at most 36500
+orders_window_ok	pass	rel_count_change value 0.5: no thresholds configured (monitor)
+
+# The direct functions say the same
+statement error
+SELECT * FROM rel_count_change('web_orders', 'order_date', NULL, 999999999999)
+----
+rel_count_change: window_days must be at most 36500 (got 999999999999)
+
+statement error
+SELECT * FROM regex_match('web_orders', 'email', '[a-z', 0.9)
+----
+regex_match: pattern '[a-z' is not a valid regular expression: missing ]: [a-z
+
+statement error
+SELECT * FROM compliance('web_orders', 'amount >')
+----
+compliance: failed to parse expression 'amount >': syntax error
+
+# ===--------------------------------------------------------------------===
+# Table names with a dot or a quote
+# ===--------------------------------------------------------------------===
+
+statement ok
+CREATE TABLE "orders.archive" AS SELECT * FROM web_orders
+
+statement ok
+CREATE TABLE "partner ""EU"" orders" AS SELECT * FROM web_orders WHERE region = 'EU'
+
+statement ok
+CREATE TABLE "q4 orders" AS SELECT * FROM web_orders
+
+# spaces work as they are; a dot or a double quote needs the quoted identifier
+query T
+SELECT status FROM volume('q4 orders', 1, NULL)
+----
+pass
+
+query T
+SELECT status FROM volume('"orders.archive"', 1, NULL)
+----
+pass
+
+query T
+SELECT status FROM volume('"partner ""EU"" orders"', 1, NULL)
+----
+pass
+
+statement error
+SELECT * FROM volume('orders.archive', 1, NULL)
+----
+volume: table 'orders.archive' does not exist (a table whose name contains a dot or a double quote is passed as a quoted identifier: "orders.archive")
+
+statement error
+SELECT * FROM volume('partner "EU" orders', 1, NULL)
+----
+(a table whose name contains a dot or a double quote is passed as a quoted identifier: "partner ""EU"" orders")
+
+statement ok
+CREATE TABLE name_checks AS SELECT * FROM order_checks LIMIT 0
+
+statement ok
+INSERT INTO name_checks VALUES
+    ('archive_rows', 'volume', 'orders.archive', NULL, NULL, 1, NULL, false, NULL, NULL),
+    ('archive_rows_quoted', 'volume', '"orders.archive"', NULL, NULL, 1, NULL, false, NULL, NULL),
+    ('q4_rows', 'volume', 'q4 orders', NULL, NULL, 1, NULL, false, NULL, NULL)
+
+query TTT
+SELECT check_name, status, message FROM run_checks('name_checks')
+----
+archive_rows	error	check 'archive_rows' (volume) cannot run: target table 'orders.archive' does not exist (a table whose name contains a dot or a double quote is passed as a quoted identifier: "orders.archive")
+archive_rows_quoted	pass	volume value 7.0 is within thresholds
+q4_rows	pass	volume value 7.0 is within thresholds

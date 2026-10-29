@@ -1,0 +1,134 @@
+# name: test/sql/anofox_diff_type_changes.test
+# description: diff_joindiff / diff_hashdiff across a migration that changed column types.
+#              A column whose type differs between source and target in a non-numeric way
+#              (INTEGER -> VARCHAR) is compared on its text form, so '007' vs 7 is a change
+#              and 'n/a' does not abort the diff with a conversion error; numeric type changes
+#              (DECIMAL -> DOUBLE, INTEGER -> BIGINT key) compare by value. Columns that exist
+#              on one side only are ignored by the default compare set.
+# group: [anofox_tabular]
+
+require anofox_tabular
+
+statement ok
+LOAD anofox_tabular
+
+statement ok
+SET anofox_tab_trace_enabled = false
+
+# Customer master data before the CRM migration
+statement ok
+CREATE TABLE crm_customers_v1 (
+    customer_id INTEGER,
+    company     VARCHAR,
+    zip         INTEGER,
+    credit_limit DECIMAL(12, 2),
+    fax         VARCHAR
+)
+
+statement ok
+INSERT INTO crm_customers_v1 VALUES
+    (1001, 'Brauhaus Mueller GmbH',  80331, 5000.00, '+49 89 123456'),
+    (1002, 'Kaffeeroesterei Wien',    1010, 1500.50, NULL),
+    (1003, 'Nordsee Fisch KG',          7,  2500.00, NULL),
+    (1004, 'Alpine Outdoor AG',       8001, 1200.00, '+41 44 765432'),
+    (1005, 'Atelier Lumiere SARL',   75002,  900.00, NULL)
+
+# After the migration: zip became VARCHAR (leading zeros kept, unknowns as 'n/a'),
+# credit_limit became DOUBLE, the key became BIGINT; fax was dropped, segment was added
+statement ok
+CREATE TABLE crm_customers_v2 (
+    customer_id  BIGINT,
+    company      VARCHAR,
+    zip          VARCHAR,
+    credit_limit DOUBLE,
+    segment      VARCHAR
+)
+
+statement ok
+INSERT INTO crm_customers_v2 VALUES
+    (1001, 'Brauhaus Mueller GmbH', '80331', 5000.0, 'enterprise'),
+    (1002, 'Kaffeeroesterei Wien',  '1010',  1500.5, 'smb'),
+    (1003, 'Nordsee Fisch KG',      '007',   2500.0, 'smb'),
+    (1004, 'Alpine Outdoor AG',     'n/a',   1200.0, 'enterprise'),
+    (1006, 'Fjord Logistics AS',    '0150',  3000.0, 'smb')
+
+# 1003: zip 7 -> '007' is a change; 1004: 8001 -> 'n/a' is a change (no conversion error);
+# 1001/1002: identical values across the type change are unchanged (5000.00 = 5000.0)
+query TIT rowsort
+SELECT diff_type, customer_id, zip FROM diff_joindiff('crm_customers_v1', 'crm_customers_v2', 'customer_id')
+----
+added	1006	0150
+changed	1003	007
+changed	1004	n/a
+removed	1005	NULL
+
+query TI rowsort
+SELECT diff_type, customer_id FROM diff_hashdiff('crm_customers_v1', 'crm_customers_v2', 'customer_id')
+----
+added	1006
+changed	1003
+changed	1004
+removed	1005
+
+# include_all shows the unchanged rows too
+query TI rowsort
+SELECT diff_type, customer_id FROM diff_joindiff('crm_customers_v1', 'crm_customers_v2', 'customer_id', NULL, true)
+----
+added	1006
+changed	1003
+changed	1004
+removed	1005
+unchanged	1001
+unchanged	1002
+
+# The numeric type change alone (DECIMAL -> DOUBLE) reports no false changes
+query TI rowsort
+SELECT diff_type, customer_id FROM diff_joindiff('crm_customers_v1', 'crm_customers_v2', 'customer_id', ['credit_limit'])
+----
+added	1006
+removed	1005
+
+# Explicit compare on the zip column only
+query TIT rowsort
+SELECT diff_type, customer_id, zip FROM diff_joindiff('crm_customers_v1', 'crm_customers_v2', 'customer_id', ['zip'])
+----
+added	1006	0150
+changed	1003	007
+changed	1004	n/a
+removed	1005	NULL
+
+# A key whose type changed from INTEGER to VARCHAR is joined on its text form
+statement ok
+CREATE TABLE crm_customers_v3 AS
+SELECT CAST(customer_id AS VARCHAR) AS customer_id, company, zip, credit_limit FROM crm_customers_v2
+
+query TT rowsort
+SELECT diff_type, customer_id FROM diff_joindiff('crm_customers_v1', 'crm_customers_v3', 'customer_id')
+----
+added	1006
+changed	1003
+changed	1004
+removed	1005
+
+# Duplicate keys are still reported when the key type differs
+statement ok
+INSERT INTO crm_customers_v3 VALUES ('1006', 'Fjord Logistics AS (dup)', '0150', 3000.0)
+
+statement error
+SELECT * FROM diff_joindiff('crm_customers_v1', 'crm_customers_v3', 'customer_id')
+----
+diff_joindiff: primary key is not unique in target table 'crm_customers_v3' (customer_id = 1006 appears 2 times)
+
+# The output keeps the target's types (zip is VARCHAR, credit_limit DOUBLE)
+query TT
+SELECT DISTINCT typeof(zip), typeof(credit_limit)
+FROM diff_joindiff('crm_customers_v1', 'crm_customers_v2', 'customer_id')
+WHERE diff_type = 'changed'
+----
+VARCHAR	DOUBLE
+
+# fax (source only) and segment (target only) are not compared by default
+query I
+SELECT COUNT(*) FROM diff_joindiff('crm_customers_v1', 'crm_customers_v2', 'customer_id') WHERE diff_type = 'changed'
+----
+2

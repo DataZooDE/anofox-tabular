@@ -1,0 +1,75 @@
+# name: test/sql/anofox_pii_ner_word_skip.test
+# description: NER skips values without any word of two or more letters (hex digests, UUIDs, numbers), so a column of 1000 md5 checksums scans in moments with the NER types enabled; values with words still go through NER
+# group: [anofox_tabular]
+
+require-env OPENVINO_AVAILABLE
+
+require anofox_tabular
+
+statement ok
+LOAD anofox_tabular
+
+# NER types only: every match below comes from the model (or, for NAME, its
+# dictionary fallback)
+statement ok
+SET anofox_pii_enabled_types = 'NAME,ORGANIZATION,LOCATION,MISC';
+
+# An order export with technical columns: md5 checksums, UUID-like ids and
+# amounts, next to a free-text customer column
+statement ok
+CREATE TABLE order_export AS
+SELECT i AS order_id,
+    md5('order-' || i) AS checksum,
+    substr(md5('id' || i), 1, 8) || '-' || substr(md5('id' || i), 9, 4) || '-4' || substr(md5('id' || i), 14, 3) ||
+        '-8' || substr(md5('id' || i), 18, 3) || '-' || substr(md5('id' || i), 21, 12) AS request_id,
+    printf('%.2f', (i * 37 % 1000) / 7.0) AS amount,
+    CASE i % 4
+        WHEN 0 THEN 'Ordered by Anna Schmidt for Siemens AG in Munich'
+        WHEN 1 THEN 'Delivery to John Smith, Microsoft, Seattle'
+        WHEN 2 THEN 'Customer Maria Garcia called from Madrid'
+        ELSE 'Gift for Peter Wagner, BMW Group'
+    END AS note
+FROM range(1000) r(i);
+
+# Technical columns: no NER inference, nothing found (a full NER pass over
+# these 2000 distinct values took minutes before)
+query TIT
+SELECT column_name, values_scanned, status FROM pii_scan_table('order_export', 'checksum,request_id,amount') ORDER BY column_name;
+----
+amount	1000	no_match
+checksum	1000	no_match
+request_id	1000	no_match
+
+query I
+SELECT count(*) FROM pii_audit_table('order_export', 'checksum,request_id');
+----
+0
+
+# The scalar functions skip such values too
+query II
+SELECT len(pii_detect('d41d8cd98f00b204e9800998ecf8427e')), pii_mask('550e8400-e29b-41d4-a716-446655440000 / 4711.00');
+----
+0	550e8400-e29b-41d4-a716-446655440000 / 4711.00
+
+# A free-text column still goes through NER: organizations are only found by
+# the model, never by the name dictionary
+query TT
+SELECT pii_type, status FROM pii_scan_table('order_export', 'note') WHERE pii_type IN ('NAME', 'ORGANIZATION') ORDER BY pii_type;
+----
+NAME	scanned
+ORGANIZATION	scanned
+
+query I
+SELECT pii_mask('Ordered by Anna Schmidt for Siemens AG in Munich') NOT LIKE '%Siemens%';
+----
+true
+
+# Short words count: a two-letter name is still a word
+query I
+SELECT list_contains(list_transform(pii_detect('Contact: Li Wei, Alibaba Group'), lambda m: m.type), 'ORGANIZATION');
+----
+true
+
+# Restore the process-wide PII settings for the tests that follow
+statement ok
+SET anofox_pii_enabled_types = '';

@@ -1,0 +1,131 @@
+# name: test/sql/anofox_check_suite_session_tz_icu.test
+# description: run_checks does not depend on the session TimeZone: one suite (freshness,
+#              rel_count_change on a TIMESTAMPTZ date column, filter_expr with ${yesterday} /
+#              ${today} tokens against TIMESTAMPTZ, TIMESTAMP and DATE columns, and a TIMESTAMPTZ
+#              identifier_column) gives the same rows under UTC, America/Los_Angeles and
+#              Europe/Berlin.
+# group: [anofox_tabular]
+
+require anofox_tabular
+
+require icu
+
+statement ok
+LOAD anofox_tabular
+
+statement ok
+SET anofox_tab_trace_enabled = false
+
+# Parcel scans of a logistics hub, stored with time zone. Six days with 10 scans shortly after
+# midnight UTC (the previous local day in Los Angeles), then 30 scans late on 2026-10-26 UTC
+# (already 2026-10-27 in Berlin). shift_start is the start of the scanning shift.
+statement ok
+CREATE TABLE parcel_scans AS
+SELECT 'PCL-' || d || '-' || i AS parcel_id,
+       CAST(strftime(TIMESTAMP '2026-10-20 01:00:00' + to_days(d) + to_minutes(i), '%Y-%m-%d %H:%M:%S') || '+00'
+            AS TIMESTAMPTZ) AS scanned_at,
+       TIMESTAMPTZ '2026-10-20 01:00:00+00' AS shift_start
+FROM range(0, 6) t1(d), range(0, 10) t2(i)
+UNION ALL
+SELECT 'PCL-LATE-' || i,
+       CAST(strftime(TIMESTAMP '2026-10-26 23:00:00' + to_minutes(i), '%Y-%m-%d %H:%M:%S') || '+00' AS TIMESTAMPTZ),
+       TIMESTAMPTZ '2026-10-26 22:00:00+00'
+FROM range(0, 30) t(i)
+
+# Live scans around yesterday (UTC): hours relative to yesterday's UTC midnight, stored as
+# TIMESTAMPTZ, as a plain UTC TIMESTAMP and as the UTC date
+statement ok
+CREATE TABLE live_scans AS
+SELECT h AS hour_offset,
+       CAST(strftime(CAST(CAST(make_timestamp(epoch_us(now())) AS DATE) - 1 AS TIMESTAMP) + to_hours(h),
+                     '%Y-%m-%d %H:%M:%S') || '+00' AS TIMESTAMPTZ) AS scanned_at,
+       CAST(CAST(make_timestamp(epoch_us(now())) AS DATE) - 1 AS TIMESTAMP) + to_hours(h) AS scanned_at_utc,
+       CAST(CAST(CAST(make_timestamp(epoch_us(now())) AS DATE) - 1 AS TIMESTAMP) + to_hours(h) AS DATE) AS scan_day
+FROM (VALUES (-10), (-5), (-1), (1), (5), (10), (20), (30)) t(h)
+
+statement ok
+CREATE TABLE hub_checks(check_name VARCHAR, check_type VARCHAR, table_name VARCHAR, column_name VARCHAR,
+  params VARCHAR, lower_threshold DOUBLE, upper_threshold DOUBLE, monitor_only BOOLEAN,
+  identifier_column VARCHAR, filter_expr VARCHAR)
+
+statement ok
+INSERT INTO hub_checks VALUES
+  ('scans_fresh', 'freshness', 'parcel_scans', 'scanned_at',
+     '{"reference_time": "2026-10-27 01:00:00"}', NULL, 7200, false, NULL, NULL),
+  ('scan_spike', 'rel_count_change', 'parcel_scans', NULL,
+     '{"date_column": "scanned_at", "window_days": 6, "reference_date": "2026-10-26"}', -0.5, 0.5, false, NULL, NULL),
+  ('scans_per_shift', 'volume', 'parcel_scans', NULL, NULL, 1, NULL, false, 'shift_start', NULL),
+  ('fresh_per_shift', 'freshness', 'parcel_scans', 'scanned_at',
+     '{"reference_time": "2026-10-27 01:00:00"}', NULL, 7200, false, 'shift_start', NULL),
+  ('since_yesterday_tz', 'volume', 'live_scans', NULL, NULL, 1, NULL, false, NULL,
+     'scanned_at >= ${yesterday}'),
+  ('yesterday_only_tz', 'volume', 'live_scans', NULL, NULL, 1, NULL, false, NULL,
+     'scanned_at >= ${yesterday} AND scanned_at < ${today}'),
+  ('yesterday_between_tz', 'volume', 'live_scans', NULL, NULL, 1, NULL, false, NULL,
+     'scanned_at BETWEEN ${yesterday} AND ${today}'),
+  ('last_30h_tz', 'volume', 'live_scans', NULL, NULL, 1, NULL, false, NULL,
+     'scanned_at >= ${today} - INTERVAL 30 HOUR'),
+  ('since_yesterday_naive', 'volume', 'live_scans', NULL, NULL, 1, NULL, false, NULL,
+     'scanned_at_utc >= ${yesterday}'),
+  ('yesterday_day', 'volume', 'live_scans', NULL, NULL, 1, NULL, false, NULL,
+     'scan_day = ${yesterday}')
+
+statement ok
+SET TimeZone = 'UTC'
+
+query TTTR
+SELECT check_name, identifier, status, round(value, 4) FROM run_checks('hub_checks') ORDER BY check_name, identifier
+----
+fresh_per_shift	2026-10-20 01:00:00+00	fail	172260.0
+fresh_per_shift	2026-10-26 22:00:00+00	pass	5460.0
+last_30h_tz	NULL	pass	7.0
+scan_spike	NULL	fail	2.0
+scans_fresh	NULL	pass	5460.0
+scans_per_shift	2026-10-20 01:00:00+00	pass	60.0
+scans_per_shift	2026-10-26 22:00:00+00	pass	30.0
+since_yesterday_naive	NULL	pass	5.0
+since_yesterday_tz	NULL	pass	5.0
+yesterday_between_tz	NULL	pass	4.0
+yesterday_day	NULL	pass	4.0
+yesterday_only_tz	NULL	pass	4.0
+
+statement ok
+SET TimeZone = 'America/Los_Angeles'
+
+query TTTR
+SELECT check_name, identifier, status, round(value, 4) FROM run_checks('hub_checks') ORDER BY check_name, identifier
+----
+fresh_per_shift	2026-10-20 01:00:00+00	fail	172260.0
+fresh_per_shift	2026-10-26 22:00:00+00	pass	5460.0
+last_30h_tz	NULL	pass	7.0
+scan_spike	NULL	fail	2.0
+scans_fresh	NULL	pass	5460.0
+scans_per_shift	2026-10-20 01:00:00+00	pass	60.0
+scans_per_shift	2026-10-26 22:00:00+00	pass	30.0
+since_yesterday_naive	NULL	pass	5.0
+since_yesterday_tz	NULL	pass	5.0
+yesterday_between_tz	NULL	pass	4.0
+yesterday_day	NULL	pass	4.0
+yesterday_only_tz	NULL	pass	4.0
+
+statement ok
+SET TimeZone = 'Europe/Berlin'
+
+query TTTR
+SELECT check_name, identifier, status, round(value, 4) FROM run_checks('hub_checks') ORDER BY check_name, identifier
+----
+fresh_per_shift	2026-10-20 01:00:00+00	fail	172260.0
+fresh_per_shift	2026-10-26 22:00:00+00	pass	5460.0
+last_30h_tz	NULL	pass	7.0
+scan_spike	NULL	fail	2.0
+scans_fresh	NULL	pass	5460.0
+scans_per_shift	2026-10-20 01:00:00+00	pass	60.0
+scans_per_shift	2026-10-26 22:00:00+00	pass	30.0
+since_yesterday_naive	NULL	pass	5.0
+since_yesterday_tz	NULL	pass	5.0
+yesterday_between_tz	NULL	pass	4.0
+yesterday_day	NULL	pass	4.0
+yesterday_only_tz	NULL	pass	4.0
+
+statement ok
+RESET TimeZone

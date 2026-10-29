@@ -1,9 +1,9 @@
 #
-# Runs the NER sqllogictests (`make test_ner`). The distribution jobs skip
+# Runs the NER sqllogictests (`make test_ner`, `make test_ner_models`). The distribution jobs skip
 # them: they guard on OPENVINO_AVAILABLE, and they download the NER model from
 # Hugging Face on first use, which the release pipeline must not depend on.
 # Here the extension is built with OpenVINO on linux_amd64 against the
-# submodule's DuckDB (v1.5.6), and the model directory is cached between runs.
+# submodule's DuckDB (v2.0.0), and the model directory is cached between runs.
 #
 name: NER tests (linux_amd64)
 on:
@@ -31,12 +31,12 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  # the vcpkg commit extension-ci-tools v1.5-variegata builds with
-  VCPKG_COMMIT: 84bab45d415d22042bd0b9081aea57f362da3f35
+  # the vcpkg commit extension-ci-tools v2.0-cyanoptera builds with
+  VCPKG_COMMIT: cd61e1e26a038e82d6550a3ebbe0fbbfe7da78e3
 
 jobs:
   test:
-    name: linux_amd64, DuckDB v1.5.6, OpenVINO
+    name: linux_amd64, DuckDB v2.0.0, OpenVINO
     runs-on: ubuntu-24.04
     timeout-minutes: 180
     steps:
@@ -71,11 +71,13 @@ jobs:
           restore-keys: ccache-ner-linux-
 
       # The model files are immutable per model name; the key changes when
-      # the model registry in anofox_ner.cpp does
+      # the model registry in anofox_ner.cpp or the default model in
+      # anofox_ner.hpp does. Holds bert-multi (default, 178 MB), distilbert-en
+      # (66 MB) and distilbert-multi (135 MB).
       - uses: actions/cache@v4
         with:
           path: ~/.duckdb/extensions/anofox/ner
-          key: ner-model-${{ hashFiles('src/anofox_ner.cpp') }}
+          key: ner-model-${{ hashFiles('src/anofox_ner.cpp', 'src/include/anofox_ner.hpp') }}
           restore-keys: ner-model-
 
       - name: Build
@@ -90,3 +92,15 @@ jobs:
 
       - name: Test
         run: make test_ner
+
+      # The non-default models distilbert-en and distilbert-multi, one
+      # process per model; cached with the model directory above
+      - name: Test non-default models
+        run: make test_ner_models
+
+      # No model on disk and auto download off: status NOT_DOWNLOADED naming
+      # the default model's directory, dictionary fallback for NAME
+      - name: Test without the model
+        run: |
+          HOME="$(mktemp -d)" DATAZOO_DISABLE_TELEMETRY=1 ANOFOX_TEST_NER_OFFLINE=1 \
+            ./build/release/test/unittest test/sql/anofox_pii_ner_offline.test

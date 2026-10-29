@@ -3,6 +3,7 @@
 #include "duckdb/common/vector.hpp"
 #include "duckdb/common/types/string_type.hpp"
 
+#include <cstddef>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -44,15 +45,37 @@ struct MxSelection {
 //! Exposed as a free function so the logic is unit-testable without sockets.
 MxSelection SelectMxHosts(std::vector<MxRecord> records);
 
+//! Process-wide DNS result cache bounds. Results are cached per domain
+//! (case-insensitive) so a column with many addresses of the same domain does
+//! one lookup instead of one per row.
+static constexpr uint32_t DNS_CACHE_TTL_SECONDS = 300;
+static constexpr size_t DNS_CACHE_MAX_ENTRIES = 10000;
+
+//! True for results that are definitive answers and may be cached: successful
+//! lookups and authoritative negatives (domain not found, no records, Null MX).
+//! Timeouts and other transient or environment errors are never cached.
+bool IsCacheableDnsResult(const DnsResult &result);
+
 class DnsResolver {
 public:
 	explicit DnsResolver(const DnsOptions &options = DnsOptions());
 
+	//! Resolves the mail hosts of `domain`, answering from the process-wide
+	//! cache when a fresh entry exists.
 	DnsResult Resolve(const std::string &domain);
 
 private:
+	DnsResult ResolveUncached(const std::string &domain);
+
 	DnsOptions options;
 };
+
+//! True for names that never belong to a deliverable mail domain: 'localhost'
+//! and '*.localhost' (RFC 6761) and the reserved TLDs '.example', '.invalid',
+//! '.test' (RFC 2606) and '.local' (RFC 6762, mDNS). Case-insensitive. The DNS
+//! stage rejects these with reason 'dns_reserved_domain' instead of resolving
+//! them (localhost would otherwise resolve to the loopback addresses).
+bool IsReservedMailDomain(const std::string &domain);
 
 std::string DnsStatusToReason(int status);
 bool EnsureAresInitialized(std::string &error_reason);

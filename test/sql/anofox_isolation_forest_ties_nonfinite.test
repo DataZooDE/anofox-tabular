@@ -1,0 +1,267 @@
+# name: test/sql/anofox_isolation_forest_ties_nonfinite.test
+# description: isolation_forest / isolation_forest_mv flag tied top scores (A-F1) and handle NaN / +-Inf values (A-F2)
+# group: [anofox_tabular]
+
+require anofox_tabular
+
+statement ok
+LOAD anofox_tabular
+
+statement ok
+SET anofox_tab_trace_enabled = false
+
+# ===--------------------------------------------------------------------===
+# A-F1: identical outliers that fill the top quantile are all flagged
+# ===--------------------------------------------------------------------===
+# 500 cold-store temperature readings from three sensors (distinct values
+# between 2.00 and 6.99 degC). Sensor CS-3 got stuck 12 times on the identical
+# value 85.0 degC (and 9.5 bar).
+# At contamination 0.01 the top quantile holds 5 rows, all of them 85.0 with
+# the same score: every one of the 12 stuck readings is flagged, nothing else.
+statement ok
+CREATE TABLE coldstore AS
+SELECT 'R-' || lpad(i::VARCHAR, 5, '0') AS reading_id,
+       'CS-' || ((i % 3) + 1)::VARCHAR AS sensor,
+       CASE WHEN i IN (17, 59, 101, 143, 185, 227, 269, 311, 353, 395, 437, 479) THEN 85.0
+            ELSE 2.0 + ((i * 7919) % 500) / 100.0 END AS temp_c,
+       CASE WHEN i IN (17, 59, 101, 143, 185, 227, 269, 311, 353, 395, 437, 479) THEN 9.5
+            ELSE 1.0 + ((i * 331) % 400) / 1000.0 END AS pressure_bar
+FROM range(1, 501) t(i)
+ORDER BY i
+
+query IIT
+SELECT count(*) FILTER (WHERE is_anomaly),
+       count(*) FILTER (WHERE is_anomaly AND value = 85.0),
+       bool_and(anomaly_score = (SELECT max(anomaly_score) FROM isolation_forest('coldstore', 'temp_c', 100, 256, 0.01, 'scores', 42)))
+           FILTER (WHERE value = 85.0)::VARCHAR
+FROM isolation_forest('coldstore', 'temp_c', 100, 256, 0.01, 'scores', 42)
+----
+12	12	true
+
+query TII
+SELECT status, outlier_count, total_count
+FROM isolation_forest('coldstore', 'temp_c', 100, 256, 0.01, 'summary', 42)
+----
+fail	12	500
+
+# Multivariate: the stuck rows repeat the same (temp, pressure) pair
+query II
+SELECT count(*) FILTER (WHERE is_anomaly),
+       count(*) FILTER (WHERE is_anomaly AND row_id IN (17, 59, 101, 143, 185, 227, 269, 311, 353, 395, 437, 479))
+FROM isolation_forest_mv('coldstore', 'temp_c,pressure_bar', 100, 256, 0.01, 'scores', 42)
+----
+12	12
+
+query TI
+SELECT status, outlier_count
+FROM isolation_forest_mv('coldstore', 'temp_c,pressure_bar', 100, 256, 0.01, 'summary', 42)
+----
+fail	12
+
+# Multivariate, mixed-type path (categorical sensor column)
+query I
+SELECT count(*) FILTER (WHERE is_anomaly AND row_id IN (17, 59, 101, 143, 185, 227, 269, 311, 353, 395, 437, 479))
+FROM isolation_forest_mv('coldstore', 'sensor,temp_c,pressure_bar', 100, 256, 0.01, 'scores', 42)
+----
+12
+
+# Reported repro: 30 identical 1000.0 values among 200 readings, contamination 0.1
+statement ok
+CREATE TABLE ties AS
+SELECT i AS id, CASE WHEN i <= 30 THEN 1000.0 ELSE 10.0 + (i % 7) END AS v
+FROM range(1, 201) t(i)
+
+query I
+SELECT count(*) FILTER (WHERE is_anomaly AND v_is_spike)
+FROM (SELECT is_anomaly, value = 1000.0 AS v_is_spike FROM isolation_forest('ties', 'v', 100, 256, 0.1, 'scores', 42))
+----
+30
+
+# Reported repro: two identical outliers among 100 rows at contamination 0.01
+statement ok
+CREATE TABLE two_spikes AS
+SELECT i AS id, CASE WHEN i IN (40, 80) THEN 1000.0 ELSE 50.0 + i * 0.25 END AS v
+FROM range(1, 101) t(i)
+
+query TI
+SELECT status, outlier_count FROM isolation_forest('two_spikes', 'v', 100, 256, 0.01, 'summary', 42)
+----
+fail	2
+
+query I
+SELECT list(row_id ORDER BY row_id) FILTER (WHERE is_anomaly)::VARCHAR
+FROM isolation_forest('two_spikes', 'v', 100, 256, 0.01, 'scores', 42)
+----
+[40, 80]
+
+# Reported repro: 20 000 rows with 206 tied outliers (every 97th reading is -400.0)
+statement ok
+CREATE TABLE big_ties AS
+SELECT i AS id, CASE WHEN i % 97 = 0 THEN -400.0 ELSE (i * 7919 % 20011) / 100.0 END AS v
+FROM range(1, 20001) t(i)
+
+query II
+SELECT count(*) FILTER (WHERE is_anomaly), count(*) FILTER (WHERE is_anomaly AND value = -400.0)
+FROM isolation_forest('big_ties', 'v', 100, 256, 0.01, 'scores', 42)
+----
+206	206
+
+# Constant data: every score is equal, nothing is flagged
+statement ok
+CREATE TABLE flatline AS
+SELECT i AS id, 21.5 AS temp_c, 1.013 AS pressure_bar FROM range(1, 301) t(i)
+
+query TII
+SELECT status, outlier_count, total_count FROM isolation_forest('flatline', 'temp_c', 100, 256, 0.1, 'summary', 42)
+----
+pass	0	300
+
+query I
+SELECT count(*) FILTER (WHERE is_anomaly) FROM isolation_forest('flatline', 'temp_c', 100, 256, 0.1, 'scores', 42)
+----
+0
+
+query TI
+SELECT status, outlier_count FROM isolation_forest_mv('flatline', 'temp_c,pressure_bar', 100, 256, 0.1, 'summary', 42)
+----
+pass	0
+
+# ===--------------------------------------------------------------------===
+# A-F2: NaN and +-Inf values
+# ===--------------------------------------------------------------------===
+# 200 flow-meter readings (distinct values 20.00 .. 29.99 l/min). Row 5 is
+# +Inf, row 6 is -Inf (meter overflow), row 7 is NaN, row 8 is NULL; rows 50
+# and 120 are planted 500.0 outliers. The trees are built from the 196 finite
+# values; +-Inf rows score 1.0 and are anomalies; NaN rows are skipped like NULL.
+statement ok
+CREATE TABLE flow_readings AS
+SELECT i AS reading_no,
+       'M-' || ((i % 4) + 1)::VARCHAR AS meter,
+       CASE WHEN i = 5 THEN 'inf'::DOUBLE
+            WHEN i = 6 THEN '-inf'::DOUBLE
+            WHEN i = 7 THEN 'nan'::DOUBLE
+            WHEN i = 8 THEN NULL
+            WHEN i IN (50, 120) THEN 500.0
+            ELSE 20.0 + ((i * 7919) % 1000) / 100.0 END AS flow_lpm,
+       CASE WHEN i = 30 THEN 'inf'::DOUBLE
+            WHEN i = 31 THEN 'nan'::DOUBLE
+            ELSE 3.0 + ((i * 331) % 200) / 1000.0 END AS pressure_bar
+FROM range(1, 201) t(i)
+ORDER BY i
+
+query TIIT
+SELECT status, outlier_count, total_count,
+       (round(avg_value, 6) = round((SELECT avg(flow_lpm) FROM flow_readings WHERE isfinite(flow_lpm)), 6))::VARCHAR
+FROM isolation_forest('flow_readings', 'flow_lpm', 100, 256, 0.01, 'summary', 42)
+----
+fail	4	198	true
+
+query IRTT
+SELECT row_id, value, (anomaly_score = 1.0)::VARCHAR, is_anomaly
+FROM isolation_forest('flow_readings', 'flow_lpm', 100, 256, 0.01, 'scores', 42)
+WHERE is_anomaly OR row_id BETWEEN 4 AND 9
+ORDER BY row_id
+----
+4	26.76	false	false
+5	inf	true	true
+6	-inf	true	true
+9	22.71	false	false
+50	500.0	false	true
+120	500.0	false	true
+
+# The finite outliers keep their own score (below 1.0, well above the bulk)
+query II
+SELECT count(*), count(*) FILTER (WHERE anomaly_score = 1.0)
+FROM isolation_forest('flow_readings', 'flow_lpm', 100, 256, 0.01, 'scores', 42)
+----
+198	2
+
+# Multivariate: +-Inf in any feature makes the row an anomaly (score 1.0);
+# NaN in any feature skips the row like NULL
+query IRT
+SELECT row_id, anomaly_score, is_anomaly
+FROM isolation_forest_mv('flow_readings', 'flow_lpm,pressure_bar', 100, 256, 0.01, 'scores', 42)
+WHERE anomaly_score = 1.0 OR row_id IN (7, 8, 31)
+ORDER BY row_id
+----
+5	1.0	true
+6	1.0	true
+30	1.0	true
+
+query TII
+SELECT status, outlier_count, total_count
+FROM isolation_forest_mv('flow_readings', 'flow_lpm,pressure_bar', 100, 256, 0.01, 'summary', 42)
+----
+fail	5	197
+
+query I
+SELECT list(row_id ORDER BY row_id) FILTER (WHERE is_anomaly)::VARCHAR
+FROM isolation_forest_mv('flow_readings', 'flow_lpm,pressure_bar', 100, 256, 0.01, 'scores', 42)
+----
+[5, 6, 30, 50, 120]
+
+# Mixed-type path (categorical meter column) treats non-finite values the same way
+query I
+SELECT list(row_id ORDER BY row_id) FILTER (WHERE anomaly_score = 1.0)::VARCHAR
+FROM isolation_forest_mv('flow_readings', 'meter,flow_lpm,pressure_bar', 100, 256, 0.01, 'scores', 42)
+----
+[5, 6, 30]
+
+query I
+SELECT count(*) FROM isolation_forest_mv('flow_readings', 'meter,flow_lpm,pressure_bar', 100, 256, 0.01, 'scores', 42)
+----
+197
+
+# Only non-finite values: every row is an anomaly, no finite value to average
+statement ok
+CREATE TABLE overflow AS SELECT i AS id, CASE WHEN i % 2 = 0 THEN 'inf'::DOUBLE ELSE 'nan'::DOUBLE END AS v FROM range(1, 11) t(i)
+
+query TIIR
+SELECT status, outlier_count, total_count, avg_value FROM isolation_forest('overflow', 'v', 100, 256, 0.1, 'summary', 42)
+----
+fail	5	5	NULL
+
+# ===--------------------------------------------------------------------===
+# Only the tied TOP group is flagged beyond the cut
+# ===--------------------------------------------------------------------===
+# 77 dock temperature readings: two distinct planted outliers (95.0, -15.0) and
+# repeating ordinary values 20.0 .. 20.9 (eight readings each). At contamination
+# 0.03 the cut (k = 3) falls inside the group of equal 20.0 readings: that group
+# of ordinary values is not flagged, only the two outliers above the cut.
+statement ok
+CREATE TABLE dock_temps AS
+SELECT i AS reading_no,
+       CASE WHEN i = 30 THEN 95.0 WHEN i = 60 THEN -15.0 ELSE 20.0 + (i % 10) * 0.1 END AS temp_c
+FROM range(1, 78) t(i)
+
+query I
+SELECT list(value ORDER BY value) FILTER (WHERE is_anomaly)::VARCHAR
+FROM isolation_forest('dock_temps', 'temp_c', 100, 256, 0.03, 'scores', 42)
+----
+[-15.0, 95.0]
+
+# The cut lies inside a tied group of equal ordinary scores (more rows share the
+# score just below the two outliers than fit under the cut)
+query I
+SELECT count(*) > 1
+FROM isolation_forest('dock_temps', 'temp_c', 100, 256, 0.03, 'scores', 42)
+WHERE anomaly_score = (SELECT max(anomaly_score) FROM isolation_forest('dock_temps', 'temp_c', 100, 256, 0.03, 'scores', 42) WHERE NOT is_anomaly)
+----
+true
+
+# Same table with the two outliers replaced by four identical spikes of 95.0:
+# the cut (k = 3) lies inside the tied top group, so all four are flagged
+statement ok
+CREATE TABLE dock_spikes AS
+SELECT reading_no, CASE WHEN reading_no IN (30, 60, 61, 62) THEN 95.0 ELSE temp_c END AS temp_c FROM dock_temps
+
+query TI
+SELECT status, outlier_count FROM isolation_forest('dock_spikes', 'temp_c', 100, 256, 0.03, 'summary', 42)
+----
+fail	4
+
+query I
+SELECT list(reading_no ORDER BY reading_no) FILTER (WHERE is_anomaly)::VARCHAR
+FROM isolation_forest('dock_spikes', 'temp_c', 100, 256, 0.03, 'scores', 42, id_column := 'reading_no')
+----
+[30, 60, 61, 62]

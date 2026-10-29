@@ -3,6 +3,7 @@
 #include "anofox_email_smtp.hpp"
 #include "anofox_email_logging.hpp"
 #include "anofox_function_alias.hpp"
+#include "anofox_statement_settings.hpp"
 #include "telemetry.hpp"
 
 #include "duckdb/common/string_util.hpp"
@@ -20,8 +21,10 @@
 #include <string_view>
 #include <limits>
 #include <mutex>
-#include <regex>
+#include <unordered_set>
 #include "anofox_tabular_banner.hpp"
+
+#include "re2/re2.h"
 
 namespace duckdb {
 namespace anofox {
@@ -31,14 +34,51 @@ namespace {
 constexpr const char *EMAIL_STAGE_REGEX = "regex";
 constexpr const char *EMAIL_STAGE_DNS = "dns";
 constexpr const char *EMAIL_STAGE_SMTP = "smtp";
-constexpr const char *EMAIL_STAGE_UNSUPPORTED = "unsupported";
+constexpr const char *EMAIL_REASON_EMPTY = "empty";
 constexpr const char *EMAIL_REASON_REGEX_FAIL = "invalid_format";
+constexpr const char *EMAIL_REASON_TOO_LONG = "invalid_length";
 constexpr const char *EMAIL_REASON_DNS_FAIL = "dns_resolution_failed";
 constexpr const char *EMAIL_REASON_SMTP_FAIL = "smtp_verification_failed";
-constexpr const char *EMAIL_REASON_UNSUPPORTED = "validation_not_implemented";
 constexpr const char *DEFAULT_VALIDATION = "regex";
+//! Default pattern: an RFC 5322 dot-atom local part (no leading, trailing or
+//! consecutive dots; quoted local parts are not accepted) and a domain of
+//! LDH labels of 1-63 characters that neither start nor end with '-'. Length
+//! limits are checked before the regex (see EMAIL_MAX_LENGTH /
+//! EMAIL_MAX_LOCAL_LENGTH). The default pattern also requires a last domain label
+//! that is not all digits (an IP address is no domain); RE2 has no lookahead, so
+//! that rule is checked in code (see LastLabelIsNumeric) whenever this pattern is
+//! the active one.
 constexpr const char *DEFAULT_REGEX_PATTERN =
-    R"(^[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*$)";
+    R"(^[A-Za-z0-9!#$%&'*+/=?^_`{|}~-]+(?:\.[A-Za-z0-9!#$%&'*+/=?^_`{|}~-]+)*@)"
+    R"((?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)*[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$)";
+//! RFC 5321 limits: 254 characters for a usable address (the 256-octet path
+//! minus the angle brackets), 64 for the local part. Applied to every pattern,
+//! including a custom anofox_tab_email_regex_pattern, before the regex runs.
+constexpr size_t EMAIL_MAX_LENGTH = 254;
+constexpr size_t EMAIL_MAX_LOCAL_LENGTH = 64;
+
+} // namespace
+
+namespace email {
+
+EmailFailureKind ClassifyEmailFailure(const std::string &reason) {
+	// Answers about the address itself; everything else (timeouts, unreachable
+	// servers, temporary SMTP replies, local resolver/socket errors) is unknown.
+	static const std::unordered_set<std::string> DEFINITE_REASONS = {
+	    // regex stage
+	    EMAIL_REASON_EMPTY, EMAIL_REASON_REGEX_FAIL, EMAIL_REASON_TOO_LONG,
+	    // dns stage: authoritative negative answers and names never looked up
+	    EMAIL_REASON_DNS_FAIL, "dns_empty_domain", "dns_reserved_domain", "dns_domain_not_found", "dns_no_records",
+	    "dns_null_mx", "mx_record_absent",
+	    // smtp stage: the mail host does not exist or the server refused the mailbox (5xx)
+	    "smtp_no_hosts", "smtp_dns_reserved_domain", "smtp_dns_domain_not_found", "smtp_dns_no_records",
+	    "smtp_dns_no_addresses", "smtp_recipient_rejected"};
+	return DEFINITE_REASONS.count(reason) ? EmailFailureKind::DEFINITE : EmailFailureKind::UNKNOWN;
+}
+
+} // namespace email
+
+namespace {
 
 struct EmailValidationResult {
 	bool valid = false;
@@ -48,10 +88,19 @@ struct EmailValidationResult {
 	std::vector<std::string> smtp_transcript;
 };
 
+//! A failed check that could not reach an answer (see email::ClassifyEmailFailure):
+//! reported as valid = NULL.
+bool IsUnknownOutcome(const EmailValidationResult &result) {
+	return !result.valid && email::ClassifyEmailFailure(result.reason) == email::EmailFailureKind::UNKNOWN;
+}
+
 bool IsSupportedValidationMode(const std::string &mode) {
 	return mode == EMAIL_STAGE_REGEX || mode == EMAIL_STAGE_DNS || mode == EMAIL_STAGE_SMTP;
 }
 
+//! Trims and lower-cases a validation mode ('full' is an alias of 'smtp').
+//! An unknown mode is an error rather than a per-row valid = false: a typo
+//! such as 'mx' would otherwise mark every address invalid without a hint.
 std::string NormalizeValidationMode(const std::string &value) {
 	auto cleaned = value;
 	StringUtil::Trim(cleaned);
@@ -59,8 +108,9 @@ std::string NormalizeValidationMode(const std::string &value) {
 	if (normalized == "full") {
 		return EMAIL_STAGE_SMTP;
 	}
-	if (!IsSupportedValidationMode(normalized) && normalized != EMAIL_STAGE_UNSUPPORTED) {
-		return EMAIL_STAGE_UNSUPPORTED;
+	if (!IsSupportedValidationMode(normalized)) {
+		EmailTrace(AnofoxLogLevel::Warn, "Rejecting unknown email validation mode '" + value + "'");
+		throw InvalidInputException("Unknown email validation mode: %s (expected regex, dns, smtp)", cleaned);
 	}
 	return normalized;
 }
@@ -77,6 +127,47 @@ std::string_view ExtractDomain(std::string_view email) {
 	return email.substr(domain_offset);
 }
 
+//! The active regex-stage pattern, compiled once per SET and shared read-only by
+//! all threads (RE2's matching methods are const and thread-safe).
+struct CompiledEmailPattern {
+	explicit CompiledEmailPattern(const std::string &pattern, const duckdb_re2::RE2::Options &options)
+	    : regex(pattern, options), is_default(pattern == DEFAULT_REGEX_PATTERN) {
+	}
+	duckdb_re2::RE2 regex;
+	//! Whether this is the built-in pattern, which also rejects an all-digit last label
+	bool is_default;
+};
+
+std::shared_ptr<const CompiledEmailPattern> CompileEmailPattern(const std::string &pattern) {
+	duckdb_re2::RE2::Options options;
+	options.set_log_errors(false);
+	auto compiled = std::make_shared<const CompiledEmailPattern>(pattern, options);
+	if (!compiled->regex.ok()) {
+		EmailTrace(AnofoxLogLevel::Warn, "Rejecting email regex pattern '" + pattern + "': " + compiled->regex.error());
+		throw InvalidInputException("Invalid email regex pattern: %s (RE2 syntax; backreferences and "
+		                            "lookahead/lookbehind are not supported)",
+		                            compiled->regex.error());
+	}
+	return compiled;
+}
+
+//! Whether the label after the last '.' (or after the '@' for a single-label
+//! domain) consists of digits only, as in max@10.0.0.1.
+bool LastLabelIsNumeric(std::string_view email) {
+	auto start = email.find_last_of(".@");
+	auto label = start == std::string_view::npos ? email : email.substr(start + 1);
+	return !label.empty() && std::all_of(label.begin(), label.end(), [](char c) { return c >= '0' && c <= '9'; });
+}
+
+//! The email settings one statement validates with: default mode, compiled
+//! pattern, DNS and SMTP options taken together (see StatementSettings)
+struct EmailSettingsSnapshot {
+	std::string default_validation;
+	std::shared_ptr<const CompiledEmailPattern> regex;
+	email::DnsOptions dns_options;
+	email::SmtpOptions smtp_options;
+};
+
 class EmailConfig {
 public:
 	static EmailConfig &Get() {
@@ -86,22 +177,20 @@ public:
 
 	void SetDefaultValidation(const std::string &value) {
 		auto normalized = NormalizeValidationMode(value);
-		if (!IsSupportedValidationMode(normalized)) {
-			throw InvalidInputException("Unsupported email validation type: %s", value);
-		}
 		std::lock_guard<std::mutex> lock(config_mutex);
 		default_validation = normalized;
 	}
 
+	//! Compiles `pattern` with RE2, whose matching time is linear in the input: a
+	//! pattern such as '^(a+)+$' cannot stall the process the way a backtracking
+	//! engine does. A pattern RE2 cannot compile (syntax error, backreference,
+	//! lookahead/lookbehind) is rejected here, at SET time, and the previous
+	//! pattern stays active.
 	void SetRegexPattern(const std::string &pattern) {
+		auto compiled = CompileEmailPattern(pattern);
 		std::lock_guard<std::mutex> lock(config_mutex);
-		try {
-			auto compiled = std::make_shared<std::regex>(pattern, std::regex_constants::ECMAScript);
-			regex_pattern = pattern;
-			regex_compiled = std::move(compiled);
-		} catch (const std::regex_error &ex) {
-			throw InvalidInputException("Invalid email regex pattern: %s", ex.what());
-		}
+		regex_pattern = pattern;
+		regex_compiled = std::move(compiled);
 	}
 
 	std::string GetDefaultValidation() {
@@ -109,7 +198,7 @@ public:
 		return default_validation;
 	}
 
-	std::shared_ptr<const std::regex> GetCompiledRegex() {
+	std::shared_ptr<const CompiledEmailPattern> GetCompiledRegex() {
 		std::lock_guard<std::mutex> lock(config_mutex);
 		return regex_compiled;
 	}
@@ -207,6 +296,11 @@ public:
 		return smtp_options;
 	}
 
+	EmailSettingsSnapshot Snapshot() {
+		std::lock_guard<std::mutex> lock(config_mutex);
+		return EmailSettingsSnapshot {default_validation, regex_compiled, dns_options, smtp_options};
+	}
+
 	std::vector<std::pair<std::string, std::string>> List() {
 		std::lock_guard<std::mutex> lock(config_mutex);
 		std::vector<std::pair<std::string, std::string>> entries;
@@ -214,6 +308,8 @@ public:
 		entries.emplace_back("regex_pattern", regex_pattern);
 		entries.emplace_back("dns_timeout_ms", std::to_string(dns_options.timeout_ms));
 		entries.emplace_back("dns_tries", std::to_string(dns_options.tries));
+		entries.emplace_back("dns_cache_ttl_s", std::to_string(email::DNS_CACHE_TTL_SECONDS));
+		entries.emplace_back("dns_cache_max_entries", std::to_string(email::DNS_CACHE_MAX_ENTRIES));
 		entries.emplace_back("smtp_port", std::to_string(smtp_options.port));
 		entries.emplace_back("smtp_connect_timeout_ms", std::to_string(smtp_options.connect_timeout_ms));
 		entries.emplace_back("smtp_read_timeout_ms", std::to_string(smtp_options.read_timeout_ms));
@@ -234,15 +330,33 @@ private:
 	std::mutex config_mutex;
 	std::string default_validation = DEFAULT_VALIDATION;
 	std::string regex_pattern = DEFAULT_REGEX_PATTERN;
-	std::shared_ptr<std::regex> regex_compiled;
+	std::shared_ptr<const CompiledEmailPattern> regex_compiled;
 	email::DnsOptions dns_options;
 	email::SmtpOptions smtp_options;
 };
 
-EmailValidationResult ValidateRegex(std::string_view email, const std::regex &regex) {
+EmailValidationResult ValidateRegex(std::string_view email, const CompiledEmailPattern &pattern) {
 	EmailValidationResult result;
 	result.stage = EMAIL_STAGE_REGEX;
-	if (std::regex_match(email.begin(), email.end(), regex)) {
+	if (email.empty()) {
+		// A blank field (empty or whitespace only, already trimmed) is a missing
+		// value rather than a malformed address; it is never looked up
+		result.valid = false;
+		result.reason = EMAIL_REASON_EMPTY;
+		return result;
+	}
+	auto at_pos = email.rfind('@');
+	auto local_length = at_pos == std::string_view::npos ? email.size() : at_pos;
+	if (email.size() > EMAIL_MAX_LENGTH || local_length > EMAIL_MAX_LOCAL_LENGTH) {
+		result.valid = false;
+		result.reason = EMAIL_REASON_TOO_LONG;
+		return result;
+	}
+	bool matches = duckdb_re2::RE2::FullMatch(duckdb_re2::StringPiece(email.data(), email.size()), pattern.regex);
+	if (matches && pattern.is_default && LastLabelIsNumeric(email)) {
+		matches = false;
+	}
+	if (matches) {
 		result.valid = true;
 	} else {
 		result.valid = false;
@@ -251,20 +365,37 @@ EmailValidationResult ValidateRegex(std::string_view email, const std::regex &re
 	return result;
 }
 
+//! Removes the whitespace (spaces, tabs, line breaks) that pasted or exported
+//! addresses often carry around them; whitespace inside the address is kept, so
+//! it still fails the syntax check.
+std::string_view TrimEmailWhitespace(std::string_view email) {
+	constexpr std::string_view WHITESPACE = " \t\r\n\v\f";
+	const auto first = email.find_first_not_of(WHITESPACE);
+	if (first == std::string_view::npos) {
+		return std::string_view();
+	}
+	const auto last = email.find_last_not_of(WHITESPACE);
+	return email.substr(first, last - first + 1);
+}
+
 //! Validates one email address. `normalized_mode` must already be normalized via
-//! NormalizeValidationMode and `regex` is the compiled pattern; both are hoisted
-//! out of the per-chunk row loops so the hot regex path does no per-row setup.
-EmailValidationResult ValidateEmailAddress(std::string_view email, const std::string &normalized_mode,
-                                           const std::regex &regex) {
+//! NormalizeValidationMode and `settings` are the statement's email settings;
+//! both are hoisted out of the per-chunk row loops so the hot regex path does no
+//! per-row setup.
+EmailValidationResult ValidateEmailAddress(std::string_view raw_email, const std::string &normalized_mode,
+                                           const EmailSettingsSnapshot &settings) {
+	const auto &regex = *settings.regex;
+	// Every stage (regex, DNS, SMTP) sees the address without surrounding whitespace
+	const auto email = TrimEmailWhitespace(raw_email);
 	// Trace message construction is guarded so disabled tracing costs nothing per row.
-	if (AnofoxTraceConfig::Get().ShouldLog(AnofoxLogLevel::Info)) {
-		EmailTrace(AnofoxLogLevel::Info,
+	if (AnofoxTraceConfig::Get().ShouldLog(AnofoxLogLevel::Debug)) {
+		EmailTrace(AnofoxLogLevel::Debug,
 		           "ValidateEmailAddress start email=" + std::string(email) + " mode=" + normalized_mode);
 	}
 	auto regex_result = ValidateRegex(email, regex);
 	if (!regex_result.valid || normalized_mode == EMAIL_STAGE_REGEX) {
-		if (AnofoxTraceConfig::Get().ShouldLog(AnofoxLogLevel::Info)) {
-			EmailTrace(AnofoxLogLevel::Info,
+		if (AnofoxTraceConfig::Get().ShouldLog(AnofoxLogLevel::Debug)) {
+			EmailTrace(AnofoxLogLevel::Debug,
 			           std::string("Regex stage result valid=") + (regex_result.valid ? "true" : "false") +
 			               " reason=" +
 			               (regex_result.reason.empty() ? std::string("<none>") : regex_result.reason));
@@ -272,16 +403,9 @@ EmailValidationResult ValidateEmailAddress(std::string_view email, const std::st
 		return regex_result;
 	}
 
-	if (normalized_mode != EMAIL_STAGE_DNS && normalized_mode != EMAIL_STAGE_SMTP) {
-		EmailValidationResult result;
-		result.stage = EMAIL_STAGE_UNSUPPORTED;
-		result.reason = EMAIL_REASON_UNSUPPORTED;
-		return result;
-	}
-
 	auto domain = std::string(ExtractDomain(email));
 	if (domain.empty()) {
-	EmailTrace(AnofoxLogLevel::Warn, "No domain extracted from email");
+		EmailTrace(AnofoxLogLevel::Debug, "No domain extracted from email");
 		EmailValidationResult result;
 		result.stage = EMAIL_STAGE_DNS;
 		result.reason = EMAIL_REASON_DNS_FAIL;
@@ -289,9 +413,8 @@ EmailValidationResult ValidateEmailAddress(std::string_view email, const std::st
 		return result;
 	}
 
-	EmailTrace(AnofoxLogLevel::Info, "Performing DNS lookup for domain=" + domain);
-	auto dns_options = EmailConfig::Get().GetDnsOptions();
-	email::DnsResolver resolver(dns_options);
+	EmailTrace(AnofoxLogLevel::Debug, "Performing DNS lookup for domain=" + domain);
+	email::DnsResolver resolver(settings.dns_options);
 	auto dns_lookup = resolver.Resolve(domain);
 
 	EmailValidationResult dns_stage;
@@ -299,7 +422,7 @@ EmailValidationResult ValidateEmailAddress(std::string_view email, const std::st
 	dns_stage.mx_hosts = dns_lookup.mx_hosts;
 	dns_stage.smtp_transcript.clear();
 
-	EmailTrace(AnofoxLogLevel::Info,
+	EmailTrace(AnofoxLogLevel::Debug,
 	           std::string("DNS result success=") + (dns_lookup.success ? "true" : "false") + " reason=" +
 	               (dns_lookup.reason.empty() ? std::string("<none>") : dns_lookup.reason) + " hosts=" +
 	               std::to_string(dns_lookup.mx_hosts.size()));
@@ -310,7 +433,7 @@ EmailValidationResult ValidateEmailAddress(std::string_view email, const std::st
 		// loopback addresses (issue #47).
 		dns_stage.valid = false;
 		dns_stage.reason = dns_lookup.reason.empty() ? EMAIL_REASON_DNS_FAIL : dns_lookup.reason;
-		EmailTrace(AnofoxLogLevel::Warn,
+		EmailTrace(AnofoxLogLevel::Debug,
 		           "DNS failure, validation fails without SMTP fallback reason=" + dns_stage.reason);
 		return dns_stage;
 	}
@@ -322,10 +445,9 @@ EmailValidationResult ValidateEmailAddress(std::string_view email, const std::st
 		return dns_stage;
 	}
 
-	auto smtp_options = EmailConfig::Get().GetSmtpOptions();
-	EmailTrace(AnofoxLogLevel::Info,
+	EmailTrace(AnofoxLogLevel::Debug,
 	           "Starting SMTP verification with " + std::to_string(smtp_hosts.size()) + " host candidates");
-	email::SmtpClient smtp_client(smtp_options);
+	email::SmtpClient smtp_client(settings.smtp_options);
 	auto smtp_result = smtp_client.Verify(std::string(email), smtp_hosts);
 
 	EmailValidationResult smtp_stage;
@@ -336,7 +458,7 @@ EmailValidationResult ValidateEmailAddress(std::string_view email, const std::st
 	}
 
 	if (!smtp_result.success) {
-	    EmailTrace(AnofoxLogLevel::Info,
+	    EmailTrace(AnofoxLogLevel::Debug,
 	               std::string("SMTP verification failed reason=") +
 	                   (smtp_result.reason.empty() ? std::string("<none>") : smtp_result.reason));
 		smtp_stage.valid = false;
@@ -344,9 +466,15 @@ EmailValidationResult ValidateEmailAddress(std::string_view email, const std::st
 		return smtp_stage;
 	}
 
-    EmailTrace(AnofoxLogLevel::Info, "SMTP verification succeeded");
+    EmailTrace(AnofoxLogLevel::Debug, "SMTP verification succeeded");
 	smtp_stage.valid = true;
 	return smtp_stage;
+}
+
+//! The email settings of the statement running in `context`
+EmailSettingsSnapshot StatementEmailSettings(optional_ptr<ClientContext> context) {
+	return StatementSettings<EmailSettingsSnapshot>(context, "anofox_tab_email_statement_settings",
+	                                                [] { return EmailConfig::Get().Snapshot(); });
 }
 
 //! Per-chunk view of the optional validation-mode argument. The mode is usually
@@ -358,9 +486,9 @@ struct ValidationModeArgument {
 	std::string default_mode;
 	UnifiedVectorFormat data;
 
-	static ValidationModeArgument Prepare(DataChunk &args, idx_t mode_column) {
+	static ValidationModeArgument Prepare(DataChunk &args, idx_t mode_column, const std::string &default_mode) {
 		ValidationModeArgument arg;
-		arg.default_mode = EmailConfig::Get().GetDefaultValidation();
+		arg.default_mode = default_mode;
 		if (args.ColumnCount() <= mode_column) {
 			arg.constant_mode = arg.default_mode;
 			return arg;
@@ -417,7 +545,7 @@ void AppendToListVector(Vector &list_vec, const std::vector<std::string> &values
 	ListVector::SetListSize(list_vec, offset + values.size());
 }
 
-void EmailValidateFunction(DataChunk &args, ExpressionState &, Vector &result) {
+void EmailValidateFunction(DataChunk &args, ExpressionState &state, Vector &result) {
 	result.SetVectorType(VectorType::FLAT_VECTOR);
 	auto &children = StructVector::GetEntries(result);
 	auto &valid_vec = anofox::VectorRef(children[0]);
@@ -441,9 +569,11 @@ void EmailValidateFunction(DataChunk &args, ExpressionState &, Vector &result) {
 	UnifiedVectorFormat email_data;
 	args.data[0].ToUnifiedFormat(args.size(), email_data);
 	auto email_values = UnifiedVectorFormat::GetData<string_t>(email_data);
-	auto mode_arg = ValidationModeArgument::Prepare(args, 1);
-	auto regex_ptr = EmailConfig::Get().GetCompiledRegex();
-	if (!regex_ptr) {
+	// One configuration for the whole statement: a SET from another connection
+	// takes effect with the next statement, never between two chunks
+	const auto settings = StatementEmailSettings(StatementContext(state));
+	auto mode_arg = ValidationModeArgument::Prepare(args, 1, settings.default_validation);
+	if (!settings.regex) {
 		throw InternalException("Email regex pattern is not initialized");
 	}
 
@@ -457,9 +587,10 @@ void EmailValidateFunction(DataChunk &args, ExpressionState &, Vector &result) {
 
 		auto &email = email_values[email_idx];
 		auto validation =
-		    ValidateEmailAddress(std::string_view(email.GetData(), email.GetSize()), mode_arg.Get(row), *regex_ptr);
+		    ValidateEmailAddress(std::string_view(email.GetData(), email.GetSize()), mode_arg.Get(row), settings);
 
-		FlatVector::SetNull(valid_vec, row, false);
+		// valid is NULL when the check could not reach an answer; reason says why
+		FlatVector::SetNull(valid_vec, row, IsUnknownOutcome(validation));
 		valid_data[row] = validation.valid;
 
 		FlatVector::SetNull(stage_vec, row, false);
@@ -482,7 +613,7 @@ void EmailValidateFunction(DataChunk &args, ExpressionState &, Vector &result) {
 	}
 }
 
-void EmailIsValidFunction(DataChunk &args, ExpressionState &, Vector &result) {
+void EmailIsValidFunction(DataChunk &args, ExpressionState &state, Vector &result) {
 	result.SetVectorType(VectorType::FLAT_VECTOR);
 	auto bool_data = duckdb_compat::FlatData<bool>(result);
 
@@ -490,9 +621,11 @@ void EmailIsValidFunction(DataChunk &args, ExpressionState &, Vector &result) {
 	UnifiedVectorFormat email_data;
 	args.data[0].ToUnifiedFormat(args.size(), email_data);
 	auto email_values = UnifiedVectorFormat::GetData<string_t>(email_data);
-	auto mode_arg = ValidationModeArgument::Prepare(args, 1);
-	auto regex_ptr = EmailConfig::Get().GetCompiledRegex();
-	if (!regex_ptr) {
+	// One configuration for the whole statement: a SET from another connection
+	// takes effect with the next statement, never between two chunks
+	const auto settings = StatementEmailSettings(StatementContext(state));
+	auto mode_arg = ValidationModeArgument::Prepare(args, 1, settings.default_validation);
+	if (!settings.regex) {
 		throw InternalException("Email regex pattern is not initialized");
 	}
 
@@ -502,11 +635,11 @@ void EmailIsValidFunction(DataChunk &args, ExpressionState &, Vector &result) {
 			FlatVector::SetNull(result, row, true);
 			continue;
 		}
-		FlatVector::SetNull(result, row, false);
-
 		auto &email = email_values[email_idx];
 		auto validation =
-		    ValidateEmailAddress(std::string_view(email.GetData(), email.GetSize()), mode_arg.Get(row), *regex_ptr);
+		    ValidateEmailAddress(std::string_view(email.GetData(), email.GetSize()), mode_arg.Get(row), settings);
+		// NULL when the check could not reach an answer (timeout, unreachable server)
+		FlatVector::SetNull(result, row, IsUnknownOutcome(validation));
 		bool_data[row] = validation.valid;
 	}
 }
@@ -660,7 +793,7 @@ void SetSmtpMailFromOption(ClientContext &, SetScope, Value &parameter) {
 
 void SetTraceEnabledOption(ClientContext &, SetScope, Value &parameter) {
 	if (parameter.IsNull()) {
-		throw InvalidInputException("anofox_trace_enabled cannot be NULL");
+		throw InvalidInputException("anofox_tab_trace_enabled cannot be NULL");
 	}
 	bool enabled = parameter.GetValue<bool>();
 	AnofoxTraceConfig::Get().SetEnabled(enabled);
@@ -669,7 +802,7 @@ void SetTraceEnabledOption(ClientContext &, SetScope, Value &parameter) {
 
 void SetTraceLevelOption(ClientContext &, SetScope, Value &parameter) {
 	if (parameter.IsNull()) {
-		throw InvalidInputException("anofox_trace_level cannot be NULL");
+		throw InvalidInputException("anofox_tab_trace_level cannot be NULL");
 	}
 	auto value = StringUtil::Lower(parameter.ToString());
 	AnofoxLogLevel parsed;
@@ -688,7 +821,9 @@ void SetTraceLevelOption(ClientContext &, SetScope, Value &parameter) {
 	} else if (value == "off" || value == "none") {
 		parsed = AnofoxLogLevel::Off;
 	} else {
-		throw InvalidInputException("Unsupported anofox_trace_level value: %s", value);
+		throw InvalidInputException("Unsupported anofox_tab_trace_level value '%s' (expected trace, debug, info, "
+		                            "warn, error, critical or off)",
+		                            value);
 	}
 	AnofoxTraceConfig::Get().SetLevel(parsed);
 	parameter = Value(AnofoxTraceConfig::Get().GetLevelString());
@@ -776,7 +911,7 @@ void RegisterEmailFunctions(ExtensionLoader &loader) {
 
 	{
 		FunctionDescription desc;
-		desc.description = "Validates an email address using the specified validation mode ('regex', 'dns', or 'smtp'). Returns a struct with validation details. Defaults to the configured mode.";
+		desc.description = "Validates an email address using the specified validation mode ('regex', 'dns', or 'smtp'). Returns a struct with validation details; valid is NULL when a DNS or SMTP check could not finish (timeout, unreachable server). Defaults to the configured mode.";
 		desc.parameter_names = {"email", "mode"};
 		desc.examples = {"SELECT email_validate('user@example.com');", "SELECT email_validate('user@example.com', 'dns');"};
 		desc.categories = {"email", "validation"};

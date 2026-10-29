@@ -1,0 +1,113 @@
+# name: test/sql/anofox_pii_email_in_urls.test
+# description: An email address inside a URL, a path or a mailto: link is matched as the bare
+#              address: the local part never absorbs a query key, a path or a scheme (F1), and an
+#              EMAIL inside an http(s) URL wins over the URL, so hash pseudonyms match the CRM column
+# group: [anofox_tabular]
+
+require anofox_tabular
+
+statement ok
+LOAD anofox_tabular
+
+# Pattern types only, so the results do not depend on the NER model
+statement ok
+SET anofox_pii_enabled_types = 'EMAIL,PHONE,IBAN,IP_ADDRESS,URL';
+
+statement ok
+CREATE MACRO found(t) AS array_to_string(list_transform(pii_detect(t), lambda m: m.type || ':' || m.text), ' ; ');
+
+# Web-server access log of a newsletter shop and CRM notes with links
+statement ok
+CREATE TABLE web_log AS SELECT * FROM (VALUES
+    (1, '203.0.113.7 - - [27/Oct/2026:09:14:02 +0100] "GET https://shop.example.com/unsubscribe?email=max.mustermann@web.de&id=7 HTTP/1.1" 200 512'),
+    (2, '198.51.100.23 - - [27/Oct/2026:09:15:40 +0100] "GET /users/anna@corp.com/profile HTTP/1.1" 404 0'),
+    (3, 'Kunde bittet um Rückruf, Kontakt: mailto:anna@gmx.net'),
+    (4, '<p>Fragen? <a href="mailto:support.de@firma-beispiel.de">Schreiben Sie uns</a></p>'),
+    (5, 'Tracking: https://crm.example.org/track?u=lena.schmidt@t-online.de#open'),
+    (6, 'Login als user:lukas.weber@posteo.de;pw-reset angefordert'),
+    (7, 'Antwort an <julia.k@example.com>, cc ''tom@example.com''')
+) t(id, line);
+
+# The matched text is the bare address, never "email=..." or "users/..."
+query IT
+SELECT id, found(line) FROM web_log ORDER BY id;
+----
+1	IP_ADDRESS:203.0.113.7 ; EMAIL:max.mustermann@web.de
+2	IP_ADDRESS:198.51.100.23 ; EMAIL:anna@corp.com
+3	EMAIL:anna@gmx.net
+4	EMAIL:support.de@firma-beispiel.de
+5	EMAIL:lena.schmidt@t-online.de
+6	EMAIL:lukas.weber@posteo.de
+7	EMAIL:julia.k@example.com ; EMAIL:tom@example.com
+
+# Redaction keeps scheme, host, path and the other query parameters
+query T
+SELECT pii_mask('https://shop.example.com/unsubscribe?email=max.mustermann@web.de&id=7');
+----
+https://shop.example.com/unsubscribe?email=[EMAIL]&id=7
+
+query T
+SELECT pii_mask('see /users/anna@corp.com/profile');
+----
+see /users/[EMAIL]/profile
+
+query T
+SELECT pii_mask(line) FROM web_log WHERE id = 4;
+----
+<p>Fragen? <a href="mailto:[EMAIL]">Schreiben Sie uns</a></p>
+
+query T
+SELECT pii_mask(line) FROM web_log WHERE id = 5;
+----
+Tracking: https://crm.example.org/track?u=[EMAIL]#open
+
+# The hash pseudonym of an address in a URL equals the one of the CRM email column
+statement ok
+CREATE TABLE crm AS SELECT * FROM (VALUES
+    (4711, 'max.mustermann@web.de'), (4712, 'anna@corp.com'), (4713, 'anna@gmx.net'),
+    (4714, 'support.de@firma-beispiel.de'), (4715, 'lena.schmidt@t-online.de')
+) t(customer_id, email);
+
+query II
+SELECT l.id, c.customer_id
+FROM web_log l JOIN crm c ON contains(pii_mask(l.line, 'hash'), pii_mask(c.email, 'hash'))
+ORDER BY l.id;
+----
+1	4711
+2	4712
+3	4713
+4	4714
+5	4715
+
+# Partial masks of the address alone
+query T
+SELECT pii_mask('mailto:anna@gmx.net', 'partial');
+----
+mailto:a***@***.net
+
+# Without EMAIL among the types the whole URL is still a URL
+query T
+SELECT pii_mask_column('https://shop.example.com/unsubscribe?email=max.mustermann@web.de&id=7', 'URL', 'redact');
+----
+[URL]
+
+# The userinfo of a URL (right after "://") is no email address: the URL stays one match
+query T
+SELECT found('Visit https://deploy@git.example.com/repo.git now');
+----
+URL:https://deploy@git.example.com/repo.git
+
+# A URL without an address stays one URL
+query T
+SELECT found('Bestellung: https://shop.example.com/orders/4711?ref=newsletter');
+----
+URL:https://shop.example.com/orders/4711?ref=newsletter
+
+# Addresses written as usual are unchanged (plus, dash, dots, subdomains)
+query T
+SELECT found('An: Jörg Müller <jörg.k+rechnung@müller-gmbh.de>, kontakt@mail.example.co.uk');
+----
+EMAIL:jörg.k+rechnung@müller-gmbh.de ; EMAIL:kontakt@mail.example.co.uk
+
+statement ok
+RESET anofox_pii_enabled_types;

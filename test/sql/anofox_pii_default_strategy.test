@@ -1,0 +1,43 @@
+# name: test/sql/anofox_pii_default_strategy.test
+# description: anofox_pii_default_mask_strategy rejects 'none' (a default that silently
+#              disables masking); 'none' stays valid as an explicit argument
+# group: [sql]
+
+require anofox_tabular
+
+statement ok
+LOAD anofox_tabular;
+
+statement ok
+SET anofox_pii_default_mask_strategy = 'partial';
+
+statement error
+SET anofox_pii_default_mask_strategy = 'none';
+----
+anofox_pii_default_mask_strategy cannot be 'none'
+
+statement error
+SET anofox_pii_default_mask_strategy = ' NONE ';
+----
+anofox_pii_default_mask_strategy cannot be 'none'
+
+# The rejected value leaves the previous setting in place
+query T
+SELECT current_setting('anofox_pii_default_mask_strategy');
+----
+PARTIAL
+
+# Unknown values keep their error
+statement error
+SET anofox_pii_default_mask_strategy = 'bogus';
+----
+Invalid mask strategy: bogus
+
+# 'none' as an explicit argument still returns the text unmasked
+query T
+SELECT pii_mask('mail jane@corp.com', 'none');
+----
+mail jane@corp.com
+
+statement ok
+RESET anofox_pii_default_mask_strategy;

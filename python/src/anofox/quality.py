@@ -1,25 +1,102 @@
 """
 Data quality metric wrappers.
 
-All functions accept a *table_name* string referencing a DuckDB table or view.
-To use a DataFrame, register it first::
+The check functions take a *table_name*: the name of a DuckDB table or view,
+or a pandas/polars DataFrame, which is copied into a temporary table for the
+call (on a file-backed connection, into that database file) and dropped
+afterwards::
 
-    name = anofox._utils.register_df_as_table(conn.native, df)
-    result = quality.volume(conn, name, min_rows=10)
-    conn.native.unregister(name)
+    result = quality.volume(conn, df, min_rows=10)
+
+Each check returns a dict with the call's parameters and every result column
+of the SQL function by name: ``status``, the metric value(s), the thresholds
+and ``message`` (DECIMAL values as float). ``_raw`` keeps the raw result row.
 """
 
 from __future__ import annotations
 
+import datetime
+import functools
+import inspect
 import json
-from typing import Any, Optional, Union
+from decimal import Decimal
+from typing import Any, Callable, Optional, TypeVar, Union
 
-_MAX_BIGINT = 9223372036854775807
+from ._sql import bind_value, execute, quote_table_name, run
+from ._table import TableLike, accepts_dataframes, column_label, column_list, without_temp_names
 
 
+F = TypeVar("F", bound=Callable[..., Any])
+
+#: The parameters of the checks that name columns.
+_COLUMN_PARAMETERS = frozenset({
+    "column_name", "column_names", "timestamp_column", "required_columns",
+    "left_keys", "right_keys", "date_column", "count_column", "metric_column",
+})
+
+#: The parameters of the checks that take a point in time (bound as TIMESTAMP or DATE).
+_TIME_PARAMETERS = frozenset({"reference_time", "reference_date", "start_date", "end_date"})
+
+
+def _utc_naive(value: Any) -> Any:
+    """
+    *value* as the naive UTC time the SQL functions expect, if it is time zone aware.
+
+    The checks bind times as ``TIMESTAMP``/``DATE``, which DuckDB would derive from
+    an aware :class:`datetime.datetime` in the session time zone: a reference time
+    of 12:00 UTC would become 13:00 or 14:00 in Europe/Berlin. An aware datetime
+    (also a ``pandas.Timestamp``) or ISO 8601 text with a UTC offset (``"...+02:00"``,
+    ``"...Z"``) is converted to the UTC instant it names; anything else, including a
+    naive datetime (taken as UTC), is returned as it is.
+    """
+    moment = value
+    if isinstance(value, str):
+        text = value.strip()
+        if text[-1:] in ("Z", "z"):
+            text = text[:-1] + "+00:00"
+        try:
+            moment = datetime.datetime.fromisoformat(text)
+        except ValueError:
+            return value
+    if isinstance(moment, datetime.datetime) and moment.utcoffset() is not None:
+        utc = moment.astimezone(datetime.timezone.utc).replace(tzinfo=None)
+        to_pydatetime = getattr(utc, "to_pydatetime", None)  # pandas.Timestamp
+        return to_pydatetime() if to_pydatetime is not None else utc
+    return value
+
+
+def _dataframe_check(*table_params: str) -> Callable[[F], F]:
+    """
+    :func:`~anofox._table.accepts_dataframes` for a check, which also takes
+    integer column labels.
+
+    A pandas DataFrame may have integer column labels (``read_csv(header=None)``);
+    its copy in DuckDB names those columns ``"0"``, ``"1"``, ... . The column
+    parameters are passed to SQL as those strings. Time zone aware reference
+    times and dates are passed as naive UTC (see :func:`_utc_naive`).
+    """
+    def decorator(func: F) -> F:
+        signature = inspect.signature(func)
+
+        @functools.wraps(func)
+        def wrapper(*args: Any, **kwargs: Any) -> Any:
+            bound = signature.bind(*args, **kwargs)
+            for name in _COLUMN_PARAMETERS.intersection(bound.arguments):
+                bound.arguments[name] = column_label(bound.arguments[name])
+            for name in _TIME_PARAMETERS.intersection(bound.arguments):
+                bound.arguments[name] = _utc_naive(bound.arguments[name])
+            return func(*bound.args, **bound.kwargs)
+
+        return accepts_dataframes(*table_params)(wrapper)  # type: ignore[return-value]
+
+    return decorator
+
+
+
+@_dataframe_check("table_name")
 def volume(
     conn: Any,
-    table_name: str,
+    table_name: TableLike,
     min_rows: int,
     max_rows: Optional[int] = None,
 ) -> dict:
@@ -31,7 +108,7 @@ def volume(
     conn:
         An :class:`~anofox.AnofoxConnection`.
     table_name:
-        Name of the DuckDB table or view.
+        Name of the DuckDB table or view, or a pandas/polars DataFrame.
     min_rows:
         Minimum acceptable row count.
     max_rows:
@@ -47,21 +124,20 @@ def volume(
     if max_rows is not None and max_rows < min_rows:
         raise ValueError("max_rows must be >= min_rows")
 
-    if max_rows is not None:
-        rows = conn.execute(
-            f"SELECT * FROM anofox_tab_volume('{table_name}', {min_rows}, {max_rows})"
-        ).fetchall()
-    else:
-        rows = conn.execute(
-            f"SELECT * FROM anofox_tab_volume('{table_name}', {min_rows}, {_MAX_BIGINT})"
-        ).fetchall()
+    cursor = execute(
+        conn,
+        "SELECT * FROM anofox_tab_volume(?, ?::BIGINT, ?::BIGINT)",
+        [table_name, min_rows, max_rows],
+    )
 
-    return _parse_table_result(rows, {"min_rows": min_rows, "max_rows": max_rows})
+    return _parse_table_result(
+cursor, {"min_rows": min_rows, "max_rows": max_rows})
 
 
+@_dataframe_check("table_name")
 def null_rate(
     conn: Any,
-    table_name: str,
+    table_name: TableLike,
     column_name: str,
     max_null_rate: float = 0.0,
 ) -> dict:
@@ -73,7 +149,7 @@ def null_rate(
     conn:
         An :class:`~anofox.AnofoxConnection`.
     table_name:
-        Name of the DuckDB table or view.
+        Name of the DuckDB table or view, or a pandas/polars DataFrame.
     column_name:
         Column to inspect.
     max_null_rate:
@@ -84,15 +160,18 @@ def null_rate(
     dict
         ``{"status": "pass"|"fail", "null_rate": float, ...}``
     """
-    rows = conn.execute(
-        f"SELECT * FROM anofox_tab_null_rate('{table_name}', '{column_name}', {max_null_rate})"
-    ).fetchall()
-    return _parse_table_result(rows, {"column": column_name, "max_null_rate": max_null_rate})
+    cursor = execute(
+        conn,
+        "SELECT * FROM anofox_tab_null_rate(?, ?, ?::DOUBLE)", [table_name, column_name, max_null_rate]
+    )
+    return _parse_table_result(
+cursor, {"column": column_name, "max_null_rate": max_null_rate})
 
 
+@_dataframe_check("table_name")
 def distinct_count(
     conn: Any,
-    table_name: str,
+    table_name: TableLike,
     column_name: str,
     min_distinct: int,
     max_distinct: Optional[int] = None,
@@ -105,7 +184,7 @@ def distinct_count(
     conn:
         An :class:`~anofox.AnofoxConnection`.
     table_name:
-        Name of the DuckDB table or view.
+        Name of the DuckDB table or view, or a pandas/polars DataFrame.
     column_name:
         Column to inspect.
     min_distinct:
@@ -118,61 +197,74 @@ def distinct_count(
     dict
         ``{"status": "pass"|"fail", "distinct_count": int, ...}``
     """
-    _max = max_distinct if max_distinct is not None else min_distinct * 1_000_000
-    rows = conn.execute(
-        f"SELECT * FROM anofox_tab_distinct_count('{table_name}', '{column_name}', {min_distinct}, {_max})"
-    ).fetchall()
+    cursor = execute(
+        conn,
+        "SELECT * FROM anofox_tab_distinct_count(?, ?, ?::BIGINT, ?::BIGINT)",
+        [table_name, column_name, min_distinct, max_distinct],
+    )
     return _parse_table_result(
-        rows, {"column": column_name, "min_distinct": min_distinct, "max_distinct": max_distinct}
+        cursor, {"column": column_name, "min_distinct": min_distinct, "max_distinct": max_distinct}
     )
 
 
+@_dataframe_check("table_name")
 def freshness(
     conn: Any,
-    table_name: str,
+    table_name: TableLike,
     timestamp_column: str,
     max_age: str,
-    warn_age: Optional[str] = None,
+    reference_time: Optional[str] = None,
 ) -> dict:
     """
-    Check that a timestamp column is sufficiently fresh.
+    Check that the newest value of a timestamp column is recent enough.
 
     Parameters
     ----------
     conn:
         An :class:`~anofox.AnofoxConnection`.
     table_name:
-        Name of the DuckDB table or view.
+        Name of the DuckDB table or view, or a pandas/polars DataFrame.
     timestamp_column:
         Name of the timestamp column.
     max_age:
-        Maximum acceptable age as an interval string, e.g. ``"24 hours"``.
-    warn_age:
-        Warning threshold age (optional).
+        Largest allowed age of the newest row, as an interval string, e.g. ``"24 hours"``.
+    reference_time:
+        Time the age is measured from, as a timestamp string or
+        :class:`datetime.datetime` (default: the current time in UTC). All times are
+        UTC: a naive datetime and text without an offset are taken as UTC; a time zone
+        aware datetime and text with an offset (``"2026-07-14T14:00:00+02:00"``) are
+        the instant they name, whatever the session ``TimeZone``.
 
     Returns
     -------
     dict
-        ``{"status": "pass"|"fail", ...}``
+        ``{"status": "pass"|"fail", "metric_value": datetime, "threshold": datetime,
+        "age_seconds": int, "message": str, ...}``. ``metric_value`` and ``threshold``
+        are naive UTC timestamps; ``reference_time`` is echoed as passed to SQL
+        (an aware value as naive UTC).
     """
-    if warn_age is not None:
-        rows = conn.execute(
-            f"SELECT * FROM anofox_tab_freshness("
-            f"'{table_name}', '{timestamp_column}', INTERVAL '{max_age}', INTERVAL '{warn_age}')"
-        ).fetchall()
-    else:
-        rows = conn.execute(
-            f"SELECT * FROM anofox_tab_freshness("
-            f"'{table_name}', '{timestamp_column}', INTERVAL '{max_age}')"
-        ).fetchall()
+    params: list = [table_name, timestamp_column, max_age]
+    reference_sql = ""
+    if reference_time is not None:
+        reference_sql = ", ?::TIMESTAMP"
+        params.append(reference_time)
+    # Without reference_time the extension returns threshold as TIMESTAMPTZ, which the
+    # duckdb Python client converts only with pytz installed; return it as TIMESTAMP.
+    cursor = execute(
+        conn,
+        "SELECT status, metric_value, threshold::TIMESTAMP AS threshold, age_seconds, message "
+        f"FROM anofox_tab_freshness(?, ?, ?::INTERVAL{reference_sql})",
+        params,
+    )
     return _parse_table_result(
-        rows, {"column": timestamp_column, "max_age": max_age, "warn_age": warn_age}
+        cursor, {"column": timestamp_column, "max_age": max_age, "reference_time": reference_time}
     )
 
 
+@_dataframe_check("table_name")
 def zscore(
     conn: Any,
-    table_name: str,
+    table_name: TableLike,
     column_name: str,
     threshold: float = 3.0,
 ) -> dict:
@@ -184,7 +276,7 @@ def zscore(
     conn:
         An :class:`~anofox.AnofoxConnection`.
     table_name:
-        Name of the DuckDB table or view.
+        Name of the DuckDB table or view, or a pandas/polars DataFrame.
     column_name:
         Numeric column to inspect.
     threshold:
@@ -195,15 +287,18 @@ def zscore(
     dict
         ``{"status": "pass"|"fail", ...}``
     """
-    rows = conn.execute(
-        f"SELECT * FROM anofox_tab_zscore('{table_name}', '{column_name}', {threshold})"
-    ).fetchall()
-    return _parse_table_result(rows, {"column": column_name, "threshold": threshold})
+    cursor = execute(
+        conn,
+        "SELECT * FROM anofox_tab_zscore(?, ?, ?::DOUBLE)", [table_name, column_name, threshold]
+    )
+    return _parse_table_result(
+cursor, {"column": column_name, "threshold": threshold})
 
 
+@_dataframe_check("table_name")
 def iqr(
     conn: Any,
-    table_name: str,
+    table_name: TableLike,
     column_name: str,
     multiplier: float = 1.5,
 ) -> dict:
@@ -215,7 +310,7 @@ def iqr(
     conn:
         An :class:`~anofox.AnofoxConnection`.
     table_name:
-        Name of the DuckDB table or view.
+        Name of the DuckDB table or view, or a pandas/polars DataFrame.
     column_name:
         Numeric column to inspect.
     multiplier:
@@ -226,16 +321,19 @@ def iqr(
     dict
         ``{"status": "pass"|"fail", ...}``
     """
-    rows = conn.execute(
-        f"SELECT * FROM anofox_tab_iqr('{table_name}', '{column_name}', {multiplier})"
-    ).fetchall()
-    return _parse_table_result(rows, {"column": column_name, "multiplier": multiplier})
+    cursor = execute(
+        conn,
+        "SELECT * FROM anofox_tab_iqr(?, ?, ?::DOUBLE)", [table_name, column_name, multiplier]
+    )
+    return _parse_table_result(
+cursor, {"column": column_name, "multiplier": multiplier})
 
 
+@_dataframe_check("table_name")
 def schema_check(
     conn: Any,
-    table_name: str,
-    required_columns: list[str],
+    table_name: TableLike,
+    required_columns: Union[str, list[str]],
 ) -> dict:
     """
     Check that a table contains all required columns.
@@ -245,25 +343,28 @@ def schema_check(
     conn:
         An :class:`~anofox.AnofoxConnection`.
     table_name:
-        Name of the DuckDB table or view.
+        Name of the DuckDB table or view, or a pandas/polars DataFrame.
     required_columns:
-        List of column names that must be present.
+        List of column names that must be present (a single name means that one column).
 
     Returns
     -------
     dict
         ``{"status": "pass"|"fail", ...}``
     """
-    cols_list = "[" + ", ".join(f"'{c}'" for c in required_columns) + "]"
-    rows = conn.execute(
-        f"SELECT * FROM anofox_tab_schema_check('{table_name}', {cols_list})"
-    ).fetchall()
-    return _parse_table_result(rows, {"required_columns": required_columns})
+    cursor = execute(
+        conn,
+        "SELECT * FROM anofox_tab_schema_check(?, ?::VARCHAR[])",
+        [table_name, column_list(required_columns)],
+    )
+    return _parse_table_result(
+cursor, {"required_columns": required_columns})
 
 
+@_dataframe_check("table_name")
 def regex_match(
     conn: Any,
-    table_name: str,
+    table_name: TableLike,
     column_name: str,
     pattern: str,
     min_match_rate: float = 1.0,
@@ -277,7 +378,7 @@ def regex_match(
     conn:
         An :class:`~anofox.AnofoxConnection`.
     table_name:
-        Name of the DuckDB table or view.
+        Name of the DuckDB table or view, or a pandas/polars DataFrame.
     column_name:
         Column to inspect.
     pattern:
@@ -292,19 +393,20 @@ def regex_match(
     dict
         ``{"status": "pass"|"fail", ...}``
     """
-    pattern_sql = pattern.replace("'", "''")
     if max_match_rate is not None:
-        rows = conn.execute(
-            f"SELECT * FROM anofox_tab_regex_match("
-            f"'{table_name}', '{column_name}', '{pattern_sql}', {min_match_rate}, {max_match_rate})"
-        ).fetchall()
+        cursor = execute(
+            conn,
+            "SELECT * FROM anofox_tab_regex_match(?, ?, ?, ?::DOUBLE, ?::DOUBLE)",
+            [table_name, column_name, pattern, min_match_rate, max_match_rate],
+        )
     else:
-        rows = conn.execute(
-            f"SELECT * FROM anofox_tab_regex_match("
-            f"'{table_name}', '{column_name}', '{pattern_sql}', {min_match_rate})"
-        ).fetchall()
+        cursor = execute(
+            conn,
+            "SELECT * FROM anofox_tab_regex_match(?, ?, ?, ?::DOUBLE)",
+            [table_name, column_name, pattern, min_match_rate],
+        )
     return _parse_table_result(
-        rows,
+        cursor,
         {
             "column": column_name,
             "pattern": pattern,
@@ -314,9 +416,10 @@ def regex_match(
     )
 
 
+@_dataframe_check("table_name")
 def values_in_set(
     conn: Any,
-    table_name: str,
+    table_name: TableLike,
     column_name: str,
     allowed_values: list[str],
     min_rate: float = 1.0,
@@ -329,7 +432,7 @@ def values_in_set(
     conn:
         An :class:`~anofox.AnofoxConnection`.
     table_name:
-        Name of the DuckDB table or view.
+        Name of the DuckDB table or view, or a pandas/polars DataFrame.
     column_name:
         Column to inspect (values are compared as strings).
     allowed_values:
@@ -342,19 +445,20 @@ def values_in_set(
     dict
         ``{"status": "pass"|"fail", ...}``
     """
-    values_list = "[" + ", ".join("'" + v.replace("'", "''") + "'" for v in allowed_values) + "]"
-    rows = conn.execute(
-        f"SELECT * FROM anofox_tab_values_in_set("
-        f"'{table_name}', '{column_name}', {values_list}, {min_rate})"
-    ).fetchall()
+    cursor = execute(
+        conn,
+        "SELECT * FROM anofox_tab_values_in_set(?, ?, ?::VARCHAR[], ?::DOUBLE)",
+        [table_name, column_name, [str(v) for v in allowed_values], min_rate],
+    )
     return _parse_table_result(
-        rows, {"column": column_name, "allowed_values": allowed_values, "min_rate": min_rate}
+        cursor, {"column": column_name, "allowed_values": allowed_values, "min_rate": min_rate}
     )
 
 
+@_dataframe_check("table_name")
 def agg_check(
     conn: Any,
-    table_name: str,
+    table_name: TableLike,
     column_name: str,
     agg: str,
     lower_threshold: Optional[float] = None,
@@ -368,7 +472,7 @@ def agg_check(
     conn:
         An :class:`~anofox.AnofoxConnection`.
     table_name:
-        Name of the DuckDB table or view.
+        Name of the DuckDB table or view, or a pandas/polars DataFrame.
     column_name:
         Numeric column to aggregate.
     agg:
@@ -385,14 +489,13 @@ def agg_check(
     """
     if agg.lower() not in ("avg", "min", "max", "sum", "median", "stddev"):
         raise ValueError("agg must be one of 'avg', 'min', 'max', 'sum', 'median', 'stddev'")
-    lower_sql = "NULL" if lower_threshold is None else str(lower_threshold)
-    upper_sql = "NULL" if upper_threshold is None else str(upper_threshold)
-    rows = conn.execute(
-        f"SELECT * FROM anofox_tab_agg_check("
-        f"'{table_name}', '{column_name}', '{agg.lower()}', {lower_sql}, {upper_sql})"
-    ).fetchall()
+    cursor = execute(
+        conn,
+        "SELECT * FROM anofox_tab_agg_check(?, ?, ?, ?::DOUBLE, ?::DOUBLE)",
+        [table_name, column_name, agg.lower(), lower_threshold, upper_threshold],
+    )
     return _parse_table_result(
-        rows,
+        cursor,
         {
             "column": column_name,
             "agg": agg.lower(),
@@ -402,9 +505,10 @@ def agg_check(
     )
 
 
+@_dataframe_check("table_name")
 def duplicate_count(
     conn: Any,
-    table_name: str,
+    table_name: TableLike,
     column_names: str | list[str],
     max_duplicates: int = 0,
 ) -> dict:
@@ -416,7 +520,7 @@ def duplicate_count(
     conn:
         An :class:`~anofox.AnofoxConnection`.
     table_name:
-        Name of the DuckDB table or view.
+        Name of the DuckDB table or view, or a pandas/polars DataFrame.
     column_names:
         A column name, comma-separated column names, or a list of column names.
     max_duplicates:
@@ -430,15 +534,19 @@ def duplicate_count(
     if max_duplicates < 0:
         raise ValueError("max_duplicates must be >= 0")
     cols = ",".join(column_names) if isinstance(column_names, list) else column_names
-    rows = conn.execute(
-        f"SELECT * FROM anofox_tab_duplicate_count('{table_name}', '{cols}', {max_duplicates})"
-    ).fetchall()
-    return _parse_table_result(rows, {"columns": cols, "max_duplicates": max_duplicates})
+    cursor = execute(
+        conn,
+        "SELECT * FROM anofox_tab_duplicate_count(?, ?, ?::BIGINT)",
+        [table_name, cols, max_duplicates],
+    )
+    return _parse_table_result(
+cursor, {"columns": cols, "max_duplicates": max_duplicates})
 
 
+@_dataframe_check("table_name")
 def occurrence(
     conn: Any,
-    table_name: str,
+    table_name: TableLike,
     column_name: str,
     mode: str = "max",
     lower_threshold: Optional[int] = None,
@@ -452,7 +560,7 @@ def occurrence(
     conn:
         An :class:`~anofox.AnofoxConnection`.
     table_name:
-        Name of the DuckDB table or view.
+        Name of the DuckDB table or view, or a pandas/polars DataFrame.
     column_name:
         Column to inspect.
     mode:
@@ -469,14 +577,13 @@ def occurrence(
     """
     if mode.lower() not in ("max", "min"):
         raise ValueError("mode must be 'max' or 'min'")
-    lower_sql = "NULL" if lower_threshold is None else str(lower_threshold)
-    upper_sql = "NULL" if upper_threshold is None else str(upper_threshold)
-    rows = conn.execute(
-        f"SELECT * FROM anofox_tab_occurrence("
-        f"'{table_name}', '{column_name}', '{mode.lower()}', {lower_sql}, {upper_sql})"
-    ).fetchall()
+    cursor = execute(
+        conn,
+        "SELECT * FROM anofox_tab_occurrence(?, ?, ?, ?::BIGINT, ?::BIGINT)",
+        [table_name, column_name, mode.lower(), lower_threshold, upper_threshold],
+    )
     return _parse_table_result(
-        rows,
+        cursor,
         {
             "column": column_name,
             "mode": mode.lower(),
@@ -486,10 +593,11 @@ def occurrence(
     )
 
 
+@_dataframe_check("left_table", "right_table")
 def match_rate(
     conn: Any,
-    left_table: str,
-    right_table: str,
+    left_table: TableLike,
+    right_table: TableLike,
     left_keys: str | list[str],
     right_keys: str | list[str],
     min_rate: float = 1.0,
@@ -504,9 +612,9 @@ def match_rate(
     conn:
         An :class:`~anofox.AnofoxConnection`.
     left_table:
-        Name of the left DuckDB table or view (every row is checked).
+        Name of the left DuckDB table or view, or a DataFrame (every row is checked).
     right_table:
-        Name of the right DuckDB table or view (deduplicated on its key columns).
+        Name of the right DuckDB table or view, or a DataFrame (deduplicated on its key columns).
     left_keys:
         Join key column(s) on the left table (string or list).
     right_keys:
@@ -521,18 +629,20 @@ def match_rate(
     """
     lk = ",".join(left_keys) if isinstance(left_keys, list) else left_keys
     rk = ",".join(right_keys) if isinstance(right_keys, list) else right_keys
-    rows = conn.execute(
-        f"SELECT * FROM anofox_tab_match_rate("
-        f"'{left_table}', '{right_table}', '{lk}', '{rk}', {min_rate})"
-    ).fetchall()
+    cursor = execute(
+        conn,
+        "SELECT * FROM anofox_tab_match_rate(?, ?, ?, ?, ?::DOUBLE)",
+        [left_table, right_table, lk, rk, min_rate],
+    )
     return _parse_table_result(
-        rows, {"left_keys": lk, "right_keys": rk, "min_rate": min_rate}
+        cursor, {"left_keys": lk, "right_keys": rk, "min_rate": min_rate}
     )
 
 
+@_dataframe_check("table_name")
 def compliance(
     conn: Any,
-    table_name: str,
+    table_name: TableLike,
     expression: str,
     min_rate: float = 1.0,
 ) -> dict:
@@ -548,7 +658,7 @@ def compliance(
     conn:
         An :class:`~anofox.AnofoxConnection`.
     table_name:
-        Name of the DuckDB table or view.
+        Name of the DuckDB table or view, or a pandas/polars DataFrame.
     expression:
         SQL boolean expression evaluated per row; NULL counts as non-compliant.
     min_rate:
@@ -559,16 +669,18 @@ def compliance(
     dict
         ``{"status": "pass"|"fail", "compliance_rate": float, ...}``
     """
-    expr_sql = expression.replace("'", "''")
-    rows = conn.execute(
-        f"SELECT * FROM anofox_tab_compliance('{table_name}', '{expr_sql}', {min_rate})"
-    ).fetchall()
-    return _parse_table_result(rows, {"expression": expression, "min_rate": min_rate})
+    cursor = execute(
+        conn,
+        "SELECT * FROM anofox_tab_compliance(?, ?, ?::DOUBLE)", [table_name, expression, min_rate]
+    )
+    return _parse_table_result(
+cursor, {"expression": expression, "min_rate": min_rate})
 
 
+@_dataframe_check("table_name")
 def rel_count_change(
     conn: Any,
-    table_name: str,
+    table_name: TableLike,
     date_column: str,
     count_column: Optional[str] = None,
     window_days: int = 7,
@@ -586,7 +698,7 @@ def rel_count_change(
     conn:
         An :class:`~anofox.AnofoxConnection`.
     table_name:
-        Name of the DuckDB table or view.
+        Name of the DuckDB table or view, or a pandas/polars DataFrame.
     date_column:
         Date or timestamp column defining the daily grain.
     count_column:
@@ -596,7 +708,8 @@ def rel_count_change(
     lower_threshold / upper_threshold:
         Acceptable relative change bounds (defaults -0.5/0.5; ``None`` = unbounded).
     reference_date:
-        ISO date string; omit for the latest date present in the data.
+        ISO date string, :class:`datetime.date` or :class:`datetime.datetime` (an aware
+        one counts on its UTC date); omit for the latest date present in the data.
     start_date / end_date:
         ISO date strings of an inclusive daily range, given together instead of
         ``reference_date``; the check is evaluated for every day of the range.
@@ -608,20 +721,18 @@ def rel_count_change(
         With ``start_date``/``end_date``: one dict per reference date (ordered by
         date), keyed by the result columns (``status``, ``reference_date``, ...).
     """
-    count_sql = "NULL" if count_column is None else f"'{count_column}'"
-    lower_sql = "NULL" if lower_threshold is None else str(lower_threshold)
-    upper_sql = "NULL" if upper_threshold is None else str(upper_threshold)
-    ref_sql = "NULL" if reference_date is None else f"DATE '{reference_date}'"
+    params = [table_name, date_column, count_column, window_days,
+              lower_threshold, upper_threshold, reference_date]
     sql = (
-        f"SELECT * FROM anofox_tab_rel_count_change("
-        f"'{table_name}', '{date_column}', {count_sql}, {window_days}, {lower_sql}, {upper_sql}, {ref_sql}"
-        f"{_date_range_sql(start_date, end_date)})"
+        "SELECT * FROM anofox_tab_rel_count_change("
+        "?, ?, ?::VARCHAR, ?::BIGINT, ?::DOUBLE, ?::DOUBLE, ?::DATE"
+        f"{_date_range_sql(start_date, end_date, params)})"
     )
     if start_date is not None or end_date is not None:
-        return _fetch_dicts(conn, sql)
-    rows = conn.execute(sql).fetchall()
+        return _fetch_dicts(conn, sql, params)
+    cursor = execute(conn, sql, params)
     return _parse_table_result(
-        rows,
+        cursor,
         {
             "date_column": date_column,
             "count_column": count_column,
@@ -631,9 +742,10 @@ def rel_count_change(
     )
 
 
+@_dataframe_check("table_name")
 def metric_anomaly_iqr(
     conn: Any,
-    table_name: str,
+    table_name: TableLike,
     date_column: str,
     metric_column: Optional[str] = None,
     window_days: int = 30,
@@ -651,7 +763,7 @@ def metric_anomaly_iqr(
     conn:
         An :class:`~anofox.AnofoxConnection`.
     table_name:
-        Name of the DuckDB table or view.
+        Name of the DuckDB table or view, or a pandas/polars DataFrame.
     date_column:
         Date or timestamp column defining the daily grain.
     metric_column:
@@ -663,7 +775,8 @@ def metric_anomaly_iqr(
     mode:
         ``"both"`` (default), ``"upper"`` or ``"lower"`` — which bound(s) to enforce.
     reference_date:
-        ISO date string; omit for the latest date present in the data.
+        ISO date string, :class:`datetime.date` or :class:`datetime.datetime` (an aware
+        one counts on its UTC date); omit for the latest date present in the data.
     start_date / end_date:
         ISO date strings of an inclusive daily range, given together instead of
         ``reference_date``; the check is evaluated for every day of the range.
@@ -677,18 +790,17 @@ def metric_anomaly_iqr(
     """
     if mode.lower() not in ("both", "upper", "lower"):
         raise ValueError("mode must be 'both', 'upper' or 'lower'")
-    metric_sql = "NULL" if metric_column is None else f"'{metric_column}'"
-    ref_sql = "NULL" if reference_date is None else f"DATE '{reference_date}'"
+    params = [table_name, date_column, metric_column, window_days, k, mode.lower(), reference_date]
     sql = (
-        f"SELECT * FROM anofox_tab_metric_anomaly_iqr("
-        f"'{table_name}', '{date_column}', {metric_sql}, {window_days}, {k}, '{mode.lower()}', {ref_sql}"
-        f"{_date_range_sql(start_date, end_date)})"
+        "SELECT * FROM anofox_tab_metric_anomaly_iqr("
+        "?, ?, ?::VARCHAR, ?::BIGINT, ?::DOUBLE, ?, ?::DATE"
+        f"{_date_range_sql(start_date, end_date, params)})"
     )
     if start_date is not None or end_date is not None:
-        return _fetch_dicts(conn, sql)
-    rows = conn.execute(sql).fetchall()
+        return _fetch_dicts(conn, sql, params)
+    cursor = execute(conn, sql, params)
     return _parse_table_result(
-        rows,
+        cursor,
         {
             "date_column": date_column,
             "metric_column": metric_column,
@@ -700,9 +812,10 @@ def metric_anomaly_iqr(
     )
 
 
+@_dataframe_check("table_name")
 def rolling_values_in_set(
     conn: Any,
-    table_name: str,
+    table_name: TableLike,
     column_name: str,
     allowed_values: list[str],
     date_column: str,
@@ -720,7 +833,7 @@ def rolling_values_in_set(
     conn:
         An :class:`~anofox.AnofoxConnection`.
     table_name:
-        Name of the DuckDB table or view.
+        Name of the DuckDB table or view, or a pandas/polars DataFrame.
     column_name:
         Column to inspect (values are compared as strings).
     allowed_values:
@@ -732,7 +845,8 @@ def rolling_values_in_set(
     min_rate:
         Minimum acceptable in-set rate (default 1.0).
     reference_date:
-        ISO date string; omit for the latest date present in the data.
+        ISO date string, :class:`datetime.date` or :class:`datetime.datetime` (an aware
+        one counts on its UTC date); omit for the latest date present in the data.
     start_date / end_date:
         ISO date strings of an inclusive daily range, given together instead of
         ``reference_date``; the check is evaluated for every day of the range.
@@ -744,18 +858,18 @@ def rolling_values_in_set(
         With ``start_date``/``end_date``: one dict per reference date (ordered by
         date), keyed by the result columns (``status``, ``reference_date``, ...).
     """
-    values_list = "[" + ", ".join("'" + v.replace("'", "''") + "'" for v in allowed_values) + "]"
-    ref_sql = "NULL" if reference_date is None else f"DATE '{reference_date}'"
+    params = [table_name, column_name, [str(v) for v in allowed_values], date_column,
+              window_days, min_rate, reference_date]
     sql = (
-        f"SELECT * FROM anofox_tab_rolling_values_in_set("
-        f"'{table_name}', '{column_name}', {values_list}, '{date_column}', {window_days}, {min_rate}, {ref_sql}"
-        f"{_date_range_sql(start_date, end_date)})"
+        "SELECT * FROM anofox_tab_rolling_values_in_set("
+        "?, ?, ?::VARCHAR[], ?, ?::BIGINT, ?::DOUBLE, ?::DATE"
+        f"{_date_range_sql(start_date, end_date, params)})"
     )
     if start_date is not None or end_date is not None:
-        return _fetch_dicts(conn, sql)
-    rows = conn.execute(sql).fetchall()
+        return _fetch_dicts(conn, sql, params)
+    cursor = execute(conn, sql, params)
     return _parse_table_result(
-        rows,
+        cursor,
         {
             "column": column_name,
             "allowed_values": allowed_values,
@@ -772,18 +886,24 @@ def define_checks(conn: Any, checks: list[dict], checks_table: str = "dq_checks"
     Create (or replace) a checks table for :func:`run_checks` from a list of dicts.
 
     Each dict supports the keys ``check_name``, ``check_type``, ``table_name`` (required)
-    plus ``column_name``, ``params`` (a dict, stored as JSON), ``lower_threshold``,
+    plus ``column_name``, ``params`` (a dict, stored as JSON; ``datetime.date`` and
+    ``datetime.datetime`` values are stored as ISO 8601 strings, an aware datetime as
+    naive UTC, ``Decimal`` as a number),
+    ``lower_threshold``,
     ``upper_threshold``, ``monitor_only``, ``identifier_column`` and ``filter_expr``.
 
     .. note::
-        The checks table must be a regular (non-temporary) table — it is read through a
-        separate connection at bind time. DataFrame *targets* must be registered as real
-        tables too (see :func:`anofox._utils.register_df_as_table`).
+        The checks table is read in the connection's current transaction at bind time, so
+        uncommitted changes to it are used; it may be a TEMP table. DataFrame *targets* must
+        be registered as real tables (see :func:`anofox._utils.register_df_as_table`).
 
-    Returns the checks table name.
+    *checks_table* may be qualified (``"dq.checks"``, ``"db.dq.checks"``): the table is
+    created in that schema, which must exist. Returns the checks table name.
     """
-    conn.execute(
-        f"CREATE OR REPLACE TABLE \"{checks_table}\" ("
+    checks_sql = quote_table_name(checks_table)
+    run(
+        conn,
+        f"CREATE OR REPLACE TABLE {checks_sql} ("
         "check_name VARCHAR, check_type VARCHAR, table_name VARCHAR, column_name VARCHAR, "
         "params VARCHAR, lower_threshold DOUBLE, upper_threshold DOUBLE, "
         "monitor_only BOOLEAN, identifier_column VARCHAR, filter_expr VARCHAR)"
@@ -793,14 +913,15 @@ def define_checks(conn: Any, checks: list[dict], checks_table: str = "dq_checks"
             if not check.get(required):
                 raise ValueError(f"every check needs a non-empty '{required}'")
         params = check.get("params")
-        conn.execute(
-            f"INSERT INTO \"{checks_table}\" VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        run(
+            conn,
+            f"INSERT INTO {checks_sql} VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             [
                 check["check_name"],
                 check["check_type"],
                 check["table_name"],
                 check.get("column_name"),
-                json.dumps(params) if params is not None else None,
+                json.dumps(params, default=_json_param) if params is not None else None,
                 check.get("lower_threshold"),
                 check.get("upper_threshold"),
                 bool(check.get("monitor_only", False)),
@@ -809,6 +930,22 @@ def define_checks(conn: Any, checks: list[dict], checks_table: str = "dq_checks"
             ],
         )
     return checks_table
+
+
+def _json_param(value: Any) -> Any:
+    """JSON form of a check parameter json.dumps cannot encode itself."""
+    converted = bind_value(value)  # numpy scalar/array, pandas.Timestamp
+    if converted is not value:
+        return converted  # json.dumps calls this again for a datetime in it
+    if isinstance(value, datetime.datetime):
+        return _utc_naive(value).isoformat()  # aware: as naive UTC, 2026-03-11T06:00:00
+    if isinstance(value, (datetime.date, datetime.time)):
+        return value.isoformat()  # date: 2026-03-08, datetime: 2026-03-11T06:00:00
+    if isinstance(value, Decimal):
+        return float(value)
+    raise TypeError(
+        f"check parameter {value!r} of type {type(value).__qualname__} cannot be stored as JSON"
+    )
 
 
 def run_checks(
@@ -824,34 +961,45 @@ def run_checks(
     conn:
         An :class:`~anofox.AnofoxConnection`.
     checks_table:
-        Name of the checks table (see :func:`define_checks` for the schema). Must be a
-        regular (non-temporary) table.
+        Name of the checks table (see :func:`define_checks` for the schema). A table
+        (TEMP too) or a regular, non-temporary view.
     result_table:
         When given, results are also appended to this table (created on first use),
         building a metric history that e.g. :func:`metric_anomaly_iqr` can analyze.
+        Both names may be schema-qualified (``"dq.checks"``, ``"dq.check_results"``).
 
     Returns
     -------
     list[dict]
-        One dict per check result with the uniform schema keys (``run_ts``, ``check_name``,
+        One dict per check result, ordered by ``check_name``, then ``identifier``, with the
+        uniform schema keys (``run_ts``, ``check_name``,
         ``check_type``, ``table_name``, ``column_name``, ``identifier``, ``value``,
         ``lower_threshold``, ``upper_threshold``, ``status``, ``message``).
     """
     if result_table is not None:
-        conn.execute(
-            f"CREATE TABLE IF NOT EXISTS \"{result_table}\" AS "
-            f"SELECT * FROM anofox_tab_run_checks('{checks_table}') LIMIT 0"
+        result_sql = quote_table_name(result_table)
+        run(
+            conn,
+            f"CREATE TABLE IF NOT EXISTS {result_sql} AS "
+            "SELECT * FROM anofox_tab_run_checks(?) LIMIT 0",
+            [checks_table],
         )
-        conn.execute(
-            f"INSERT INTO \"{result_table}\" SELECT * FROM anofox_tab_run_checks('{checks_table}')"
+        run(
+            conn,
+            f"INSERT INTO {result_sql} SELECT * FROM anofox_tab_run_checks(?)", [checks_table]
         )
-        cursor = conn.execute(
-            f"SELECT * FROM \"{result_table}\" "
-            f"WHERE run_ts = (SELECT MAX(run_ts) FROM \"{result_table}\") ORDER BY check_name"
+        cursor = execute(
+            conn,
+            f"SELECT * FROM {result_sql} "
+            f"WHERE run_ts = (SELECT MAX(run_ts) FROM {result_sql}) "
+            "ORDER BY check_name NULLS LAST, identifier NULLS LAST"
         )
     else:
-        cursor = conn.execute(
-            f"SELECT * FROM anofox_tab_run_checks('{checks_table}') ORDER BY check_name"
+        cursor = execute(
+            conn,
+            "SELECT * FROM anofox_tab_run_checks(?) "
+            "ORDER BY check_name NULLS LAST, identifier NULLS LAST",
+            [checks_table],
         )
     columns = [d[0] for d in cursor.description]
     return [dict(zip(columns, row)) for row in cursor.fetchall()]
@@ -861,53 +1009,57 @@ def run_checks(
 # Internal helpers
 # ---------------------------------------------------------------------------
 
-def _date_range_sql(start_date: Optional[str], end_date: Optional[str]) -> str:
+def _date_range_sql(start_date: Optional[str], end_date: Optional[str], params: list) -> str:
     """Named start_date/end_date arguments of the time-aware checks ('' when absent).
 
-    Validation (both or neither, start <= end, not with reference_date) is left to
-    the extension so the Python and SQL errors are the same.
+    The dates are appended to *params*. Validation (both or neither, start <= end,
+    not with reference_date) is left to the extension so the Python and SQL errors
+    are the same.
     """
     sql = ""
     if start_date is not None:
-        sql += f", start_date := DATE '{start_date}'"
+        sql += ", start_date := ?::DATE"
+        params.append(start_date)
     if end_date is not None:
-        sql += f", end_date := DATE '{end_date}'"
+        sql += ", end_date := ?::DATE"
+        params.append(end_date)
     return sql
 
 
-def _fetch_dicts(conn: Any, sql: str) -> list[dict]:
+def _fetch_dicts(conn: Any, sql: str, params: list) -> list[dict]:
     """Run a query and return every row as a dict keyed by the result column names."""
-    cursor = conn.execute(sql)
+    cursor = execute(conn, sql, params)
     columns = [d[0] for d in cursor.description]
-    return [dict(zip(columns, row)) for row in cursor.fetchall()]
+    return [{c: _to_python(v) for c, v in zip(columns, row)} for row in cursor.fetchall()]
 
 
-def _parse_table_result(rows: list, extra: dict) -> dict:
+def _to_python(value: Any) -> Any:
     """
-    Convert a table-function result row list into a result dict.
-
-    The first row contains column names from cursor description, or we rely
-    on the known metric column names.  The ``status`` field comes from the
-    extension itself (a VARCHAR column typically "pass" or "fail").
+    Plain Python value for a result dict: DECIMAL thresholds become float, and a
+    message names a DataFrame input "the DataFrame", not its temporary table.
     """
+    if isinstance(value, str):
+        return without_temp_names(value)
+    return float(value) if isinstance(value, Decimal) else value
+
+
+def _parse_table_result(cursor: Any, extra: dict) -> dict:
+    """
+    Convert the first row of a check's result into a result dict.
+
+    The dict holds the call's parameters (*extra*), then every result column
+    by name (``status``, the metric value(s), the thresholds, ``message``),
+    with DECIMAL values converted to float. ``_raw`` keeps the row as returned
+    by DuckDB, in column order, for backward compatibility (a DataFrame input
+    named "the DataFrame" there too, not its temporary table).
+    """
+    columns = [d[0] for d in cursor.description]
+    rows = cursor.fetchall()
     if not rows:
         return {"status": "error", "error": "no rows returned", **extra}
 
     row = rows[0]
-    if len(row) == 1:
-        return {"status": str(row[0]), **extra}
-
-    # Multiple columns — build dict from the row values
-    result: dict = {}
-    for val in row:
-        if isinstance(val, str) and val in ("pass", "fail", "warn", "error"):
-            result["status"] = val
-            break
-
-    if "status" not in result:
-        result["status"] = "pass" if row else "error"
-
-    result.update(extra)
-    # Attach raw values for debugging
-    result["_raw"] = list(row)
+    named = {c: _to_python(v) for c, v in zip(columns, row)}
+    result: dict = {"status": str(named.get("status", "error")), **extra, **named}
+    result["_raw"] = [without_temp_names(v) if isinstance(v, str) else v for v in row]
     return result

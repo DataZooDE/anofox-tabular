@@ -1,4 +1,5 @@
 #include "anofox_postal.hpp"
+#include "anofox_postal_path.hpp"
 #include "anofox_tabular_banner.hpp"
 
 #if HAVE_LIBPOSTAL
@@ -17,6 +18,7 @@
 #include "duckdb/parser/parsed_data/create_scalar_function_info.hpp"
 
 #include "anofox_raii.hpp"
+#include "anofox_curl_ca.hpp"
 #include "anofox_trace.hpp"
 #include "duckdb/common/string_util.hpp"
 #include "anofox_duckdb_vectors.hpp"
@@ -45,7 +47,6 @@ namespace {
 constexpr const char *POSTAL_BASE_URL = "https://public-read-libpostal-data.s3.amazonaws.com/v1.1.0/";
 const std::vector<std::string> POSTAL_ASSETS = {"language_classifier.tar.gz", "libpostal_data.tar.gz",
                                                 "parser.tar.gz"};
-constexpr const char *DEFAULT_POSTAL_DIR = ".duckdb/extensions/libpostal";
 
 // Callback for libcurl to write data to file
 static size_t WriteDataToFile(void *ptr, size_t size, size_t nmemb, FILE *stream) {
@@ -128,6 +129,16 @@ static void ExtractTarball(const std::string &archive_path, const std::string &t
 	if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
 		throw IOException("tar failed to extract '" + archive_path + "' into '" + target_dir + "'");
 	}
+}
+//! A data directory is complete when the language classifier and the address
+//! parser model are present (what postal_status() reports as data_present).
+static bool IsPostalDataComplete(FileSystem &fs, const std::string &dir) {
+	if (!fs.DirectoryExists(dir)) {
+		return false;
+	}
+	std::ifstream classifier_stream(fs.JoinPath(dir, POSTAL_CLASSIFIER_FILE));
+	std::ifstream parser_stream(fs.JoinPath(dir, POSTAL_PARSER_FILE));
+	return classifier_stream.good() && parser_stream.good();
 }
 } // namespace
 
@@ -249,14 +260,36 @@ void PostalManager::LoadData(ClientContext &context) {
 	LoadDataInternal(context);
 }
 
-void PostalManager::LoadDataInternal(ClientContext &context) {
+std::string PostalManager::ResolveDataDirectory(ClientContext &context) const {
 	auto &fs = FileSystem::GetFileSystem(context);
-	auto data_dir = fs.ExpandPath(data_directory);
-	if (!fs.DirectoryExists(data_dir)) {
-		fs.CreateDirectory(data_dir);
+	auto is_complete = [&fs](const std::string &dir) { return IsPostalDataComplete(fs, dir); };
+	// ExpandPath("~") yields the home directory DuckDB uses (the home_directory
+	// setting, else HOME / USERPROFILE); empty means none is known.
+	const bool home_known = !fs.ExpandPath("~").empty();
+	auto resolved = ResolvePostalDataDirectory(
+	    data_directory, [&fs](const std::string &path) { return fs.ExpandPath(path); }, home_known, is_complete);
+	if (resolved.legacy_fallback && !legacy_notice_logged.exchange(true)) {
+		AnofoxTrace(AnofoxLogLevel::Info,
+		            "Postal using the libpostal data in '" + resolved.path +
+		                "' (relative to the working directory). The default data path is now home-based ('" +
+		                DEFAULT_POSTAL_DIR + "'); move the data there or SET anofox_tab_postal_data_path to keep it.");
 	}
+	if (resolved.no_home_directory && !no_home_notice_logged.exchange(true)) {
+		AnofoxTrace(AnofoxLogLevel::Warn, "Postal found no home directory to expand '" + std::string(DEFAULT_POSTAL_DIR) +
+		                                      "'; using '" + resolved.path + "' relative to the working directory");
+	}
+	AnofoxTrace(AnofoxLogLevel::Debug, "Postal data directory resolved to " + resolved.path);
+	return resolved.path;
+}
+
+void PostalManager::LoadDataInternal(ClientContext &context) {
 	if (GetStatusInternal(context).data_present) {
 		return;
+	}
+	auto &fs = FileSystem::GetFileSystem(context);
+	auto data_dir = ResolveDataDirectory(context);
+	if (!fs.DirectoryExists(data_dir)) {
+		fs.CreateDirectoriesRecursive(data_dir);
 	}
 
 	// Initialize libcurl global state once per process (RAII, process lifetime)
@@ -269,6 +302,7 @@ void PostalManager::LoadDataInternal(ClientContext &context) {
 		// Robust libcurl-based download with retry logic
 		const int max_retries = 5;
 		bool download_success = false;
+		std::string last_error;
 
 		for (int attempt = 1; attempt <= max_retries && !download_success; attempt++) {
 			if (attempt > 1) {
@@ -302,6 +336,7 @@ void PostalManager::LoadDataInternal(ClientContext &context) {
 			curl_easy_setopt(curl.get(), CURLOPT_FAILONERROR, 1L);  // Fail on HTTP error codes
 			curl_easy_setopt(curl.get(), CURLOPT_SSL_VERIFYPEER, 1L);  // Verify SSL certificates
 			curl_easy_setopt(curl.get(), CURLOPT_SSL_VERIFYHOST, 2L);  // Verify hostname matches cert
+			ConfigureCurlCaBundle(curl.get(), "postal");  // A CA bundle that exists on this system
 
 			// Perform the download
 			CURLcode res = curl_easy_perform(curl.get());
@@ -316,10 +351,10 @@ void PostalManager::LoadDataInternal(ClientContext &context) {
 				download_success = true;
 				AnofoxTrace(AnofoxLogLevel::Info, "Postal download complete for " + asset);
 			} else {
-				const char *error_msg = curl_easy_strerror(res);
+				last_error = std::string(curl_easy_strerror(res)) + " (HTTP " + std::to_string(http_code) + ")" +
+				             CurlCaErrorHint(res);
 				AnofoxTrace(AnofoxLogLevel::Warn,
-					"Postal download attempt " + std::to_string(attempt) + " failed: " +
-					std::string(error_msg) + " (HTTP " + std::to_string(http_code) + ")");
+					"Postal download attempt " + std::to_string(attempt) + " failed: " + last_error);
 
 				// Remove partially downloaded file
 				fs.RemoveFile(destination);
@@ -335,7 +370,8 @@ void PostalManager::LoadDataInternal(ClientContext &context) {
 
 		if (!download_success) {
 			AnofoxTrace(AnofoxLogLevel::Error, "Postal download failed after " + std::to_string(max_retries) + " attempts");
-			throw IOException("Failed to download '" + asset + "' from " + url + " after " + std::to_string(max_retries) + " attempts");
+			throw IOException("Failed to download '" + asset + "' from " + url + " after " + std::to_string(max_retries) +
+			                  " attempts: " + last_error);
 		}
 
 		// Extract the tarball without involving a shell
@@ -361,16 +397,8 @@ PostalStatus PostalManager::GetStatusInternal(ClientContext &context) const {
 	PostalStatus status;
 	status.initialized = initialized.load();
 	auto &fs = FileSystem::GetFileSystem(context);
-	status.data_dir = fs.ExpandPath(data_directory);
-	if (!fs.DirectoryExists(status.data_dir)) {
-		status.data_present = false;
-		return status;
-	}
-	const auto classifier_file = fs.JoinPath(status.data_dir, "language_classifier/language_classifier.dat");
-	const auto parser_file = fs.JoinPath(status.data_dir, "address_parser/address_parser_phrases.dat");
-	std::ifstream classifier_stream(classifier_file);
-	std::ifstream parser_stream(parser_file);
-	status.data_present = classifier_stream.good() && parser_stream.good();
+	status.data_dir = ResolveDataDirectory(context);
+	status.data_present = IsPostalDataComplete(fs, status.data_dir);
 	return status;
 }
 
@@ -496,14 +524,29 @@ void PostalParseAddressFunction(DataChunk &args, ExpressionState &state, Vector 
 		// Write the libpostal component values straight into the child vectors
 		// (no intermediate std::string or Value copies).
 		auto input_str = inputs[idx].GetString();
+		// libpostal can return the same label more than once (e.g. 'road' for
+		// both 'prinsengracht' and 'gv' in '1016 GV Amsterdam'); the values of a
+		// repeated label are joined with a space in the order libpostal returns
+		// them instead of the last one overwriting the earlier ones.
 		manager.ParseAddress(input_str, [&](char **labels, char **values, size_t count) {
+			std::string joined[COMPONENT_COUNT];
+			bool present[COMPONENT_COUNT] = {};
 			for (size_t component = 0; component < count; component++) {
 				for (idx_t c = 0; c < COMPONENT_COUNT; c++) {
 					if (std::strcmp(labels[component], COMPONENT_LABELS[c]) == 0) {
-						child_data[c][i] = StringVector::AddString(anofox::VectorRef(children[c]), values[component]);
-						FlatVector::SetNull(anofox::VectorRef(children[c]), i, false);
+						if (present[c]) {
+							joined[c] += ' ';
+						}
+						joined[c] += values[component];
+						present[c] = true;
 						break;
 					}
+				}
+			}
+			for (idx_t c = 0; c < COMPONENT_COUNT; c++) {
+				if (present[c]) {
+					child_data[c][i] = StringVector::AddString(anofox::VectorRef(children[c]), joined[c]);
+					FlatVector::SetNull(anofox::VectorRef(children[c]), i, false);
 				}
 			}
 		});

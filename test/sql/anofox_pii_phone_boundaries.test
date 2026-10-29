@@ -1,0 +1,135 @@
+# name: test/sql/anofox_pii_phone_boundaries.test
+# description: Phone numbers are found wherever they sit between non-alphanumeric
+#              characters: JSON values, CSV fields, HTML cells, "tel=", "Tel.+49",
+#              quoted values. Dates, versions and IBAN groups stay unmatched.
+# group: [sql]
+
+require anofox_tabular
+
+statement ok
+LOAD anofox_tabular;
+
+# Pattern types only, so the results do not depend on the NER model
+statement ok
+SET anofox_pii_enabled_types = 'EMAIL,PHONE,CREDIT_CARD,US_SSN,IP_ADDRESS,IBAN,DE_TAX_ID,URL,US_PASSPORT,CRYPTO_ADDRESS,UK_NINO,MAC_ADDRESS,API_KEY';
+
+# ============================================================================
+# CRM events stored as JSON
+# ============================================================================
+
+statement ok
+CREATE TABLE crm_events AS SELECT * FROM (VALUES
+    (1, '{"event":"lead_created","customer_id":4711,"phone":"+49 171 2345678","email":"anna.schmidt@example.de"}'),
+    (2, '{"event":"callback_requested","phone":"0171 1234567","agent":"m.weber"}'),
+    (3, '{"event":"order_placed","phone":"+4930123456789","iban":"DE89370400440532013000"}'),
+    (4, '{"event":"contact_updated","contact":{"mobile":"+43 664 1234567","fax":"+43 1 5131234"}}'),
+    (5, '{"event":"ticket","note":"Kunde bittet um Rueckruf","phones":["+41 44 6681800","089 12345678"]}'),
+    (6, '{"event":"lead_created","phone":"+44 20 7946 0958","created":"2026-10-27T08:15:30Z"}')
+) t(id, payload);
+
+query IT
+SELECT id, pii_mask(payload) FROM crm_events ORDER BY id;
+----
+1	{"event":"lead_created","customer_id":4711,"phone":"[PHONE]","email":"[EMAIL]"}
+2	{"event":"callback_requested","phone":"[PHONE]","agent":"m.weber"}
+3	{"event":"order_placed","phone":"[PHONE]","iban":"[IBAN]"}
+4	{"event":"contact_updated","contact":{"mobile":"[PHONE]","fax":"[PHONE]"}}
+5	{"event":"ticket","note":"Kunde bittet um Rueckruf","phones":["[PHONE]","[PHONE]"]}
+6	{"event":"lead_created","phone":"[PHONE]","created":"2026-10-27T08:15:30Z"}
+
+# No digit run of the numbers survives the masking
+query I
+SELECT count(*) FROM crm_events
+WHERE regexp_matches(pii_mask(payload), '171|2345678|1234567|30123456789|664|5131234|6681800|12345678|7946|0958');
+----
+0
+
+query IT
+SELECT id, array_to_string(list_transform(pii_detect(payload), lambda x: x.type || ':' || x.text), '; ') FROM crm_events WHERE id IN (1, 4, 5) ORDER BY id;
+----
+1	PHONE:+49 171 2345678; EMAIL:anna.schmidt@example.de
+4	PHONE:+43 664 1234567; PHONE:+43 1 5131234
+5	PHONE:+41 44 6681800; PHONE:089 12345678
+
+# ============================================================================
+# CSV export lines
+# ============================================================================
+
+# The tab-separated line shows its tabs as <TAB>
+query IT
+SELECT i, replace(pii_mask(line), chr(9), '<TAB>') FROM (VALUES
+    (1, '10234,Anna Schmidt,+49 171 2345678,anna@example.de'),
+    (2, '10235,"Weber, Max","0171 1234567",Berlin'),
+    (3, '10236;Mueller;+41 44 6681800;Zuerich'),
+    (4, 'phone,+49 89 12345678'),
+    (5, '10237|Kaya|0221 4711-0|Koeln'),
+    (6, concat_ws(chr(9), '10238', 'Novak', '+420 601 123 456', 'Praha'))
+) t(i, line) ORDER BY i;
+----
+1	10234,Anna Schmidt,[PHONE],[EMAIL]
+2	10235,"Weber, Max","[PHONE]",Berlin
+3	10236;Mueller;[PHONE];Zuerich
+4	phone,[PHONE]
+5	10237|Kaya|[PHONE]|Koeln
+6	10238<TAB>Novak<TAB>[PHONE]<TAB>Praha
+
+# ============================================================================
+# HTML snippets and key=value notation
+# ============================================================================
+
+query T
+SELECT pii_mask('<tr><td>Kundenservice</td><td>+49 30 1234567</td></tr><tr><td>Fax</td><td>030 1234568</td></tr>');
+----
+<tr><td>Kundenservice</td><td>[PHONE]</td></tr><tr><td>Fax</td><td>[PHONE]</td></tr>
+
+query T
+SELECT pii_mask('<a href="tel:+491711234567">+49 171 1234567</a>');
+----
+<a href="tel:[PHONE]">[PHONE]</a>
+
+query IT
+SELECT i, pii_mask(s) FROM (VALUES
+    (1, 'tel=+491711234567'),
+    (2, 'Tel.+49 171 1234567'),
+    (3, 'Rueckruf unter ''0171 1234567'' erbeten'),
+    (4, 'Hotline `+49 800 1234567`'),
+    (5, 'mobile=+49 171 2345678&lang=de'),
+    (6, 'Kontakt: Max Weber/+49 171 2345678')
+) t(i, s) ORDER BY i;
+----
+1	tel=[PHONE]
+2	Tel.[PHONE]
+3	Rueckruf unter '[PHONE]' erbeten
+4	Hotline `[PHONE]`
+5	mobile=[PHONE]&lang=de
+6	Kontakt: Max Weber/[PHONE]
+
+# ============================================================================
+# Look-alikes stay unmatched
+# ============================================================================
+
+query IT
+SELECT i, pii_mask(s) FROM (VALUES
+    (1, 'Tel.25.10.2026'),
+    (2, '{"created":"2026-10-27","version":"1.0.171","build":"2026.10.27"}'),
+    (3, 'DE89-3704-0044-0532-0130-00'),
+    (4, '{"iban":"DE89 3704 0044 0532 0130 00"}'),
+    (5, 'order=20261027-0001,qty=3'),
+    (6, '<td>0,99</td><td>1.234.567</td>'),
+    (7, 'abc0171 1234567'),
+    (8, '{"id":"6b0d549b-0171-4567-8901-a35a099950d8"}'),
+    (9, 'ticket=INC-0221-4711-0815')
+) t(i, s) ORDER BY i;
+----
+1	Tel.25.10.2026
+2	{"created":"2026-10-27","version":"1.0.171","build":"2026.10.27"}
+3	[IBAN]
+4	{"iban":"[IBAN]"}
+5	order=20261027-0001,qty=3
+6	<td>0,99</td><td>1.234.567</td>
+7	abc0171 1234567
+8	{"id":"6b0d549b-0171-4567-8901-a35a099950d8"}
+9	ticket=INC-0221-4711-0815
+
+statement ok
+SET anofox_pii_enabled_types = '';

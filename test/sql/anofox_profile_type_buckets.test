@@ -1,0 +1,78 @@
+# name: test/sql/anofox_profile_type_buckets.test
+# description: profile_summary's type buckets add up to column_count: types outside the numeric,
+#              string, temporal, boolean and complex buckets (UUID, BIT, ENUM, JSON, ...) are
+#              counted in other_columns. profile_table's top_values break count ties by the
+#              value in the column's own type (9 before 10, 2026-02-01 before 2026-10-01), not
+#              by its text.
+# group: [anofox_tabular]
+
+require anofox_tabular
+
+statement ok
+LOAD anofox_tabular
+
+statement ok
+SET anofox_tab_trace_level='warn'
+
+statement ok
+CREATE TYPE ticket_state AS ENUM ('new', 'open', 'closed')
+
+# A helpdesk export with identifier, binary, flag-set and enum columns
+statement ok
+CREATE TABLE helpdesk AS SELECT * FROM (VALUES
+    ('5b0c9a3e-8f43-4a8e-9d1e-0f3b2c6a7d10'::UUID, 'PDF'::BLOB, '1010'::BIT, 'open'::ticket_state,
+     42, 'Printer offline', DATE '2026-03-02', true, [1, 2], 120.50::DECIMAL(10, 2)),
+    ('9c1d2e3f-4a5b-4c6d-8e7f-a0b1c2d3e4f5'::UUID, NULL, '0001'::BIT, 'closed'::ticket_state,
+     7, 'VPN drops', DATE '2026-03-03', false, [3], 80.00::DECIMAL(10, 2))
+) t(ticket_uuid, attachment, flags, state, priority, subject, opened_on, sla_breached, tags, cost)
+
+query IIIIIIII
+SELECT column_count, numeric_columns, string_columns, temporal_columns, boolean_columns,
+       complex_columns, other_columns,
+       numeric_columns + string_columns + temporal_columns + boolean_columns + complex_columns + other_columns
+FROM profile_summary('helpdesk')
+----
+10	2	2	1	1	1	3	10
+
+# other_columns sits after complex_columns
+query T
+SELECT list(column_name ORDER BY column_index)[6:8]
+FROM (SELECT column_name, row_number() OVER () AS column_index
+      FROM (DESCRIBE SELECT * FROM profile_summary('helpdesk')))
+----
+[boolean_columns, complex_columns, other_columns]
+
+statement ok
+CREATE TABLE plain_orders (order_id INTEGER, customer VARCHAR, placed_at TIMESTAMP)
+
+statement ok
+INSERT INTO plain_orders VALUES (1, 'Kaiser GmbH', TIMESTAMP '2026-03-01 09:00:00')
+
+query II
+SELECT column_count, other_columns FROM profile_summary('plain_orders')
+----
+3	0
+
+# top_values: equal counts are ordered by value in the column's type
+statement ok
+CREATE TABLE order_lines (qty INTEGER, unit_price DECIMAL(10, 2), ship_date DATE, sku VARCHAR)
+
+statement ok
+INSERT INTO order_lines VALUES
+    (10, 100.00, DATE '2026-10-01', 'SKU-10'),
+    (9,  9.50,   DATE '2026-02-01', 'SKU-9'),
+    (10, 100.00, DATE '2026-10-01', 'SKU-10'),
+    (9,  9.50,   DATE '2026-02-01', 'SKU-9'),
+    (100, 20.00, DATE '2026-11-15', 'SKU-100'),
+    (100, 20.00, DATE '2026-11-15', 'SKU-100'),
+    (2,  1000.00, DATE '2027-01-03', 'SKU-2')
+
+query TT
+SELECT column_name, list_transform(top_values, lambda x: x.value || ':' || x.count)
+FROM profile_table('order_lines')
+ORDER BY column_name
+----
+qty	['9:2', '10:2', '100:2', '2:1']
+ship_date	['2026-02-01:2', '2026-10-01:2', '2026-11-15:2', '2027-01-03:1']
+sku	['SKU-10:2', 'SKU-100:2', 'SKU-9:2', 'SKU-2:1']
+unit_price	['9.50:2', '20.00:2', '100.00:2', '1000.00:1']

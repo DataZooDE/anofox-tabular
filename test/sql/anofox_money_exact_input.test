@@ -1,0 +1,140 @@
+# name: test/sql/anofox_money_exact_input.test
+# description: money() keeps DECIMAL amounts exact (no detour through DOUBLE),
+#              rejects amounts above the DECIMAL(18,3) range, formats negative
+#              amounts with the sign before a leading symbol, and the currency
+#              lookups return NULL for an unsupported code
+# group: [anofox_tabular]
+
+require anofox_tabular
+
+statement ok
+LOAD anofox_tabular;
+
+statement ok
+SET anofox_tab_trace_level='warn';
+
+#----------------------------------------------------------------------------------------------------------------------
+# A general ledger with large exact DECIMAL balances
+#----------------------------------------------------------------------------------------------------------------------
+
+statement ok
+CREATE TABLE ledger (account VARCHAR, balance DECIMAL(18,3), currency VARCHAR);
+
+statement ok
+INSERT INTO ledger VALUES
+    ('1000 Cash',               123456789012345.678, 'EUR'),
+    ('1200 Receivables',        999999999999999.999, 'EUR'),
+    ('1400 Inventory',         -999999999999999.999, 'EUR'),
+    ('3000 Revenue',                         0.001, 'KWD'),
+    ('4000 Payroll',              98765432109876.543, 'usd');
+
+query TTT
+SELECT account, money_amount(money(balance, currency)), money_currency(money(balance, currency))
+FROM ledger ORDER BY account;
+----
+1000 Cash	123456789012345.678	EUR
+1200 Receivables	999999999999999.999	EUR
+1400 Inventory	-999999999999999.999	EUR
+3000 Revenue	0.001	KWD
+4000 Payroll	98765432109876.543	USD
+
+# Exact amounts survive arithmetic: the two largest balances cancel exactly
+query T
+SELECT money_amount(money_add(money(999999999999999.999, 'EUR'), money(-999999999999999.999, 'EUR')));
+----
+0.000
+
+# DECIMAL literals and DECIMAL columns of other scales bind to the exact overload
+query TT
+SELECT money_amount(money(123456789012345.678, 'EUR')),
+       money_amount(money(12345678901234.5::DECIMAL(16,1), 'EUR'));
+----
+123456789012345.678	12345678901234.500
+
+# More than 3 fractional digits round half away from zero
+query TT
+SELECT money_amount(money(2.0005::DECIMAL(10,4), 'EUR')), money_amount(money(-2.0005::DECIMAL(10,4), 'EUR'));
+----
+2.001	-2.001
+
+# One unit above the maximum does not fit DECIMAL(18,3)
+statement error
+SELECT money(1000000000000000.000, 'EUR');
+----
+DECIMAL(18,3)
+
+statement error
+SELECT money(1000000000000000::DECIMAL(19,0), 'EUR');
+----
+DECIMAL(18,3)
+
+#----------------------------------------------------------------------------------------------------------------------
+# DOUBLE and integer inputs
+#----------------------------------------------------------------------------------------------------------------------
+
+# Integers are exact (no 'amount * 1000' rounding in DOUBLE)
+query TT
+SELECT money_amount(money(123456789012345, 'EUR')), money_amount(money(-999999999999999, 'EUR'));
+----
+123456789012345.000	-999999999999999.000
+
+query T
+SELECT money_amount(money(19.99::DOUBLE, 'USD'));
+----
+19.990
+
+# A DOUBLE that rounds past the maximum is rejected instead of being stored as
+# 1000000000000000.000
+statement error
+SELECT money(999999999999999.999::DOUBLE, 'EUR');
+----
+out of range for DECIMAL(18,3)
+
+statement error
+SELECT money(1e18, 'EUR');
+----
+out of range for DECIMAL(18,3)
+
+# NULL amounts give a typed NULL money value
+query TT
+SELECT money(NULL, 'EUR') IS NULL, typeof(money(NULL, 'EUR'));
+----
+true	STRUCT(amount DECIMAL(18,3), currency VARCHAR)
+
+#----------------------------------------------------------------------------------------------------------------------
+# money_format: the minus sign comes first
+#----------------------------------------------------------------------------------------------------------------------
+
+query TTTTT
+SELECT money_format(money(-42.5, 'USD'), 'symbol'),
+       money_format(money(-42.5, 'EUR'), 'symbol'),
+       money_format(money(-1234.5, 'GBP'), 'symbol'),
+       money_format(money(-1234.5, 'EUR'), 'long'),
+       money_format(money(-42.5, 'USD'), 'code');
+----
+-$42.50	-42,50 €	-£1,234.50	-1.234,50 Euro	-42.50 USD
+
+query TT
+SELECT money_format(money(-1234, 'JPY'), 'symbol'), money_format(money(-0.004, 'USD'), 'symbol');
+----
+-¥1,234	$0.00
+
+#----------------------------------------------------------------------------------------------------------------------
+# currency_symbol / currency_name: NULL for an unsupported code
+#----------------------------------------------------------------------------------------------------------------------
+
+query TTTT
+SELECT currency_symbol('BTC'), currency_name('BTC'), currency_symbol(' eur '), currency_name('xyz');
+----
+NULL	NULL	€	NULL
+
+query TTT
+SELECT code, currency_symbol(code), currency_name(code)
+FROM (VALUES ('EUR'), ('BTC'), ('chf'), (''), (NULL)) t(code)
+ORDER BY code NULLS LAST;
+----
+(empty)	NULL	NULL
+BTC	NULL	NULL
+EUR	€	Euro
+chf	CHF	Swiss Franc
+NULL	NULL	NULL

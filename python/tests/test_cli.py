@@ -4,7 +4,7 @@ Tests for _cli.py — argument parsing and CLI behaviour.
 
 import csv
 import sys
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from io import StringIO
 from pathlib import Path
 from unittest.mock import patch
@@ -34,7 +34,7 @@ def _run_cli(*argv: str) -> tuple[int, str]:
     """
     Call _cli.main() with patched sys.argv and a captured rich Console.
 
-    Returns (exit_code, stdout_text).
+    Returns (exit_code, stdout and stderr text).
     Catches SystemExit so the caller can assert on the exit code.
     Non-integer exit codes (e.g. error strings) map to exit code 1.
     """
@@ -44,7 +44,7 @@ def _run_cli(*argv: str) -> tuple[int, str]:
     buf = StringIO()
     console = Console(file=buf, force_terminal=False, no_color=True)
     with patch("sys.argv", ["anofox", *argv]):
-        with redirect_stdout(buf):
+        with redirect_stdout(buf), redirect_stderr(buf):
             try:
                 main(console=console)
                 code = 0
@@ -99,25 +99,41 @@ class TestReadFn:
 
 
 class TestQualityArgValidation:
-    def test_null_max_without_column_exits_nonzero(self, tmp_path):
+    def test_null_max_without_column_exits_2(self, tmp_path):
         """--null-max requires --column; validation runs before connecting."""
         rows = [{"a": "1"}, {"a": "2"}]
         csv_path = _make_csv(tmp_path, rows)
         # Validation raises SystemExit before any connection is attempted
         code, _ = _run_cli("quality", csv_path, "--null-max", "0.5")
-        assert code != 0
+        assert code == 2  # an error, not a failing check
 
-    def test_no_rules_exits_nonzero(self, tmp_path):
+    def test_no_rules_exits_2(self, tmp_path):
         """No quality rules should exit with a non-zero code."""
         rows = [{"a": "1"}]
         csv_path = _make_csv(tmp_path, rows)
         code, _ = _run_cli("quality", csv_path)
-        assert code != 0
+        assert code == 2  # an error, not a failing check
 
 
 # ---------------------------------------------------------------------------
 # Tests that DO require the extension
 # ---------------------------------------------------------------------------
+
+class TestQualityErrorNamesTheFile:
+    def test_unknown_column_names_file_not_internal_table(self, ext_path, tmp_path):
+        if ext_path is None:
+            pytest.skip("No extension binary")
+        rows = [{"customer_id": "C-1", "email": "ana@example.com"},
+                {"customer_id": "C-2", "email": ""}]
+        csv_path = _make_csv(tmp_path, rows)
+        code, out = _run_cli("quality", csv_path, "--null-max", "0.1",
+                             "--column", "e_mail", "--ext", ext_path)
+        assert code == 2
+        assert "_cli_quality" not in out
+        assert "sample.csv" in out
+        assert "e_mail" in out
+        assert "LINE" not in out
+
 
 class TestProfileCommand:
     def test_profile_produces_output(self, ext_path, tmp_path):
@@ -208,3 +224,34 @@ class TestQualityCommand:
             "--null-max", "0.5", "--column", "score",
         )
         assert code == 0
+
+
+class TestQualityJsonAndExitCodes:
+    def test_json_with_null_rate_serialises_decimals(self, ext_path, tmp_path):
+        import json as _json
+        if ext_path is None:
+            pytest.skip("No extension binary")
+        rows = [{"email": "ana@example.com"}, {"email": ""}, {"email": "carla@example.org"},
+                {"email": "dan@example.net"}]
+        csv_path = _make_csv(tmp_path, rows)
+        code, out = _run_cli(
+            "quality", csv_path, "--ext", ext_path,
+            "--null-max", "0.5", "--column", "email", "--format", "json",
+        )
+        assert code == 0
+        parsed = _json.loads(out)
+        assert parsed["status"] == "pass"
+        assert parsed["checks"]["null_rate"]["null_rate"] == 0.25
+        assert 0.25 in parsed["checks"]["null_rate"]["_raw"]
+
+    def test_crash_exits_2(self, ext_path, tmp_path):
+        if ext_path is None:
+            pytest.skip("No extension binary")
+        rows = [{"email": "ana@example.com"}]
+        csv_path = _make_csv(tmp_path, rows)
+        code, out = _run_cli(
+            "quality", csv_path, "--ext", ext_path,
+            "--null-max", "0.5", "--column", "no_such_column",
+        )
+        assert code == 2
+        assert "no_such_column" in out

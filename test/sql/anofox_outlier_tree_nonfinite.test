@@ -1,0 +1,61 @@
+# name: test/sql/anofox_outlier_tree_nonfinite.test
+# description: outlier_tree never reports inf or NaN statistics: an infinite value is still an
+#              outlier, but its z_score is NULL (the explanation says n/a); the cluster statistics
+#              are computed over the finite values without overflowing for values near the DOUBLE
+#              range, and a statistic out of range would be NULL.
+# group: [anofox_tabular]
+
+require anofox_tabular
+
+statement ok
+LOAD anofox_tabular
+
+statement ok
+SET anofox_tab_trace_enabled = false
+
+# Daily consumption of 60 smart meters; the counter of meter 8 overflowed and was exported as inf
+statement ok
+CREATE TABLE meter_daily AS
+SELECT 'MTR-' || lpad(CAST(i + 1 AS VARCHAR), 4, '0') AS meter_id,
+       CASE WHEN i = 7 THEN 'inf'::DOUBLE ELSE 100.0 + (i % 5) END AS kwh
+FROM range(60) r(i)
+
+query ITTRRITT
+SELECT row_id, column_name, outlier_value, round(cluster_mean, 4), round(cluster_sd, 4), cluster_size,
+       z_score IS NULL, isfinite(lower_bound) AND isfinite(upper_bound)
+FROM outlier_tree('meter_daily', 'kwh', 'outliers')
+----
+8	kwh	inf	102.0	1.4384	59	true	true
+
+query T
+SELECT explanation FROM outlier_tree('meter_daily', 'kwh', 'outliers')
+----
+Value inf for column 'kwh' is unusually high (median: 102.00, MAD: 1.48, z-score: n/a)
+
+# No inf or NaN anywhere in the numeric output
+query I
+SELECT count(*) FROM outlier_tree('meter_daily', 'kwh', 'outliers')
+WHERE NOT isfinite(coalesce(z_score, 0)) OR NOT isfinite(cluster_mean) OR NOT isfinite(cluster_sd)
+   OR NOT isfinite(lower_bound) OR NOT isfinite(upper_bound) OR NOT isfinite(outlier_score)
+----
+0
+
+# Two meters report the DOUBLE maximum as a sentinel: their sum overflows a plain DOUBLE sum,
+# the cluster statistics stay finite
+statement ok
+CREATE TABLE meter_sentinel AS
+SELECT 'MTR-' || lpad(CAST(i + 1 AS VARCHAR), 4, '0') AS meter_id,
+       CASE WHEN i = 3 THEN 1.7e308 WHEN i = 41 THEN 1.6e308 ELSE 100.0 + (i % 5) END AS kwh
+FROM range(60) r(i)
+
+query T
+SELECT bool_and(isfinite(cluster_mean) AND isfinite(cluster_sd) AND isfinite(z_score)
+                AND isfinite(lower_bound) AND isfinite(upper_bound))
+FROM outlier_tree('meter_sentinel', 'kwh', 'outliers')
+----
+true
+
+query IT
+SELECT row_id, outlier_value_num = 1.7e308 FROM outlier_tree('meter_sentinel', 'kwh', 'outliers') ORDER BY row_id LIMIT 1
+----
+4	true

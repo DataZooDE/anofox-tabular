@@ -1,0 +1,202 @@
+# name: test/sql/anofox_pii_partial_mask.test
+# description: the partial strategy keeps at most half of the letters and digits of a value
+#              and masks short values completely, for every PII type (F7)
+# group: [sql]
+
+require anofox_tabular
+
+statement ok
+LOAD anofox_tabular;
+
+# Pattern types only, so the results do not depend on the NER model
+statement ok
+SET anofox_pii_enabled_types = 'EMAIL,PHONE,CREDIT_CARD,US_SSN,IBAN,IP_ADDRESS,URL,MAC_ADDRESS,UK_NINO,US_PASSPORT,API_KEY,CRYPTO_ADDRESS,DE_TAX_ID';
+
+# --- EMAIL: first character of the local part, masked domain labels, TLD kept ---
+
+query T
+SELECT pii_mask('mail ab@cd.de', 'partial');
+----
+mail a*@**.de
+
+query T
+SELECT pii_mask_column('Ticket from jane.doe@acme-corp.com about invoice 4711', 'EMAIL', 'partial');
+----
+Ticket from j*******@*********.com about invoice 4711
+
+query T
+SELECT pii_mask_column('Mail an jörg.k@example.com', 'EMAIL', 'partial');
+----
+Mail an j*****@*******.com
+
+query T
+SELECT pii_mask_column('x@mail.example.de', 'EMAIL', 'partial');
+----
+*@****.*******.de
+
+# --- PHONE: last four digits at most, never more than half of the digits ---
+
+query T
+SELECT pii_mask_column('Callback +49 151 12345678 after 5pm', 'PHONE', 'partial');
+----
+Callback +***-***-5678 after 5pm
+
+query T
+SELECT pii_mask_column('Tel. (555) 123-4567', 'PHONE', 'partial');
+----
+Tel. ***-***-4567
+
+# --- CREDIT_CARD: first and last four for 16+ digits, last four only below ---
+
+query T
+SELECT pii_mask_column('Card 4111 1111 1111 1111', 'CREDIT_CARD', 'partial');
+----
+Card 4111********1111
+
+query T
+SELECT pii_mask_column('Amex 3782 822463 10005', 'CREDIT_CARD', 'partial');
+----
+Amex ***********0005
+
+# --- US_SSN, DE_TAX_ID ---
+
+query T
+SELECT pii_mask_column('SSN 123-45-6789', 'US_SSN', 'partial');
+----
+SSN ***-**-6789
+
+# --- IBAN: country code and check digits plus up to four trailing characters ---
+
+query T
+SELECT pii_mask_column('IBAN DE89 3704 0044 0532 0130 00', 'IBAN', 'partial');
+----
+IBAN DE89**************3000
+
+query T
+SELECT pii_mask_column('Konto NO9386011117947', 'IBAN', 'partial');
+----
+Konto NO93********947
+
+# --- IP_ADDRESS, MAC_ADDRESS ---
+
+query T
+SELECT pii_mask_column('Login from 192.168.1.100', 'IP_ADDRESS', 'partial');
+----
+Login from 192.***.***.**
+
+query T
+SELECT pii_mask_column('Router 00:1A:2B:3C:4D:5E', 'MAC_ADDRESS', 'partial');
+----
+Router 00:1A:**:**:**:**
+
+query T
+SELECT pii_mask_column('Router 001a.2b3c.4d5e', 'MAC_ADDRESS', 'partial');
+----
+Router 001a.****.****
+
+# --- URL: scheme and top-level domain, host labels and path masked ---
+
+query T
+SELECT pii_mask_column('See https://crm.example.com/customers/4711 for details', 'URL', 'partial');
+----
+See https://***.*******.com/*** for details
+
+query T
+SELECT pii_mask_column('Blog: https://anna-schmidt.blog', 'URL', 'partial');
+----
+Blog: https://************.blog
+
+# --- UK_NINO, US_PASSPORT, API_KEY, CRYPTO_ADDRESS ---
+
+query T
+SELECT pii_mask_column('NINO AB123456C', 'UK_NINO', 'partial');
+----
+NINO AB ** ** ** C
+
+query T
+SELECT pii_mask_column('Passport A12345678', 'US_PASSPORT', 'partial');
+----
+Passport A********
+
+query T
+SELECT pii_mask_column('Key AKIAIOSFODNN7EXAMPLE', 'API_KEY', 'partial');
+----
+Key AKIA****************
+
+query T
+SELECT pii_mask_column('Pay to bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq', 'CRYPTO_ADDRESS', 'partial');
+----
+Pay to bc1q**********************************5mdq
+
+# --- No partial mask of a realistic support-ticket value reveals more than half of its
+#     letters and digits ---
+
+statement ok
+CREATE TABLE support_tickets AS
+SELECT * FROM (VALUES
+    (1, 'EMAIL',          'Customer ab@cd.de cannot log in'),
+    (2, 'EMAIL',          'Reply to li@na.cn'),
+    (3, 'EMAIL',          'From jane.doe@acme-corp.com'),
+    (4, 'PHONE',          'Callback +49 151 12345678'),
+    (5, 'PHONE',          'Tel 0151 1234567'),
+    (6, 'CREDIT_CARD',    'Card 4111 1111 1111 1111'),
+    (7, 'CREDIT_CARD',    'Amex 3782 822463 10005'),
+    (8, 'US_SSN',         'SSN 123-45-6789'),
+    (9, 'IBAN',           'IBAN DE89370400440532013000'),
+    (10, 'IBAN',          'IBAN NO9386011117947'),
+    (11, 'IP_ADDRESS',    'Login from 10.0.0.1'),
+    (12, 'IP_ADDRESS',    'Login from 2001:0db8:85a3:0000:0000:8a2e:0370:7334'),
+    (13, 'URL',           'Profile https://anna-schmidt.blog'),
+    (14, 'URL',           'Profile https://crm.example.com/customers/4711?tab=orders'),
+    (15, 'MAC_ADDRESS',   'Device 001A2B3C4D5E'),
+    (16, 'UK_NINO',       'NINO AB 12 34 56 C'),
+    (17, 'US_PASSPORT',   'Passport C12345678'),
+    (18, 'API_KEY',       'Token ghp_aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789'),
+    (19, 'CRYPTO_ADDRESS','ETH 0x52908400098527886E0F7030069857D2E4169EE7'),
+    (20, 'DE_TAX_ID',     'Steuer-ID 86095742719')
+) t(ticket_id, pii_type, body);
+
+statement ok
+CREATE TABLE ticket_matches AS
+SELECT ticket_id, pii_type,
+       list_filter(pii_detect(body), lambda m: m.type = pii_type)[1].text AS matched,
+       pii_mask_value(list_filter(pii_detect(body), lambda m: m.type = pii_type)[1].text, pii_type, 'partial') AS masked
+FROM support_tickets;
+
+# Every ticket has a match of its type
+query I
+SELECT count(*) FROM ticket_matches WHERE matched IS NULL;
+----
+0
+
+# Revealed letters and digits are at most half of those of the value
+query III
+SELECT ticket_id, matched, masked FROM ticket_matches
+WHERE length(regexp_replace(masked, '[^\pL\pN]', '', 'g'))
+      > length(regexp_replace(matched, '[^\pL\pN]', '', 'g')) // 2;
+----
+
+# --- Short values are masked completely ---
+
+query T
+SELECT pii_mask_value('ab@cd.de', 'EMAIL', 'partial');
+----
+a*@**.de
+
+query T
+SELECT pii_mask_value('1234', 'PHONE', 'partial');
+----
+****
+
+query T
+SELECT pii_mask_value('DE89', 'IBAN', 'partial');
+----
+****
+
+query T
+SELECT pii_mask_value('AKIA12', 'API_KEY', 'partial');
+----
+******
+
+statement ok
+RESET anofox_pii_enabled_types;

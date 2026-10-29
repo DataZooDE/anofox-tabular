@@ -201,7 +201,7 @@ SELECT anofox_tab_vat_country_name('XX')
 ----
 NULL
 
-# Test anofox_tab_vat_format - Plain style (digits only)
+# Test anofox_tab_vat_format - Plain style (national part without prefix)
 query T
 SELECT anofox_tab_vat_format('DE123456789', 'plain')
 ----

@@ -1,0 +1,104 @@
+# name: test/sql/anofox_check_null_keys.test
+# description: duplicate_count treats NULL keys as duplicates of each other only: a single
+#              NULL key is not a duplicate, two NULL keys are one duplicate. Compound keys
+#              compare their NULL components as equal, consistent with the single-column rule.
+#              The same counting applies in run_checks.
+# group: [anofox_tabular]
+
+require anofox_tabular
+
+statement ok
+LOAD anofox_tabular
+
+statement ok
+SET anofox_tab_trace_enabled = false
+
+# A CRM export: customer_ref is optional (walk-in customers have none)
+statement ok
+CREATE TABLE crm_contacts (contact_id INTEGER, customer_ref VARCHAR, country VARCHAR, email VARCHAR)
+
+statement ok
+INSERT INTO crm_contacts VALUES
+    (1, 'C-1001', 'DE', 'lena.fischer@example.de'),
+    (2, 'C-1002', 'DE', 'jonas.weber@example.de'),
+    (3, NULL,     'AT', 'walk-in@example.at')
+
+# one NULL key: no duplicate
+query TI
+SELECT status, duplicate_count FROM duplicate_count('crm_contacts', 'customer_ref')
+----
+pass	0
+
+query T
+SELECT message FROM duplicate_count('crm_contacts', 'customer_ref')
+----
+0 duplicate(s) in 3 rows is acceptable
+
+# a second walk-in customer: the two NULL keys are one duplicate
+statement ok
+INSERT INTO crm_contacts VALUES (4, NULL, 'AT', 'walk-in-2@example.at')
+
+query TI
+SELECT status, duplicate_count FROM duplicate_count('crm_contacts', 'customer_ref')
+----
+fail	1
+
+# a real duplicate plus the NULL pair
+statement ok
+INSERT INTO crm_contacts VALUES (5, 'C-1001', 'DE', 'lena.f@example.de')
+
+query I
+SELECT duplicate_count FROM duplicate_count('crm_contacts', 'customer_ref')
+----
+2
+
+# compound key: NULL components compare equal; (NULL, 'AT') appears twice -> 1,
+# ('C-1001', 'DE') twice -> 1
+query I
+SELECT duplicate_count FROM duplicate_count('crm_contacts', 'customer_ref, country')
+----
+2
+
+# compound key with a single NULL-component row: no duplicate
+statement ok
+CREATE TABLE shipments (order_id INTEGER, parcel_no INTEGER)
+
+statement ok
+INSERT INTO shipments VALUES (7001, 1), (7001, 2), (7002, NULL)
+
+query I
+SELECT duplicate_count FROM duplicate_count('shipments', 'order_id, parcel_no')
+----
+0
+
+query I
+SELECT duplicate_count FROM duplicate_count('shipments', 'parcel_no')
+----
+0
+
+# ===--------------------------------------------------------------------===
+# run_checks counts the same way, also per partition
+# ===--------------------------------------------------------------------===
+
+statement ok
+CREATE TABLE key_checks (
+    check_name VARCHAR, check_type VARCHAR, table_name VARCHAR, column_name VARCHAR,
+    params VARCHAR, lower_threshold DOUBLE, upper_threshold DOUBLE,
+    monitor_only BOOLEAN, identifier_column VARCHAR, filter_expr VARCHAR
+)
+
+statement ok
+INSERT INTO key_checks VALUES
+    ('parcel_unique',   'duplicate_count', 'shipments',    'parcel_no',             NULL, NULL, 0, false, NULL, NULL),
+    ('ref_unique',      'duplicate_count', 'crm_contacts', 'customer_ref',          NULL, NULL, 0, false, NULL, NULL),
+    ('ref_cty_unique',  'duplicate_count', 'crm_contacts', 'customer_ref, country', NULL, NULL, 0, false, NULL, NULL),
+    ('ref_by_country',  'duplicate_count', 'crm_contacts', 'customer_ref',          NULL, NULL, 0, false, 'country', NULL)
+
+query TTTR
+SELECT check_name, identifier, status, value FROM run_checks('key_checks') ORDER BY check_name, identifier
+----
+parcel_unique	NULL	pass	0.0
+ref_by_country	AT	fail	1.0
+ref_by_country	DE	fail	1.0
+ref_cty_unique	NULL	fail	2.0
+ref_unique	NULL	fail	2.0

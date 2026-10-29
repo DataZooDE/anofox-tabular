@@ -68,6 +68,7 @@ class TestProfileTable:
             "top_values", "avg_length", "min_length", "max_length",
             "pattern_summary", "is_unique", "is_constant",
             "zero_count", "negative_count", "is_sampled", "actual_sample_size",
+            "nan_count", "inf_count",
         }
         assert expected.issubset(set(result.columns))
 
@@ -166,6 +167,13 @@ class TestProfileSummary:
         assert "complex_columns" in result.columns
         assert result["complex_columns"].iloc[0] == 0  # all scalars
 
+    def test_type_buckets_add_up_to_column_count(self, conn, profile_table_fixture):
+        from anofox import profile
+        row = profile.profile_summary(conn, profile_table_fixture).iloc[0]
+        buckets = ["numeric_columns", "string_columns", "temporal_columns",
+                   "boolean_columns", "complex_columns", "other_columns"]
+        assert sum(int(row[b]) for b in buckets) == int(row["column_count"])
+
     def test_has_total_nulls_field(self, conn, profile_table_fixture):
         from anofox import profile
         result = profile.profile_summary(conn, profile_table_fixture)
@@ -237,10 +245,15 @@ class TestProfileCorrelations:
 class _DummyNative:
     def __init__(self):
         self.last_query = None
+        self.last_params = None
 
-    def sql(self, query):
+    def execute(self, query, params=None):
         self.last_query = query
+        self.last_params = params
         return self
+
+    def sql(self, query, params=None):
+        return self.execute(query, params)
 
     def df(self):
         return pandas.DataFrame()
@@ -251,38 +264,102 @@ class _DummyConn:
         self.native = _DummyNative()
 
 
-class TestProfileSqlEscaping:
-    def test_profile_table_escapes_table_and_columns(self, monkeypatch):
+class TestProfileSqlBinding:
+    """Table and column names travel as bound parameters, never inside the SQL text."""
+
+    def test_profile_table_binds_table_and_columns(self):
         from anofox import profile
 
         conn = _DummyConn()
-        monkeypatch.setattr(profile, "resolve_table", lambda _c, _t: ("bad'table", False))
-        monkeypatch.setattr(profile, "cleanup_table", lambda _c, _t, _r: None)
 
-        profile.profile_table(conn, "ignored", columns=["a'b"])
+        profile.profile_table(conn, "bad'table", columns=["a'b"])
 
-        assert "anofox_tab_profile_table('bad''table'" in conn.native.last_query
-        assert "['a''b']" in conn.native.last_query
+        assert "bad'table" not in conn.native.last_query
+        assert conn.native.last_params[:2] == ["bad'table", ["a'b"]]
 
-    def test_profile_summary_escapes_table(self, monkeypatch):
+    def test_profile_summary_binds_table(self):
         from anofox import profile
 
         conn = _DummyConn()
-        monkeypatch.setattr(profile, "resolve_table", lambda _c, _t: ("bad'table", False))
-        monkeypatch.setattr(profile, "cleanup_table", lambda _c, _t, _r: None)
 
-        profile.profile_summary(conn, "ignored")
+        profile.profile_summary(conn, "bad'table")
 
-        assert "anofox_tab_profile_summary('bad''table')" in conn.native.last_query
+        assert "bad'table" not in conn.native.last_query
+        assert conn.native.last_params == ["bad'table"]
 
-    def test_profile_correlations_escapes_table_and_columns(self, monkeypatch):
+    def test_profile_correlations_binds_table_and_columns(self):
         from anofox import profile
 
         conn = _DummyConn()
-        monkeypatch.setattr(profile, "resolve_table", lambda _c, _t: ("bad'table", False))
-        monkeypatch.setattr(profile, "cleanup_table", lambda _c, _t, _r: None)
 
-        profile.profile_correlations(conn, "ignored", columns=["a'b"])
+        profile.profile_correlations(conn, "bad'table", columns=["a'b"])
 
-        assert "anofox_tab_profile_correlations('bad''table'" in conn.native.last_query
-        assert "['a''b']" in conn.native.last_query
+        assert "bad'table" not in conn.native.last_query
+        assert conn.native.last_params == ["bad'table", ["a'b"]]
+
+
+class TestDocstringsListEveryColumn:
+    """The Returns section of each profile wrapper names every SQL output column."""
+
+    @pytest.fixture
+    def invoices(self, conn):
+        import pandas as pd
+        return pd.DataFrame({
+            "invoice_no": ["INV-1001", "INV-1002", "INV-1003"],
+            "net_amount": [1200.0, 89.5, 430.25],
+            "vat_amount": [228.0, 17.0, 81.75],
+        })
+
+    @pytest.mark.parametrize("name", ["profile_table", "profile_summary", "profile_correlations"])
+    def test_columns_in_docstring(self, conn, invoices, name):
+        import re
+        from anofox import profile
+        func = getattr(profile, name)
+        returns = func.__doc__.split("Returns")[1]
+        documented = set(re.findall(r"[a-z_0-9]+", returns))
+        missing = [c for c in func(conn, invoices).columns if c not in documented]
+        assert missing == []
+
+
+class TestProfileTableResultValues:
+    """profile_table: plain Python top_values, row_count is the rows scanned."""
+
+    @pytest.fixture
+    def products(self):
+        import pandas as pd
+        return pd.DataFrame({
+            "sku": [f"SKU-{100 + i % 7}" for i in range(300)],
+            "price": [9.5 + i % 4 for i in range(300)],
+            "fax": ["+49 30 1234-56" if i == 3 else None for i in range(300)],
+        })
+
+    def test_top_values_is_a_list_for_pandas(self, conn, products):
+        from anofox import profile
+        out = profile.profile_table(conn, products)
+        top = out.set_index("column_name").loc["sku", "top_values"]
+        assert type(top) is list
+        assert top[0] == {"value": "SKU-100", "count": 43}
+        import polars as pl
+        polars_top = profile.profile_table(conn, pl.from_pandas(products)).filter(
+            pl.col("column_name") == "sku")["top_values"].to_list()[0]
+        assert polars_top == top
+
+    def test_top_values_none_and_empty_result(self, conn, products):
+        from anofox import profile
+        out = profile.profile_table(conn, products.iloc[0:0])
+        assert out["top_values"].isna().all() or all(v in (None, []) for v in out["top_values"])
+        assert out["top_values"].dtype == object
+
+    def test_row_count_is_rows_scanned(self, conn, products):
+        from anofox import profile
+        sampled = profile.profile_table(conn, products, sample_size=10)
+        assert sampled["row_count"].tolist() == [10, 10, 10]
+        assert sampled["is_sampled"].all()
+        total = profile.profile_summary(conn, products)["row_count"].iloc[0]
+        assert total == 300
+        exact = profile.profile_table(conn, products, sample_size=10, exact=True)
+        assert exact["row_count"].tolist() == [300, 300, 300]
+
+    def test_docstring_says_rows_scanned(self):
+        from anofox import profile
+        assert "rows scanned" in profile.profile_table.__doc__

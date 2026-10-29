@@ -133,3 +133,174 @@ class TestPiiAuditTable:
         assert list(result.columns[:2]) == ["row_id", "id"]
         # Only row 1 contains PII
         assert set(result["id"]) == {1}
+
+
+class TestPiiTableColumnsArgument:
+    def test_scan_columns_as_string(self, conn, text_table):
+        from anofox import pii
+        as_list = pii.pii_scan_table(conn, text_table, columns=["text"])
+        as_string = pii.pii_scan_table(conn, text_table, columns="text")
+        assert as_string.equals(as_list)
+
+    def test_audit_columns_as_string(self, conn, text_table):
+        from anofox import pii
+        as_list = pii.pii_audit_table(conn, text_table, columns=["text"])
+        as_string = pii.pii_audit_table(conn, text_table, columns="text")
+        assert as_string.equals(as_list)
+
+
+class TestPiiMaskValue:
+    """pii_mask_value masks a whole known-PII value, also where detection finds nothing."""
+
+    def test_scalar(self, conn):
+        from anofox import pii
+        assert pii.pii_mask_value(conn, "Li", "NAME") == "[NAME]"
+        assert pii.pii_mask_value(conn, None, "NAME") is None
+
+    def test_dataframe_keeps_index(self, conn):
+        import pandas as pd
+        from anofox import pii
+        df = pd.DataFrame({"first_name": ["Li", "Anna", None], "phone": ["01511234567", "030 1234", None]},
+                          index=[7, 8, 9])
+        out = pii.pii_mask_value(conn, df, "PHONE", strategy="redact", column="phone")
+        assert list(out.index) == [7, 8, 9]
+        assert out["pii_mask_value"].tolist()[:2] == ["[PHONE]", "[PHONE]"]
+        assert out["pii_mask_value"].isna().tolist()[2]
+
+    def test_unknown_type_raises(self, conn):
+        import duckdb
+        import pytest
+        from anofox import pii
+        with pytest.raises(duckdb.Error, match="Unknown PII type"):
+            pii.pii_mask_value(conn, "x", "NO_SUCH_TYPE")
+
+
+class TestMaskReplace:
+    """replace=True masks the column in place instead of adding a column next
+    to the raw value, so the result no longer carries the PII."""
+
+    @staticmethod
+    def _tickets():
+        import pandas as pd
+        return pd.DataFrame({
+            "ticket_id": [5001, 5002, 5003],
+            "body": ["Please call me at +1 650-253-0000",
+                     "Mail ana.lopez@example.com about the refund",
+                     None],
+            "agent": ["Mia Schulz", "Li", "Tom Berger"],
+        }, index=[7, 8, 9])
+
+    def test_pii_mask_replaces_the_column(self, conn):
+        from anofox import pii
+        tickets = self._tickets()
+        masked = pii.pii_mask(conn, tickets, column="body", replace=True)
+        assert list(masked.columns) == ["ticket_id", "body", "agent"]
+        assert list(masked.index) == [7, 8, 9]
+        assert "650-253-0000" not in masked.loc[7, "body"]
+        assert "ana.lopez@example.com" not in masked.loc[8, "body"]
+        assert masked["body"].isna().tolist() == [False, False, True]
+        # The input is not changed.
+        assert tickets.loc[8, "body"] == "Mail ana.lopez@example.com about the refund"
+
+    def test_pii_mask_default_still_adds_a_column(self, conn):
+        from anofox import pii
+        masked = pii.pii_mask(conn, self._tickets(), column="body")
+        assert list(masked.columns) == ["ticket_id", "body", "agent", "pii_mask"]
+
+    def test_pii_mask_value_replaces_the_column(self, conn):
+        from anofox import pii
+        masked = pii.pii_mask_value(conn, self._tickets(), "NAME", column="agent", replace=True)
+        assert list(masked.columns) == ["ticket_id", "body", "agent"]
+        assert "Li" not in masked["agent"].tolist()
+        assert "Mia Schulz" not in masked["agent"].tolist()
+
+    def test_polars(self, conn):
+        pl = pytest.importorskip("polars")
+        from anofox import pii
+        tickets = pl.from_pandas(self._tickets())
+        masked = pii.pii_mask(conn, tickets, column="body", replace=True)
+        assert masked.columns == ["ticket_id", "body", "agent"]
+        assert "ana.lopez@example.com" not in masked["body"][1]
+
+    @pytest.mark.parametrize("call", [
+        lambda pii, conn: pii.pii_mask(conn, "ana@example.com", replace=True),
+        lambda pii, conn: pii.pii_mask_value(conn, "Li", "NAME", replace=True),
+    ])
+    def test_replace_needs_a_dataframe(self, conn, call):
+        from anofox import pii
+        with pytest.raises(ValueError, match="replace.*DataFrame"):
+            call(pii, conn)
+
+
+def _setting(conn):
+    return conn.execute("SELECT current_setting('anofox_pii_enabled_types')").fetchone()[0]
+
+
+@pytest.fixture
+def tickets():
+    return pandas.DataFrame({
+        "ticket_id": [5001, 5002, 5003],
+        "body": [
+            "Please call me back on +49 30 1234567, thanks",
+            "Invoice copy to anna.schmidt@example.de please",
+            "Refund to IBAN DE89370400440532013000 and mail ops@example.com",
+        ],
+    }, index=[11, 12, 13])
+
+
+class TestPiiTypes:
+    """types= restricts detection for one call and restores the setting afterwards."""
+
+    def test_mask_text_with_type_list(self, conn):
+        from anofox import pii
+        text = "Mail anna@example.de or call +49 30 1234567"
+        assert pii.pii_mask(conn, text, types=["EMAIL"]) == "Mail [EMAIL] or call +49 30 1234567"
+        assert _setting(conn) == ""
+
+    def test_mask_dataframe_with_comma_string(self, conn, tickets):
+        from anofox import pii
+        out = pii.pii_mask(conn, tickets, column="body", types="EMAIL, IBAN")
+        assert out.index.tolist() == [11, 12, 13]
+        assert out["pii_mask"].tolist() == [
+            "Please call me back on +49 30 1234567, thanks",
+            "Invoice copy to [EMAIL] please",
+            "Refund to IBAN [IBAN] and mail [EMAIL]",
+        ]
+        assert _setting(conn) == ""
+
+    def test_detect_and_contains(self, conn):
+        from anofox import pii
+        found = pii.pii_detect(conn, "call +49 30 1234567 or anna@example.de", types=["PHONE"])
+        assert [m["type"] for m in found] == ["PHONE"]
+        assert pii.pii_contains(conn, "anna@example.de", types=["PHONE"]) is False
+        assert pii.pii_contains(conn, "anna@example.de", types=["EMAIL"]) is True
+
+    def test_scan_and_audit_table(self, conn, tickets):
+        from anofox import pii
+        scan = pii.pii_scan_table(conn, tickets, columns=["body"], types=["EMAIL"])
+        assert list(scan["checked_types"].iloc[0]) == ["EMAIL"]
+        audit = pii.pii_audit_table(conn, tickets, columns=["body"], id_column="ticket_id", types=["EMAIL"])
+        assert sorted(audit["ticket_id"].tolist()) == [5002, 5003]
+        assert _setting(conn) == ""
+
+    def test_previous_setting_restored(self, conn):
+        from anofox import pii
+        conn.execute("SET anofox_pii_enabled_types = 'EMAIL,PHONE'")
+        try:
+            assert pii.pii_mask(conn, "anna@example.de, IBAN DE89370400440532013000",
+                                types=["IBAN"]) == "anna@example.de, IBAN [IBAN]"
+            assert _setting(conn) == "EMAIL,PHONE"
+        finally:
+            conn.execute("RESET anofox_pii_enabled_types")
+
+    def test_unknown_type_raises_and_keeps_setting(self, conn):
+        import duckdb
+        from anofox import pii
+        with pytest.raises(duckdb.Error, match="Unknown PII type"):
+            pii.pii_mask(conn, "anna@example.de", types=["EMAIL", "PASSPORT_NO"])
+        assert _setting(conn) == ""
+
+    def test_empty_types_raises(self, conn):
+        from anofox import pii
+        with pytest.raises(ValueError, match="types"):
+            pii.pii_mask(conn, "anna@example.de", types=[])

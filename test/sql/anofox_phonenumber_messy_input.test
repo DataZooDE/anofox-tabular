@@ -1,0 +1,125 @@
+# name: test/sql/anofox_phonenumber_messy_input.test
+# description: Letters in a phone number make it invalid (reason invalid_characters); a leading
+#              label (Tel:, Phone, Mobil, Fax, ...) is stripped and a trailing extension
+#              (ext., x, Durchwahl, DW) is split off into phonenumber_parse().extension
+# group: [phonenumber]
+
+require anofox_tabular
+
+statement ok
+LOAD anofox_tabular;
+
+statement ok
+SET anofox_tab_phonenumber_default_region='US';
+
+# A contact list exported from a CRM: labels typed into the phone field, extensions in
+# several notations, notes and letters mixed into the digits
+statement ok
+CREATE TABLE contacts AS SELECT * FROM (VALUES
+    (1,  'Anna Schmidt',    'Tel: +49 30 12345678',          NULL),
+    (2,  'Jonas Weber',     'Tel. 030 12345678',             'DE'),
+    (3,  'Sarah Miller',    'Phone (650) 253-0000',          'US'),
+    (4,  'Lena Fischer',    'Mobil: 0171 1234567',           'DE'),
+    (5,  'Tom Baker',       '+1 650-253-0000 ext. 123',      NULL),
+    (6,  'Chris Young',     '(650) 253-0000 x42',            'US'),
+    (7,  'Kim Lee',         '650-253-0000 EXT 7',            'US'),
+    (8,  'Max Mustermann',  '030 12345678 Durchwahl 215',    'DE'),
+    (9,  'Eva Huber',       '030 12345678 DW 12',            'DE'),
+    (10, 'Paul Wagner',     'Fax: 030 12345678',             'DE'),
+    (11, 'Ben Clark',       'tel:+1-650-253-0000',           NULL),
+    (12, 'Emma Jansen',     '0049 30 12345678 ext 5',        'DE'),
+    (13, 'Noah Brown',      '650foo2530000',                 'US'),
+    (14, 'Mia Becker',      '030 12A34567',                  'DE'),
+    (15, 'Leon Wolf',       '+49 30 1234 FAX 5678',          NULL),
+    (16, 'Olivia Davis',    'call 650 253 0000',             'US'),
+    (17, 'Liam Wilson',     '650 253 0000 (mobile)',         'US'),
+    (18, 'Ava Moore',       '1-800-FLOWERS',                 'US'),
+    (19, 'Finn Koch',       '030 12345678 ext',              'DE'),
+    (20, 'Ella Hall',       'x123',                          'US'),
+    (21, 'Unknown',         'n/a',                           'DE')
+) t(id, name, phone, country);
+
+query ITTTTT
+SELECT id,
+       (phonenumber_parse(phone, country)).valid,
+       phonenumber_format(phone, country, 'E164'),
+       (phonenumber_parse(phone, country)).extension,
+       (phonenumber_parse(phone, country)).reason,
+       phonenumber_is_valid(phone, country)
+FROM contacts ORDER BY id;
+----
+1	true	+493012345678	NULL	NULL	true
+2	true	+493012345678	NULL	NULL	true
+3	true	+16502530000	NULL	NULL	true
+4	true	+491711234567	NULL	NULL	true
+5	true	+16502530000	123	NULL	true
+6	true	+16502530000	42	NULL	true
+7	true	+16502530000	7	NULL	true
+8	true	+493012345678	215	NULL	true
+9	true	+493012345678	12	NULL	true
+10	true	+493012345678	NULL	NULL	true
+11	true	+16502530000	NULL	NULL	true
+12	true	+493012345678	5	NULL	true
+13	false	NULL	NULL	invalid_characters	false
+14	false	NULL	NULL	invalid_characters	false
+15	false	NULL	NULL	invalid_characters	false
+16	false	NULL	NULL	invalid_characters	false
+17	false	NULL	NULL	invalid_characters	false
+18	false	NULL	NULL	invalid_characters	false
+19	false	NULL	NULL	invalid_characters	false
+20	false	NULL	NULL	invalid_characters	false
+21	false	NULL	NULL	not_a_number	false
+
+# The checks without a reason agree: a number with letters is neither possible, valid for its
+# region, nor has a region
+query ITTT
+SELECT id,
+       phonenumber_is_possible(phone, country),
+       phonenumber_is_valid_for_region(phone, country),
+       phonenumber_region(phone, country)
+FROM contacts WHERE id IN (2, 6, 13, 15) ORDER BY id;
+----
+2	true	true	DE
+6	true	true	US
+13	false	false	NULL
+15	false	false	NULL
+
+# The extension is not part of any format
+query TTTT
+SELECT phonenumber_format('+1 650-253-0000 ext. 123', NULL, 'E164'),
+       phonenumber_format('+1 650-253-0000 ext. 123', NULL, 'INTERNATIONAL'),
+       phonenumber_format('+1 650-253-0000 ext. 123', NULL, 'NATIONAL'),
+       phonenumber_format('+1 650-253-0000 ext. 123', NULL, 'RFC3966');
+----
++16502530000	+1 650 253 0000	(650) 253-0000	tel:+1-650-253-0000
+
+# The RFC3966 output reads back as the same number
+query T
+SELECT phonenumber_format(phonenumber_format('030 12345678', 'DE', 'RFC3966'), NULL, 'E164');
+----
++493012345678
+
+# Markers are case-insensitive and may be followed by '.', ':' or spaces
+query TTTT
+SELECT (phonenumber_parse('030 12345678 durchwahl: 9', 'DE')).extension,
+       (phonenumber_parse('030 12345678 Dw.12', 'DE')).extension,
+       (phonenumber_parse('(650) 253-0000 X 1234', 'US')).extension,
+       (phonenumber_parse('650 253 0000, Ext: 88', 'US')).extension;
+----
+9	12	1234	88
+
+# phonenumber_match compares the numbers without their extensions
+query TT
+SELECT phonenumber_match('(650) 253-0000 x42', '+1 650 253 0000', 'US'),
+       phonenumber_match('Tel: 030 12345678', '+49 30 12345678', 'DE');
+----
+EXACT_MATCH	EXACT_MATCH
+
+# A valid number without an extension has a NULL extension; NULL input stays a NULL struct
+query TT
+SELECT (phonenumber_parse('+49 30 12345678', NULL)).extension, phonenumber_parse(NULL, 'DE') IS NULL;
+----
+NULL	true
+
+statement ok
+SET anofox_tab_phonenumber_default_region='US';

@@ -1,0 +1,36 @@
+# name: test/sql/anofox_check_freshness_now_icu.test
+# description: freshness with an instant as reference_time (TIMESTAMPTZ, now()) measures from
+#              its UTC time also when ICU is loaded and the session TimeZone is not UTC.
+# group: [anofox_tabular]
+
+require anofox_tabular
+
+require icu
+
+statement ok
+LOAD anofox_tabular
+
+statement ok
+SET anofox_tab_trace_enabled = false
+
+statement ok
+SET TimeZone = 'America/New_York'
+
+statement ok
+CREATE TABLE parcel_scans AS
+SELECT * FROM (VALUES ('PCL-77001', TIMESTAMP '2026-10-27 08:00:00'),
+                      ('PCL-77002', TIMESTAMP '2026-10-27 10:10:00')) t(parcel_id, scanned_at)
+
+# 12:30 at +02:00 is 10:30 UTC: 20 minutes after the newest scan
+query TTI
+SELECT status, CAST(threshold AS VARCHAR), age_seconds
+FROM freshness('parcel_scans', 'scanned_at', INTERVAL 1 HOUR, TIMESTAMPTZ '2026-10-27 12:30:00+02')
+----
+pass	2026-10-27 09:30:00	1200
+
+# now() equals the default (the current UTC time)
+query T
+SELECT (SELECT age_seconds FROM freshness('parcel_scans', 'scanned_at', INTERVAL 1 HOUR, now()))
+     - (SELECT age_seconds FROM freshness('parcel_scans', 'scanned_at', INTERVAL 1 HOUR)) BETWEEN -5 AND 5
+----
+true

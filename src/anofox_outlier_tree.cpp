@@ -210,10 +210,24 @@ void OutlierTree::FindOutliersInNumericCluster(
                ", n=" + std::to_string(stats.n_samples) +
                ", median=" + std::to_string(stats.median) +
                ", mad_scaled=" + std::to_string(stats.mad_scaled) +
+               ", spread=" + std::to_string(stats.spread) +
                ", z_outlier=" + std::to_string(params_.z_outlier));
 
-    if (stats.n_samples < 3 || stats.mad_scaled < 1e-10) {
-        return;  // Not enough variation to detect outliers
+    if (stats.n_samples < 3) {
+        AnofoxTrace(AnofoxLogLevel::Debug,
+                   "OutlierTree: Skipping cluster for " + column_info[target_col].name + ": only " +
+                   std::to_string(stats.n_samples) + " finite value(s)");
+        return;
+    }
+    if (stats.mad_scaled < 1e-10) {
+        // More than half of the values share one value: the MAD cannot scale the z-score
+        AnofoxTrace(AnofoxLogLevel::Debug,
+                   "OutlierTree: MAD is 0 for " + column_info[target_col].name + " (n=" +
+                   std::to_string(stats.n_samples) + "), " +
+                   (stats.spread < 1e-10
+                        ? std::string("every finite value equals the median ") + std::to_string(stats.median) +
+                              ": only values off the median can be outliers"
+                        : "using the scaled mean absolute deviation " + std::to_string(stats.spread)));
     }
 
     // Maximum number of outliers allowed in this cluster
@@ -229,6 +243,9 @@ void OutlierTree::FindOutliersInNumericCluster(
 
     for (size_t idx : row_indices) {
         double value = data[target_col].numeric_values[idx];
+        if (std::isnan(value)) {
+            continue;  // NaN is neither high nor low
+        }
         // Use robust z-score (based on median/MAD) for outlier detection
         double z = stats.GetRobustZScore(value);
 
@@ -240,6 +257,30 @@ void OutlierTree::FindOutliersInNumericCluster(
         if (std::abs(z) >= params_.z_outlier) {
             potential_outliers.push_back({idx, z});
         }
+    }
+
+    // A value repeated more often than the group may have outliers is a regular value of the
+    // group, not an outlier (a 5 % discount on 6 % of the invoices, when most carry none);
+    // flagging only max_outliers of its identical rows would also be arbitrary.
+    {
+        std::map<double, size_t> value_counts;
+        for (const auto& candidate : potential_outliers) {
+            value_counts[data[target_col].numeric_values[candidate.first]]++;
+        }
+        auto repeated = [&](const std::pair<size_t, double>& candidate) {
+            double value = data[target_col].numeric_values[candidate.first];
+            return value_counts[value] > max_outliers;
+        };
+        for (const auto& [value, count] : value_counts) {
+            if (count > max_outliers) {
+                AnofoxTrace(AnofoxLogLevel::Debug,
+                           "OutlierTree: Not flagging " + std::to_string(value) + " in " +
+                           column_info[target_col].name + ": it occurs " + std::to_string(count) +
+                           " times, more than the " + std::to_string(max_outliers) + " outlier(s) allowed");
+            }
+        }
+        potential_outliers.erase(std::remove_if(potential_outliers.begin(), potential_outliers.end(), repeated),
+                                 potential_outliers.end());
     }
 
     // Sort by absolute z-score (most extreme first)
@@ -261,8 +302,11 @@ void OutlierTree::FindOutliersInNumericCluster(
         outlier.cluster_mean = stats.mean;
         outlier.cluster_sd = stats.sd;
         outlier.cluster_median = stats.median;
+        outlier.cluster_mad = stats.spread;
         outlier.cluster_size = stats.n_samples;
-        outlier.z_score = z_score;
+        // An infinite value (or one so far out that the robust z overflows) is an outlier
+        // without a meaningful z-score: reported as NULL, not inf
+        outlier.z_score = std::isfinite(z_score) ? z_score : std::numeric_limits<double>::quiet_NaN();
         outlier.lower_bound = lower_bound;
         outlier.upper_bound = upper_bound;
         outlier.conditions = conditions;
@@ -556,16 +600,29 @@ NumericClusterStats OutlierTree::ComputeNumericStats(
 
     stats.n_samples = values.size();
 
-    // Mean
-    double sum = std::accumulate(values.begin(), values.end(), 0.0);
-    stats.mean = sum / stats.n_samples;
-
-    // Standard deviation
-    double sq_sum = 0.0;
+    // Mean and standard deviation over the values scaled by their largest magnitude, so values
+    // near the DOUBLE range (1e308) do not overflow the sums. A result that is itself out of
+    // range stays inf and is reported as NULL.
+    double scale = 0.0;
     for (double v : values) {
-        sq_sum += (v - stats.mean) * (v - stats.mean);
+        scale = std::max(scale, std::abs(v));
     }
-    stats.sd = stats.n_samples > 1 ? std::sqrt(sq_sum / (stats.n_samples - 1)) : 0.0;
+    if (scale == 0.0) {
+        scale = 1.0;
+    }
+    double scaled_sum = 0.0;
+    for (double v : values) {
+        scaled_sum += v / scale;
+    }
+    double scaled_mean = scaled_sum / stats.n_samples;
+    stats.mean = scaled_mean * scale;
+
+    double scaled_sq_sum = 0.0;
+    for (double v : values) {
+        double diff = v / scale - scaled_mean;
+        scaled_sq_sum += diff * diff;
+    }
+    stats.sd = stats.n_samples > 1 ? std::sqrt(scaled_sq_sum / (stats.n_samples - 1)) * scale : 0.0;
 
     // Sort for quantiles
     std::sort(values.begin(), values.end());
@@ -586,6 +643,23 @@ NumericClusterStats OutlierTree::ComputeNumericStats(
     stats.mad = abs_deviations[abs_deviations.size() / 2];
     // Scale factor 1.4826 makes MAD consistent with SD for normal distributions
     stats.mad_scaled = stats.mad * 1.4826;
+
+    // Fallback spread for groups where more than half of the values are equal (MAD = 0, e.g.
+    // order quantities that are mostly 1): the mean absolute deviation from the median, scaled
+    // by sqrt(pi/2) to be consistent with the SD for normal distributions. It is 0 only when
+    // every value equals the median; the SD is the last resort.
+    double abs_dev_sum = 0.0;
+    for (double deviation : abs_deviations) {
+        abs_dev_sum += deviation / scale;
+    }
+    stats.mean_abs_dev_scaled = abs_dev_sum / stats.n_samples * scale * 1.2533141373155003;  // sqrt(pi / 2)
+    if (stats.mad_scaled >= 1e-10) {
+        stats.spread = stats.mad_scaled;
+    } else if (stats.mean_abs_dev_scaled >= 1e-10) {
+        stats.spread = stats.mean_abs_dev_scaled;
+    } else if (stats.sd >= 1e-10) {
+        stats.spread = stats.sd;
+    }
 
     return stats;
 }
@@ -622,10 +696,23 @@ void OutlierTree::GenerateExplanation(
 
     // Describe the outlier
     if (column_info[outlier.target_column_idx].type == FeatureType::NUMERIC) {
-        oss << " is unusually " << (outlier.z_score > 0 ? "high" : "low")
-            << " (mean: " << std::fixed << std::setprecision(2) << outlier.cluster_mean
-            << ", SD: " << outlier.cluster_sd
-            << ", z-score: " << outlier.z_score << ")";
+        // The direction from the value itself: the z-score is NaN for an infinite value
+        bool is_high = std::holds_alternative<double>(outlier.outlier_value) &&
+                       std::get<double>(outlier.outlier_value) > outlier.cluster_median;
+        // A statistic out of the DOUBLE range is NULL in the result and "n/a" here
+        auto format_stat = [](double stat) {
+            std::ostringstream stat_text;
+            if (std::isfinite(stat)) {
+                stat_text << std::fixed << std::setprecision(2) << stat;
+            } else {
+                stat_text << "n/a";
+            }
+            return stat_text.str();
+        };
+        oss << " is unusually " << (is_high ? "high" : "low")
+            << " (median: " << format_stat(outlier.cluster_median)
+            << ", MAD: " << format_stat(outlier.cluster_mad)
+            << ", z-score: " << format_stat(outlier.z_score) << ")";
     } else {
         oss << " is unusually rare (cluster size: " << outlier.cluster_size << ")";
     }
@@ -792,6 +879,7 @@ bool OutlierTree::AddOrReplaceOutlier(
 struct OutlierTreeBindData : public TableFunctionData {
     std::string table_name;
     std::vector<std::string> column_names;
+    std::vector<FeatureType> column_types;  // resolved at bind: VARCHAR/ENUM categorical, else numeric
     std::string output_mode;  // "summary" or "outliers"
     OutlierTreeParams params;
     IdColumn id_column;       // optional pass-through identifier ('outliers' mode)
@@ -834,8 +922,10 @@ static unique_ptr<FunctionData> OutlierTreeBind(ClientContext &context, TableFun
         throw BinderException("outlier_tree requires at least 2 arguments: table_name, columns");
     }
 
-    std::string table_name = input.inputs[0].ToString();
-    std::string columns_str = input.inputs[1].ToString();
+    std::string table_name = RequireNonNullArgument(input, 0, "outlier_tree", "table_name");
+    RejectTempTable(context, "outlier_tree", table_name);
+    RejectUncommittedChanges(context, "outlier_tree");
+    std::string columns_str = RequireNonNullArgument(input, 1, "outlier_tree", "columns");
 
     // Parse column names
     std::vector<std::string> column_names;
@@ -860,15 +950,45 @@ static unique_ptr<FunctionData> OutlierTreeBind(ClientContext &context, TableFun
         throw BinderException("columns parameter must contain at least one column name");
     }
 
+    // Resolve the feature columns now (case-insensitive, the table's spelling from here on) and
+    // check their types: numeric columns (BOOLEAN as 0/1) are read as DOUBLE, VARCHAR and ENUM
+    // as categories. Anything else (DATE, TIMESTAMP, LIST, ...) failed late with a cast error.
+    std::vector<FeatureType> column_types;
+    {
+        std::vector<std::string> resolved_names;
+        for (auto &column : ResolveColumns(context, "outlier_tree", table_name,
+                                                    vector<string>(column_names.begin(), column_names.end()))) {
+            auto type_id = column.type.id();
+            if (type_id == LogicalTypeId::VARCHAR || type_id == LogicalTypeId::ENUM) {
+                column_types.push_back(FeatureType::CATEGORICAL);
+            } else if (column.type.IsNumeric() || type_id == LogicalTypeId::BOOLEAN) {
+                column_types.push_back(FeatureType::NUMERIC);
+            } else {
+                throw BinderException("outlier_tree: column '%s' must be numeric or categorical (VARCHAR), got %s",
+                                      column.name, column.type.ToString());
+            }
+            resolved_names.push_back(std::move(column.name));
+        }
+        column_names = std::move(resolved_names);
+    }
+
     // Parse optional parameters (read integral values as signed so that
     // negative inputs can be rejected before any cast to size_t)
-    std::string output_mode = input.inputs.size() > 2 ? input.inputs[2].ToString() : "summary";
-    int64_t max_depth_raw = input.inputs.size() > 3 ? input.inputs[3].GetValue<int64_t>() : 4;
-    double max_perc_outliers = input.inputs.size() > 4 ? input.inputs[4].GetValue<double>() : 0.01;
-    int64_t min_size_numeric_raw = input.inputs.size() > 5 ? input.inputs[5].GetValue<int64_t>() : 25;
-    int64_t min_size_categ_raw = input.inputs.size() > 6 ? input.inputs[6].GetValue<int64_t>() : 75;
-    double z_norm = input.inputs.size() > 7 ? input.inputs[7].GetValue<double>() : 2.67;
-    double z_outlier = input.inputs.size() > 8 ? input.inputs[8].GetValue<double>() : 8.0;
+    // An absent or NULL parameter takes its default (GetValue on NULL would be an INTERNAL error)
+    auto optional = [&](idx_t index, Value default_value) {
+        return input.inputs.size() > index && !input.inputs[index].IsNull() ? input.inputs[index] : default_value;
+    };
+    std::string output_mode = LowerOption(optional(2, Value("summary")).ToString());
+    int64_t max_depth_raw = optional(3, Value::BIGINT(4)).GetValue<int64_t>();
+    double max_perc_outliers = optional(4, Value::DOUBLE(0.01)).GetValue<double>();
+    int64_t min_size_numeric_raw = optional(5, Value::BIGINT(25)).GetValue<int64_t>();
+    int64_t min_size_categ_raw = optional(6, Value::BIGINT(75)).GetValue<int64_t>();
+    double z_norm = optional(7, Value::DOUBLE(2.67)).GetValue<double>();
+    double z_outlier = optional(8, Value::DOUBLE(8.0)).GetValue<double>();
+
+    if (output_mode != "summary" && output_mode != "outliers") {
+        throw BinderException("outlier_tree: output_mode must be 'summary' or 'outliers'");
+    }
 
     // Validate parameters while still signed
     static constexpr int64_t MAX_TREE_DEPTH = 1024;
@@ -911,6 +1031,12 @@ static unique_ptr<FunctionData> OutlierTreeBind(ClientContext &context, TableFun
         return_types.emplace_back(LogicalType(LogicalTypeId::DOUBLE));
         names.emplace_back("cluster_sd");
         return_types.emplace_back(LogicalType(LogicalTypeId::DOUBLE));
+        // The statistics the z-score and the bounds are computed from (NULL for
+        // categorical columns); cluster_mean / cluster_sd are descriptive only
+        names.emplace_back("cluster_median");
+        return_types.emplace_back(LogicalType(LogicalTypeId::DOUBLE));
+        names.emplace_back("cluster_mad");
+        return_types.emplace_back(LogicalType(LogicalTypeId::DOUBLE));
         names.emplace_back("cluster_size");
         return_types.emplace_back(LogicalType(LogicalTypeId::BIGINT));
         names.emplace_back("z_score");
@@ -948,6 +1074,7 @@ static unique_ptr<FunctionData> OutlierTreeBind(ClientContext &context, TableFun
 
     auto bind_data = make_uniq<OutlierTreeBindData>(table_name, column_names, output_mode, params);
     bind_data->id_column = std::move(id_column);
+    bind_data->column_types = std::move(column_types);
     return std::move(bind_data);
 }
 
@@ -960,37 +1087,16 @@ static void OutlierTreeExecute(ClientContext &context, TableFunctionInput &data_
     if (!state.executed) {
         state.executed = true;
 
-        Connection con(*context.db);
+        auto con = OpenSiblingConnection(context);
 
-        // Detect column types first (LIMIT 0 only binds the query), so the
-        // data query below can cast every column to a known type
+        // Column types were resolved and checked at bind time
         const idx_t n_cols = bind_data.column_names.size();
         std::vector<ColumnInfo> column_info(n_cols);
         std::vector<ColumnData> data(n_cols);
-
-        {
-            std::string raw_column_list;
-            for (size_t i = 0; i < n_cols; ++i) {
-                if (i > 0) raw_column_list += ", ";
-                raw_column_list += QuoteSqlIdentifier(bind_data.column_names[i]);
-            }
-            std::string type_query = "SELECT " + raw_column_list + " FROM " +
-                                     BuildQueryTableRef(bind_data.table_name) + " LIMIT 0";
-            auto type_result = con.Query(type_query);
-            if (type_result->HasError()) {
-                throw InvalidInputException("Failed to query source table: %s", type_result->GetError());
-            }
-            for (size_t i = 0; i < n_cols; ++i) {
-                auto col_type = duckdb_compat::ResultTypes(*type_result)[i].id();
-                if (col_type == LogicalTypeId::VARCHAR || col_type == LogicalTypeId::ENUM) {
-                    column_info[i].type = FeatureType::CATEGORICAL;
-                    data[i].type = FeatureType::CATEGORICAL;
-                } else {
-                    column_info[i].type = FeatureType::NUMERIC;
-                    data[i].type = FeatureType::NUMERIC;
-                }
-                column_info[i].name = bind_data.column_names[i];
-            }
+        for (size_t i = 0; i < n_cols; ++i) {
+            column_info[i].type = bind_data.column_types[i];
+            data[i].type = bind_data.column_types[i];
+            column_info[i].name = bind_data.column_names[i];
         }
 
         // Build the data query: categorical columns as VARCHAR, numeric
@@ -1019,6 +1125,7 @@ static void OutlierTreeExecute(ClientContext &context, TableFunctionInput &data_
         int64_t source_row = 0;
         std::vector<UnifiedVectorFormat> formats(n_cols);
         while (true) {
+            ThrowIfInterrupted(context);
             auto chunk = result->Fetch();
             if (!chunk || chunk->size() == 0) break;
 
@@ -1092,15 +1199,17 @@ static void OutlierTreeExecute(ClientContext &context, TableFunctionInput &data_
         auto outlier_value_nums = duckdb_compat::FlatData<double>(outlier_value_num_vec);
         auto cluster_means = duckdb_compat::FlatData<double>(output.data[base + 3]);
         auto cluster_sds = duckdb_compat::FlatData<double>(output.data[base + 4]);
-        auto cluster_sizes = duckdb_compat::FlatData<int64_t>(output.data[base + 5]);
-        auto z_scores = duckdb_compat::FlatData<double>(output.data[base + 6]);
-        auto lower_bounds = duckdb_compat::FlatData<double>(output.data[base + 7]);
-        auto upper_bounds = duckdb_compat::FlatData<double>(output.data[base + 8]);
-        auto &conditions_vec = output.data[base + 9];
+        auto cluster_medians = duckdb_compat::FlatData<double>(output.data[base + 5]);
+        auto cluster_mads = duckdb_compat::FlatData<double>(output.data[base + 6]);
+        auto cluster_sizes = duckdb_compat::FlatData<int64_t>(output.data[base + 7]);
+        auto z_scores = duckdb_compat::FlatData<double>(output.data[base + 8]);
+        auto lower_bounds = duckdb_compat::FlatData<double>(output.data[base + 9]);
+        auto upper_bounds = duckdb_compat::FlatData<double>(output.data[base + 10]);
+        auto &conditions_vec = output.data[base + 11];
         auto conditions = duckdb_compat::FlatData<string_t>(conditions_vec);
-        auto &explanation_vec = output.data[base + 10];
+        auto &explanation_vec = output.data[base + 12];
         auto explanations = duckdb_compat::FlatData<string_t>(explanation_vec);
-        auto outlier_scores = duckdb_compat::FlatData<double>(output.data[base + 11]);
+        auto outlier_scores = duckdb_compat::FlatData<double>(output.data[base + 13]);
 
         for (idx_t i = 0; i < count; ++i) {
             auto &outlier = state.outliers[state.current_row + i];
@@ -1119,12 +1228,30 @@ static void OutlierTreeExecute(ClientContext &context, TableFunctionInput &data_
             } else {
                 FlatVector::SetNull(outlier_value_num_vec, i, true);
             }
-            cluster_means[i] = outlier.cluster_mean;
-            cluster_sds[i] = outlier.cluster_sd;
+            // NaN/inf statistics (an infinite outlier value, values near the DOUBLE range) are NULL
+            auto set_finite_or_null = [&](idx_t column, auto target, double stat) {
+                if (std::isfinite(stat)) {
+                    target[i] = stat;
+                } else {
+                    FlatVector::SetNull(output.data[base + column], i, true);
+                }
+            };
+            // A categorical outlier has no numeric group statistics: mean, sd,
+            // median, mad and bounds are NULL; z_score keeps its rarity score
+            if (std::holds_alternative<double>(outlier.outlier_value)) {
+                set_finite_or_null(3, cluster_means, outlier.cluster_mean);
+                set_finite_or_null(4, cluster_sds, outlier.cluster_sd);
+                set_finite_or_null(5, cluster_medians, outlier.cluster_median);
+                set_finite_or_null(6, cluster_mads, outlier.cluster_mad);
+                set_finite_or_null(9, lower_bounds, outlier.lower_bound);
+                set_finite_or_null(10, upper_bounds, outlier.upper_bound);
+            } else {
+                for (idx_t column : {3, 4, 5, 6, 9, 10}) {
+                    FlatVector::SetNull(output.data[base + column], i, true);
+                }
+            }
             cluster_sizes[i] = static_cast<int64_t>(outlier.cluster_size);
-            z_scores[i] = outlier.z_score;
-            lower_bounds[i] = outlier.lower_bound;
-            upper_bounds[i] = outlier.upper_bound;
+            set_finite_or_null(8, z_scores, outlier.z_score);
             conditions[i] = StringVector::AddString(conditions_vec, outlier.GetConditionsJSON());
             explanations[i] = StringVector::AddString(explanation_vec, outlier.explanation);
             outlier_scores[i] = outlier.outlier_score;

@@ -1,0 +1,95 @@
+# name: test/sql/anofox_pii_deep_validation.test
+# description: anofox_pii_deep_validation rejects only phone numbers the phone module can judge and finds impossible; numbers in another country's national format are kept
+# group: [anofox_tabular]
+
+require anofox_tabular
+
+statement ok
+LOAD anofox_tabular
+
+statement ok
+SET anofox_pii_enabled_types = 'PHONE';
+
+statement ok
+CREATE TABLE crm_notes (id INTEGER, note VARCHAR);
+
+statement ok
+INSERT INTO crm_notes VALUES
+    (1, 'Rückruf unter 0171 1234567 erbeten'),
+    (2, 'Zentrale (089) 123 456 78, Durchwahl 089-123456-78'),
+    (3, 'Büro Köln 0221/4711-0'),
+    (4, 'Mobil +49 171 1234567'),
+    (5, 'Aus den USA: 0049 171 1234567'),
+    (6, 'US office (415) 555-2671'),
+    (7, 'Hotline +1 415 555 2671'),
+    (8, 'Kaputt: +1 415 555 2671 99');
+
+# Without deep validation every pattern match is kept
+query II
+SELECT id, pii_mask(note) FROM crm_notes ORDER BY id;
+----
+1	Rückruf unter [PHONE] erbeten
+2	Zentrale [PHONE], Durchwahl [PHONE]
+3	Büro Köln [PHONE]
+4	Mobil [PHONE]
+5	Aus den USA: [PHONE]
+6	US office [PHONE]
+7	Hotline [PHONE]
+8	Kaputt: [PHONE]
+
+statement ok
+SET anofox_pii_deep_validation = true;
+
+# Default region US: German national numbers cannot be judged for the US and
+# stay masked; the +1 number with 12 digits after the country code is rejected
+query II
+SELECT id, pii_mask(note) FROM crm_notes ORDER BY id;
+----
+1	Rückruf unter [PHONE] erbeten
+2	Zentrale [PHONE], Durchwahl [PHONE]
+3	Büro Köln [PHONE]
+4	Mobil [PHONE]
+5	Aus den USA: [PHONE]
+6	US office [PHONE]
+7	Hotline [PHONE]
+8	Kaputt: +1 415 555 2671 99
+
+# Default region DE: the same result
+statement ok
+SET anofox_tab_phonenumber_default_region = 'DE';
+
+query II
+SELECT id, pii_mask(note) FROM crm_notes ORDER BY id;
+----
+1	Rückruf unter [PHONE] erbeten
+2	Zentrale [PHONE], Durchwahl [PHONE]
+3	Büro Köln [PHONE]
+4	Mobil [PHONE]
+5	Aus den USA: [PHONE]
+6	US office [PHONE]
+7	Hotline [PHONE]
+8	Kaputt: +1 415 555 2671 99
+
+# A number in the region's own national format with an impossible length is rejected
+query I
+SELECT pii_mask('Fax 0171 1234567 8901');
+----
+Fax 0171 1234567 8901
+
+statement ok
+SET anofox_tab_phonenumber_default_region = 'US';
+
+query I
+SELECT pii_mask('Fax 0171 1234567 8901');
+----
+Fax [PHONE]
+
+statement ok
+RESET anofox_tab_phonenumber_default_region;
+
+statement ok
+SET anofox_pii_deep_validation = false;
+
+# Restore the process-wide PII settings for the tests that follow
+statement ok
+SET anofox_pii_enabled_types = '';

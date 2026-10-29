@@ -1,0 +1,58 @@
+# name: test/sql/anofox_check_suite_order.test
+# description: run_checks returns its rows in a stable order: by check_name, then by identifier
+#              (as text, the NULL partition last), whatever the order of the checks table.
+# group: [anofox_tabular]
+
+require anofox_tabular
+
+statement ok
+LOAD anofox_tabular
+
+statement ok
+SET anofox_tab_trace_enabled = false
+
+statement ok
+CREATE TABLE web_orders (
+    order_id    INTEGER,
+    customer_id INTEGER,
+    region      VARCHAR,
+    order_date  DATE,
+    amount      DECIMAL(10,2),
+    email       VARCHAR
+)
+
+statement ok
+INSERT INTO web_orders VALUES
+    (7001, 501, 'EU',   DATE '2026-10-19',  89.90, 'anna.schmidt@example.de'),
+    (7002, 502, 'US',   DATE '2026-10-19', 249.00, 'j.miller@example.com'),
+    (7003, 503, 'APAC', DATE '2026-10-20',  35.50, 'kenji.sato@example.jp'),
+    (7004, 501, 'EU',   DATE '2026-10-20',  12.00, 'anna.schmidt@example.de'),
+    (7005, 504, NULL,   DATE '2026-10-21', 120.00, 'noreply'),
+    (7005, 504, NULL,   DATE '2026-10-21', 120.00, 'noreply'),
+    (7006, 505, 'US',   DATE '2026-10-21',  64.20, 'l.garcia@example.com')
+
+statement ok
+CREATE TABLE order_checks (
+    check_name VARCHAR, check_type VARCHAR, table_name VARCHAR, column_name VARCHAR, params VARCHAR,
+    lower_threshold DOUBLE, upper_threshold DOUBLE, monitor_only BOOLEAN, identifier_column VARCHAR,
+    filter_expr VARCHAR)
+
+# Inserted out of order: the result is ordered by check_name, then identifier (NULL last)
+statement ok
+INSERT INTO order_checks VALUES
+    ('volume_by_region', 'volume', 'web_orders', NULL, NULL, 1, NULL, false, 'region', NULL),
+    ('amount_by_region', 'agg', 'web_orders', 'amount', '{"agg": "max"}', NULL, 200, false, 'region', NULL),
+    ('order_key_dupes', 'duplicate_count', 'web_orders', 'order_id, customer_id', NULL, NULL, 0, false, NULL, NULL)
+
+query TTT
+SELECT check_name, identifier, status FROM run_checks('order_checks')
+----
+amount_by_region	APAC	pass
+amount_by_region	EU	pass
+amount_by_region	US	fail
+amount_by_region	NULL	pass
+order_key_dupes	NULL	fail
+volume_by_region	APAC	pass
+volume_by_region	EU	pass
+volume_by_region	US	pass
+volume_by_region	NULL	pass

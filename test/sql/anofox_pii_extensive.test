@@ -2,6 +2,9 @@
 # description: Extensive PII detection and masking tests - hundreds of test cases
 # group: [anofox_tabular]
 
+# Scan statuses are compared without the ' (NER unavailable)' suffix, which builds without
+# the NER model (e.g. macOS ARM, no OpenVINO) append; these tests do not depend on NER.
+
 require anofox_tabular
 
 statement ok
@@ -121,9 +124,9 @@ true
 
 # --- Email Masking Tests ---
 
-# Partial masking preserves domain
+# Partial masking keeps the first character and the top-level domain only
 query I
-SELECT pii_mask('user@example.com', 'partial') LIKE '%@example.com';
+SELECT pii_mask('user@example.com', 'partial') = 'u***@*******.com';
 ----
 true
 
@@ -135,7 +138,7 @@ true
 
 # Hash masking produces hex
 query I
-SELECT regexp_matches(pii_mask('test@example.com', 'hash'), '^[0-9a-f]{8}$');
+SELECT regexp_matches(pii_mask('test@example.com', 'hash'), '^[0-9a-f]{16}$');
 ----
 true
 
@@ -297,11 +300,11 @@ SELECT list_contains(list_transform(pii_detect('4111-1111-1111-1111'), lambda x:
 ----
 true
 
-# Visa 13 digit (older format - not currently supported)
+# Visa 13 digit (older format)
 query I
 SELECT list_contains(list_transform(pii_detect('4222222222222'), lambda x: x.type), 'CREDIT_CARD');
 ----
-false
+true
 
 # --- Mastercard ---
 
@@ -335,11 +338,11 @@ SELECT list_contains(list_transform(pii_detect('5500000000000004'), lambda x: x.
 ----
 true
 
-# New 2-series Mastercard (not currently in pattern)
+# 2-series Mastercard
 query I
 SELECT list_contains(list_transform(pii_detect('2221000000000009'), lambda x: x.type), 'CREDIT_CARD');
 ----
-false
+true
 
 # --- American Express ---
 
@@ -440,11 +443,11 @@ SELECT list_contains(list_transform(pii_detect('123-45-6789'), lambda x: x.type)
 ----
 true
 
-# Without dashes
+# Without separators a 9-digit number is not reported (reference numbers look the same)
 query I
 SELECT list_contains(list_transform(pii_detect('123456789'), lambda x: x.type), 'US_SSN');
 ----
-true
+false
 
 # With spaces
 query I
@@ -590,19 +593,19 @@ SELECT list_contains(list_transform(pii_detect('CH9300762011623852957'), lambda 
 ----
 true
 
-# --- IBAN with Spaces (not currently supported - requires no spaces) ---
+# --- IBAN with Spaces (groups of four separated by spaces) ---
 
 # German with spaces
 query I
 SELECT list_contains(list_transform(pii_detect('DE89 3704 0044 0532 0130 00'), lambda x: x.type), 'IBAN');
 ----
-false
+true
 
 # UK with spaces
 query I
 SELECT list_contains(list_transform(pii_detect('GB82 WEST 1234 5698 7654 32'), lambda x: x.type), 'IBAN');
 ----
-false
+true
 
 # --- IBAN in Context ---
 
@@ -694,7 +697,7 @@ SELECT list_contains(list_transform(pii_detect('255.255.255.255'), lambda x: x.t
 ----
 true
 
-# --- IPv6 Addresses (limited support) ---
+# --- IPv6 Addresses ---
 
 # Full IPv6
 query I
@@ -702,17 +705,17 @@ SELECT list_contains(list_transform(pii_detect('2001:0db8:85a3:0000:0000:8a2e:03
 ----
 true
 
-# Compressed IPv6 (not currently supported)
+# Compressed IPv6
 query I
 SELECT list_contains(list_transform(pii_detect('2001:db8:85a3::8a2e:370:7334'), lambda x: x.type), 'IP_ADDRESS');
 ----
-false
+true
 
-# Loopback IPv6 (not currently supported - too short)
+# Loopback IPv6
 query I
 SELECT list_contains(list_transform(pii_detect('::1'), lambda x: x.type), 'IP_ADDRESS');
 ----
-false
+true
 
 # --- IP in Context ---
 
@@ -824,9 +827,9 @@ SELECT pii_mask('Go to https://secret.com/private', 'redact') LIKE '%[URL]%';
 ----
 true
 
-# Partial shows domain
+# Partial keeps scheme and top-level domain, masks host labels and path
 query I
-SELECT pii_mask('https://example.com/secret/path', 'partial') LIKE '%example.com%';
+SELECT pii_mask('https://example.com/secret/path', 'partial') = 'https://*******.com/***';
 ----
 true
 
@@ -1011,12 +1014,12 @@ true
 
 # --- Valid Passport Formats ---
 
-# Current format (9 digits). Note: a 9-digit number that also forms a valid
-# SSN is reported as US_SSN by overlap resolution, so use a 9xx number here.
+# Bare 9-digit numbers are not reported: without a checksum they cannot be told
+# apart from contract, order or claim numbers.
 query I
 SELECT list_contains(list_transform(pii_detect('Passport: 987654321'), lambda x: x.type), 'US_PASSPORT');
 ----
-true
+false
 
 # Legacy format (letter + 8 digits)
 query I
@@ -1599,11 +1602,11 @@ SELECT match_count FROM pii_scan_table('extensive_pii_test') WHERE column_name =
 ----
 4
 
-# Clean text column - no PII
-query I
-SELECT COUNT(*) FROM pii_scan_table('extensive_pii_test') WHERE column_name = 'clean_text';
+# Clean text column - no PII: one no_match row, no PII type
+query TTIIT
+SELECT column_name, pii_type, match_count, values_scanned, regexp_replace(status, ' \(NER unavailable\)$', '') AS status FROM pii_scan_table('extensive_pii_test') WHERE column_name = 'clean_text';
 ----
-0
+clean_text	NULL	0	5	no_match
 
 # --- pii_audit_table Tests ---
 
@@ -1990,17 +1993,17 @@ SET anofox_pii_default_mask_strategy = 'redact';
 # PII STATUS FUNCTION TESTS (5+ cases)
 # ============================================================================
 
-# All 17 types listed
+# All 22 types listed
 query I
 SELECT COUNT(*) FROM pii_status();
 ----
-17
+22
 
-# All enabled
+# All enabled except the opt-in POSTAL_CODE
 query I
 SELECT COUNT(*) FROM pii_status() WHERE enabled = true;
 ----
-17
+21
 
 # Check specific types exist
 query I

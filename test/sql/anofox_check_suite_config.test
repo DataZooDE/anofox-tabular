@@ -1,0 +1,174 @@
+# name: test/sql/anofox_check_suite_config.test
+# description: Checks-table configuration of a shop's nightly suite: match_rate leaves NULL keys
+#              (guest checkouts) out of the rate and says how many it left out; left_keys and
+#              right_keys accept a JSON array; metric_anomaly_iqr measures column_name when
+#              params.metric_column is absent; a check without a check_name and checks sharing
+#              a name are 'error' rows instead of aborting the suite; rows with a NULL
+#              identifier_column value form a partition of their own. The direct match_rate
+#              excludes NULL keys the same way, and the time-aware direct checks accept
+#              reference_date := by name.
+# group: [anofox_tabular]
+
+require anofox_tabular
+
+statement ok
+LOAD anofox_tabular
+
+statement ok
+SET anofox_tab_trace_enabled = false
+
+statement ok
+CREATE TABLE shop_customers (customer_id INTEGER, home_region VARCHAR, name VARCHAR)
+
+statement ok
+INSERT INTO shop_customers VALUES
+    (11, 'north', 'Brauhaus Mueller GmbH'),
+    (12, 'south', 'Nordsee Fisch KG'),
+    (13, 'east',  'Alpen Sport AG'),
+    (14, 'west',  'Rheinwerk Druck')
+
+# 5003 and 5006 are guest checkouts (no customer_id), 5004 has no region, 5005 references a
+# customer that does not exist
+statement ok
+CREATE TABLE shop_orders (order_id INTEGER, customer_id INTEGER, region VARCHAR, amount DOUBLE, ordered_on DATE)
+
+statement ok
+INSERT INTO shop_orders VALUES
+    (5001, 11,   'north', 120.0, DATE '2026-10-18'),
+    (5002, 12,   'south',  80.0, DATE '2026-10-18'),
+    (5003, NULL, 'north',  15.0, DATE '2026-10-19'),
+    (5004, 13,   NULL,     60.0, DATE '2026-10-19'),
+    (5005, 99,   'west',   45.0, DATE '2026-10-20'),
+    (5006, NULL, 'south',  30.0, DATE '2026-10-20'),
+    (5007, 11,   'north', 200.0, DATE '2026-10-21'),
+    (5008, 12,   'south', 220.0, DATE '2026-10-21')
+
+statement ok
+CREATE TABLE shop_checks (check_name VARCHAR, check_type VARCHAR, table_name VARCHAR, column_name VARCHAR,
+                          params VARCHAR, lower_threshold DOUBLE, upper_threshold DOUBLE, monitor_only BOOLEAN,
+                          identifier_column VARCHAR, filter_expr VARCHAR)
+
+statement ok
+INSERT INTO shop_checks VALUES
+    ('customer_fk', 'match_rate', 'shop_orders', 'customer_id',
+     '{"right_table": "shop_customers", "right_keys": ["customer_id"]}', 1.0, NULL, false, NULL, NULL),
+    ('customer_region_fk', 'match_rate', 'shop_orders', NULL,
+     '{"right_table": "shop_customers", "left_keys": ["customer_id", "region"], "right_keys": ["customer_id", "home_region"]}',
+     0.8, NULL, false, NULL, NULL),
+    ('amount_iqr', 'metric_anomaly_iqr', 'shop_orders', 'amount',
+     '{"date_column": "ordered_on", "reference_date": "2026-10-21", "window_days": 3}', NULL, NULL, false, NULL, NULL),
+    ('amount_iqr_conflict', 'metric_anomaly_iqr', 'shop_orders', 'amount',
+     '{"date_column": "ordered_on", "metric_column": "order_id"}', NULL, NULL, false, NULL, NULL),
+    ('amount_iqr_same', 'metric_anomaly_iqr', 'shop_orders', 'AMOUNT',
+     '{"date_column": "ordered_on", "metric_column": "amount", "reference_date": "2026-10-21", "window_days": 3}',
+     NULL, NULL, false, NULL, NULL),
+    (NULL, 'volume', 'shop_orders', NULL, NULL, 1, NULL, false, NULL, NULL),
+    ('orders_volume', 'volume', 'shop_orders', NULL, NULL, 1, NULL, false, NULL, NULL),
+    ('orders_volume', 'null_rate', 'shop_orders', 'region', NULL, NULL, 0.5, false, NULL, NULL),
+    ('volume_by_region', 'volume', 'shop_orders', NULL, NULL, 1, NULL, false, 'region', NULL)
+
+query TTTR rowsort
+SELECT check_name, identifier, status, round(value, 4) FROM run_checks('shop_checks')
+----
+NULL	NULL	error	NULL
+amount_iqr	NULL	fail	210.0
+amount_iqr_conflict	NULL	error	NULL
+amount_iqr_same	NULL	fail	210.0
+customer_fk	NULL	fail	0.8333
+customer_region_fk	NULL	pass	0.8
+orders_volume	NULL	error	NULL
+orders_volume	NULL	error	NULL
+volume_by_region	NULL	pass	1.0
+volume_by_region	north	pass	3.0
+volume_by_region	south	pass	3.0
+volume_by_region	west	pass	1.0
+
+query T rowsort
+SELECT message FROM run_checks('shop_checks')
+WHERE status = 'error' OR check_name IN ('customer_fk', 'customer_region_fk')
+----
+check 'amount_iqr_conflict' (metric_anomaly_iqr) cannot run: column_name 'amount' and params.metric_column 'order_id' name different columns; set only one
+check 'orders_volume' (null_rate) cannot run: check_name 'orders_volume' is used by 2 checks; check names must be unique
+check 'orders_volume' (volume) cannot run: check_name 'orders_volume' is used by 2 checks; check names must be unique
+check without check_name (volume) cannot run: every check needs a check_name
+match_rate value 0.8 is within thresholds; 3 row(s) with a NULL key excluded
+match_rate value 0.833 violates thresholds (0.833 < lower 1.0); samples: '99'; 2 row(s) with a NULL key excluded
+
+# A JSON array that is not a list of column names is an error row
+statement ok
+CREATE TABLE bad_checks AS SELECT * FROM shop_checks WHERE false
+
+statement ok
+INSERT INTO bad_checks VALUES
+    ('customer_fk', 'match_rate', 'shop_orders', 'customer_id',
+     '{"right_table": "shop_customers", "right_keys": [42]}', 1.0, NULL, false, NULL, NULL)
+
+query TT
+SELECT status, message FROM run_checks('bad_checks')
+----
+error	check 'customer_fk' (match_rate) cannot run: params.right_keys must be a string or a JSON array of strings
+
+# ===--------------------------------------------------------------------===
+# The direct match_rate excludes NULL keys too
+# ===--------------------------------------------------------------------===
+
+query TRIIT
+SELECT status, round(match_rate, 4), matched_count, total_count, message
+FROM match_rate('shop_orders', 'shop_customers', 'customer_id', 'customer_id')
+----
+fail	0.8333	5	6	Match rate 0.833 (5/6) is below minimum 1.0; samples: '99'; 2 row(s) with a NULL key excluded
+
+query TRIIT
+SELECT status, round(match_rate, 4), matched_count, total_count, message
+FROM match_rate('shop_orders', 'shop_customers', 'customer_id,region', 'customer_id,home_region', 0.8)
+----
+pass	0.8	4	5	Match rate 0.8 (4/5) is acceptable; 3 row(s) with a NULL key excluded
+
+statement ok
+CREATE TABLE guest_orders AS SELECT * FROM shop_orders WHERE customer_id IS NULL
+
+query TRIIT
+SELECT status, match_rate, matched_count, total_count, message
+FROM match_rate('guest_orders', 'shop_customers', 'customer_id', 'customer_id')
+----
+pass	0.0	0	0	No left rows with a non-NULL key (2 row(s) with a NULL key excluded); match rate check passed trivially
+
+# ===--------------------------------------------------------------------===
+# reference_date by name on the time-aware direct checks
+# ===--------------------------------------------------------------------===
+
+query TTR
+SELECT status, reference_date, rel_change
+FROM rel_count_change('shop_orders', 'ordered_on', reference_date := DATE '2026-10-20')
+----
+pass	2026-10-20	0.0
+
+query TTR
+SELECT status, reference_date, rel_change
+FROM rel_count_change('shop_orders', 'ordered_on', NULL, 2, NULL, NULL, DATE '2026-10-20')
+----
+pass	2026-10-20	0.0
+
+query TTR
+SELECT status, reference_date, metric_value
+FROM metric_anomaly_iqr('shop_orders', 'ordered_on', reference_date := DATE '2026-10-19')
+----
+pass	2026-10-19	2.0
+
+query TTR
+SELECT status, reference_date, in_set_rate
+FROM rolling_values_in_set('shop_orders', 'region', ['north', 'south'], 'ordered_on', reference_date := DATE '2026-10-19')
+----
+pass	2026-10-19	1.0
+
+statement error
+SELECT * FROM rel_count_change('shop_orders', 'ordered_on', NULL, 7, -0.5, 0.5, DATE '2026-10-20',
+                               reference_date := DATE '2026-10-21')
+----
+rel_count_change: reference_date is given twice (positionally and as reference_date :=)
+
+statement error
+SELECT * FROM rel_count_change('shop_orders', 'ordered_on', reference_date := DATE '2026-10-20',
+                               start_date := DATE '2026-10-19', end_date := DATE '2026-10-21')
+----
+rel_count_change: reference_date cannot be combined with start_date/end_date

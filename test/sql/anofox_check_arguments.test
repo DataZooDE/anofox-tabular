@@ -1,0 +1,531 @@
+# name: test/sql/anofox_check_arguments.test
+# description: Every direct check validates its arguments when the query is bound: a NULL
+#              required threshold or list raises "<fn>: <arg> must not be NULL" (optional
+#              arguments keep their documented NULL = default rule), and an unknown table, an
+#              unknown column or an empty name raises a check-specific error instead of a raw
+#              binder/catalog error leaking the generated SQL.
+# group: [anofox_tabular]
+
+require anofox_tabular
+
+statement ok
+LOAD anofox_tabular
+
+statement ok
+SET anofox_tab_trace_enabled = false
+
+# ===--------------------------------------------------------------------===
+# A support desk: tickets and the customers they belong to
+# ===--------------------------------------------------------------------===
+
+statement ok
+CREATE TABLE support_tickets (ticket_id INTEGER, customer_id INTEGER, priority VARCHAR, status VARCHAR,
+                              channel VARCHAR, opened_at TIMESTAMP, opened_on DATE, resolution_hours DOUBLE)
+
+statement ok
+INSERT INTO support_tickets VALUES
+    (9001, 501, 'high',   'resolved', 'email', TIMESTAMP '2026-10-20 08:15:00', DATE '2026-10-20',  4.5),
+    (9002, 502, 'low',    'resolved', 'phone', TIMESTAMP '2026-10-20 09:40:00', DATE '2026-10-20', 26.0),
+    (9003, 503, 'medium', 'open',     'chat',  TIMESTAMP '2026-10-21 11:05:00', DATE '2026-10-21', NULL),
+    (9004, 501, 'high',   'pending',  'email', TIMESTAMP '2026-10-22 14:30:00', DATE '2026-10-22',  8.0),
+    (9005, 504, 'urgent', 'resolved', 'phone', TIMESTAMP '2026-10-23 07:55:00', DATE '2026-10-23',  1.5),
+    (9006, NULL, 'low',   'open',     'web',   TIMESTAMP '2026-10-23 16:20:00', DATE '2026-10-23', NULL)
+
+statement ok
+CREATE TABLE support_customers (customer_id INTEGER, company VARCHAR, tier VARCHAR)
+
+statement ok
+INSERT INTO support_customers VALUES (501, 'Brauhaus Mueller GmbH', 'gold'), (502, 'Nordlicht AG', 'silver'),
+    (503, 'Kaffeerösterei Kranz', 'bronze'), (504, 'Elbtal Logistik KG', 'gold')
+
+# The direct check functions covered by this file. A new check function (categories 'metric'
+# and 'data-quality') fails this query until its argument validation is tested here.
+query T
+SELECT DISTINCT function_name FROM duckdb_functions()
+WHERE function_name LIKE 'anofox_tab_%' AND list_contains(categories, 'metric')
+  AND list_contains(categories, 'data-quality')
+  AND function_name <> 'anofox_tab_run_checks'
+ORDER BY 1
+----
+anofox_tab_agg_check
+anofox_tab_compliance
+anofox_tab_distinct_count
+anofox_tab_duplicate_count
+anofox_tab_freshness
+anofox_tab_iqr
+anofox_tab_match_rate
+anofox_tab_metric_anomaly_iqr
+anofox_tab_metric_anomaly_iqr_events
+anofox_tab_null_rate
+anofox_tab_occurrence
+anofox_tab_regex_match
+anofox_tab_rel_count_change
+anofox_tab_rel_count_change_events
+anofox_tab_rolling_values_in_set
+anofox_tab_rolling_values_in_set_events
+anofox_tab_schema_check
+anofox_tab_values_in_set
+anofox_tab_volume
+anofox_tab_zscore
+
+# ===--------------------------------------------------------------------===
+# F4: NULL required thresholds and lists
+# ===--------------------------------------------------------------------===
+
+statement error
+SELECT * FROM null_rate('support_tickets', 'customer_id', NULL)
+----
+null_rate: max_null_rate must not be NULL
+
+statement error
+SELECT * FROM schema_check('support_tickets', NULL)
+----
+schema_check: required_columns must not be NULL
+
+statement error
+SELECT * FROM freshness('support_tickets', 'opened_at', NULL)
+----
+freshness: max_age must not be NULL
+
+statement error
+SELECT * FROM freshness('support_tickets', 'opened_at', NULL, TIMESTAMP '2026-10-24 06:00:00')
+----
+freshness: max_age must not be NULL
+
+statement error
+SELECT * FROM zscore('support_tickets', 'resolution_hours', NULL)
+----
+zscore: threshold must not be NULL
+
+statement error
+SELECT * FROM iqr('support_tickets', 'resolution_hours', NULL)
+----
+iqr: iqr_multiplier must not be NULL
+
+statement error
+SELECT * FROM agg_check('support_tickets', 'resolution_hours', NULL, 0, 24)
+----
+agg_check: agg must not be NULL
+
+statement error
+SELECT * FROM occurrence('support_tickets', 'priority', NULL, NULL, 3)
+----
+occurrence: mode must not be NULL
+
+statement error
+SELECT * FROM values_in_set('support_tickets', 'status', NULL)
+----
+values_in_set: allowed_values must not be NULL
+
+statement error
+SELECT * FROM rolling_values_in_set('support_tickets', 'status', NULL, 'opened_on')
+----
+rolling_values_in_set: allowed_values must not be NULL
+
+statement error
+SELECT * FROM rolling_values_in_set_events('support_tickets', 'status', NULL, 'opened_on')
+----
+rolling_values_in_set_events: allowed_values must not be NULL
+
+statement error
+SELECT * FROM regex_match('support_tickets', 'channel', NULL, 0.5)
+----
+regex_match: pattern must not be NULL
+
+statement error
+SELECT * FROM compliance('support_tickets', NULL)
+----
+compliance: expression must not be NULL
+
+statement error
+SELECT * FROM match_rate('support_tickets', 'support_customers', 'customer_id', NULL)
+----
+match_rate: right_keys must not be NULL
+
+statement error
+SELECT * FROM duplicate_count('support_tickets', NULL)
+----
+duplicate_count: column_names must not be NULL
+
+statement error
+SELECT * FROM rel_count_change('support_tickets', NULL)
+----
+rel_count_change: date_column must not be NULL
+
+statement error
+SELECT * FROM metric_anomaly_iqr_events('support_tickets', NULL)
+----
+metric_anomaly_iqr_events: date_column must not be NULL
+
+# A prepared statement with a NULL parameter is the same error
+statement ok
+PREPARE nr AS SELECT status FROM null_rate('support_tickets', 'customer_id', $1)
+
+statement error
+EXECUTE nr(NULL)
+----
+null_rate: max_null_rate must not be NULL
+
+query T
+EXECUTE nr(0.2)
+----
+pass
+
+# Optional arguments keep their NULL = default/unbounded rule
+query TT
+SELECT status, message FROM volume('support_tickets', NULL, NULL)
+----
+pass	Row count 6 is within acceptable range
+
+query TR
+SELECT status, threshold FROM values_in_set('support_tickets', 'channel', ['email', 'phone', 'chat', 'web'], NULL)
+----
+pass	1.0
+
+query TI
+SELECT status, threshold FROM duplicate_count('support_tickets', 'ticket_id', NULL)
+----
+pass	0
+
+# (ticket 9006 has no customer: a NULL key is left out of the rate, the other 5 all match)
+query TR
+SELECT status, threshold FROM match_rate('support_tickets', 'support_customers', 'customer_id', 'customer_id', NULL)
+----
+pass	1.0
+
+query TR
+SELECT status, threshold FROM compliance('support_tickets', 'ticket_id > 9000', NULL)
+----
+pass	1.0
+
+statement ok
+SELECT status, message FROM freshness('support_tickets', 'opened_at', INTERVAL '1 day', NULL)
+
+# ===--------------------------------------------------------------------===
+# F5: unknown table
+# ===--------------------------------------------------------------------===
+
+statement error
+SELECT * FROM volume('support_tikets', 1, NULL)
+----
+volume: table 'support_tikets' does not exist
+
+statement error
+SELECT * FROM null_rate('support_tikets', 'customer_id', 0.1)
+----
+null_rate: table 'support_tikets' does not exist
+
+statement error
+SELECT * FROM distinct_count('support_tikets', 'priority', 1, 10)
+----
+distinct_count: table 'support_tikets' does not exist
+
+statement error
+SELECT * FROM schema_check('support_tikets', ['ticket_id'])
+----
+schema_check: table 'support_tikets' does not exist
+
+statement error
+SELECT * FROM freshness('support_tikets', 'opened_at', INTERVAL '1 day')
+----
+freshness: table 'support_tikets' does not exist
+
+statement error
+SELECT * FROM zscore('support_tikets', 'resolution_hours', 3.0)
+----
+zscore: table 'support_tikets' does not exist
+
+statement error
+SELECT * FROM iqr('support_tikets', 'resolution_hours', 1.5)
+----
+iqr: table 'support_tikets' does not exist
+
+statement error
+SELECT * FROM regex_match('support_tikets', 'channel', '^[a-z]+$', 1.0)
+----
+regex_match: table 'support_tikets' does not exist
+
+statement error
+SELECT * FROM values_in_set('support_tikets', 'status', ['open', 'resolved'])
+----
+values_in_set: table 'support_tikets' does not exist
+
+statement error
+SELECT * FROM agg_check('support_tikets', 'resolution_hours', 'avg', 0, 24)
+----
+agg_check: table 'support_tikets' does not exist
+
+statement error
+SELECT * FROM duplicate_count('support_tikets', 'ticket_id')
+----
+duplicate_count: table 'support_tikets' does not exist
+
+statement error
+SELECT * FROM occurrence('support_tikets', 'priority', 'max', NULL, 3)
+----
+occurrence: table 'support_tikets' does not exist
+
+statement error
+SELECT * FROM match_rate('support_tikets', 'support_customers', 'customer_id', 'customer_id')
+----
+match_rate: table 'support_tikets' does not exist
+
+statement error
+SELECT * FROM match_rate('support_tickets', 'support_customer', 'customer_id', 'customer_id')
+----
+match_rate: table 'support_customer' does not exist
+
+statement error
+SELECT * FROM compliance('support_tikets', 'ticket_id > 0')
+----
+compliance: table 'support_tikets' does not exist
+
+statement error
+SELECT * FROM rel_count_change('support_tikets', 'opened_on')
+----
+rel_count_change: table 'support_tikets' does not exist
+
+statement error
+SELECT * FROM rel_count_change_events('support_tikets', 'opened_on')
+----
+rel_count_change_events: table 'support_tikets' does not exist
+
+statement error
+SELECT * FROM metric_anomaly_iqr('support_tikets', 'opened_on')
+----
+metric_anomaly_iqr: table 'support_tikets' does not exist
+
+statement error
+SELECT * FROM metric_anomaly_iqr_events('support_tikets', 'opened_on')
+----
+metric_anomaly_iqr_events: table 'support_tikets' does not exist
+
+statement error
+SELECT * FROM rolling_values_in_set('support_tikets', 'status', ['open', 'resolved'], 'opened_on')
+----
+rolling_values_in_set: table 'support_tikets' does not exist
+
+statement error
+SELECT * FROM rolling_values_in_set_events('support_tikets', 'status', ['open', 'resolved'], 'opened_on')
+----
+rolling_values_in_set_events: table 'support_tikets' does not exist
+
+# No raw catalog suggestion leaks out
+statement error
+SELECT * FROM volume('nope', 1, 2)
+----
+<!REGEX>:.*Did you mean.*
+
+# A schema-qualified name in an unknown schema is the same error
+statement error
+SELECT * FROM volume('warehouse.support_tickets', 1, NULL)
+----
+volume: table 'warehouse.support_tickets' does not exist
+
+# ===--------------------------------------------------------------------===
+# F5: unknown column (the message lists the table's columns)
+# ===--------------------------------------------------------------------===
+
+statement error
+SELECT * FROM null_rate('support_tickets', 'customer', 0.1)
+----
+null_rate: column 'customer' not found in table 'support_tickets' (available columns: ticket_id, customer_id, priority, status, channel, opened_at, opened_on, resolution_hours)
+
+statement error
+SELECT * FROM distinct_count('support_tickets', 'prio', 1, 10)
+----
+distinct_count: column 'prio' not found in table 'support_tickets'
+
+statement error
+SELECT * FROM freshness('support_tickets', 'created_at', INTERVAL '1 day')
+----
+freshness: column 'created_at' not found in table 'support_tickets'
+
+statement error
+SELECT * FROM zscore('support_tickets', 'resolution_time', 3.0)
+----
+zscore: column 'resolution_time' not found in table 'support_tickets'
+
+statement error
+SELECT * FROM iqr('support_tickets', 'resolution_time', 1.5)
+----
+iqr: column 'resolution_time' not found in table 'support_tickets'
+
+statement error
+SELECT * FROM regex_match('support_tickets', 'source', '^[a-z]+$', 1.0)
+----
+regex_match: column 'source' not found in table 'support_tickets'
+
+statement error
+SELECT * FROM values_in_set('support_tickets', 'state', ['open', 'resolved'])
+----
+values_in_set: column 'state' not found in table 'support_tickets'
+
+statement error
+SELECT * FROM agg_check('support_tickets', 'resolution_time', 'avg', 0, 24)
+----
+agg_check: column 'resolution_time' not found in table 'support_tickets'
+
+statement error
+SELECT * FROM duplicate_count('support_tickets', 'ticket_id, ticket_no')
+----
+duplicate_count: column 'ticket_no' not found in table 'support_tickets'
+
+statement error
+SELECT * FROM duplicate_count('support_tickets', ['ticket_id', 'ticket_no'])
+----
+duplicate_count: column 'ticket_no' not found in table 'support_tickets'
+
+statement error
+SELECT * FROM occurrence('support_tickets', 'prio', 'max', NULL, 3)
+----
+occurrence: column 'prio' not found in table 'support_tickets'
+
+statement error
+SELECT * FROM match_rate('support_tickets', 'support_customers', 'cust_id', 'customer_id')
+----
+match_rate: column 'cust_id' not found in table 'support_tickets'
+
+statement error
+SELECT * FROM match_rate('support_tickets', 'support_customers', 'customer_id', 'id')
+----
+match_rate: column 'id' not found in table 'support_customers' (available columns: customer_id, company, tier)
+
+statement error
+SELECT * FROM rel_count_change('support_tickets', 'created_on')
+----
+rel_count_change: column 'created_on' not found in table 'support_tickets'
+
+statement error
+SELECT * FROM rel_count_change('support_tickets', 'opened_on', 'customer')
+----
+rel_count_change: column 'customer' not found in table 'support_tickets'
+
+statement error
+SELECT * FROM rel_count_change_events('support_tickets', 'created_on')
+----
+rel_count_change_events: column 'created_on' not found in table 'support_tickets'
+
+statement error
+SELECT * FROM metric_anomaly_iqr('support_tickets', 'created_on')
+----
+metric_anomaly_iqr: column 'created_on' not found in table 'support_tickets'
+
+statement error
+SELECT * FROM metric_anomaly_iqr('support_tickets', 'opened_on', 'resolution_time')
+----
+metric_anomaly_iqr: column 'resolution_time' not found in table 'support_tickets'
+
+statement error
+SELECT * FROM metric_anomaly_iqr_events('support_tickets', 'created_on')
+----
+metric_anomaly_iqr_events: column 'created_on' not found in table 'support_tickets'
+
+statement error
+SELECT * FROM rolling_values_in_set('support_tickets', 'state', ['open', 'resolved'], 'opened_on')
+----
+rolling_values_in_set: column 'state' not found in table 'support_tickets'
+
+statement error
+SELECT * FROM rolling_values_in_set('support_tickets', 'status', ['open', 'resolved'], 'created_on')
+----
+rolling_values_in_set: column 'created_on' not found in table 'support_tickets'
+
+statement error
+SELECT * FROM rolling_values_in_set_events('support_tickets', 'status', ['open', 'resolved'], 'created_on')
+----
+rolling_values_in_set_events: column 'created_on' not found in table 'support_tickets'
+
+# No raw binder error leaks out
+statement error
+SELECT * FROM null_rate('support_tickets', 'nope', 0.1)
+----
+<!REGEX>:.*Candidate bindings.*
+
+# Column names match case-insensitively, like DuckDB identifiers
+query T
+SELECT status FROM null_rate('support_tickets', 'Customer_ID', 0.2)
+----
+pass
+
+# ===--------------------------------------------------------------------===
+# F5: empty names
+# ===--------------------------------------------------------------------===
+
+statement error
+SELECT * FROM null_rate('', 'customer_id', 0.1)
+----
+null_rate: table_name must not be empty
+
+statement error
+SELECT * FROM volume('  ', 1, NULL)
+----
+volume: table_name must not be empty
+
+statement error
+SELECT * FROM null_rate('support_tickets', '', 0.1)
+----
+null_rate: column_name must not be empty
+
+statement error
+SELECT * FROM match_rate('support_tickets', '', 'customer_id', 'customer_id')
+----
+match_rate: right_table must not be empty
+
+statement error
+SELECT * FROM rel_count_change('support_tickets', '')
+----
+rel_count_change: date_column must not be empty
+
+statement error
+SELECT * FROM freshness('support_tickets', '', INTERVAL '1 day')
+----
+freshness: timestamp_column must not be empty
+
+# ===--------------------------------------------------------------------===
+# Relations the catalog does not know still work: TEMP tables, views, files
+# ===--------------------------------------------------------------------===
+
+statement ok
+CREATE TEMP TABLE open_tickets AS SELECT * FROM support_tickets WHERE status <> 'resolved'
+
+query TII
+SELECT status, null_count, total_count FROM null_rate('open_tickets', 'resolution_hours', 1.0)
+----
+pass	2	3
+
+statement error
+SELECT * FROM null_rate('open_tickets', 'resolution', 1.0)
+----
+null_rate: column 'resolution' not found in table 'open_tickets'
+
+statement ok
+CREATE VIEW high_priority AS SELECT ticket_id, priority FROM support_tickets WHERE priority IN ('high', 'urgent')
+
+query TI
+SELECT status, row_count FROM volume('high_priority', 1, NULL)
+----
+pass	3
+
+statement error
+SELECT * FROM distinct_count('high_priority', 'status', 1, NULL)
+----
+distinct_count: column 'status' not found in table 'high_priority' (available columns: ticket_id, priority)
+
+statement ok
+COPY support_tickets TO '__TEST_DIR__/support_tickets.csv' (HEADER)
+
+query TI
+SELECT status, row_count FROM volume('__TEST_DIR__/support_tickets.csv', 6, 6)
+----
+pass	6
+
+statement error
+SELECT * FROM null_rate('__TEST_DIR__/support_tickets.csv', 'customer', 0.1)
+----
+null_rate: column 'customer' not found in table
+
+statement error
+SELECT * FROM volume('__TEST_DIR__/no_such_file.csv', 1, NULL)
+----
+volume: cannot read table

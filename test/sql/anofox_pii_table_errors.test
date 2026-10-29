@@ -1,0 +1,85 @@
+# name: test/sql/anofox_pii_table_errors.test
+# description: pii_scan_table and pii_audit_table report table errors as plain messages: no nested JSON, no internal query_table SQL, and a clear message for TEMP tables
+# group: [anofox_tabular]
+
+# Scan statuses are compared without the ' (NER unavailable)' suffix, which builds without
+# the NER model (e.g. macOS ARM, no OpenVINO) append; these tests do not depend on NER.
+
+require anofox_tabular
+
+statement ok
+LOAD anofox_tabular
+
+# Pattern-based types only: the error paths do not need the NER model
+statement ok
+SET anofox_pii_enabled_types = 'EMAIL,PHONE,IBAN';
+
+# A CRM export staged as a TEMP table: the table functions read through a
+# separate connection, which cannot see it
+statement ok
+CREATE TEMP TABLE crm_contacts_staging AS SELECT * FROM (VALUES
+    (1, 'Sabine Weiß', 'sabine.weiss@example.de', '+49 30 1234567'),
+    (2, 'Peter Müller', 'p.mueller@example.ch', '+41 44 668 18 00')
+) t(contact_id, full_name, email, phone);
+
+statement error
+SELECT * FROM pii_scan_table('crm_contacts_staging');
+----
+pii_scan_table: 'crm_contacts_staging' is a TEMP table, which is not supported
+
+statement error
+SELECT * FROM pii_scan_table('crm_contacts_staging');
+----
+Copy it into a regular table first (CREATE TABLE ... AS SELECT * FROM crm_contacts_staging)
+
+statement error
+SELECT * FROM pii_scan_table('temp.crm_contacts_staging', 'email');
+----
+pii_scan_table: 'temp.crm_contacts_staging' is a TEMP table, which is not supported
+
+statement error
+SELECT * FROM pii_audit_table('crm_contacts_staging');
+----
+pii_audit_table: 'crm_contacts_staging' is a TEMP table, which is not supported
+
+# The suggested copy works
+statement ok
+CREATE TABLE crm_contacts AS SELECT * FROM crm_contacts_staging;
+
+query TTIT
+SELECT column_name, pii_type, match_count, regexp_replace(status, ' \(NER unavailable\)$', '') AS status FROM pii_scan_table('crm_contacts', 'email');
+----
+email	EMAIL	2	scanned
+
+# A missing table: the message starts with the function's own message (not a
+# "Failed to scan table - {json}" wrapper) ...
+statement error
+SELECT * FROM pii_scan_table('crm_contacts_2023');
+----
+<REGEX>:Binder Error: pii_scan_table: table 'crm_contacts_2023' does not exist.*
+
+statement error
+SELECT * FROM pii_audit_table('crm_contacts_2023');
+----
+<REGEX>:Binder Error: pii_audit_table: table 'crm_contacts_2023' does not exist.*
+
+# ... and shows neither JSON nor the internal query_table SQL
+statement error
+SELECT * FROM pii_scan_table('crm_contacts_2023');
+----
+<!REGEX>:.*(exception_message|query_table|LINE 1).*
+
+statement error
+SELECT * FROM pii_audit_table('crm_contacts_2023');
+----
+<!REGEX>:.*(exception_message|query_table|LINE 1).*
+
+# A column filter naming an unknown column keeps its binder message
+statement error
+SELECT * FROM pii_scan_table('crm_contacts', 'mobile');
+----
+pii_scan_table: column 'mobile' not found in table 'crm_contacts'
+
+# Restore the process-wide PII settings for the tests that follow
+statement ok
+SET anofox_pii_enabled_types = '';

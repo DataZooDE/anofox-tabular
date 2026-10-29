@@ -1,0 +1,72 @@
+# name: test/sql/docs_coverage.test
+# description: Fail when a registered function or setting is missing from the docs
+# group: [sql]
+#
+# Every function named anofox% (the canonical anofox_tab_* names plus
+# anofox_ner_status and anofox_contract_version) and every short alias
+# (a name X for which anofox_tab_X is registered) must appear in docs/api/*.md
+# as a code span: `name` or `name(...)`. Every setting named anofox% and
+# datazoo_banner must appear as `name` in docs/reference/configuration.md.
+# Each query returns the missing names, so the expected result is empty.
+#
+# The paths are relative to the repo root. The unittest binary changes its
+# working directory to the root it was built from (UNITTEST_ROOT_DIRECTORY,
+# set by extension-ci-tools to the checkout), so `make test` and every CI job
+# that runs it read the docs of the same checkout. When running a unittest
+# built in another checkout, pass --test-dir <this checkout>.
+
+require anofox_tabular
+
+statement ok
+LOAD anofox_tabular;
+
+# The docs must be reachable from the working directory at all. A failure here
+# means the test runs outside the repo root, not that a page is missing.
+query I
+SELECT if(count(*) > 0, 'found', 'missing') FROM glob('docs/api/*.md');
+----
+found
+
+query I
+SELECT count(*) FROM glob('docs/reference/configuration.md');
+----
+1
+
+# Functions and aliases that docs/api/*.md does not mention as a code span.
+query I
+WITH docs AS (
+    SELECT string_agg(content, chr(10)) AS txt FROM read_text('docs/api/*.md')
+),
+registered AS (
+    SELECT DISTINCT function_name AS name
+    FROM duckdb_functions()
+    WHERE function_name LIKE 'anofox%'
+),
+aliases AS (
+    SELECT DISTINCT f.function_name AS name
+    FROM duckdb_functions() f
+    JOIN registered r ON r.name = 'anofox_tab_' || f.function_name
+),
+names AS (
+    SELECT name FROM registered
+    UNION
+    SELECT name FROM aliases
+)
+SELECT name
+FROM names, docs
+WHERE NOT contains(docs.txt, '`' || name || '`')
+  AND NOT contains(docs.txt, '`' || name || '(')
+ORDER BY name;
+----
+
+# Settings that docs/reference/configuration.md does not mention as `name`.
+query I
+WITH docs AS (
+    SELECT content AS txt FROM read_text('docs/reference/configuration.md')
+)
+SELECT s.name
+FROM duckdb_settings() s, docs
+WHERE (s.name LIKE 'anofox%' OR s.name = 'datazoo_banner')
+  AND NOT contains(docs.txt, '`' || s.name || '`')
+ORDER BY s.name;
+----

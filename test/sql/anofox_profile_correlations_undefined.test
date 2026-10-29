@@ -1,0 +1,79 @@
+# name: test/sql/anofox_profile_correlations_undefined.test
+# description: profile_correlations reports NULL for a correlation that is undefined (one finite
+#              pair, a constant column, no pairs at all) instead of 1.0; a varying pair of two
+#              rows keeps its exact +/-1.0.
+# group: [anofox_tabular]
+
+require anofox_tabular
+
+statement ok
+LOAD anofox_tabular
+
+statement ok
+SET anofox_tab_trace_enabled = false
+
+# A shop's daily KPIs: list_price is constant (a single price point this week), so it has no
+# correlation with anything; units and revenue move together
+statement ok
+CREATE TABLE daily_kpis (day DATE, units INTEGER, revenue DECIMAL(10, 2), list_price DECIMAL(8, 2))
+
+statement ok
+INSERT INTO daily_kpis VALUES
+    (DATE '2026-10-19', 120, 2398.80, 19.99),
+    (DATE '2026-10-20', 95,  1899.05, 19.99),
+    (DATE '2026-10-21', 143, 2858.57, 19.99),
+    (DATE '2026-10-22', 88,  1759.12, 19.99),
+    (DATE '2026-10-23', 160, 3198.40, 19.99)
+
+query TTIRR
+SELECT column_a, column_b, n, round(pearson, 4), round(spearman, 4)
+FROM profile_correlations('daily_kpis', ['units', 'revenue', 'list_price'])
+ORDER BY column_a, column_b
+----
+revenue	list_price	5	NULL	NULL
+units	list_price	5	NULL	NULL
+units	revenue	5	1.0	1.0
+
+# A single row: one pair, the correlation is undefined
+statement ok
+CREATE TABLE first_day AS SELECT units, revenue FROM daily_kpis WHERE day = DATE '2026-10-19'
+
+query IRR
+SELECT n, pearson, spearman FROM profile_correlations('first_day')
+----
+1	NULL	NULL
+
+# No rows at all
+statement ok
+CREATE TABLE no_days AS SELECT units, revenue FROM daily_kpis WHERE false
+
+query IRR
+SELECT n, pearson, spearman FROM profile_correlations('no_days')
+----
+0	NULL	NULL
+
+# Two varying rows: an exact correlation of +1.0 or -1.0
+statement ok
+CREATE TABLE two_days AS SELECT * FROM (VALUES (120, 2398.80), (95, 1899.05)) v(units, revenue)
+
+query IRR
+SELECT n, pearson, spearman FROM profile_correlations('two_days')
+----
+2	1.0	1.0
+
+statement ok
+CREATE TABLE returns_vs_units AS SELECT * FROM (VALUES (120, 3), (95, 11)) v(units, returns)
+
+query IRR
+SELECT n, pearson, spearman FROM profile_correlations('returns_vs_units')
+----
+2	-1.0	-1.0
+
+# Two rows with equal units: constant, undefined
+statement ok
+CREATE TABLE flat_days AS SELECT * FROM (VALUES (120, 2398.80), (120, 2401.10)) v(units, revenue)
+
+query IRR
+SELECT n, pearson, spearman FROM profile_correlations('flat_days')
+----
+2	NULL	NULL

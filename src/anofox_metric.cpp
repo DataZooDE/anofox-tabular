@@ -1,4 +1,5 @@
 #include "anofox_metric.hpp"
+#include "anofox_check.hpp"
 #include "anofox_isolation_forest.hpp"
 #include "anofox_dbscan.hpp"
 #include "anofox_function_alias.hpp"
@@ -18,6 +19,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <limits>
 #include "anofox_tabular_banner.hpp"
 
 namespace duckdb {
@@ -30,8 +32,8 @@ namespace {
 
 // Helper: Generate SQL for volume metrics
 static string GenerateVolumeSQL(const string &table_ref, const Value &min_rows, const Value &max_rows) {
-	string min_val = min_rows.IsNull() ? "NULL" : min_rows.ToString();
-	string max_val = max_rows.IsNull() ? "NULL" : max_rows.ToString();
+	string min_val = BigintThresholdSQL(min_rows);
+	string max_val = BigintThresholdSQL(max_rows);
 
 	return "SELECT "
 		"CASE "
@@ -56,7 +58,7 @@ static string GenerateVolumeSQL(const string &table_ref, const Value &min_rows, 
 // Empty-input semantics: an empty table yields null_count = 0, total_count = 0, null_rate = 0.0
 // and passes trivially with an explicit message (instead of NULL rate and message).
 static string GenerateNullRateSQL(const string &table_ref, const string &column_name, const Value &max_null_rate) {
-	string max_rate_val = max_null_rate.IsNull() ? "1.0" : max_null_rate.ToString();
+	string max_rate_val = DoubleThresholdSQL(max_null_rate, "1.0");
 	string col_id = QuoteSqlIdentifier(column_name);
 
 	return "SELECT "
@@ -68,10 +70,10 @@ static string GenerateNullRateSQL(const string &table_ref, const string &column_
 		"CASE "
 		"  WHEN total_count = 0 THEN 'Table is empty (0 rows); null rate check passed trivially' "
 		"  WHEN null_rate <= " + max_rate_val + " THEN "
-		"    'Null rate ' || CAST(null_rate AS VARCHAR) || ' (' || CAST(null_count AS VARCHAR) || '/' || "
+		"    'Null rate ' || " + RoundedNumberSQL("null_rate") + " || ' (' || CAST(null_count AS VARCHAR) || '/' || "
 		"    CAST(total_count AS VARCHAR) || ') is acceptable' "
 		"  ELSE "
-		"    'Null rate ' || CAST(null_rate AS VARCHAR) || ' (' || CAST(null_count AS VARCHAR) || '/' || "
+		"    'Null rate ' || " + RoundedNumberSQL("null_rate") + " || ' (' || CAST(null_count AS VARCHAR) || '/' || "
 		"    CAST(total_count AS VARCHAR) || ') exceeds maximum ' || CAST(" + max_rate_val + " AS VARCHAR) "
 		"END AS message "
 		"FROM (SELECT "
@@ -83,8 +85,8 @@ static string GenerateNullRateSQL(const string &table_ref, const string &column_
 
 // Helper: Generate SQL for distinct count metrics
 static string GenerateDistinctCountSQL(const string &table_ref, const string &column_name, const Value &min_distinct, const Value &max_distinct) {
-	string min_val = min_distinct.IsNull() ? "NULL" : min_distinct.ToString();
-	string max_val = max_distinct.IsNull() ? "NULL" : max_distinct.ToString();
+	string min_val = BigintThresholdSQL(min_distinct);
+	string max_val = BigintThresholdSQL(max_distinct);
 	string col_id = QuoteSqlIdentifier(column_name);
 
 	return "SELECT "
@@ -106,33 +108,71 @@ static string GenerateDistinctCountSQL(const string &table_ref, const string &co
 		"FROM (SELECT COUNT(DISTINCT " + col_id + ") AS distinct_count FROM " + table_ref + ")";
 }
 
+// The CTEs that read the non-NULL values of `col_id` as DOUBLE: `all_vals(val)` and, when the
+// column has an exact numeric type (integers, DECIMAL), a one-row `ref(r)` with the reference
+// value the values are centred on (see ExactCenteringType): val is then the exact difference to
+// it, so values above 2^53 stay distinct. `offset_sql` is the DOUBLE to add to a centred
+// location (mean, quantile, bound) to report it on the column's scale ("" when not centred).
+struct CenteredValuesSQL {
+	string ctes;
+	string offset_sql;
+};
+
+static CenteredValuesSQL BuildCenteredValuesSQL(const string &table_ref, const string &col_id,
+                                                const LogicalType &column_type) {
+	auto centering_type =
+	    column_type.id() == LogicalTypeId::INVALID ? string() : ExactCenteringType(column_type.ToString());
+	if (centering_type.empty()) {
+		return {"all_vals AS (SELECT CAST(" + col_id + " AS DOUBLE) AS val FROM " + table_ref + " WHERE " + col_id +
+		            " IS NOT NULL), ",
+		        ""};
+	}
+	return {"ref AS (SELECT " + CenteringReferenceSQL(col_id, centering_type) + " AS r FROM " + table_ref + "), "
+	        "all_vals AS (SELECT " + CenteredDoubleSQL(col_id, centering_type, "ref.r") + " AS val FROM " + table_ref +
+	            ", ref WHERE " + col_id + " IS NOT NULL), ",
+	        "(SELECT CAST(r AS DOUBLE) FROM ref)"};
+}
+
+// `centred_sql` shifted back by the offset of BuildCenteredValuesSQL
+static string Uncentered(const CenteredValuesSQL &values, const string &centred_sql) {
+	return values.offset_sql.empty() ? centred_sql : "(" + values.offset_sql + " + " + centred_sql + ")";
+}
+
 // Helper: Generate SQL for zscore metrics using CTE to avoid nested aggregates
-static string GenerateZscoreSQL(const string &table_ref, const string &column_name, const Value &threshold) {
-	string thresh_val = threshold.IsNull() ? "3.0" : threshold.ToString();
+static string GenerateZscoreSQL(const string &table_ref, const string &column_name, const LogicalType &column_type,
+                                const Value &threshold) {
+	string thresh_val = DoubleThresholdSQL(threshold, "3.0");
 	string col_id = QuoteSqlIdentifier(column_name);
 
 	// Use CTEs to avoid nested aggregate error:
-	// 1. vals: the non-NULL values cast to DOUBLE
+	// 1. vals: the non-NULL values cast to DOUBLE (exact numeric types centred first, see
+	//    BuildCenteredValuesSQL; mean is reported on the column's scale)
 	// 2. stats: compute mean and stddev (always exactly one row)
 	// 3. with_zscore: compute z-score for each row; a constant column (stddev = 0)
 	//    or a single row (stddev NULL) yields z-score 0 instead of NaN/NULL
 	// 4. summary: driven by stats so exactly one row is returned even for empty input
 	// Empty-input semantics: empty/all-NULL input yields one row with total_count = 0,
 	// outlier_count = 0, outlier_rate = 0.0, NULL mean/stddev, status 'pass'.
-	return "WITH vals AS ("
-		"SELECT CAST(" + col_id + " AS DOUBLE) AS val FROM " + table_ref + " WHERE " + col_id + " IS NOT NULL"
-		"), "
+	// NaN/Inf values are left out of the statistics (they would turn mean/stddev into NaN and
+	// every row into an "outlier") and counted for the message.
+	const string nonfinite_note =
+	    "CASE WHEN nonfinite_count > 0 THEN '; ' || CAST(nonfinite_count AS VARCHAR) || ' NaN/Inf value(s) ignored' "
+	    "ELSE '' END";
+	auto values = BuildCenteredValuesSQL(table_ref, col_id, column_type);
+	return "WITH " + values.ctes +
+		"vals AS (SELECT val FROM all_vals WHERE isfinite(val)), "
 		"stats AS ("
-		"SELECT AVG(val) AS mean, STDDEV(val) AS stddev, COUNT(*) AS total_count FROM vals"
+		"SELECT AVG(val) AS centred_mean, " + Uncentered(values, "AVG(val)") + " AS mean, STDDEV(val) AS stddev, COUNT(*) AS total_count, "
+		"(SELECT COUNT(*) FROM all_vals WHERE NOT isfinite(val)) AS nonfinite_count FROM vals"
 		"), "
 		"with_zscore AS ("
 		"SELECT CASE WHEN s.stddev IS NULL OR s.stddev = 0 THEN 0.0 "
-		"            ELSE ABS((v.val - s.mean) / s.stddev) END AS abs_zscore "
+		"            ELSE ABS((v.val - s.centred_mean) / s.stddev) END AS abs_zscore "
 		"FROM vals v, stats s"
 		"), "
 		"summary AS ("
 		"SELECT "
-		"  s.mean, s.stddev, s.total_count, "
+		"  s.mean, s.stddev, s.total_count, s.nonfinite_count, "
 		"  (SELECT COUNT(*) FROM with_zscore z WHERE z.abs_zscore > " + thresh_val + ") AS outlier_count "
 		"FROM stats s"
 		") "
@@ -150,49 +190,60 @@ static string GenerateZscoreSQL(const string &table_ref, const string &column_na
 		"  WHEN stddev IS NULL OR stddev = 0 THEN "
 		"    'No outliers detected (constant column: standard deviation is 0 or undefined)' "
 		"  WHEN outlier_count = 0 THEN "
-		"    'No outliers detected (z-score threshold: ' || CAST(" + thresh_val + " AS VARCHAR) || ')' "
+		"    'No outliers detected (z-score threshold: ' || CAST(" + thresh_val + " AS VARCHAR) || " + nonfinite_note + " || ')' "
 		"  ELSE "
 		"    CAST(outlier_count AS VARCHAR) || ' outlier(s) detected (' || "
-		"    CAST((CAST(outlier_count AS DOUBLE) / total_count * 100) AS VARCHAR) || "
-		"    '% of ' || CAST(total_count AS VARCHAR) || ' rows)' "
+		"    " + RoundedNumberSQL("CAST(outlier_count AS DOUBLE) / total_count * 100") + " || "
+		"    '% of ' || CAST(total_count AS VARCHAR) || ' rows' || " + nonfinite_note + " || ')' "
 		"END AS message "
 		"FROM summary";
 }
 
 // Helper: Generate SQL for IQR metrics using CTE to avoid nested aggregates
-static string GenerateIQRSQL(const string &table_ref, const string &column_name, const Value &iqr_multiplier) {
-	string mult_val = iqr_multiplier.IsNull() ? "1.5" : iqr_multiplier.ToString();
+static string GenerateIQRSQL(const string &table_ref, const string &column_name, const LogicalType &column_type,
+                             const Value &iqr_multiplier) {
+	string mult_val = DoubleThresholdSQL(iqr_multiplier, "1.5");
 	string col_id = QuoteSqlIdentifier(column_name);
 
 	// Use CTEs to avoid nested aggregate error:
-	// 1. vals: the non-NULL values cast to DOUBLE
+	// 1. vals: the finite non-NULL values cast to DOUBLE (exact numeric types centred first, see
+	//    BuildCenteredValuesSQL; quantiles and bounds are reported on the column's scale)
 	// 2. stats: compute Q1 and Q3 quantiles (always exactly one row)
 	// 3. bounds: derive the outlier bounds from the quantiles
 	// 4. summary: driven by bounds so exactly one row is returned even for empty input
 	// Empty-input semantics: empty/all-NULL input yields one row with total_count = 0,
 	// outlier_count = 0, NULL quantiles/bounds, status 'pass' and an explicit message.
-	return "WITH vals AS ("
-		"SELECT CAST(" + col_id + " AS DOUBLE) AS val FROM " + table_ref + " WHERE " + col_id + " IS NOT NULL"
-		"), "
+	// NaN/Inf values are left out like in zscore (a NaN would become Q3 and every value an
+	// "outlier") and counted for the message.
+	const string nonfinite_note =
+	    "CASE WHEN nonfinite_count > 0 THEN '; ' || CAST(nonfinite_count AS VARCHAR) || ' NaN/Inf value(s) ignored' "
+	    "ELSE '' END";
+	auto values = BuildCenteredValuesSQL(table_ref, col_id, column_type);
+	return "WITH " + values.ctes +
+		"vals AS (SELECT val FROM all_vals WHERE isfinite(val)), "
 		"stats AS ("
-		"SELECT QUANTILE_CONT(val, 0.25) AS q1, QUANTILE_CONT(val, 0.75) AS q3, COUNT(*) AS total_count FROM vals"
+		"SELECT QUANTILE_CONT(val, 0.25) AS q1, QUANTILE_CONT(val, 0.75) AS q3, COUNT(*) AS total_count, "
+		"(SELECT COUNT(*) FROM all_vals WHERE NOT isfinite(val)) AS nonfinite_count FROM vals"
 		"), "
 		"bounds AS ("
 		"SELECT "
 		"  q1, "
 		"  q3, "
 		"  total_count, "
+		"  nonfinite_count, "
 		"  q1 - " + mult_val + " * (q3 - q1) AS lower_bound, "
 		"  q3 + " + mult_val + " * (q3 - q1) AS upper_bound "
 		"FROM stats"
 		"), "
 		"summary AS ("
 		"SELECT "
-		"  b.q1, "
-		"  b.q3, "
+		"  " + Uncentered(values, "b.q1") + " AS q1, "
+		"  " + Uncentered(values, "b.q3") + " AS q3, "
+		"  b.q3 - b.q1 AS iqr, "
 		"  b.total_count, "
-		"  b.lower_bound, "
-		"  b.upper_bound, "
+		"  b.nonfinite_count, "
+		"  " + Uncentered(values, "b.lower_bound") + " AS lower_bound, "
+		"  " + Uncentered(values, "b.upper_bound") + " AS upper_bound, "
 		"  (SELECT COUNT(*) FROM vals v, bounds b2 WHERE v.val < b2.lower_bound OR v.val > b2.upper_bound) AS outlier_count "
 		"FROM bounds b"
 		") "
@@ -200,7 +251,7 @@ static string GenerateIQRSQL(const string &table_ref, const string &column_name,
 		"CASE WHEN outlier_count = 0 THEN 'pass' ELSE 'fail' END AS status, "
 		"q1, "
 		"q3, "
-		"q3 - q1 AS iqr, "
+		"iqr, "
 		"lower_bound, "
 		"upper_bound, "
 		"outlier_count, "
@@ -210,9 +261,9 @@ static string GenerateIQRSQL(const string &table_ref, const string &column_name,
 		"  WHEN total_count = 0 THEN "
 		"    'No rows to evaluate (column is empty or all NULL)' "
 		"  WHEN outlier_count = 0 THEN "
-		"    'No outliers detected by IQR method (bounds: [' || CAST(lower_bound AS VARCHAR) || ', ' || CAST(upper_bound AS VARCHAR) || '])' "
+		"    'No outliers detected by IQR method (bounds: [' || " + RoundedNumberSQL("lower_bound") + " || ', ' || " + RoundedNumberSQL("upper_bound") + " || ']' || " + nonfinite_note + " || ')' "
 		"  ELSE "
-		"    CAST(outlier_count AS VARCHAR) || ' outlier(s) detected outside bounds [' || CAST(lower_bound AS VARCHAR) || ', ' || CAST(upper_bound AS VARCHAR) || ']' "
+		"    CAST(outlier_count AS VARCHAR) || ' outlier(s) detected outside bounds [' || " + RoundedNumberSQL("lower_bound") + " || ', ' || " + RoundedNumberSQL("upper_bound") + " || ']' || " + nonfinite_note + " "
 		"END AS message "
 		"FROM summary";
 }
@@ -236,9 +287,9 @@ static string GenerateSchemaSQL(const string &table_name, const vector<string> &
 	       "  SELECT column_name"
 	       "  FROM (DESCRIBE SELECT * FROM " + BuildQueryTableRef(table_name) + ")"
 	       "), missing AS ("
-	       "  SELECT col FROM required"
-	       "  EXCEPT"
-	       "  SELECT col FROM actual"
+	       // Column names match case-insensitively, like DuckDB identifiers
+	       "  SELECT DISTINCT col FROM required r"
+	       "  WHERE NOT EXISTS (SELECT 1 FROM actual a WHERE lower(a.col) = lower(r.col))"
 	       "), missing_stats AS ("
 	       "  SELECT"
 	       "    COALESCE(COUNT(*), 0) AS missing_count,"
@@ -256,12 +307,39 @@ static string GenerateSchemaSQL(const string &table_name, const vector<string> &
 }
 
 // Helper: Generate SQL for freshness metrics
-static string GenerateFreshnessSQL(const string &table_ref, const string &timestamp_column, const Value &max_age, const Value &reference_time) {
-	string max_age_interval =
-	    max_age.IsNull() ? "INTERVAL '1 day'" : "'" + EscapeSqlStringLiteral(max_age.ToString()) + "'::INTERVAL";
+// All timestamps are compared in UTC: the reference time defaults to now() in UTC (UtcNowSQL),
+// and a TIMESTAMP WITH TIME ZONE column is read as its UTC instant (UtcTimestampSQL), with and
+// without the ICU extension and whatever the session TimeZone. A plain TIMESTAMP column and an
+// explicit reference_time are taken as UTC as they are.
+static string GenerateFreshnessSQL(const string &table_ref, const string &timestamp_column,
+                                   const LogicalType &column_type, const Value &max_age,
+                                   const Value &reference_time) {
+	// max_age is never NULL here (rejected at bind time)
+	string max_age_interval = "'" + EscapeSqlStringLiteral(max_age.ToString()) + "'::INTERVAL";
 	string ref_time =
-	    reference_time.IsNull() ? "now()" : "'" + EscapeSqlStringLiteral(reference_time.ToString()) + "'::TIMESTAMP";
+	    reference_time.IsNull() ? UtcNowSQL() : "'" + EscapeSqlStringLiteral(reference_time.ToString()) + "'::TIMESTAMP";
 	string col_id = QuoteSqlIdentifier(timestamp_column);
+	string age_sql = "EXTRACT(EPOCH FROM (" + ref_time + " - latest_timestamp))::BIGINT";
+	// A latest timestamp after the reference time passes (the data is not stale) but is
+	// called out: it usually means clock skew or timestamps loaded in the wrong time zone
+	string future_note = "CASE WHEN " + age_sql + " < 0 THEN '. Warning: the latest timestamp is ' || "
+	                     "CAST(-" + age_sql + " AS VARCHAR) || 's after the reference time; check for clock skew or "
+	                     "a time zone mismatch' ELSE '' END";
+
+	// An infinite timestamp (an SCD2 valid_to of the current version) is no update time: it is
+	// ignored, and the message says how many rows were
+	string infinite = InfiniteTimeSQL(col_id, column_type, "TIMESTAMP");
+	string infinite_note = "CASE WHEN infinite_count > 0 THEN '. ' || CAST(infinite_count AS VARCHAR) || "
+	                       "' row(s) with an infinite timestamp ignored' ELSE '' END";
+	// A text value that is no timestamp is skipped (not a conversion error), and the message
+	// says how many were
+	const bool is_text = column_type.id() == LogicalTypeId::VARCHAR;
+	string timestamp_sql = UtcTimestampSQL(col_id, column_type, is_text);
+	string skipped_count = is_text ? "COUNT(*) FILTER (WHERE " + col_id + " IS NOT NULL AND (" + timestamp_sql + ") IS NULL)"
+	                               : string("0");
+	string skipped_note = "CASE WHEN skipped_count > 0 THEN '. ' || CAST(skipped_count AS VARCHAR) || "
+	                      "' row(s) skipped (" + EscapeSqlStringLiteral(timestamp_column) +
+	                      " is not a timestamp)' ELSE '' END";
 
 	// Empty-input semantics: an empty table or all-NULL timestamp column yields one row with
 	// status 'fail', NULL metric_value/age_seconds and an explicit message (freshness cannot
@@ -274,17 +352,20 @@ static string GenerateFreshnessSQL(const string &table_ref, const string &timest
 		"END AS status, "
 		"latest_timestamp AS metric_value, "
 		"threshold_timestamp AS threshold, "
-		"EXTRACT(EPOCH FROM (" + ref_time + " - latest_timestamp))::BIGINT AS age_seconds, "
+		+ age_sql + " AS age_seconds, "
 		"CASE "
+		"  WHEN latest_timestamp IS NULL AND skipped_count > 0 THEN 'No timestamp values found' "
 		"  WHEN latest_timestamp IS NULL THEN "
 		"    'No timestamp values found (table is empty or column is all NULL)' "
 		"  WHEN latest_timestamp >= threshold_timestamp THEN "
-		"    'Data is fresh. Latest update: ' || CAST(latest_timestamp AS VARCHAR) || ' (age: ' || CAST(EXTRACT(EPOCH FROM (" + ref_time + " - latest_timestamp))::BIGINT AS VARCHAR) || 's)' "
+		"    'Data is fresh. Latest update: ' || CAST(latest_timestamp AS VARCHAR) || ' (age: ' || CAST(" + age_sql + " AS VARCHAR) || 's)' || " + future_note + " "
 		"  ELSE "
-		"    'Data is stale. Latest update: ' || CAST(latest_timestamp AS VARCHAR) || ' (age: ' || CAST(EXTRACT(EPOCH FROM (" + ref_time + " - latest_timestamp))::BIGINT AS VARCHAR) || 's, max allowed: ' || CAST(EXTRACT(EPOCH FROM " + max_age_interval + ")::BIGINT AS VARCHAR) || 's)' "
-		"END AS message "
+		"    'Data is stale. Latest update: ' || CAST(latest_timestamp AS VARCHAR) || ' (age: ' || CAST(" + age_sql + " AS VARCHAR) || 's, max allowed: ' || CAST(EXTRACT(EPOCH FROM " + max_age_interval + ")::BIGINT AS VARCHAR) || 's)' "
+		"END || " + skipped_note + " || " + infinite_note + " AS message "
 		"FROM (SELECT "
-		"  MAX(" + col_id + ") AS latest_timestamp, "
+		"  MAX(" + timestamp_sql + ") FILTER (WHERE NOT " + infinite + ") AS latest_timestamp, "
+		"  COUNT(*) FILTER (WHERE " + infinite + ") AS infinite_count, "
+		"  " + skipped_count + " AS skipped_count, "
 		+ ref_time + " - " + max_age_interval + " AS threshold_timestamp "
 		"FROM " + table_ref + ")";
 }
@@ -301,7 +382,11 @@ static unique_ptr<TableRef> MetricVolumeBindReplace(ClientContext &context, Tabl
 		throw BinderException("anofox_metric_volume requires 3 arguments: table_name, min_rows, max_rows");
 	}
 
-	string table_name = input.inputs[0].ToString();
+	string table_name = RequireNameArgument(input, 0, "volume", "table_name");
+	RequireRelationColumns(context, "volume", table_name);
+	ValidateNonNegative(input.inputs[1], "volume", "min_rows");
+	ValidateNonNegative(input.inputs[2], "volume", "max_rows");
+	ValidateThresholdOrder(input.inputs[1], input.inputs[2], "volume", "min_rows", "max_rows");
 	string table_ref = BuildQueryTableRef(table_name);
 	string sql = GenerateVolumeSQL(table_ref, input.inputs[1], input.inputs[2]);
 	return ParseSubquery(sql, context, "Failed to parse volume metric query");
@@ -313,9 +398,11 @@ static unique_ptr<TableRef> MetricNullRateBindReplace(ClientContext &context, Ta
 		throw BinderException("anofox_metric_null_rate requires 3 arguments: table_name, column_name, max_null_rate");
 	}
 
-	string table_name = input.inputs[0].ToString();
-	string column_name = input.inputs[1].ToString();
-	ValidateFiniteDouble(input.inputs[2], "null_rate", "max_null_rate");
+	string table_name = RequireNameArgument(input, 0, "null_rate", "table_name");
+	string column_name = RequireNameArgument(input, 1, "null_rate", "column_name");
+	RequireNonNullArgument(input, 2, "null_rate", "max_null_rate");
+	ValidateRate(input.inputs[2], "null_rate", "max_null_rate");
+	RequireRelationColumns(context, "null_rate", table_name, {column_name});
 	string table_ref = BuildQueryTableRef(table_name);
 	string sql = GenerateNullRateSQL(table_ref, column_name, input.inputs[2]);
 	return ParseSubquery(sql, context, "Failed to parse null rate metric query");
@@ -327,8 +414,12 @@ static unique_ptr<TableRef> MetricDistinctCountBindReplace(ClientContext &contex
 		throw BinderException("anofox_metric_distinct_count requires 4 arguments: table_name, column_name, min_distinct, max_distinct");
 	}
 
-	string table_name = input.inputs[0].ToString();
-	string column_name = input.inputs[1].ToString();
+	string table_name = RequireNameArgument(input, 0, "distinct_count", "table_name");
+	string column_name = RequireNameArgument(input, 1, "distinct_count", "column_name");
+	ValidateNonNegative(input.inputs[2], "distinct_count", "min_distinct");
+	ValidateNonNegative(input.inputs[3], "distinct_count", "max_distinct");
+	ValidateThresholdOrder(input.inputs[2], input.inputs[3], "distinct_count", "min_distinct", "max_distinct");
+	RequireRelationColumns(context, "distinct_count", table_name, {column_name});
 	string table_ref = BuildQueryTableRef(table_name);
 	string sql = GenerateDistinctCountSQL(table_ref, column_name, input.inputs[2], input.inputs[3]);
 	return ParseSubquery(sql, context, "Failed to parse distinct count metric query");
@@ -340,11 +431,18 @@ static unique_ptr<TableRef> MetricZscoreBindReplace(ClientContext &context, Tabl
 		throw BinderException("anofox_metric_zscore requires 3 arguments: table_name, column_name, threshold");
 	}
 
-	string table_name = input.inputs[0].ToString();
-	string column_name = input.inputs[1].ToString();
+	string table_name = RequireNameArgument(input, 0, "zscore", "table_name");
+	string column_name = RequireNameArgument(input, 1, "zscore", "column_name");
+	RequireNonNullArgument(input, 2, "zscore", "threshold");
 	ValidateFiniteDouble(input.inputs[2], "zscore", "threshold");
+	if (!input.inputs[2].IsNull() && input.inputs[2].GetValue<double>() <= 0) {
+		throw BinderException("zscore: threshold must be positive (got %s)", input.inputs[2].ToString());
+	}
+	RequireRelationColumns(context, "zscore", table_name, {column_name});
+	RequireNumericColumn(context, "zscore", table_name, column_name);
 	string table_ref = BuildQueryTableRef(table_name);
-	string sql = GenerateZscoreSQL(table_ref, column_name, input.inputs[2]);
+	string sql = GenerateZscoreSQL(table_ref, column_name, LookupColumnType(context, table_name, column_name),
+	                               input.inputs[2]);
 	return ParseSubquery(sql, context, "Failed to parse zscore metric query");
 }
 
@@ -354,11 +452,16 @@ static unique_ptr<TableRef> MetricIQRBindReplace(ClientContext &context, TableFu
 		throw BinderException("anofox_metric_iqr requires 3 arguments: table_name, column_name, iqr_multiplier");
 	}
 
-	string table_name = input.inputs[0].ToString();
-	string column_name = input.inputs[1].ToString();
+	string table_name = RequireNameArgument(input, 0, "iqr", "table_name");
+	string column_name = RequireNameArgument(input, 1, "iqr", "column_name");
+	RequireNonNullArgument(input, 2, "iqr", "iqr_multiplier");
 	ValidateFiniteDouble(input.inputs[2], "iqr", "iqr_multiplier");
+	ValidateNonNegative(input.inputs[2], "iqr", "iqr_multiplier");
+	RequireRelationColumns(context, "iqr", table_name, {column_name});
+	RequireNumericColumn(context, "iqr", table_name, column_name);
 	string table_ref = BuildQueryTableRef(table_name);
-	string sql = GenerateIQRSQL(table_ref, column_name, input.inputs[2]);
+	string sql = GenerateIQRSQL(table_ref, column_name, LookupColumnType(context, table_name, column_name),
+	                            input.inputs[2]);
 	return ParseSubquery(sql, context, "Failed to parse IQR metric query");
 }
 
@@ -368,9 +471,12 @@ static unique_ptr<TableRef> MetricSchemaBindReplace(ClientContext &context, Tabl
 		throw BinderException("anofox_metric_schema requires 2 arguments: table_name, required_columns");
 	}
 
-	string table_name = input.inputs[0].ToString();
+	string table_name = RequireNameArgument(input, 0, "schema_check", "table_name");
+	RequireNonNullArgument(input, 1, "schema_check", "required_columns");
+	// The required columns are what the check asserts: a missing one is a 'fail' row, not an error
+	RequireRelationColumns(context, "schema_check", table_name);
 	vector<string> required_columns;
-	if (!input.inputs[1].IsNull() && input.inputs[1].type().id() == LogicalTypeId::LIST) {
+	if (input.inputs[1].type().id() == LogicalTypeId::LIST) {
 		auto &list_children = ListValue::GetChildren(input.inputs[1]);
 		for (auto &child : list_children) {
 			if (!child.IsNull()) {
@@ -385,19 +491,59 @@ static unique_ptr<TableRef> MetricSchemaBindReplace(ClientContext &context, Tabl
 	return ParseSubquery(sql, context, "Failed to parse schema metric query");
 }
 
+// The reference_time of freshness as a plain UTC TIMESTAMP (NULL stays NULL): an instant
+// (TIMESTAMP WITH TIME ZONE, e.g. now()) is taken as its UTC time whatever the session TimeZone;
+// a DATE is its midnight; a string is cast to TIMESTAMP. Any other type is a binder error.
+static Value NormalizeReferenceTime(const Value &reference_time) {
+	if (reference_time.IsNull()) {
+		return Value(LogicalType(LogicalTypeId::TIMESTAMP));
+	}
+	switch (reference_time.type().id()) {
+	case LogicalTypeId::TIMESTAMP_TZ:
+		return Value::TIMESTAMP(timestamp_t(reference_time.GetValueUnsafe<int64_t>()));
+	case LogicalTypeId::TIMESTAMP:
+	case LogicalTypeId::TIMESTAMP_SEC:
+	case LogicalTypeId::TIMESTAMP_MS:
+	case LogicalTypeId::TIMESTAMP_NS:
+	case LogicalTypeId::DATE:
+	case LogicalTypeId::VARCHAR:
+		try {
+			return reference_time.DefaultCastAs(LogicalType(LogicalTypeId::TIMESTAMP));
+		} catch (std::exception &) {
+			throw BinderException("freshness: reference_time '%s' is not a valid timestamp", reference_time.ToString());
+		}
+	default:
+		throw BinderException("freshness: reference_time must be a TIMESTAMP or TIMESTAMP WITH TIME ZONE, got %s",
+		                      reference_time.type().ToString());
+	}
+}
+
 static unique_ptr<TableRef> MetricFreshnessBindReplace(ClientContext &context, TableFunctionBindInput &input) {
 	PostHogTelemetry::Instance().RecordFunctionCall("metric_freshness");
 	if (input.inputs.size() < 3) {
 		throw BinderException("anofox_metric_freshness requires at least 3 arguments: table_name, timestamp_column, max_age");
 	}
 
-	string table_name = input.inputs[0].ToString();
-	string timestamp_column = input.inputs[1].ToString();
+	string table_name = RequireNameArgument(input, 0, "freshness", "table_name");
+	string timestamp_column = RequireNameArgument(input, 1, "freshness", "timestamp_column");
+	RequireNonNullArgument(input, 2, "freshness", "max_age");
 	Value max_age = input.inputs[2];
+	// NULL reference_time = the current UTC time
 	Value reference_time = (input.inputs.size() > 3) ? input.inputs[3] : Value();
+	reference_time = NormalizeReferenceTime(reference_time);
+	if (!reference_time.IsNull() &&
+	    !Value::IsFinite(reference_time.DefaultCastAs(LogicalType(LogicalTypeId::TIMESTAMP)).GetValue<timestamp_t>())) {
+		throw BinderException("freshness: reference_time must be a finite timestamp");
+	}
 
 	string table_ref = BuildQueryTableRef(table_name);
-	string sql = GenerateFreshnessSQL(table_ref, timestamp_column, max_age, reference_time);
+	auto column = RequireRelationColumns(context, "freshness", table_name, {timestamp_column})[0];
+	if (!IsTimeColumnType(column.type)) {
+		throw BinderException("freshness: timestamp_column '%s' %s", column.name,
+		                      TimeColumnTypeError(column.type, "timestamps"));
+	}
+	auto &column_type = column.type;
+	string sql = GenerateFreshnessSQL(table_ref, timestamp_column, column_type, max_age, reference_time);
 	return ParseSubquery(sql, context, "Failed to parse freshness metric query");
 }
 
@@ -452,27 +598,117 @@ struct IsolationForestGlobalState : public GlobalTableFunctionState {
 	std::vector<double> scores;
 	std::vector<double> first_column_values;  // univariate numeric path only ("value" output column)
 	std::vector<Value> id_values;              // id_column value per scored row (empty without id_column)
+	std::vector<int64_t> source_row_ids;       // 1-based scan position of each scored row ("row_id")
+	std::vector<bool> anomaly_flags;           // is_anomaly per scored row
 	double threshold = 0.0;
 	int64_t total_count = 0;
 	int64_t outlier_count = 0;
 	double avg_value = 0.0;
+	bool avg_is_null = false;  // no scored row has a finite value
 };
+
+// Classifies the numeric feature values of one row for the isolation forest:
+// a NaN in any feature skips the row like NULL; +-Inf in any feature makes the
+// row an anomaly that is scored 1.0 and kept out of the trees.
+enum class IsolationRowKind : uint8_t { FINITE, NON_FINITE_ANOMALY, SKIPPED_NAN };
+
+// Merges the model scores of the finite rows with the rows forced to score 1.0
+// (+-Inf), in scan order, and derives the anomaly flags and counts.
+static void FinishIsolationForestScores(IsolationForestGlobalState &state, const IsolationForest *forest,
+                                        const std::vector<double> &finite_scores,
+                                        const std::vector<bool> &non_finite_rows, double finite_sum,
+                                        bool univariate) {
+	const size_t n_rows = non_finite_rows.size();
+	state.total_count = static_cast<int64_t>(n_rows);
+	const size_t n_finite = finite_scores.size();
+	if (univariate) {
+		if (n_finite > 0) {
+			state.avg_value = finite_sum / static_cast<double>(n_finite);
+		} else {
+			// No finite value scored (empty table, all NULL/NaN, or only +-Inf): NULL, as documented
+			state.avg_value = 0.0;
+			state.avg_is_null = true;
+		}
+	}
+	state.threshold = forest ? forest->ComputeThreshold(finite_scores) : std::numeric_limits<double>::infinity();
+
+	state.scores.clear();
+	state.scores.reserve(n_rows);
+	state.anomaly_flags.clear();
+	state.anomaly_flags.reserve(n_rows);
+	size_t next_finite = 0;
+	for (size_t r = 0; r < n_rows; ++r) {
+		if (non_finite_rows[r]) {
+			state.scores.push_back(1.0);
+			state.anomaly_flags.push_back(true);
+		} else {
+			double score = finite_scores[next_finite++];
+			state.scores.push_back(score);
+			state.anomaly_flags.push_back(IsolationForest::IsAnomaly(score, state.threshold));
+		}
+	}
+	state.outlier_count =
+	    static_cast<int64_t>(std::count(state.anomaly_flags.begin(), state.anomaly_flags.end(), true));
+	if (anofox::AnofoxTraceConfig::Get().ShouldLog(anofox::AnofoxLogLevel::Debug)) {
+		anofox::AnofoxTrace(anofox::AnofoxLogLevel::Debug,
+		                    "isolation_forest: " + std::to_string(n_rows) + " scored rows (" + std::to_string(n_finite) +
+		                        " finite, " + std::to_string(n_rows - n_finite) + " +-Inf), threshold " +
+		                        std::to_string(state.threshold) + ", " + std::to_string(state.outlier_count) +
+		                        " anomalies");
+	}
+}
 
 // Initialize global state
 static unique_ptr<GlobalTableFunctionState> IsolationForestInit(ClientContext &, TableFunctionInitInput &) {
 	return make_uniq<IsolationForestGlobalState>();
 }
 
+// Resolve the feature columns of an anomaly function at bind time: case-insensitive names
+// (the table's spelling is used from here on), unknown names are an error, and every column
+// must be numeric (BOOLEAN is cast to 0/1). With `allow_categorical` VARCHAR/ENUM columns are
+// accepted as categorical features (isolation_forest_mv). Without this check a VARCHAR column
+// was silently scored as a category (isolation_forest) or failed with a cast error (dbscan).
+static vector<string> ResolveFeatureColumns(ClientContext &context, const string &function_name,
+                                            const string &table_name, const vector<string> &requested,
+                                            bool allow_categorical) {
+	vector<string> names;
+	for (auto &column : ResolveColumns(context, function_name, table_name, requested)) {
+		auto type_id = column.type.id();
+		bool numeric = column.type.IsNumeric() || type_id == LogicalTypeId::BOOLEAN;
+		bool categorical = type_id == LogicalTypeId::VARCHAR || type_id == LogicalTypeId::ENUM;
+		if (!numeric && !(allow_categorical && categorical)) {
+			if (allow_categorical) {
+				throw BinderException("%s: column '%s' must be numeric or categorical (VARCHAR), got %s",
+				                      function_name, column.name, column.type.ToString());
+			}
+			throw BinderException("%s: column '%s' must be numeric, got %s", function_name, column.name,
+			                      column.type.ToString());
+		}
+		names.push_back(std::move(column.name));
+	}
+	return names;
+}
+
 // Shared optional-parameter handling and validation for both isolation forest bind functions.
 // Integer parameters are read as signed int64_t and range-checked BEFORE casting to size_t,
 // so negative values are rejected instead of wrapping; doubles must be finite.
+// An optional positional parameter that is absent or NULL takes its default,
+// like the seed does; GetValue on a NULL Value would raise an INTERNAL error.
+template <class T>
+static T OptionalInput(const TableFunctionBindInput &input, idx_t index, T default_value) {
+	if (input.inputs.size() <= index || input.inputs[index].IsNull()) {
+		return default_value;
+	}
+	return input.inputs[index].GetValue<T>();
+}
+
 static void ParseIsolationForestCommonParameters(TableFunctionBindInput &input, const string &function_name,
                                                  size_t &n_trees, size_t &sample_size, double &contamination,
                                                  string &output_mode, uint64_t &seed, bool &has_seed) {
-	int64_t n_trees_val = input.inputs.size() > 2 ? input.inputs[2].GetValue<int64_t>() : 100;
-	int64_t sample_size_val = input.inputs.size() > 3 ? input.inputs[3].GetValue<int64_t>() : 256;
-	contamination = input.inputs.size() > 4 ? input.inputs[4].GetValue<double>() : 0.1;
-	output_mode = input.inputs.size() > 5 ? input.inputs[5].ToString() : "summary";
+	int64_t n_trees_val = OptionalInput<int64_t>(input, 2, 100);
+	int64_t sample_size_val = OptionalInput<int64_t>(input, 3, 256);
+	contamination = OptionalInput<double>(input, 4, 0.1);
+	output_mode = LowerOption(OptionalInput<string>(input, 5, "summary"));
 
 	// Seed parameter (optional, index 6); any signed value is an acceptable seed
 	seed = 0;
@@ -507,8 +743,8 @@ static unique_ptr<FunctionData> IsolationForestBind(ClientContext &context, Tabl
 		throw BinderException("isolation_forest requires at least 2 arguments: table_name, column_name");
 	}
 
-	string table_name = input.inputs[0].ToString();
-	string column_name = input.inputs[1].ToString();
+	string table_name = RequireNonNullArgument(input, 0, "isolation_forest", "table_name");
+	string column_name = RequireNonNullArgument(input, 1, "isolation_forest", "column_name");
 	vector<string> column_names = {column_name};
 
 	size_t n_trees;
@@ -548,6 +784,7 @@ static unique_ptr<FunctionData> IsolationForestBind(ClientContext &context, Tabl
 		return_types.emplace_back(LogicalType(LogicalTypeId::VARCHAR));
 	}
 
+	column_names = ResolveFeatureColumns(context, "isolation_forest", table_name, column_names, false);
 	auto id_column = BindIdColumn(context, input, "isolation_forest", table_name, output_mode == "scores", "scores");
 	InsertIdColumn(id_column, "isolation_forest", return_types, names);
 
@@ -565,10 +802,10 @@ static unique_ptr<FunctionData> IsolationForestMultivariateBind(ClientContext &c
 		throw BinderException("isolation_forest_mv requires at least 2 arguments: table_name, column_names");
 	}
 
-	string table_name = input.inputs[0].ToString();
+	string table_name = RequireNonNullArgument(input, 0, "isolation_forest_mv", "table_name");
 
 	// Parse comma-separated column names
-	auto column_names = ParseCommaSeparatedColumns(input.inputs[1].ToString());
+	auto column_names = ParseCommaSeparatedColumns(RequireNonNullArgument(input, 1, "isolation_forest_mv", "column_names"));
 	if (column_names.empty()) {
 		throw BinderException("column_names must contain at least one column");
 	}
@@ -672,6 +909,10 @@ static unique_ptr<FunctionData> IsolationForestMultivariateBind(ClientContext &c
 		return_types.emplace_back(LogicalType(LogicalTypeId::VARCHAR));
 	}
 
+	column_names = ResolveFeatureColumns(context, "isolation_forest_mv", table_name, column_names, true);
+	if (has_weight_column) {
+		weight_column = ResolveFeatureColumns(context, "isolation_forest_mv", table_name, {weight_column}, false)[0];
+	}
 	auto id_column =
 	    BindIdColumn(context, input, "isolation_forest_mv", table_name, output_mode == "scores", "scores");
 	InsertIdColumn(id_column, "isolation_forest_mv", return_types, names);
@@ -694,7 +935,7 @@ static void IsolationForestExecute(ClientContext &context, TableFunctionInput &d
 	if (!state.executed) {
 		state.executed = true;
 
-		Connection con(*context.db);
+		auto con = OpenSiblingConnection(context);
 
 		// Step 1: Detect column types from the source table
 		std::vector<bool> is_categorical(bind_data.column_names.size(), false);
@@ -750,17 +991,11 @@ static void IsolationForestExecute(ClientContext &context, TableFunctionInput &d
 		const idx_t id_col_idx = n_checked_cols;
 		column_list += bind_data.id_column.SelectSuffix();
 
-		string null_checks;
-		for (size_t i = 0; i < bind_data.column_names.size(); ++i) {
-			if (i > 0) null_checks += " AND ";
-			null_checks += QuoteSqlIdentifier(bind_data.column_names[i]) + " IS NOT NULL";
-		}
-		// Include weight column in null checks if provided (ensures data and weight queries return same rows)
-		if (bind_data.has_weight_column) {
-			null_checks += " AND " + QuoteSqlIdentifier(bind_data.weight_column) + " IS NOT NULL";
-		}
-
-		string query = "SELECT " + column_list + " FROM " + BuildQueryTableRef(bind_data.table_name) + " WHERE " + null_checks;
+		// No WHERE clause: every row of the scan is read and counted, so row_id
+		// is the 1-based position in the scan order (the table row number),
+		// also after rows that are skipped below because a value is NULL.
+		string query = "SELECT " + column_list + " FROM " + BuildQueryTableRef(bind_data.table_name);
+		int64_t source_row = 0;
 
 		// Stream the input instead of materializing the full result; model
 		// fitting requires the complete dataset, so the feature columns built
@@ -806,12 +1041,14 @@ static void IsolationForestExecute(ClientContext &context, TableFunctionInput &d
 
 			double sum_first_col = 0.0;
 			std::vector<double> sample_weights;  // Collected during data fetch if weight column provided
+			std::vector<bool> non_finite_rows;   // per scored row: +-Inf in a numeric feature
 
 			// Read data and build category mappings, reading chunks through
 			// UnifiedVectorFormat typed accessors. The weight column (if
 			// present) is the last column in the result.
 			std::vector<UnifiedVectorFormat> formats;
 			while (true) {
+				ThrowIfInterrupted(context);
 				auto chunk = result->Fetch();
 				if (!chunk || chunk->size() == 0) break;
 
@@ -822,6 +1059,7 @@ static void IsolationForestExecute(ClientContext &context, TableFunctionInput &d
 				}
 
 				for (idx_t row = 0; row < chunk->size(); ++row) {
+					source_row++;
 					bool valid_row = true;
 					for (idx_t col = 0; col < n_checked_cols; ++col) {
 						if (!formats[col].validity.RowIsValid(formats[col].sel->get_index(row))) {
@@ -831,9 +1069,28 @@ static void IsolationForestExecute(ClientContext &context, TableFunctionInput &d
 					}
 					if (!valid_row) continue;
 
+					auto kind = IsolationRowKind::FINITE;
+					for (idx_t col = 0; col < bind_data.column_names.size() && kind != IsolationRowKind::SKIPPED_NAN;
+					     ++col) {
+						if (is_categorical[col]) {
+							continue;
+						}
+						double v = UnifiedVectorFormat::GetData<double>(formats[col])[formats[col].sel->get_index(row)];
+						if (std::isnan(v)) {
+							kind = IsolationRowKind::SKIPPED_NAN;
+						} else if (std::isinf(v)) {
+							kind = IsolationRowKind::NON_FINITE_ANOMALY;
+						}
+					}
+					if (kind == IsolationRowKind::SKIPPED_NAN) continue;
+
+					state.source_row_ids.push_back(source_row);
 					if (bind_data.id_column.Enabled()) {
 						state.id_values.push_back(chunk->data[id_col_idx].GetValue(row));
 					}
+					non_finite_rows.push_back(kind == IsolationRowKind::NON_FINITE_ANOMALY);
+					// +-Inf rows are anomalies by definition and stay out of the trees
+					if (kind == IsolationRowKind::NON_FINITE_ANOMALY) continue;
 
 					// Process feature columns (not including weight column)
 					for (idx_t col = 0; col < bind_data.column_names.size(); ++col) {
@@ -863,36 +1120,34 @@ static void IsolationForestExecute(ClientContext &context, TableFunctionInput &d
 			}
 
 			size_t n_rows = data.empty() ? 0 : data[0].size();
-			state.total_count = static_cast<int64_t>(n_rows);
 
 			if (n_rows == 0) {
-				state.avg_value = 0.0;
-				state.outlier_count = 0;
+				FinishIsolationForestScores(state, nullptr, {}, non_finite_rows, 0.0, !bind_data.is_multivariate);
 			} else {
-				state.avg_value = sum_first_col / static_cast<double>(n_rows);
-
 				// Create and fit isolation forest with mixed-type data (Extended IF with ndim/coef_type, scoring_metric, SCiForest with ntry/prob_pick_avg_gain)
 				IsolationForest forest(bind_data.n_trees, bind_data.sample_size, bind_data.contamination,
 				                       actual_seed, bind_data.ndim, bind_data.coef_type, bind_data.scoring_metric,
 				                       bind_data.ntry, bind_data.prob_pick_avg_gain);
+				forest.SetInterruptCheck([&context]() { ThrowIfInterrupted(context); });
 
 				// sample_weights was already collected during data fetch (guarantees correct row alignment)
 				forest.FitMixed(data, column_info, sample_weights);
 
 				// Score all points directly into the state; row ids and
 				// anomaly flags are derived during emission
-				state.scores = forest.ScoreBatchMixed(data);
-				state.threshold = forest.ComputeThreshold(state.scores);
-				state.outlier_count = static_cast<int64_t>(std::count_if(
-				    state.scores.begin(), state.scores.end(), [&](double s) { return s > state.threshold; }));
+				auto finite_scores = forest.ScoreBatchMixed(data);
+				FinishIsolationForestScores(state, &forest, finite_scores, non_finite_rows, sum_first_col,
+				                            !bind_data.is_multivariate);
 			}
 		} else {
 			// Numeric-only path: use original vector<vector<double>> format
 			std::vector<std::vector<double>> data;
 			double sum_first_col = 0.0;
+			std::vector<bool> non_finite_rows;  // per scored row: +-Inf in a feature
 
 			std::vector<UnifiedVectorFormat> formats;
 			while (true) {
+				ThrowIfInterrupted(context);
 				auto chunk = result->Fetch();
 				if (!chunk || chunk->size() == 0) break;
 
@@ -903,6 +1158,7 @@ static void IsolationForestExecute(ClientContext &context, TableFunctionInput &d
 				}
 
 				for (idx_t row = 0; row < chunk->size(); ++row) {
+					source_row++;
 					bool valid_row = true;
 					for (idx_t col = 0; col < n_checked_cols; ++col) {
 						if (!formats[col].validity.RowIsValid(formats[col].sel->get_index(row))) {
@@ -912,19 +1168,35 @@ static void IsolationForestExecute(ClientContext &context, TableFunctionInput &d
 					}
 					if (!valid_row) continue;
 
+					// The numeric path has no weight column: every checked column is a feature
+					std::vector<double> point(n_checked_cols);
+					auto kind = IsolationRowKind::FINITE;
+					for (idx_t col = 0; col < n_checked_cols; ++col) {
+						point[col] = UnifiedVectorFormat::GetData<double>(formats[col])[formats[col].sel->get_index(row)];
+						if (std::isnan(point[col])) {
+							kind = IsolationRowKind::SKIPPED_NAN;
+							break;
+						}
+						if (std::isinf(point[col])) {
+							kind = IsolationRowKind::NON_FINITE_ANOMALY;
+						}
+					}
+					// NaN is skipped like NULL (the row keeps its row_id slot)
+					if (kind == IsolationRowKind::SKIPPED_NAN) continue;
+
+					state.source_row_ids.push_back(source_row);
 					if (bind_data.id_column.Enabled()) {
 						state.id_values.push_back(chunk->data[id_col_idx].GetValue(row));
 					}
-
-					// The numeric path has no weight column: every checked column is a feature
-					std::vector<double> point(n_checked_cols);
-					for (idx_t col = 0; col < n_checked_cols; ++col) {
-						point[col] = UnifiedVectorFormat::GetData<double>(formats[col])[formats[col].sel->get_index(row)];
-					}
 					if (!bind_data.is_multivariate) {
-						sum_first_col += point[0];
 						// Retain the raw input values for the "value" output column
 						state.first_column_values.push_back(point[0]);
+					}
+					non_finite_rows.push_back(kind == IsolationRowKind::NON_FINITE_ANOMALY);
+					// +-Inf rows are anomalies by definition and stay out of the trees
+					if (kind == IsolationRowKind::NON_FINITE_ANOMALY) continue;
+					if (!bind_data.is_multivariate) {
+						sum_first_col += point[0];
 					}
 					data.push_back(std::move(point));
 				}
@@ -933,26 +1205,21 @@ static void IsolationForestExecute(ClientContext &context, TableFunctionInput &d
 				throw InvalidInputException("Failed to query source table: %s", result->GetError());
 			}
 
-			state.total_count = static_cast<int64_t>(data.size());
-
 			if (data.empty()) {
-				state.avg_value = 0.0;
-				state.outlier_count = 0;
+				FinishIsolationForestScores(state, nullptr, {}, non_finite_rows, 0.0, !bind_data.is_multivariate);
 			} else {
-				state.avg_value = sum_first_col / static_cast<double>(data.size());
-
 				// Create and fit isolation forest (ndim/coef_type/scoring_metric/ntry/prob_pick_avg_gain passed but only used for multivariate)
 				IsolationForest forest(bind_data.n_trees, bind_data.sample_size, bind_data.contamination,
 				                       actual_seed, bind_data.ndim, bind_data.coef_type, bind_data.scoring_metric,
 				                       bind_data.ntry, bind_data.prob_pick_avg_gain);
+				forest.SetInterruptCheck([&context]() { ThrowIfInterrupted(context); });
 				forest.Fit(data);
 
 				// Score all points directly into the state; row ids and
 				// anomaly flags are derived during emission
-				state.scores = forest.ScoreBatch(data);
-				state.threshold = forest.ComputeThreshold(state.scores);
-				state.outlier_count = static_cast<int64_t>(std::count_if(
-				    state.scores.begin(), state.scores.end(), [&](double s) { return s > state.threshold; }));
+				auto finite_scores = forest.ScoreBatch(data);
+				FinishIsolationForestScores(state, &forest, finite_scores, non_finite_rows, sum_first_col,
+				                            !bind_data.is_multivariate);
 			}
 		}
 	}
@@ -978,7 +1245,7 @@ static void IsolationForestExecute(ClientContext &context, TableFunctionInput &d
 
 		for (idx_t i = 0; i < count; ++i) {
 			idx_t r = state.current_row + i;
-			row_ids[i] = static_cast<int64_t>(r + 1);  // 1-indexed
+			row_ids[i] = state.source_row_ids[r];
 			if (id_vec) {
 				// Scores are in scan order, like the ids captured with them
 				id_vec->SetValue(i, state.id_values[r]);
@@ -988,7 +1255,7 @@ static void IsolationForestExecute(ClientContext &context, TableFunctionInput &d
 				values[i] = r < state.first_column_values.size() ? state.first_column_values[r] : 0.0;
 			}
 			anomaly_scores[i] = state.scores[r];
-			is_anomaly[i] = state.scores[r] > state.threshold;
+			is_anomaly[i] = state.anomaly_flags[r];
 		}
 		state.current_row += count;
 	} else {
@@ -1011,7 +1278,7 @@ static void IsolationForestExecute(ClientContext &context, TableFunctionInput &d
 				output.SetValue(0, 0, Value(status));
 				output.SetValue(1, 0, Value::BIGINT(state.outlier_count));
 				output.SetValue(2, 0, Value::BIGINT(state.total_count));
-				output.SetValue(3, 0, Value::DOUBLE(state.avg_value));
+				output.SetValue(3, 0, state.avg_is_null ? Value(LogicalType::DOUBLE) : Value::DOUBLE(state.avg_value));
 				output.SetValue(4, 0, Value::DOUBLE(bind_data.contamination));
 				output.SetValue(5, 0, Value::INTEGER(static_cast<int32_t>(bind_data.n_trees)));
 				output.SetValue(6, 0, Value(message));
@@ -1055,6 +1322,7 @@ struct DBSCANGlobalState : public GlobalTableFunctionState {
 	std::vector<double> anomaly_scores;
 	std::vector<double> first_column_values; // univariate only
 	std::vector<Value> id_values;            // id_column value per point (empty without id_column)
+	std::vector<int64_t> source_row_ids;     // 1-based scan position of each point ("row_id")
 	int64_t total_count = 0;
 	int64_t cluster_count = 0;
 	int64_t noise_count = 0;
@@ -1069,9 +1337,9 @@ static unique_ptr<GlobalTableFunctionState> DBSCANInit(ClientContext &, TableFun
 // Shared optional-parameter handling and validation for both DBSCAN bind functions
 static void ParseDBSCANParameters(TableFunctionBindInput &input, const string &function_name, double &eps,
                                   int64_t &min_pts, string &output_mode) {
-	eps = input.inputs.size() > 2 ? input.inputs[2].GetValue<double>() : 0.5;
-	min_pts = input.inputs.size() > 3 ? input.inputs[3].GetValue<int64_t>() : 5;
-	output_mode = input.inputs.size() > 4 ? input.inputs[4].ToString() : "summary";
+	eps = OptionalInput<double>(input, 2, 0.5);
+	min_pts = OptionalInput<int64_t>(input, 3, 5);
+	output_mode = LowerOption(OptionalInput<string>(input, 4, "summary"));
 
 	if (!std::isfinite(eps) || eps <= 0.0) {
 		throw BinderException(function_name + ": eps must be a finite number > 0.0");
@@ -1140,8 +1408,8 @@ static unique_ptr<FunctionData> DBSCANBind(ClientContext &context, TableFunction
 		throw BinderException("dbscan requires at least 2 arguments: table_name, column_name");
 	}
 
-	string table_name = input.inputs[0].ToString();
-	vector<string> column_names = {input.inputs[1].ToString()};
+	string table_name = RequireNonNullArgument(input, 0, "dbscan", "table_name");
+	vector<string> column_names = {RequireNonNullArgument(input, 1, "dbscan", "column_name")};
 
 	double eps;
 	int64_t min_pts;
@@ -1149,6 +1417,7 @@ static unique_ptr<FunctionData> DBSCANBind(ClientContext &context, TableFunction
 	ParseDBSCANParameters(input, "dbscan", eps, min_pts, output_mode);
 
 	DefineDBSCANSchema(output_mode, /*include_value=*/true, /*include_n_columns=*/false, return_types, names);
+	column_names = ResolveFeatureColumns(context, "dbscan", table_name, column_names, false);
 	auto id_column = BindIdColumn(context, input, "dbscan", table_name, output_mode == "clusters", "clusters");
 	InsertIdColumn(id_column, "dbscan", return_types, names);
 
@@ -1165,8 +1434,8 @@ static unique_ptr<FunctionData> DBSCANMultivariateBind(ClientContext &context, T
 		throw BinderException("dbscan_mv requires at least 2 arguments: table_name, column_names");
 	}
 
-	string table_name = input.inputs[0].ToString();
-	auto column_names = ParseCommaSeparatedColumns(input.inputs[1].ToString());
+	string table_name = RequireNonNullArgument(input, 0, "dbscan_mv", "table_name");
+	auto column_names = ParseCommaSeparatedColumns(RequireNonNullArgument(input, 1, "dbscan_mv", "column_names"));
 	if (column_names.empty()) {
 		throw BinderException("column_names must contain at least one column");
 	}
@@ -1177,6 +1446,7 @@ static unique_ptr<FunctionData> DBSCANMultivariateBind(ClientContext &context, T
 	ParseDBSCANParameters(input, "dbscan_mv", eps, min_pts, output_mode);
 
 	DefineDBSCANSchema(output_mode, /*include_value=*/false, /*include_n_columns=*/true, return_types, names);
+	column_names = ResolveFeatureColumns(context, "dbscan_mv", table_name, column_names, false);
 	auto id_column = BindIdColumn(context, input, "dbscan_mv", table_name, output_mode == "clusters", "clusters");
 	InsertIdColumn(id_column, "dbscan_mv", return_types, names);
 
@@ -1207,26 +1477,26 @@ static void DBSCANExecute(ClientContext &context, TableFunctionInput &data_p, Da
 	if (!state.executed) {
 		state.executed = true;
 
-		Connection con(*context.db);
+		auto con = OpenSiblingConnection(context);
 
 		// Materialize the selected columns as DOUBLE, skipping rows with NULLs
 		// (same query path as the isolation forest table function)
 		string column_list;
-		string null_checks;
 		for (size_t i = 0; i < bind_data.column_names.size(); ++i) {
 			if (i > 0) {
 				column_list += ", ";
-				null_checks += " AND ";
 			}
 			column_list += "CAST(" + QuoteSqlIdentifier(bind_data.column_names[i]) + " AS DOUBLE)";
-			null_checks += QuoteSqlIdentifier(bind_data.column_names[i]) + " IS NOT NULL";
 		}
 		// The id column (if any) is read last in the same query, so each id
 		// stays with its own point; it is never a filter (NULL ids pass through)
 		const idx_t n_features = bind_data.column_names.size();
 		column_list += bind_data.id_column.SelectSuffix();
-		string query = "SELECT " + column_list + " FROM " + BuildQueryTableRef(bind_data.table_name) + " WHERE " +
-		               null_checks;
+		// No WHERE clause: every row of the scan is counted, so row_id is the
+		// 1-based position in the scan order (the table row number), also
+		// after rows that are skipped below because a value is NULL.
+		string query = "SELECT " + column_list + " FROM " + BuildQueryTableRef(bind_data.table_name);
+		int64_t source_row = 0;
 
 		// Stream the input instead of materializing the full result; the
 		// clustering algorithm requires the complete dataset, so the feature
@@ -1239,6 +1509,7 @@ static void DBSCANExecute(ClientContext &context, TableFunctionInput &data_p, Da
 		std::vector<std::vector<double>> data;
 		std::vector<UnifiedVectorFormat> formats;
 		while (true) {
+			ThrowIfInterrupted(context);
 			auto chunk = result->Fetch();
 			if (!chunk || chunk->size() == 0) {
 				break;
@@ -1251,6 +1522,7 @@ static void DBSCANExecute(ClientContext &context, TableFunctionInput &data_p, Da
 			}
 
 			for (idx_t row = 0; row < chunk->size(); ++row) {
+				source_row++;
 				bool valid_row = true;
 				for (idx_t col = 0; col < n_features; ++col) {
 					if (!formats[col].validity.RowIsValid(formats[col].sel->get_index(row))) {
@@ -1262,6 +1534,7 @@ static void DBSCANExecute(ClientContext &context, TableFunctionInput &data_p, Da
 					continue;
 				}
 
+				state.source_row_ids.push_back(source_row);
 				if (bind_data.id_column.Enabled()) {
 					state.id_values.push_back(chunk->data[n_features].GetValue(row));
 				}
@@ -1283,6 +1556,7 @@ static void DBSCANExecute(ClientContext &context, TableFunctionInput &data_p, Da
 
 		if (!data.empty()) {
 			DBSCAN dbscan(bind_data.eps, static_cast<size_t>(bind_data.min_pts));
+			dbscan.SetInterruptCheck([&context]() { ThrowIfInterrupted(context); });
 			dbscan.Fit(data);
 
 			state.points = dbscan.GetResults();
@@ -1324,7 +1598,7 @@ static void DBSCANExecute(ClientContext &context, TableFunctionInput &data_p, Da
 		for (idx_t i = 0; i < count; ++i) {
 			idx_t r = state.current_row + i;
 			auto &pt = state.points[r];
-			row_ids[i] = static_cast<int64_t>(r + 1);  // 1-indexed
+			row_ids[i] = state.source_row_ids[r];
 			if (id_vec) {
 				// Points are in scan order, like the ids captured with them
 				id_vec->SetValue(i, state.id_values[r]);
@@ -1494,10 +1768,12 @@ void RegisterMetricFunctions(ExtensionLoader &loader) {
 	freshness_func_basic.bind_replace = DATAZOO_GUARD(ANOFOX_TABULAR_BANNER, MetricFreshnessBindReplace);
 	freshness_set.AddFunction(freshness_func_basic);
 
-	// Full overload with 4 parameters (includes reference_time)
+	// Full overload with 4 parameters (includes reference_time). ANY: a TIMESTAMP, an instant
+	// (TIMESTAMP WITH TIME ZONE, e.g. now()), a DATE or a timestamp string; two overloads for
+	// TIMESTAMP and TIMESTAMPTZ would make a string literal ambiguous
 	TableFunction freshness_func_full("anofox_tab_freshness",
 	                                   {LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::VARCHAR),
-	                                    LogicalType(LogicalTypeId::INTERVAL), LogicalType(LogicalTypeId::TIMESTAMP)},
+	                                    LogicalType(LogicalTypeId::INTERVAL), LogicalType(LogicalTypeId::ANY)},
 	                                   nullptr, nullptr);
 	freshness_func_full.bind_replace = DATAZOO_GUARD(ANOFOX_TABULAR_BANNER, MetricFreshnessBindReplace);
 	freshness_set.AddFunction(freshness_func_full);

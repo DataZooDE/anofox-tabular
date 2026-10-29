@@ -473,3 +473,339 @@ class TestCheckSuite:
         from anofox import quality
         with pytest.raises(ValueError, match="check_name"):
             quality.define_checks(conn, [{"check_type": "volume", "table_name": "_suite_orders"}])
+
+
+class TestQualifiedCheckTables:
+    """Schema-qualified checks and result tables land in that schema, not main."dq.checks"."""
+
+    @pytest.fixture(autouse=True)
+    def _schema(self, conn):
+        conn.execute("CREATE SCHEMA IF NOT EXISTS dq")
+        conn.execute("CREATE SCHEMA IF NOT EXISTS sales")
+        conn.execute(
+            "CREATE OR REPLACE TABLE sales.invoices AS SELECT * FROM (VALUES "
+            "('INV-2026-0001', 'ACME GmbH', 1250.00), ('INV-2026-0002', 'Globex AG', NULL), "
+            "('INV-2026-0003', 'Initech SE', 980.50)) t(invoice_no, customer, net_amount)"
+        )
+        yield
+        conn.execute("DROP SCHEMA dq CASCADE")
+        conn.execute("DROP SCHEMA sales CASCADE")
+        conn.execute('DROP TABLE IF EXISTS main."dq.checks"')
+        conn.execute('DROP TABLE IF EXISTS main."dq.results"')
+
+    CHECKS = [
+        {"check_name": "invoice_volume", "check_type": "volume", "table_name": "sales.invoices",
+         "lower_threshold": 1},
+        {"check_name": "net_amount_nulls", "check_type": "null_rate", "table_name": "sales.invoices",
+         "column_name": "net_amount", "upper_threshold": 0.0},
+    ]
+
+    def _tables(self, conn):
+        return sorted(conn.execute(
+            "SELECT schema_name || '.' || table_name FROM duckdb_tables() "
+            "WHERE table_name IN ('checks', 'results', 'dq.checks', 'dq.results')"
+        ).fetchall())
+
+    def test_define_and_run_in_schema(self, conn):
+        from anofox import quality
+        assert quality.define_checks(conn, self.CHECKS, "dq.checks") == "dq.checks"
+        assert self._tables(conn) == [("dq.checks",)]
+        results = {r["check_name"]: r["status"] for r in quality.run_checks(conn, "dq.checks")}
+        assert results == {"invoice_volume": "pass", "net_amount_nulls": "fail"}
+
+    def test_result_table_in_schema(self, conn):
+        from anofox import quality
+        quality.define_checks(conn, self.CHECKS, "dq.checks")
+        quality.run_checks(conn, "dq.checks", result_table="dq.results")
+        rows = quality.run_checks(conn, "dq.checks", result_table="dq.results")
+        assert len(rows) == 2
+        assert self._tables(conn) == [("dq.checks",), ("dq.results",)]
+        assert conn.execute("SELECT count(*) FROM dq.results").fetchone()[0] == 4
+
+
+class TestNamedResultFields:
+    """Result dicts carry every result column by name, with floats instead of Decimal."""
+
+    @staticmethod
+    def _no_decimal(result):
+        from decimal import Decimal
+        return not any(isinstance(v, Decimal) for k, v in result.items() if k != "_raw")
+
+    def test_null_rate_fields(self, conn, sparse_table):
+        from anofox import quality
+        result = quality.null_rate(conn, sparse_table, "val", max_null_rate=0.1)
+        assert result["message"].startswith("Null rate")
+        assert isinstance(result["null_rate"], float)
+        assert result["max_null_rate"] == 0.1 and isinstance(result["max_null_rate"], float)
+        assert isinstance(result["null_count"], int) and isinstance(result["total_count"], int)
+        assert result["message"] == result["_raw"][-1]
+        assert self._no_decimal(result)
+
+    def test_volume_fields(self, conn, quality_table):
+        from anofox import quality
+        result = quality.volume(conn, quality_table, min_rows=10)
+        assert result["row_count"] == 100
+        assert result["min_rows"] == 10
+        assert result["max_rows"] is None
+        assert "message" in result
+
+    def test_zscore_threshold_is_float(self, conn, quality_table):
+        from anofox import quality
+        result = quality.zscore(conn, quality_table, "score", threshold=3.0)
+        assert result["threshold"] == 3.0 and isinstance(result["threshold"], float)
+        assert self._no_decimal(result)
+
+    def test_distinct_count_without_max(self, conn, quality_table):
+        from anofox import quality
+        result = quality.distinct_count(conn, quality_table, "category", min_distinct=2)
+        assert result["distinct_count"] == 5
+        assert result["max_distinct"] is None
+
+    def test_range_rows_have_no_decimal(self, conn, sparse_table):
+        from anofox import quality
+        assert self._no_decimal(quality.iqr(conn, sparse_table, "val"))
+
+
+class TestFreshness:
+    """freshness works without pytz and takes the SQL reference_time."""
+
+    @pytest.fixture
+    def events(self, conn):
+        conn.execute(
+            "CREATE OR REPLACE TABLE _events AS "
+            "SELECT TIMESTAMP '2026-01-30 10:00:00' - INTERVAL (i) HOUR AS created_at FROM range(5) t(i)"
+        )
+        yield "_events"
+        conn.execute("DROP TABLE IF EXISTS _events")
+
+    def test_against_now(self, conn, events):
+        from anofox import quality
+        result = quality.freshness(conn, events, "created_at", "1 day")
+        assert result["status"] == "fail"
+        assert result["age_seconds"] > 0
+
+    def test_reference_time(self, conn, events):
+        import datetime
+        from anofox import quality
+        result = quality.freshness(conn, events, "created_at", "1 day", reference_time="2026-01-31 08:00:00")
+        assert result["status"] == "pass"
+        assert result["age_seconds"] == 79200
+        assert result["metric_value"] == datetime.datetime(2026, 1, 30, 10, 0)
+        assert result["threshold"] == datetime.datetime(2026, 1, 30, 8, 0)
+
+
+class TestDefineChecksDates:
+    """define_checks serialises date/datetime/Decimal params so run_checks can use them."""
+
+    @pytest.fixture(autouse=True)
+    def orders(self, conn):
+        conn.execute(
+            "CREATE OR REPLACE TABLE _dated_orders AS "
+            "SELECT DATE '2026-03-01' + (i % 10)::INTEGER AS order_date, i AS order_id "
+            "FROM range(1, 101) t(i)"
+        )
+        # A spike on the latest day: only a check pinned to an earlier date passes.
+        conn.execute(
+            "INSERT INTO _dated_orders SELECT DATE '2026-03-10', i FROM range(101, 151) t(i)"
+        )
+        yield
+        conn.execute("DROP TABLE IF EXISTS _dated_orders")
+        conn.execute("DROP TABLE IF EXISTS _dated_checks")
+
+    def test_date_param_runs_end_to_end(self, conn):
+        import datetime
+        from decimal import Decimal
+        from anofox import quality
+        quality.define_checks(conn, [{
+            "check_name": "orders_week", "check_type": "rel_count_change",
+            "table_name": "_dated_orders",
+            "params": {"date_column": "order_date", "window_days": 3,
+                       "reference_date": datetime.date(2026, 3, 8)},
+            "lower_threshold": float(Decimal("-0.5")), "upper_threshold": 0.5,
+        }, {
+            "check_name": "fresh", "check_type": "freshness", "table_name": "_dated_orders",
+            "column_name": "order_date",
+            "params": {"reference_time": datetime.datetime(2026, 3, 10, 6, 0)},
+            "upper_threshold": float(Decimal("86400")),
+        }], "_dated_checks")
+        stored = conn.execute("SELECT params FROM _dated_checks ORDER BY check_name").fetchall()
+        assert '"reference_time": "2026-03-10T06:00:00"' in stored[0][0]
+        assert '"reference_date": "2026-03-08"' in stored[1][0]
+        results = {r["check_name"]: r for r in quality.run_checks(conn, "_dated_checks")}
+        assert results["orders_week"]["status"] == "pass", results["orders_week"]["message"]
+        assert results["fresh"]["status"] == "pass", results["fresh"]["message"]
+        assert results["fresh"]["value"] == 21600.0
+
+
+class TestTempTableNamesHidden:
+    """Errors for a DataFrame input do not show the generated temporary table name."""
+
+    def _orders(self):
+        import pandas as pd
+        return pd.DataFrame({"order_id": [1, 2, 3], "amount": [19.99, 5.0, 120.0]})
+
+    def test_table_function_error(self, conn):
+        from anofox import profile
+        with pytest.raises(Exception) as info:
+            profile.profile_table(conn, self._orders(), columns=["amout"])
+        assert "_anofox_" not in str(info.value)
+        assert "the DataFrame" in str(info.value)
+        assert "amout" in str(info.value)
+
+    def test_anomaly_error(self, conn):
+        from anofox import anomaly
+        with pytest.raises(Exception) as info:
+            anomaly.isolation_forest(conn, self._orders(), "amout")
+        assert "_anofox_" not in str(info.value)
+        assert "the DataFrame" in str(info.value)
+
+    def test_error_type_kept(self, conn):
+        import duckdb
+        from anofox import anomaly
+        with pytest.raises(duckdb.BinderException):
+            anomaly.isolation_forest(conn, self._orders(), "amout")
+
+    def test_table_name_unchanged(self, conn):
+        from anofox import anomaly
+        conn.execute("CREATE OR REPLACE TABLE _named_orders AS SELECT 1.0 AS amount")
+        try:
+            with pytest.raises(Exception, match="_named_orders"):
+                anomaly.isolation_forest(conn, "_named_orders", "amout")
+        finally:
+            conn.execute("DROP TABLE IF EXISTS _named_orders")
+
+    def test_result_message(self, conn):
+        from anofox import quality
+        result = quality.schema_check(conn, self._orders(), ["order_id", "customer_id"])
+        assert result["status"] == "fail"
+        assert result["message"] == "The DataFrame is missing 1 column(s)"
+
+    def test_diff_names_source_and_target(self, conn):
+        import pandas as pd
+        from anofox import diff
+        before = pd.DataFrame({"sku": ["A-100", "B-200"], "price": [9.99, 24.5]})
+        after = pd.DataFrame({"article": ["A-100", "B-200"], "price": [9.99, 26.0]})
+        with pytest.raises(Exception) as info:
+            diff.joindiff(conn, before, after, primary_keys="sku")
+        assert "not found in the target DataFrame" in str(info.value)
+        assert "_anofox_" not in str(info.value)
+
+    def test_quality_check_error(self, conn):
+        with pytest.raises(Exception) as info:
+            conn.quality_check(self._orders(), {"null_rate": {"column": "amout"}})
+        assert "_anofox_" not in str(info.value)
+
+    def test_no_temp_table_left_behind(self, conn):
+        from anofox import diff
+        import pandas as pd
+        before = pd.DataFrame({"sku": ["A-100"], "price": [9.99]})
+        with pytest.raises(TypeError):
+            diff.joindiff(conn, before, ["not", "a", "frame"], primary_keys="sku")
+        leftover = conn.execute(
+            "SELECT count(*) FROM duckdb_tables() WHERE table_name LIKE '\\_anofox\\_%' ESCAPE '\\'"
+        ).fetchall()[0][0]
+        assert leftover == 0
+
+
+class TestAwareReferenceTimes:
+    """
+    A time zone aware reference time is the instant it names: it is bound as naive
+    UTC, whatever the session TimeZone. A naive datetime (and text without an
+    offset) is UTC, like in the SQL functions.
+    """
+
+    @pytest.fixture
+    def berlin(self, conn):
+        previous = conn.execute("SELECT current_setting('TimeZone')").fetchone()[0]
+        conn.execute("SET TimeZone = 'Europe/Berlin'")
+        yield
+        conn.execute(f"SET TimeZone = '{previous}'")
+
+    @pytest.fixture(params=["pandas", "polars"])
+    def shipments(self, request):
+        import datetime
+        rows = {
+            "shipment_id": ["SHP-1001", "SHP-1002", "SHP-1003"],
+            "carrier": ["DHL", "UPS", "DPD"],
+            "scanned_at": [  # naive UTC, newest 2026-07-14 10:00 UTC
+                datetime.datetime(2026, 7, 14, 6, 15),
+                datetime.datetime(2026, 7, 14, 8, 40),
+                datetime.datetime(2026, 7, 14, 10, 0),
+            ],
+        }
+        if request.param == "pandas":
+            import pandas as pd
+            return pd.DataFrame(rows)
+        import polars as pl
+        return pl.DataFrame(rows)
+
+    @pytest.mark.parametrize("reference", [
+        "aware_utc", "aware_plus_two", "naive_utc", "pandas_aware", "iso_text_with_offset",
+    ])
+    def test_freshness_reference_time_is_an_instant(self, conn, berlin, shipments, reference):
+        import datetime
+        import pandas as pd
+        from anofox import quality
+        utc_noon = datetime.datetime(2026, 7, 14, 12, 0, tzinfo=datetime.timezone.utc)
+        value = {
+            "aware_utc": utc_noon,
+            "aware_plus_two": utc_noon.astimezone(datetime.timezone(datetime.timedelta(hours=2))),
+            "naive_utc": utc_noon.replace(tzinfo=None),
+            "pandas_aware": pd.Timestamp(utc_noon).tz_convert("Europe/Berlin"),
+            "iso_text_with_offset": "2026-07-14T14:00:00+02:00",
+        }[reference]
+        result = quality.freshness(conn, shipments, "scanned_at", "3 hours", reference_time=value)
+        assert result["age_seconds"] == 7200  # 2 h old, not 2 h + the Berlin offset
+        assert result["status"] == "pass"
+        assert result["threshold"] == datetime.datetime(2026, 7, 14, 9, 0)
+
+    def test_reference_date_from_aware_datetime_is_its_utc_date(self, conn, berlin, daily_table):
+        import datetime
+        from anofox import quality
+        # 01:00 in Berlin (CET, +01) on 2026-03-14 is 2026-03-13 in UTC: a normal day.
+        berlin_time = datetime.datetime(
+            2026, 3, 14, 0, 30, tzinfo=datetime.timezone(datetime.timedelta(hours=1))
+        )
+        result = quality.rel_count_change(conn, daily_table, "event_date", reference_date=berlin_time)
+        assert result["status"] == "pass"
+        rows = quality.rel_count_change(
+            conn, daily_table, "event_date", start_date=berlin_time, end_date=berlin_time
+        )
+        assert [r["reference_date"] for r in rows] == [datetime.date(2026, 3, 13)]
+
+    def test_define_checks_stores_aware_datetime_as_utc(self, conn, berlin):
+        import datetime
+        from anofox import quality
+        conn.execute(
+            "CREATE OR REPLACE TABLE _scans AS SELECT * FROM (VALUES "
+            "('SHP-1001', TIMESTAMP '2026-07-14 08:40:00'), ('SHP-1002', TIMESTAMP '2026-07-14 10:00:00')"
+            ") t(shipment_id, scanned_at)"
+        )
+        try:
+            quality.define_checks(conn, [{
+                "check_name": "scans_fresh", "check_type": "freshness", "table_name": "_scans",
+                "column_name": "scanned_at",
+                "params": {"reference_time": datetime.datetime(
+                    2026, 7, 14, 14, 0, tzinfo=datetime.timezone(datetime.timedelta(hours=2)))},
+                "upper_threshold": 10800.0,
+            }], "_scan_checks")
+            stored = conn.execute("SELECT params FROM _scan_checks").fetchone()[0]
+            assert '"reference_time": "2026-07-14T12:00:00"' in stored
+            [result] = quality.run_checks(conn, "_scan_checks")
+            assert result["value"] == 7200.0
+            assert result["status"] == "pass", result["message"]
+        finally:
+            conn.execute("DROP TABLE IF EXISTS _scans")
+            conn.execute("DROP TABLE IF EXISTS _scan_checks")
+
+
+class TestRawHidesTempTableName:
+    def test_schema_check_raw_names_the_dataframe(self, conn):
+        import pandas as pd
+        from anofox import quality
+        customers = pd.DataFrame({"customer_id": ["C-17"], "email": ["anna.berger@example.com"]})
+        result = quality.schema_check(conn, customers, ["customer_id", "email", "vat_id"])
+        assert result["status"] == "fail"
+        assert "_anofox_" not in repr(result)
+        assert result["_raw"][-1] == result["message"]
+        assert result["message"] == "The DataFrame is missing 1 column(s)"

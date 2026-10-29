@@ -1,0 +1,268 @@
+# name: test/sql/anofox_anomaly_row_id.test
+# description: row_id of every anomaly function is the 1-based table row number, NULL-feature rows included (F15)
+# group: [anofox_tabular]
+
+require anofox_tabular
+
+statement ok
+LOAD anofox_tabular
+
+statement ok
+SET anofox_tab_trace_enabled = false
+
+# ===--------------------------------------------------------------------===
+# Fixtures
+# ===--------------------------------------------------------------------===
+# 80 sensor readings. temperature is NULL in rows 7, 23, 41; humidity is NULL
+# in rows 15, 41, 52. Planted outliers: row 30 (95.0 degC), row 60 (-15.0 degC)
+# and row 70 (99 % humidity). Every NULL row lies before an outlier, so any
+# renumbering of the analysed rows moves the reported row_id off the outlier.
+statement ok
+CREATE TABLE readings AS
+SELECT 50000 + i AS reading_id,
+       'S-' || lpad(((i % 4) + 1)::VARCHAR, 2, '0') AS sensor,
+       CASE WHEN i IN (7, 23, 41) THEN NULL
+            WHEN i = 30 THEN 95.0
+            WHEN i = 60 THEN -15.0
+            ELSE 20.0 + (i % 10) * 0.1 END AS temperature,
+       CASE WHEN i IN (15, 41, 52) THEN NULL
+            WHEN i = 70 THEN 99.0
+            ELSE 45.0 + (i % 7) * 0.2 END AS humidity
+FROM range(1, 81) t(i)
+ORDER BY i
+
+# The reference numbering: the row number in the order the table is scanned
+statement ok
+CREATE VIEW numbered AS SELECT row_number() OVER () AS rn, * FROM readings
+
+# ===--------------------------------------------------------------------===
+# isolation_forest ('scores')
+# ===--------------------------------------------------------------------===
+statement ok
+CREATE TABLE if_scores AS
+SELECT * FROM isolation_forest('readings', 'temperature', 100, 256, 0.03, 'scores', 42)
+
+# One row per analysed row (80 - 3 NULL temperatures)
+query I
+SELECT count(*) FROM if_scores
+----
+77
+
+# Every row_id joins to the row whose temperature the function reported
+query II
+SELECT count(*), count(*) FILTER (WHERE s.value IS DISTINCT FROM n.temperature)
+FROM if_scores s JOIN numbered n ON n.rn = s.row_id
+----
+77	0
+
+# NULL-temperature rows never appear, the other rows keep their table position
+query I
+SELECT list(row_id ORDER BY row_id) FILTER (WHERE row_id IN (7, 23, 41)) FROM if_scores
+----
+NULL
+
+# The planted temperature outliers are the flagged rows
+query IIR
+SELECT s.row_id, n.reading_id, n.temperature
+FROM if_scores s JOIN numbered n ON n.rn = s.row_id
+WHERE s.is_anomaly
+ORDER BY s.row_id
+----
+30	50030	95.0
+60	50060	-15.0
+
+# id_column still reports the id of the same row as row_id
+query II
+SELECT count(*), count(*) FILTER (WHERE s.reading_id IS DISTINCT FROM n.reading_id)
+FROM isolation_forest('readings', 'temperature', 100, 256, 0.03, 'scores', 42, id_column := 'reading_id') s
+JOIN numbered n ON n.rn = s.row_id
+----
+77	0
+
+# Summary mode still counts the analysed rows only
+query II
+SELECT outlier_count, total_count FROM isolation_forest('readings', 'temperature', 100, 256, 0.03, 'summary', 42)
+----
+2	77
+
+# ===--------------------------------------------------------------------===
+# isolation_forest_mv ('scores'), numeric and mixed-type paths
+# ===--------------------------------------------------------------------===
+statement ok
+CREATE TABLE ifmv_scores AS
+SELECT * FROM isolation_forest_mv('readings', 'temperature, humidity', 100, 256, 0.04, 'scores', 42,
+                                  id_column := 'reading_id')
+
+# 80 rows minus the five rows with a NULL temperature or humidity
+query II
+SELECT count(*), count(*) FILTER (WHERE row_id IN (7, 15, 23, 41, 52)) FROM ifmv_scores
+----
+75	0
+
+query II
+SELECT count(*), count(*) FILTER (WHERE s.reading_id IS DISTINCT FROM n.reading_id
+                                     OR n.temperature IS NULL OR n.humidity IS NULL)
+FROM ifmv_scores s JOIN numbered n ON n.rn = s.row_id
+----
+75	0
+
+query IIRR
+SELECT s.row_id, n.reading_id, n.temperature, n.humidity
+FROM ifmv_scores s JOIN numbered n ON n.rn = s.row_id
+WHERE s.is_anomaly
+ORDER BY s.row_id
+----
+30	50030	95.0	45.4
+60	50060	-15.0	45.8
+70	50070	20.0	99.0
+
+# Mixed-type path (categorical sensor column): same numbering
+query II
+SELECT count(*), count(*) FILTER (WHERE s.reading_id IS DISTINCT FROM n.reading_id)
+FROM isolation_forest_mv('readings', 'sensor, temperature', 100, 256, 0.03, 'scores', 42,
+                         id_column := 'reading_id') s
+JOIN numbered n ON n.rn = s.row_id
+----
+77	0
+
+query I
+SELECT list(row_id ORDER BY row_id)
+FROM isolation_forest_mv('readings', 'sensor, temperature', 100, 256, 0.03, 'scores', 42)
+WHERE is_anomaly
+----
+[30, 60]
+
+# Weighted path: a NULL weight skips the row but keeps the numbering
+query II
+SELECT count(*), count(*) FILTER (WHERE row_id IN (7, 15, 23, 41, 52))
+FROM isolation_forest_mv('readings', 'temperature', 100, 256, 0.03, 'scores', 42, 1, 'uniform', 'depth',
+                         'humidity')
+----
+75	0
+
+query I
+SELECT list(row_id ORDER BY row_id)
+FROM isolation_forest_mv('readings', 'temperature', 100, 256, 0.03, 'scores', 42, 1, 'uniform', 'depth',
+                         'humidity')
+WHERE is_anomaly
+----
+[30, 60]
+
+# ===--------------------------------------------------------------------===
+# dbscan / dbscan_mv ('clusters')
+# ===--------------------------------------------------------------------===
+statement ok
+CREATE TABLE db_clusters AS
+SELECT * FROM dbscan('readings', 'temperature', 0.5, 3, 'clusters', id_column := 'reading_id')
+
+query III
+SELECT count(*), count(*) FILTER (WHERE s.value IS DISTINCT FROM n.temperature),
+       count(*) FILTER (WHERE s.reading_id IS DISTINCT FROM n.reading_id)
+FROM db_clusters s JOIN numbered n ON n.rn = s.row_id
+----
+77	0	0
+
+query IIRT
+SELECT s.row_id, n.reading_id, n.temperature, s.point_type
+FROM db_clusters s JOIN numbered n ON n.rn = s.row_id
+WHERE s.is_anomaly
+ORDER BY s.row_id
+----
+30	50030	95.0	NOISE
+60	50060	-15.0	NOISE
+
+query II
+SELECT count(*), count(*) FILTER (WHERE row_id IN (7, 15, 23, 41, 52))
+FROM dbscan_mv('readings', 'temperature, humidity', 1.0, 3, 'clusters')
+----
+75	0
+
+query IIRR
+SELECT s.row_id, n.reading_id, n.temperature, n.humidity
+FROM dbscan_mv('readings', 'temperature, humidity', 1.0, 3, 'clusters', id_column := 'reading_id') s
+JOIN numbered n ON n.rn = s.row_id AND n.reading_id = s.reading_id
+WHERE s.is_anomaly
+ORDER BY s.row_id
+----
+30	50030	95.0	45.4
+60	50060	-15.0	45.8
+70	50070	20.0	99.0
+
+# ===--------------------------------------------------------------------===
+# outlier_tree ('outliers') uses the same numbering
+# ===--------------------------------------------------------------------===
+query ITR
+SELECT s.row_id, s.column_name, s.outlier_value_num
+FROM outlier_tree('readings', 'temperature, humidity', 'outliers') s
+JOIN numbered n ON n.rn = s.row_id
+WHERE s.outlier_value_num = CASE s.column_name WHEN 'temperature' THEN n.temperature ELSE n.humidity END
+ORDER BY s.row_id
+----
+30	temperature	95.0
+60	temperature	-15.0
+70	humidity	99.0
+
+# The same row has the same row_id in every function
+query I
+SELECT count(*)
+FROM outlier_tree('readings', 'temperature, humidity', 'outliers') o
+JOIN if_scores i ON i.row_id = o.row_id AND o.column_name = 'temperature'
+JOIN db_clusters d ON d.row_id = o.row_id
+JOIN ifmv_scores m ON m.row_id = o.row_id
+WHERE i.is_anomaly AND d.is_anomaly AND m.is_anomaly
+----
+2
+
+# ===--------------------------------------------------------------------===
+# Views: row_id is the row number in the view's row order
+# ===--------------------------------------------------------------------===
+statement ok
+CREATE VIEW late_readings AS SELECT * FROM readings WHERE reading_id > 50020
+
+statement ok
+CREATE VIEW late_numbered AS SELECT row_number() OVER () AS rn, * FROM late_readings
+
+query IIR
+SELECT s.row_id, n.reading_id, s.value
+FROM isolation_forest('late_readings', 'temperature', 100, 256, 0.04, 'scores', 42) s
+JOIN late_numbered n ON n.rn = s.row_id AND n.temperature = s.value
+WHERE s.is_anomaly
+ORDER BY s.row_id
+----
+10	50030	95.0
+40	50060	-15.0
+
+query II
+SELECT count(*), count(*) FILTER (WHERE s.value IS DISTINCT FROM n.temperature)
+FROM dbscan('late_readings', 'temperature', 0.5, 3, 'clusters') s
+JOIN late_numbered n ON n.rn = s.row_id
+----
+58	0
+
+# ===--------------------------------------------------------------------===
+# Large table: the numbering holds across vectors and row groups (parallel scan)
+# ===--------------------------------------------------------------------===
+statement ok
+CREATE TABLE meter_log AS
+SELECT i AS log_id,
+       CASE WHEN i % 997 = 0 THEN NULL
+            WHEN i = 250001 THEN 5000.0
+            ELSE 230.0 + (i % 50) * 0.1 END AS voltage
+FROM range(1, 300001) t(i)
+ORDER BY i
+
+statement ok
+CREATE TABLE meter_scores AS
+SELECT * FROM isolation_forest('meter_log', 'voltage', 50, 256, 0.0, 'scores', 7, id_column := 'log_id')
+
+query III
+SELECT count(*), count(*) FILTER (WHERE row_id <> log_id), max(row_id)
+FROM meter_scores
+----
+299700	0	300000
+
+# The spike keeps its table row number (250 NULL rows lie before it)
+query IR
+SELECT row_id, value FROM meter_scores WHERE value > 1000
+----
+250001	5000.0

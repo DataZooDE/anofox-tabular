@@ -1,0 +1,164 @@
+# name: test/sql/anofox_check_overflow_exact.test
+# description: SUM and AVG of a HUGEINT or DECIMAL(38) column are an error only when the exact sum
+#              really leaves its range. Large transfers that cancel out, and a single value at
+#              the type maximum, are summed exactly (DuckDB's sum() alone could fail on a
+#              partial sum, depending on the order of the rows); a sum beyond the range is still
+#              an 'error' row in run_checks (for that check or partition only) and an error in
+#              agg_check.
+# group: [anofox_tabular]
+
+require anofox_tabular
+
+statement ok
+LOAD anofox_tabular
+
+statement ok
+SET anofox_tab_trace_enabled = false
+
+# A token settlement ledger: a mint, a burn of the same size and a second mint. amount_wei and
+# amount_eur net out to one mint; amount_units holds the HUGEINT maximum, a fee of 1 and a
+# refund of 5, so the exact sum is the maximum minus 4.
+statement ok
+CREATE TABLE settlement_ledger (
+    batch VARCHAR, desk VARCHAR, amount_wei DECIMAL(38, 0), amount_units HUGEINT, amount_eur DECIMAL(38, 2))
+
+statement ok
+INSERT INTO settlement_ledger VALUES
+    ('B-001', 'mint', 60000000000000000000000000000000000000, 170141183460469231731687303715884105727,
+     600000000000000000000000000000000000.00),
+    ('B-002', 'burn', -60000000000000000000000000000000000000, 1, -600000000000000000000000000000000000.00),
+    ('B-003', 'mint', 60000000000000000000000000000000000000, -5, 600000000000000000000000000000000000.25)
+
+# A reserve whose cap is exactly the largest value of its type
+statement ok
+CREATE TABLE reserve_caps (asset VARCHAR, cap_wei DECIMAL(38, 0), cap_units HUGEINT, cap_eur DECIMAL(38, 2))
+
+statement ok
+INSERT INTO reserve_caps VALUES
+    ('GOLD-T', 99999999999999999999999999999999999999, 170141183460469231731687303715884105727,
+     999999999999999999999999999999999999.99)
+
+# Two treasury wallets whose balances really do not sum within the type
+statement ok
+CREATE TABLE treasury_wallets (wallet VARCHAR, balance_wei DECIMAL(38, 0), balance_units HUGEINT)
+
+statement ok
+INSERT INTO treasury_wallets VALUES
+    ('0xA11CE', 60000000000000000000000000000000000000, 170141183460469231731687303715884105727),
+    ('0xB0B00', 60000000000000000000000000000000000000, 1)
+
+# ===--------------------------------------------------------------------===
+# agg_check
+# ===--------------------------------------------------------------------===
+
+query TT
+SELECT status, message FROM agg_check('settlement_ledger', 'amount_wei', 'sum', 0, NULL)
+----
+pass	sum value 60000000000000000000000000000000000000 is within acceptable range
+
+query TT
+SELECT status, message FROM agg_check('settlement_ledger', 'amount_units', 'sum', 0, NULL)
+----
+pass	sum value 170141183460469231731687303715884105723 is within acceptable range
+
+query TT
+SELECT status, message FROM agg_check('settlement_ledger', 'amount_eur', 'sum', 0, NULL)
+----
+pass	sum value 600000000000000000000000000000000000.25 is within acceptable range
+
+query TR
+SELECT status, value FROM agg_check('settlement_ledger', 'amount_wei', 'avg', 0, NULL)
+----
+pass	2e+37
+
+query TR
+SELECT status, value FROM agg_check('settlement_ledger', 'amount_eur', 'avg', 0, NULL)
+----
+pass	2e+35
+
+query TT
+SELECT status, message FROM agg_check('reserve_caps', 'cap_wei', 'sum', NULL, NULL)
+----
+pass	sum value 99999999999999999999999999999999999999 is within acceptable range
+
+query TT
+SELECT status, message FROM agg_check('reserve_caps', 'cap_units', 'sum', NULL, NULL)
+----
+pass	sum value 170141183460469231731687303715884105727 is within acceptable range
+
+query TT
+SELECT status, message FROM agg_check('reserve_caps', 'cap_eur', 'sum', NULL, NULL)
+----
+pass	sum value 999999999999999999999999999999999999.99 is within acceptable range
+
+query TR
+SELECT status, value FROM agg_check('reserve_caps', 'cap_units', 'avg', NULL, NULL)
+----
+pass	1.7014118346046923e+38
+
+# 1.2e38 leaves DECIMAL(38,0); the maximum plus 1 leaves HUGEINT
+statement error
+SELECT * FROM agg_check('treasury_wallets', 'balance_wei', 'sum', NULL, NULL)
+----
+agg_check: sum of DECIMAL(38,0) column 'balance_wei' overflows its exact sum
+
+statement error
+SELECT * FROM agg_check('treasury_wallets', 'balance_units', 'sum', NULL, NULL)
+----
+agg_check: sum of HUGEINT column 'balance_units' overflows its exact sum
+
+statement error
+SELECT * FROM agg_check('treasury_wallets', 'balance_units', 'avg', NULL, NULL)
+----
+agg_check: avg of HUGEINT column 'balance_units' overflows its exact sum
+
+# The average of balance_wei is 6e37: its exact sum fits the HUGEINT accumulator
+query TR
+SELECT status, value FROM agg_check('treasury_wallets', 'balance_wei', 'avg', NULL, NULL)
+----
+pass	6e+37
+
+# ===--------------------------------------------------------------------===
+# run_checks
+# ===--------------------------------------------------------------------===
+
+statement ok
+CREATE TABLE ledger_checks (
+    check_name VARCHAR, check_type VARCHAR, table_name VARCHAR, column_name VARCHAR,
+    params VARCHAR, lower_threshold DOUBLE, upper_threshold DOUBLE, monitor_only BOOLEAN,
+    identifier_column VARCHAR, filter_expr VARCHAR)
+
+statement ok
+INSERT INTO ledger_checks VALUES
+    ('net_wei', 'agg', 'settlement_ledger', 'amount_wei', '{"agg": "sum"}', 0, NULL, false, NULL, NULL),
+    ('net_units', 'agg', 'settlement_ledger', 'amount_units', '{"agg": "sum"}', 0, NULL, false, NULL, NULL),
+    ('net_eur', 'agg', 'settlement_ledger', 'amount_eur', '{"agg": "sum"}', 0, NULL, false, NULL, NULL),
+    ('avg_wei', 'agg', 'settlement_ledger', 'amount_wei', '{"agg": "avg"}', 0, NULL, false, NULL, NULL),
+    ('net_wei_by_desk', 'agg', 'settlement_ledger', 'amount_wei', '{"agg": "sum"}', NULL, NULL, false, 'desk', NULL),
+    ('net_units_by_desk', 'agg', 'settlement_ledger', 'amount_units', '{"agg": "sum"}', NULL, NULL, false, 'desk', NULL),
+    ('net_wei_mints', 'agg', 'settlement_ledger', 'amount_wei', '{"agg": "sum"}', NULL, NULL, false, NULL, 'batch <> ''B-002'''),
+    ('cap_wei', 'agg', 'reserve_caps', 'cap_wei', '{"agg": "sum"}', NULL, NULL, false, NULL, NULL),
+    ('cap_units', 'agg', 'reserve_caps', 'cap_units', '{"agg": "sum"}', NULL, NULL, false, NULL, NULL),
+    ('treasury_wei', 'agg', 'treasury_wallets', 'balance_wei', '{"agg": "sum"}', NULL, NULL, false, NULL, NULL),
+    ('treasury_units', 'agg', 'treasury_wallets', 'balance_units', '{"agg": "sum"}', NULL, NULL, false, NULL, NULL),
+    ('treasury_avg_wei', 'agg', 'treasury_wallets', 'balance_wei', '{"agg": "avg"}', NULL, NULL, false, NULL, NULL),
+    ('wallets', 'volume', 'treasury_wallets', NULL, NULL, 1, NULL, false, NULL, NULL)
+
+query TTTT
+SELECT check_name, identifier, status, message FROM run_checks('ledger_checks')
+----
+avg_wei	NULL	pass	agg value 2e+37 is within thresholds
+cap_units	NULL	pass	agg value 170141183460469231731687303715884105727: no thresholds configured (monitor)
+cap_wei	NULL	pass	agg value 99999999999999999999999999999999999999: no thresholds configured (monitor)
+net_eur	NULL	pass	agg value 600000000000000000000000000000000000.25 is within thresholds
+net_units	NULL	pass	agg value 170141183460469231731687303715884105723 is within thresholds
+net_units_by_desk	burn	pass	agg value 1: no thresholds configured (monitor)
+net_units_by_desk	mint	pass	agg value 170141183460469231731687303715884105722: no thresholds configured (monitor)
+net_wei	NULL	pass	agg value 60000000000000000000000000000000000000 is within thresholds
+net_wei_by_desk	burn	pass	agg value -60000000000000000000000000000000000000: no thresholds configured (monitor)
+net_wei_by_desk	mint	error	check 'net_wei_by_desk' (agg) cannot run: sum of DECIMAL(38,0) column 'amount_wei' overflows its exact sum
+net_wei_mints	NULL	error	check 'net_wei_mints' (agg) cannot run: sum of DECIMAL(38,0) column 'amount_wei' overflows its exact sum; filter matched 2/3 rows
+treasury_avg_wei	NULL	pass	agg value 6e+37: no thresholds configured (monitor)
+treasury_units	NULL	error	check 'treasury_units' (agg) cannot run: sum of HUGEINT column 'balance_units' overflows its exact sum
+treasury_wei	NULL	error	check 'treasury_wei' (agg) cannot run: sum of DECIMAL(38,0) column 'balance_wei' overflows its exact sum
+wallets	NULL	pass	volume value 2.0 is within thresholds

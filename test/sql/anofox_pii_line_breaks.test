@@ -1,0 +1,131 @@
+# name: test/sql/anofox_pii_line_breaks.test
+# description: IBANs and card numbers wrapped over two lines (one line break, LF or CRLF, optionally with spaces around it, where a group separator goes) are detected, masked, hashed, scanned and audited like the single-line form; offsets stay byte offsets of the input; two line breaks, a blank line or a failing checksum keep numbers on different lines apart
+# group: [anofox_tabular]
+
+require anofox_tabular
+
+statement ok
+LOAD anofox_tabular
+
+# Pattern types only, so the results do not depend on the NER model
+statement ok
+SET anofox_pii_enabled_types = 'EMAIL,IBAN,CREDIT_CARD';
+
+# Support ticket bodies and exported e-mails: mail clients and ticket forms
+# wrap long lines, so bank details and card numbers end up on two lines
+statement ok
+CREATE TABLE support_tickets AS SELECT * FROM (VALUES
+    (1001, 'Hallo Support-Team,' || chr(10) ||
+           'bitte erstatten Sie den Betrag auf mein Konto IBAN DE89 3704' || chr(10) ||
+           '0044 0532 0130 00 bei der Commerzbank.' || chr(10) ||
+           'Viele Grüße, Maria Weber'),
+    (1002, 'Hi, my card 4111 1111' || chr(10) || '1111 1111 was charged twice. Please refund.'),
+    (1003, 'Kreditkarte: 5500 0000 0000' || chr(13) || chr(10) || '0004, Ablauf 08/27' || chr(13) || chr(10) ||
+           'E-Mail: k.vogel@example.de'),
+    (1004, 'Überweisung an AT61 1904 3002 ' || chr(10) || '   3457 3201 erledigt'),
+    (1005, 'Rückzahlung auf GB29NWBK6016' || chr(10) || '1331926819 angewiesen'),
+    (1006, 'Karte 4111 1111 1111 1111' || chr(10) || '2024 Ablauf, Kartenprüfnummer separat'),
+    (1007, 'Artikel 4111 1111' || chr(10) || '1111 1112 Stück, Lager 3'),
+    (1008, 'Bestellnummer 4111 1111' || chr(10) || chr(10) || '1111 1111 Positionen'),
+    (1009, 'Belege' || chr(10) || '4111' || chr(10) || '1111' || chr(10) || '1111' || chr(10) || '1111'),
+    (1010, 'IBAN DE89 3704 0044 0532 0130 00' || chr(10) || 'Betrag 120,00 EUR')
+) t(ticket_id, body);
+
+# Line feeds and carriage returns shown as <LF> and <CR>
+query IT
+SELECT ticket_id, replace(replace(pii_mask(body), chr(13), '<CR>'), chr(10), '<LF>') FROM support_tickets ORDER BY ticket_id;
+----
+1001	Hallo Support-Team,<LF>bitte erstatten Sie den Betrag auf mein Konto IBAN [IBAN] bei der Commerzbank.<LF>Viele Grüße, Maria Weber
+1002	Hi, my card [CREDIT_CARD] was charged twice. Please refund.
+1003	Kreditkarte: [CREDIT_CARD], Ablauf 08/27<CR><LF>E-Mail: [EMAIL]
+1004	Überweisung an [IBAN] erledigt
+1005	Rückzahlung auf [IBAN] angewiesen
+1006	Karte [CREDIT_CARD]<LF>2024 Ablauf, Kartenprüfnummer separat
+1007	Artikel 4111 1111<LF>1111 1112 Stück, Lager 3
+1008	Bestellnummer 4111 1111<LF><LF>1111 1111 Positionen
+1009	Belege<LF>4111<LF>1111<LF>1111<LF>1111
+1010	IBAN [IBAN]<LF>Betrag 120,00 EUR
+
+# The reported text is the input's text, line break included; offsets are
+# byte offsets of the input (ü and Ü take two bytes)
+query ITIIT
+SELECT ticket_id, m.type, m.start_pos, m.end_pos, replace(replace(m.text, chr(13), '<CR>'), chr(10), '<LF>')
+FROM (SELECT ticket_id, unnest(pii_detect(body)) AS m FROM support_tickets) ORDER BY ticket_id, m.start_pos;
+----
+1001	IBAN	71	98	DE89 3704<LF>0044 0532 0130 00
+1002	CREDIT_CARD	12	31	4111 1111<LF>1111 1111
+1003	CREDIT_CARD	13	33	5500 0000 0000<CR><LF>0004
+1003	EMAIL	57	75	k.vogel@example.de
+1004	IBAN	16	44	AT61 1904 3002 <LF>   3457 3201
+1005	IBAN	17	40	GB29NWBK6016<LF>1331926819
+1006	CREDIT_CARD	6	25	4111 1111 1111 1111
+1010	IBAN	5	32	DE89 3704 0044 0532 0130 00
+
+# Offsets address exactly the reported text
+query I
+SELECT count(*) FROM (SELECT body, unnest(pii_detect(body)) AS m FROM support_tickets)
+WHERE encode(body)[m.start_pos + 1 : m.end_pos] <> encode(m.text);
+----
+0
+
+# Hashes equal those of the single-line form (pseudonyms join across exports)
+query IT
+SELECT ticket_id,
+       list_transform(pii_detect(body), lambda m: pii_mask_value(m.text, m.type, 'hash'))
+           = list_transform(pii_detect(regexp_replace(body, '[ ]*\r?\n[ ]*', ' ', 'g')), lambda m: pii_mask_value(m.text, m.type, 'hash'))
+FROM support_tickets WHERE ticket_id <= 1005 ORDER BY ticket_id;
+----
+1001	true
+1002	true
+1003	true
+1004	true
+1005	true
+
+query TT
+SELECT pii_mask_value('DE89 3704' || chr(10) || '0044 0532 0130 00', 'IBAN', 'hash') = pii_mask_value('DE89 3704 0044 0532 0130 00', 'IBAN', 'hash'),
+       pii_mask_value('4111 1111' || chr(13) || chr(10) || '1111 1111', 'CREDIT_CARD', 'hash') = pii_mask_value('4111 1111 1111 1111', 'CREDIT_CARD', 'hash');
+----
+true	true
+
+# Partial masks equal those of the single-line form
+query IT
+SELECT ticket_id, replace(replace(pii_mask(body, 'partial'), chr(13), '<CR>'), chr(10), '<LF>') FROM support_tickets WHERE ticket_id IN (1001, 1002, 1003, 1005) ORDER BY ticket_id;
+----
+1001	Hallo Support-Team,<LF>bitte erstatten Sie den Betrag auf mein Konto IBAN DE89**************3000 bei der Commerzbank.<LF>Viele Grüße, Maria Weber
+1002	Hi, my card 4111********1111 was charged twice. Please refund.
+1003	Kreditkarte: 5500********0004, Ablauf 08/27<CR><LF>E-Mail: k******@*******.de
+1005	Rückzahlung auf GB29**************6819 angewiesen
+
+# Validation functions accept a value wrapped once, not one broken over three lines
+query TTT
+SELECT pii_is_valid_iban('DE89 3704' || chr(10) || '0044 0532 0130 00'),
+       pii_is_valid_credit_card('4111 1111' || chr(13) || chr(10) || '1111 1111'),
+       pii_is_valid_iban('DE89 3704' || chr(10) || '0044 0532' || chr(10) || '0130 00');
+----
+true	true	false
+
+# pii_scan_table finds the wrapped values
+query TTI
+SELECT column_name, pii_type, match_count FROM pii_scan_table('support_tickets', 'body') ORDER BY pii_type;
+----
+body	CREDIT_CARD	3
+body	EMAIL	1
+body	IBAN	4
+
+# pii_audit_table reports every wrapped value with the input's text
+query ITT
+SELECT row_id, pii_type, replace(replace(matched_text, chr(13), '<CR>'), chr(10), '<LF>')
+FROM pii_audit_table('support_tickets', 'body') ORDER BY row_id, start_pos;
+----
+1	IBAN	DE89 3704<LF>0044 0532 0130 00
+2	CREDIT_CARD	4111 1111<LF>1111 1111
+3	CREDIT_CARD	5500 0000 0000<CR><LF>0004
+3	EMAIL	k.vogel@example.de
+4	IBAN	AT61 1904 3002 <LF>   3457 3201
+5	IBAN	GB29NWBK6016<LF>1331926819
+6	CREDIT_CARD	4111 1111 1111 1111
+10	IBAN	DE89 3704 0044 0532 0130 00
+
+# Restore the process-wide settings for the tests that follow
+statement ok
+SET anofox_pii_enabled_types = '';

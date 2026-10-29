@@ -1,0 +1,47 @@
+# name: test/sql/anofox_vat_fullwidth.test
+# description: VAT numbers typed with an East Asian input method use full-width letters, digits
+#              and punctuation (U+FF01..U+FF5E) and the ideographic space (U+3000). They are
+#              folded to ASCII before the VAT functions normalize the input, instead of being
+#              deleted (which turned 'DE８１１１２８１３５' into 'DE' and a valid number into a
+#              rejected one).
+# group: [anofox_tabular]
+
+require anofox_tabular
+
+statement ok
+LOAD anofox_tabular;
+
+# A supplier list maintained by a Tokyo purchasing office
+statement ok
+CREATE TABLE suppliers_jp AS SELECT * FROM (VALUES
+    (1, 'Müller Antriebstechnik AG', 'DE８１１１２８１３５'),
+    (2, 'Wiener Metallbau GmbH',     'ＡＴＵ１３５８５６２７'),
+    (3, 'Lyon Emballages SAS',       'ＦＲ　４０　３０３　２６５　０４５'),
+    (4, 'Rotterdam Haven BV',        'ｎｌ００４４９５４４５Ｂ０１'),
+    (5, 'Bremer Logistik GmbH',      'ＤＥ811－128－135'),
+    (6, 'Grazer Holzwerk KG',        'ＡＴＵ１３５８５６２６')
+) t(supplier_id, supplier_name, vat_id);
+
+query ITTTT
+SELECT supplier_id, vat_normalize(vat_id), vat_is_valid(vat_id), (vat_validate(vat_id)).reason,
+       vat_format(vat_id, 'iso')
+FROM suppliers_jp
+ORDER BY supplier_id;
+----
+1	DE811128135	true	NULL	DE811128135
+2	ATU13585627	true	NULL	ATU13585627
+3	FR40303265045	true	NULL	FR40303265045
+4	NL004495445B01	true	NULL	NL004495445B01
+5	DE811128135	true	NULL	DE811128135
+6	ATU13585626	false	checksum_mismatch	ATU13585626
+
+query TTT
+SELECT vat_split('DE８１１１２８１３５'), vat_is_valid_syntax('ＤＥ８１１１２８１３５'), vat_format('ＤＥ８１１１２８１３５', 'plain');
+----
+{'country': DE, 'digits': 811128135}	true	811128135
+
+# Other non-ASCII characters are still removed, as before
+query T
+SELECT vat_normalize('DE 811·128·135 ✓');
+----
+DE811128135

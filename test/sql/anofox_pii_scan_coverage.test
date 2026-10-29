@@ -1,0 +1,127 @@
+# name: test/sql/anofox_pii_scan_coverage.test
+# description: pii_scan_table reports every column (scanned with matches, scanned without
+#              matches, skipped with its type) so an audit can prove coverage; pii_audit_table
+#              returns the matched text (F19)
+# group: [sql]
+
+# Scan statuses are compared without the ' (NER unavailable)' suffix, which builds without
+# the NER model (e.g. macOS ARM, no OpenVINO) append; these tests do not depend on NER.
+
+require anofox_tabular
+
+statement ok
+LOAD anofox_tabular;
+
+# Pattern types only, so the results do not depend on the NER model
+statement ok
+SET anofox_pii_enabled_types = 'EMAIL,PHONE,IBAN,CREDIT_CARD,US_SSN';
+
+statement ok
+CREATE TABLE crm_contacts AS
+SELECT * FROM (VALUES
+    (101, 'Li',    'li.na@example.cn',  DATE '2025-03-01', 'Prefers phone, call +49 151 12345678', NULL::VARCHAR, 'B2C'),
+    (102, 'Anna',  'anna@example.com',  DATE '2025-04-12', 'Refund to DE89370400440532013000',      NULL, 'B2B'),
+    (103, 'Jonas', NULL,                DATE '2025-05-30', 'No contact preference',                 NULL, 'B2C')
+) t(contact_id, first_name, email, signup_date, notes, fax, segment);
+
+# Schema: the five original columns keep their meaning; values_scanned, status,
+# checked_types and ner_model are new
+query TT
+SELECT column_name, column_type FROM (DESCRIBE SELECT * FROM pii_scan_table('crm_contacts'));
+----
+column_name	VARCHAR
+pii_type	VARCHAR
+match_count	BIGINT
+sample_values	VARCHAR[]
+confidence	DOUBLE
+values_scanned	BIGINT
+status	VARCHAR
+checked_types	VARCHAR[]
+ner_model	VARCHAR
+
+# Every column appears, in table order: matches per type, no_match for scanned columns
+# without a match (also an all-NULL column), skipped (TYPE) for columns that are not VARCHAR
+query TTITRIT
+SELECT column_name, pii_type, match_count, sample_values, confidence, values_scanned, status
+FROM pii_scan_table('crm_contacts');
+----
+contact_id	NULL	0	[]	NULL	0	skipped (INTEGER)
+first_name	NULL	0	[]	NULL	3	no_match
+email	EMAIL	2	[li.na@example.cn, anna@example.com]	1.0	2	scanned
+signup_date	NULL	0	[]	NULL	0	skipped (DATE)
+notes	IBAN	1	[DE89370400440532013000]	1.0	3	scanned
+notes	PHONE	1	[+49 151 12345678]	1.0	3	scanned
+fax	NULL	0	[]	NULL	0	no_match
+segment	NULL	0	[]	NULL	3	no_match
+
+# Filtering on the PII rows gives the old result
+query TTI
+SELECT column_name, pii_type, match_count FROM pii_scan_table('crm_contacts') WHERE pii_type IS NOT NULL;
+----
+email	EMAIL	2
+notes	IBAN	1
+notes	PHONE	1
+
+# Coverage proof: every column is either scanned or skipped with a reason
+query I
+SELECT count(DISTINCT column_name) FROM pii_scan_table('crm_contacts');
+----
+7
+
+# With a column list, exactly the named columns are reported; a named non-VARCHAR column is
+# cast and scanned
+query TTIT
+SELECT column_name, pii_type, values_scanned, regexp_replace(status, ' \(NER unavailable\)$', '') AS status FROM pii_scan_table('crm_contacts', 'first_name, signup_date, email');
+----
+first_name	NULL	3	no_match
+email	EMAIL	2	scanned
+signup_date	NULL	3	no_match
+
+# --- pii_audit_table: matched_text holds the detected text ---
+
+query TTITT
+SELECT column_name, pii_type, row_id, matched_text, masked_value
+FROM pii_audit_table('crm_contacts', 'notes, email')
+ORDER BY row_id, column_name;
+----
+email	EMAIL	1	li.na@example.cn	[EMAIL]
+notes	PHONE	1	+49 151 12345678	Prefers phone, call [PHONE]
+email	EMAIL	2	anna@example.com	[EMAIL]
+notes	IBAN	2	DE89370400440532013000	Refund to [IBAN]
+
+query TT
+SELECT column_name, column_type FROM (DESCRIBE SELECT * FROM pii_audit_table('crm_contacts', id_column := 'contact_id'));
+----
+row_id	BIGINT
+contact_id	INTEGER
+column_name	VARCHAR
+pii_type	VARCHAR
+original_value	VARCHAR
+masked_value	VARCHAR
+start_pos	BIGINT
+end_pos	BIGINT
+confidence	DOUBLE
+matched_text	VARCHAR
+
+query I
+SELECT bool_and(substr(original_value, start_pos + 1, end_pos - start_pos) = matched_text)
+FROM pii_audit_table('crm_contacts');
+----
+true
+
+statement ok
+RESET anofox_pii_enabled_types;
+
+# --- pii_status describes the NER types ---
+
+query I
+SELECT count(*) FROM pii_status() WHERE recognizer_name = 'Unknown' OR pattern_info = 'No description';
+----
+0
+
+query TT
+SELECT pii_type, recognizer_name FROM pii_status() WHERE pii_type IN ('LOCATION', 'MISC', 'ORGANIZATION') ORDER BY pii_type;
+----
+LOCATION	Location
+MISC	Miscellaneous Entity
+ORGANIZATION	Organization Name

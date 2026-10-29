@@ -1,0 +1,61 @@
+# name: test/sql/anofox_attached_relations_icu.test
+# description: run_checks over a TIMESTAMPTZ event table of an attached database ('mig.events')
+#              buckets the events by their UTC date whatever the session TimeZone, like it does
+#              for a table of the default database: the attached table's column type is found.
+# group: [anofox_tabular]
+
+require anofox_tabular
+
+require icu
+
+statement ok
+LOAD anofox_tabular
+
+statement ok
+SET anofox_tab_trace_enabled = false
+
+statement ok
+ATTACH ':memory:' AS mig
+
+# Two logins a day at 02:30 UTC from 2026-10-10 to 2026-10-16; on 2026-10-17 four logins.
+# In America/New_York 02:30 UTC is still the previous evening: a local-time bucketing would
+# shift every day by one and see the 4 logins on 2026-10-16.
+statement ok
+CREATE TABLE mig.events AS
+SELECT 500 + i AS event_id, TIMESTAMPTZ '2026-10-10 02:30:00+00' + to_days(CAST(i // 2 AS INTEGER)) AS happened_at
+FROM range(0, 14) t(i)
+
+statement ok
+INSERT INTO mig.events VALUES
+    (600, TIMESTAMPTZ '2026-10-17 02:30:00+00'), (601, TIMESTAMPTZ '2026-10-17 02:31:00+00'),
+    (602, TIMESTAMPTZ '2026-10-17 02:32:00+00'), (603, TIMESTAMPTZ '2026-10-17 02:33:00+00')
+
+statement ok
+CREATE TABLE login_checks (check_name VARCHAR, check_type VARCHAR, table_name VARCHAR, column_name VARCHAR,
+                           params VARCHAR, lower_threshold DOUBLE, upper_threshold DOUBLE,
+                           monitor_only BOOLEAN, identifier_column VARCHAR, filter_expr VARCHAR)
+
+statement ok
+INSERT INTO login_checks VALUES
+    ('daily_logins', 'rel_count_change', 'mig.events', NULL,
+     '{"date_column": "happened_at", "reference_date": "2026-10-17"}', NULL, NULL, false, NULL, NULL),
+    ('daily_logins_iqr', 'metric_anomaly_iqr', 'mig.events', NULL,
+     '{"date_column": "happened_at", "reference_date": "2026-10-17", "window_days": 7}', NULL, NULL, true, NULL, NULL)
+
+statement ok
+SET TimeZone = 'America/New_York'
+
+query TTR
+SELECT check_name, status, value FROM run_checks('login_checks') ORDER BY check_name
+----
+daily_logins	pass	1.0
+daily_logins_iqr	warn	4.0
+
+statement ok
+SET TimeZone = 'UTC'
+
+query TTR
+SELECT check_name, status, value FROM run_checks('login_checks') ORDER BY check_name
+----
+daily_logins	pass	1.0
+daily_logins_iqr	warn	4.0

@@ -1,14 +1,19 @@
 #include "anofox_pii.hpp"
 #include "anofox_ner.hpp"
+#include "anofox_pii_names.hpp"
 #include "anofox_sql_utils.hpp"
 #include "anofox_trace.hpp"
 #include "anofox_function_alias.hpp"
 #include "anofox_id_column.hpp"
 #include "anofox_phonenumber.hpp"
+#include "anofox_phonenumber_metadata.hpp"
+#include "anofox_money_currency.hpp"
+#include "anofox_statement_settings.hpp"
 #include "telemetry.hpp"
 
 #include "duckdb/catalog/catalog.hpp"
 #include "duckdb/catalog/catalog_entry/table_catalog_entry.hpp"
+#include "duckdb/common/error_data.hpp"
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/common/types/value.hpp"
 #include "duckdb/common/types/vector.hpp"
@@ -23,11 +28,15 @@
 
 #include <algorithm>
 #include <array>
+#include <map>
 #include <unordered_set>
 #include <sstream>
 #include <iomanip>
 #include <cctype>
+#include <iterator>
+#include <cstring>
 #include <cmath>
+#include <string_view>
 #include <openssl/sha.h>
 #include "anofox_tabular_banner.hpp"
 
@@ -46,13 +55,143 @@ bool IsNERType(PIIType type) {
            type == PIIType::MISC;
 }
 
+// Whether a detection over effective_types (empty = the default set, which
+// includes the NER types) runs the NER recognizers
+bool WantsNERTypes(const std::vector<PIIType> &effective_types) {
+    return effective_types.empty() || std::any_of(effective_types.begin(), effective_types.end(), IsNERType);
+}
+
+// Whether the NER model cannot run: not downloaded (offline), failed to
+// download or load, or a build without OpenVINO. NAME then falls back to the
+// name dictionary and ORGANIZATION, LOCATION and MISC are not detected.
+bool NERUnavailable() {
+#if HAVE_OPENVINO
+    const auto status = NERModelManager::Instance().GetStatusSnapshot().status;
+    return status == NERStatus::NOT_DOWNLOADED || status == NERStatus::FAILED || status == NERStatus::NOT_AVAILABLE;
+#else
+    return true;
+#endif
+}
+
+// Values a pii_scan_table run may push through the NER model before it logs a
+// warning that the scan will take long
+constexpr int64_t NER_LARGE_SCAN_VALUES = 100000;
+
+// A character that belongs to a word: letters and digits (ASCII and
+// Unicode), and the joiners '-' and '\'' ("Klaus-Peter", "O'Connor").
+// Unicode punctuation and spaces ("„Sabine Weiß“", "«Jürgen»", no-break
+// space) end a word, as in the NER tokenizer (ClassifyNERCodePoint).
+bool IsWordCodePoint(uint32_t cp) {
+    return cp == '-' || cp == '\'' || ClassifyNERCodePoint(cp) == NERCharClass::WORD ||
+           ClassifyNERCodePoint(cp) == NERCharClass::IDEOGRAPH;
+}
+
+// Byte length of the word character starting at `pos`, 0 when the character
+// there is no word character
+size_t WordCharLengthAt(const std::string &text, size_t pos) {
+    uint32_t cp = 0;
+    const size_t length = DecodeUTF8CodePoint(text, pos, cp);
+    return IsWordCodePoint(cp) ? length : 0;
+}
+
+// Byte length of the word character ending right before `pos`, 0 when the
+// character there is no word character
+size_t WordCharLengthBefore(const std::string &text, size_t pos) {
+    size_t lead = pos - 1;
+    while (lead > 0 && pos - lead < 4 && (static_cast<unsigned char>(text[lead]) & 0xC0) == 0x80) {
+        lead--;
+    }
+    uint32_t cp = 0;
+    if (DecodeUTF8CodePoint(text, lead, cp) != pos - lead) {
+        // Not a complete UTF-8 character: a stray byte counts as a word byte
+        return 1;
+    }
+    return IsWordCodePoint(cp) ? pos - lead : 0;
+}
+
+// Quotes, brackets and other punctuation around a name are not part of it;
+// "." and "&" are ("Acme Inc.", "Schulze & Partner")
+bool IsTrimmablePunctuation(uint32_t cp) {
+    return cp != '.' && cp != '&' && ClassifyNERCodePoint(cp) == NERCharClass::PUNCT;
+}
+
+// NER spans come from subword tokens and can stop inside a word ("w[NAME]",
+// "[LOCATION]ße"). Widen the span to whole words so masking never leaves part
+// of a word in clear text; drop quotes and brackets the model tagged along at
+// either end ("“David O'Connor”"). Returns false when nothing is left.
+bool WidenToWords(const std::string &text, PIIMatch &match) {
+    size_t start = match.start_pos;
+    size_t end = match.end_pos;
+    while (start > 0) {
+        const size_t length = WordCharLengthBefore(text, start);
+        if (length == 0) {
+            break;
+        }
+        start -= length;
+    }
+    while (end < text.size()) {
+        const size_t length = WordCharLengthAt(text, end);
+        if (length == 0) {
+            break;
+        }
+        end += length;
+    }
+    while (start < end) {
+        uint32_t cp = 0;
+        const size_t length = DecodeUTF8CodePoint(text, start, cp);
+        if (!IsTrimmablePunctuation(cp)) {
+            break;
+        }
+        start += length;
+    }
+    while (end > start) {
+        size_t lead = end - 1;
+        while (lead > start && end - lead < 4 && (static_cast<unsigned char>(text[lead]) & 0xC0) == 0x80) {
+            lead--;
+        }
+        uint32_t cp = 0;
+        DecodeUTF8CodePoint(text, lead, cp);
+        // A trailing joiner is no part of the name either ("Wagner-" at the end of a span)
+        if (!IsTrimmablePunctuation(cp)) {
+            break;
+        }
+        end = lead;
+    }
+    if (start >= end) {
+        return false;
+    }
+    if (start != match.start_pos || end != match.end_pos) {
+        match.start_pos = start;
+        match.end_pos = end;
+        match.matched_text = text.substr(start, end - start);
+    }
+    return true;
+}
+
+// A NER span without any letter ("903", "12-04") names nobody; the
+// multilingual models occasionally tag a bare number as ORG
+bool ContainsLetter(const std::string &text) {
+    size_t pos = 0;
+    while (pos < text.size()) {
+        uint32_t cp = 0;
+        const size_t length = DecodeUTF8CodePoint(text, pos, cp);
+        if (cp < 0x80 ? std::isalpha(static_cast<int>(cp)) != 0
+                      : ClassifyNERCodePoint(cp) == NERCharClass::WORD ||
+                            ClassifyNERCodePoint(cp) == NERCharClass::IDEOGRAPH) {
+            return true;
+        }
+        pos += length;
+    }
+    return false;
+}
+
 // Words that label a PII field ("IBAN DE89...", "SSN: 123-...") rather than
 // name an entity. The NER model tags some of them as ORG or LOC (#118).
 bool IsFieldLabel(const std::string &text) {
     static const std::unordered_set<std::string> labels = {
         "IBAN", "BIC", "SWIFT", "SSN", "VAT", "VAT ID", "USTID", "UST-IDNR", "TIN", "NINO", "EIN",
         "ITIN", "PIN", "CVV", "CVC", "DOB", "ID", "EMAIL", "E-MAIL", "PHONE", "TEL", "FAX", "MOBILE",
-        "URL", "IP", "MAC", "PASSPORT", "API KEY"};
+        "URL", "IP", "MAC", "PASSPORT", "API KEY", "KVNR", "KV-NR", "EGK"};
     std::string upper;
     for (char c : text) {
         if (c == ':' || c == '.' || c == '#') {
@@ -64,6 +203,423 @@ bool IsFieldLabel(const std::string &text) {
         upper.pop_back();
     }
     return labels.count(upper) > 0;
+}
+
+// An ISO 3166-1 alpha-2 country code ("DE", "GB") or ISO 4217 currency code
+// ("EUR", "USD"), written in capitals. The NER model tags such codes in
+// master data as ORG or LOC; on their own they identify nobody.
+bool IsCountryOrCurrencyCode(const std::string &text) {
+    const bool all_upper = !text.empty() && std::all_of(text.begin(), text.end(), [](char c) {
+        return c >= 'A' && c <= 'Z';
+    });
+    if (!all_upper) {
+        return false;
+    }
+    if (text.size() == 2) {
+        // ISO 3166-1 alpha-2, officially assigned codes
+        static const std::unordered_set<std::string> country_codes = {
+            "AD", "AE", "AF", "AG", "AI", "AL", "AM", "AO", "AQ", "AR", "AS", "AT", "AU", "AW", "AX", "AZ", "BA",
+            "BB", "BD", "BE", "BF", "BG", "BH", "BI", "BJ", "BL", "BM", "BN", "BO", "BQ", "BR", "BS", "BT", "BV",
+            "BW", "BY", "BZ", "CA", "CC", "CD", "CF", "CG", "CH", "CI", "CK", "CL", "CM", "CN", "CO", "CR", "CU",
+            "CV", "CW", "CX", "CY", "CZ", "DE", "DJ", "DK", "DM", "DO", "DZ", "EC", "EE", "EG", "EH", "ER", "ES",
+            "ET", "FI", "FJ", "FK", "FM", "FO", "FR", "GA", "GB", "GD", "GE", "GF", "GG", "GH", "GI", "GL", "GM",
+            "GN", "GP", "GQ", "GR", "GS", "GT", "GU", "GW", "GY", "HK", "HM", "HN", "HR", "HT", "HU", "ID", "IE",
+            "IL", "IM", "IN", "IO", "IQ", "IR", "IS", "IT", "JE", "JM", "JO", "JP", "KE", "KG", "KH", "KI", "KM",
+            "KN", "KP", "KR", "KW", "KY", "KZ", "LA", "LB", "LC", "LI", "LK", "LR", "LS", "LT", "LU", "LV", "LY",
+            "MA", "MC", "MD", "ME", "MF", "MG", "MH", "MK", "ML", "MM", "MN", "MO", "MP", "MQ", "MR", "MS", "MT",
+            "MU", "MV", "MW", "MX", "MY", "MZ", "NA", "NC", "NE", "NF", "NG", "NI", "NL", "NO", "NP", "NR", "NU",
+            "NZ", "OM", "PA", "PE", "PF", "PG", "PH", "PK", "PL", "PM", "PN", "PR", "PS", "PT", "PW", "PY", "QA",
+            "RE", "RO", "RS", "RU", "RW", "SA", "SB", "SC", "SD", "SE", "SG", "SH", "SI", "SJ", "SK", "SL", "SM",
+            "SN", "SO", "SR", "SS", "ST", "SV", "SX", "SY", "SZ", "TC", "TD", "TF", "TG", "TH", "TJ", "TK", "TL",
+            "TM", "TN", "TO", "TR", "TT", "TV", "TW", "TZ", "UA", "UG", "UM", "US", "UY", "UZ", "VA", "VC", "VE",
+            "VG", "VI", "VN", "VU", "WF", "WS", "YE", "YT", "ZA", "ZM", "ZW"};
+        return country_codes.count(text) > 0;
+    }
+    if (text.size() == 3) {
+        return CurrencyRegistry::GetInstance().CurrencyExists(text);
+    }
+    return false;
+}
+
+// ---------------------------------------------------------------------------
+// UTF-8 code point helpers for masking. Masks keep or replace whole
+// characters: a byte-based substr can split a multi-byte sequence and yield
+// invalid UTF-8 that DuckDB rejects ("Invalid unicode"). Input is valid UTF-8
+// (DuckDB guarantees that for VARCHAR); a code point starts at every byte
+// that is not a continuation byte (10xxxxxx).
+// ---------------------------------------------------------------------------
+bool IsUtf8Continuation(char c) {
+    return (static_cast<unsigned char>(c) & 0xC0) == 0x80;
+}
+
+// Number of code points in text
+size_t Utf8Length(std::string_view text) {
+    return static_cast<size_t>(std::count_if(text.begin(), text.end(),
+                                             [](char c) { return !IsUtf8Continuation(c); }));
+}
+
+// Byte offset at which code point number n starts (text.size() if n >= length)
+size_t Utf8ByteOffset(std::string_view text, size_t n) {
+    size_t seen = 0;
+    for (size_t i = 0; i < text.size(); ++i) {
+        if (!IsUtf8Continuation(text[i])) {
+            if (seen == n) {
+                return i;
+            }
+            ++seen;
+        }
+    }
+    return text.size();
+}
+
+// First n code points of text
+std::string Utf8Prefix(std::string_view text, size_t n) {
+    return std::string(text.substr(0, Utf8ByteOffset(text, n)));
+}
+
+// Last n code points of text
+std::string Utf8Suffix(std::string_view text, size_t n) {
+    const size_t length = Utf8Length(text);
+    if (n >= length) {
+        return std::string(text);
+    }
+    return std::string(text.substr(Utf8ByteOffset(text, length - n)));
+}
+
+// One '*' per character of text
+std::string Utf8Stars(std::string_view text) {
+    return std::string(Utf8Length(text), '*');
+}
+
+// ---------------------------------------------------------------------------
+// Partial masks keep at most half of the letters and digits of a value and
+// mask short values completely. Each recognizer has its own rule; ApplyMask()
+// checks every result against the half rule and falls back to one '*' per
+// character, so no type (also one added later) can reveal more.
+// ---------------------------------------------------------------------------
+
+// Words of at most this many characters are masked completely by partial
+constexpr size_t PARTIAL_SHORT_WORD = 4;
+
+// Letters and digits of text: ASCII letters and digits plus every non-ASCII
+// code point. Counts what a partial mask reveals ('*' and separators are not
+// counted).
+size_t CountLettersAndDigits(std::string_view text) {
+    size_t count = 0;
+    for (char c : text) {
+        const auto byte = static_cast<unsigned char>(c);
+        if (std::isalnum(byte) || (byte >= 0xC0)) {
+            ++count;
+        }
+    }
+    return count;
+}
+
+// True if text is well-formed UTF-8 (a byte-based partial mask of arbitrary
+// pii_mask_value input could cut a character)
+bool IsValidUtf8(std::string_view text) {
+    size_t i = 0;
+    while (i < text.size()) {
+        const auto lead = static_cast<unsigned char>(text[i]);
+        size_t extra = 0;
+        if (lead < 0x80) {
+            extra = 0;
+        } else if ((lead & 0xE0) == 0xC0) {
+            extra = 1;
+        } else if ((lead & 0xF0) == 0xE0) {
+            extra = 2;
+        } else if ((lead & 0xF8) == 0xF0) {
+            extra = 3;
+        } else {
+            return false;
+        }
+        if (i + extra >= text.size()) {
+            return false;
+        }
+        for (size_t k = 1; k <= extra; ++k) {
+            if (!IsUtf8Continuation(text[i + k])) {
+                return false;
+            }
+        }
+        i += extra + 1;
+    }
+    return true;
+}
+
+// Partial mask of one word of an entity: words of at most
+// PARTIAL_SHORT_WORD characters become stars, longer words keep their first
+// `keep` characters but never more than half of them
+std::string MaskWordKeepingPrefix(const std::string &word, size_t keep) {
+    const size_t length = Utf8Length(word);
+    if (length <= PARTIAL_SHORT_WORD) {
+        return std::string(length, '*');
+    }
+    keep = std::min(keep, length / 2);
+    return Utf8Prefix(word, keep) + std::string(length - keep, '*');
+}
+
+// E.164 form of a phone number ("+49301234567") as the phone module parses it:
+// a number with +CC or the default region's international prefix (0049...) for
+// that country, a national number (030 ...) for
+// anofox_tab_phonenumber_default_region. Empty when the module does not accept
+// the number as valid.
+std::string PhoneToE164(const std::string &text) {
+    try {
+        const auto parts = phonenumber::PhoneNumberManager::Instance().Parse(text, "");
+        if (parts.valid && parts.matches_valid_pattern && parts.country_code > 0 &&
+            !parts.national_number.empty()) {
+            return "+" + std::to_string(parts.country_code) + parts.national_number;
+        }
+        AnofoxTrace(AnofoxLogLevel::Trace, "pii: phone hash falls back to the digits, not a valid number: " + text +
+                                               " (" + parts.reason + ")");
+    } catch (const std::exception &e) {
+        AnofoxTrace(AnofoxLogLevel::Debug, "pii: phone hash falls back to the digits: " + std::string(e.what()));
+    }
+    return std::string();
+}
+
+// Canonical form of a matched value for the HASH strategy, so differently
+// formatted copies of one value (4111 1111 1111 1111 / 4111-1111-1111-1111)
+// hash alike: phone numbers are hashed in their E.164 form (030 1234567,
+// +49 (0)30 1234567 and 0049 30 1234567 alike with the default region DE),
+// separators (space, dash, dot, slash, parentheses) are removed from other
+// numeric identifiers and from phone numbers the phone module cannot parse,
+// IBAN and UK NINO are upper-cased, e-mail addresses are lower-cased. Other
+// types are hashed as matched.
+std::string NormalizeForHash(PIIType type, const std::string &text) {
+    if (type == PIIType::PHONE) {
+        auto e164 = PhoneToE164(text);
+        if (!e164.empty()) {
+            return e164;
+        }
+    }
+    switch (type) {
+    case PIIType::PHONE:
+    case PIIType::CREDIT_CARD:
+    case PIIType::US_SSN:
+    case PIIType::DE_TAX_ID:
+    case PIIType::IBAN:
+    case PIIType::UK_NINO:
+    case PIIType::DE_SVNR:
+    case PIIType::DE_KVNR:
+    case PIIType::DE_ID_CARD: {
+        const bool upper = type == PIIType::IBAN || type == PIIType::UK_NINO || type == PIIType::DE_SVNR ||
+                           type == PIIType::DE_KVNR || type == PIIType::DE_ID_CARD;
+        std::string normalized;
+        normalized.reserve(text.size());
+        for (char c : text) {
+            if (std::isspace(static_cast<unsigned char>(c)) || c == '-' || c == '.' || c == '/' ||
+                c == '(' || c == ')') {
+                continue;
+            }
+            normalized += upper ? static_cast<char>(std::toupper(static_cast<unsigned char>(c))) : c;
+        }
+        return normalized;
+    }
+    case PIIType::EMAIL: {
+        std::string normalized = StringUtil::Lower(text);
+        StringUtil::Trim(normalized);
+        return normalized;
+    }
+    default:
+        return text;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Unicode space separators. Values copied from PDFs, spreadsheets and web
+// forms separate digit groups with a no-break space (U+00A0), a narrow
+// no-break space (U+202F, the French and Swiss thousands separator), a thin
+// space (U+2009) or a figure space (U+2007): "+49 30 12345678" with U+00A0.
+// The pattern recognizers and the hash and partial masks treat every space
+// separator (Unicode category Zs) like an ASCII space.
+// ---------------------------------------------------------------------------
+
+// Byte length of the Unicode space separator other than U+0020 that starts
+// at `pos`, 0 when there is none: U+00A0, U+1680, U+2000-U+200A, U+202F,
+// U+205F and U+3000
+size_t UnicodeSpaceLengthAt(const std::string &text, size_t pos) {
+    const auto b0 = static_cast<unsigned char>(text[pos]);
+    if (b0 < 0xC2) {
+        return 0;
+    }
+    if (b0 == 0xC2) {
+        return pos + 1 < text.size() && static_cast<unsigned char>(text[pos + 1]) == 0xA0 ? 2 : 0;
+    }
+    if (pos + 2 >= text.size()) {
+        return 0;
+    }
+    const auto b1 = static_cast<unsigned char>(text[pos + 1]);
+    const auto b2 = static_cast<unsigned char>(text[pos + 2]);
+    const bool space = (b0 == 0xE1 && b1 == 0x9A && b2 == 0x80) ||                   // U+1680
+                       (b0 == 0xE2 && b1 == 0x80 && (b2 <= 0x8A || b2 == 0xAF)) || // U+2000-U+200A, U+202F
+                       (b0 == 0xE2 && b1 == 0x81 && b2 == 0x9F) ||                   // U+205F
+                       (b0 == 0xE3 && b1 == 0x80 && b2 == 0x80);                     // U+3000
+    return space ? 3 : 0;
+}
+
+bool IsLineBreakAt(const std::string &text, size_t pos) {
+    return pos < text.size() && (text[pos] == '\n' || text[pos] == '\r');
+}
+
+bool IsBlankAt(const std::string &text, size_t pos) {
+    return pos < text.size() && (text[pos] == ' ' || text[pos] == '\t');
+}
+
+// The text with every Unicode space separator replaced by one ASCII space,
+// so the pattern recognizers (whose patterns and scanners know ' ' only) find
+// "DE89<NBSP>3704<NBSP>..." like "DE89 3704 ...". Match offsets in the folded
+// text are mapped back to byte offsets of the original text, and the matched
+// text is taken from the original, so detection reports and masking replaces
+// exactly the bytes of the input.
+//
+// With fold_line_breaks, a single line break (LF, CRLF or CR) together with
+// the spaces and tabs around it also becomes one ASCII space: a mail client or
+// ticket form that wraps "IBAN DE89 3704 0044 0532 0130 00" after "3704" puts
+// the line break where the group separator was. A blank line (two line
+// breaks with only spaces between them) is a paragraph break and stays.
+// Callers count the folded line breaks inside a match (LineBreaksIn) to keep
+// matches that span more than one of them out.
+class SpaceFoldedText {
+public:
+    explicit SpaceFoldedText(const std::string &original, bool fold_line_breaks = false) : original_(original) {
+        size_t copied = 0;  // original bytes before this are in folded_
+        for (size_t pos = 0; pos < original.size(); ++pos) {
+            size_t begin = pos;  // original bytes [begin, after) become one ' '
+            size_t after = pos;
+            bool line_break = false;
+            if (fold_line_breaks && IsLineBreakAt(original, pos)) {
+                after = pos + (original.compare(pos, 2, "\r\n") == 0 ? 2 : 1);
+                while (begin > copied && IsBlankAt(original, begin - 1)) {
+                    begin--;
+                }
+                while (IsBlankAt(original, after)) {
+                    after++;
+                }
+                // A second line break before or after: a blank line, not a wrapped value
+                if (IsLineBreakAt(original, after) || (begin > 0 && IsLineBreakAt(original, begin - 1))) {
+                    pos = after - 1;
+                    continue;
+                }
+                line_break = true;
+            } else {
+                const size_t length = UnicodeSpaceLengthAt(original, pos);
+                if (length == 0) {
+                    continue;
+                }
+                after = pos + length;
+            }
+            if (offsets_.empty()) {
+                folded_.reserve(original.size());
+                offsets_.reserve(original.size() + 1);
+            }
+            CopyRange(copied, begin);
+            if (line_break) {
+                line_breaks_.push_back(folded_.size());
+            }
+            folded_ += ' ';
+            offsets_.push_back(begin);
+            pos = after - 1;
+            copied = after;
+        }
+        if (!offsets_.empty()) {
+            CopyRange(copied, original.size());
+            offsets_.push_back(original.size());
+        }
+    }
+
+    // The text the pattern recognizers scan
+    const std::string &Text() const {
+        return offsets_.empty() ? original_ : folded_;
+    }
+
+    // Number of line breaks folded into spaces in [start, end) of Text()
+    size_t LineBreaksIn(size_t start, size_t end) const {
+        return static_cast<size_t>(std::lower_bound(line_breaks_.begin(), line_breaks_.end(), end) -
+                                   std::lower_bound(line_breaks_.begin(), line_breaks_.end(), start));
+    }
+
+    bool HasLineBreaks() const {
+        return !line_breaks_.empty();
+    }
+
+    // Map a match found in Text() onto the original text
+    void MapToOriginal(PIIMatch &match) const {
+        if (offsets_.empty()) {
+            return;
+        }
+        match.start_pos = offsets_[match.start_pos];
+        match.end_pos = offsets_[match.end_pos];
+        match.matched_text = original_.substr(match.start_pos, match.end_pos - match.start_pos);
+    }
+
+private:
+    void CopyRange(size_t from, size_t to) {
+        folded_.append(original_, from, to - from);
+        for (size_t i = from; i < to; ++i) {
+            offsets_.push_back(i);
+        }
+    }
+
+    const std::string &original_;
+    std::string folded_;
+    // Byte offset in original_ of each byte of folded_, plus the end; empty
+    // when nothing was folded (folded_ is unused then)
+    std::vector<size_t> offsets_;
+    // Positions in folded_ of the spaces that replaced a line break, ascending
+    std::vector<size_t> line_breaks_;
+};
+
+// text with every Unicode space separator replaced by one ASCII space
+std::string FoldUnicodeSpaces(const std::string &text) {
+    return SpaceFoldedText(text).Text();
+}
+
+// Types whose values are found also when wrapped over two lines: their
+// checksums (MOD-97, Luhn) keep numbers on adjacent lines from joining into a
+// false match. Phone numbers have no checksum and are not joined.
+bool JoinsWrappedLines(PIIType type) {
+    return type == PIIType::IBAN || type == PIIType::CREDIT_CARD;
+}
+
+// A value of `type` as its partial mask, hash and validation read it: Unicode
+// spaces as ASCII spaces, and for the types that join wrapped lines a single
+// line break too ("DE89 3704\n0044 ..." reads as "DE89 3704 0044 ...")
+std::string FoldSeparators(PIIType type, const std::string &text) {
+    if (JoinsWrappedLines(type) && text.find_first_of("\r\n") != std::string::npos) {
+        const SpaceFoldedText folded(text, true);
+        if (folded.LineBreaksIn(0, folded.Text().size()) <= 1) {
+            return folded.Text();
+        }
+    }
+    return FoldUnicodeSpaces(text);
+}
+
+// Whether text has a letter outside the (sorted, non-overlapping) spans of
+// `covered`. A NER span that overlaps a pattern match is dropped and a NER
+// span without a letter names nobody, so without such a letter the NER model
+// cannot add anything to the pattern matches.
+bool HasLetterOutside(const std::string &text, const std::vector<PIIMatch> &covered) {
+    size_t pos = 0;
+    auto span = covered.begin();
+    while (pos < text.size()) {
+        while (span != covered.end() && span->end_pos <= pos) {
+            ++span;
+        }
+        if (span != covered.end() && span->start_pos <= pos) {
+            pos = span->end_pos;
+            continue;
+        }
+        uint32_t cp = 0;
+        const size_t length = DecodeUTF8CodePoint(text, pos, cp);
+        if (cp < 0x80 ? std::isalpha(static_cast<int>(cp)) != 0
+                      : ClassifyNERCodePoint(cp) == NERCharClass::WORD ||
+                            ClassifyNERCodePoint(cp) == NERCharClass::IDEOGRAPH) {
+            return true;
+        }
+        pos += std::max<size_t>(length, 1);
+    }
+    return false;
 }
 } // anonymous namespace
 
@@ -90,6 +646,11 @@ std::string PIITypeToString(PIIType type) {
         case PIIType::UK_NINO: return "UK_NINO";
         case PIIType::MAC_ADDRESS: return "MAC_ADDRESS";
         case PIIType::API_KEY: return "API_KEY";
+        case PIIType::DATE_OF_BIRTH: return "DATE_OF_BIRTH";
+        case PIIType::DE_SVNR: return "DE_SVNR";
+        case PIIType::DE_KVNR: return "DE_KVNR";
+        case PIIType::DE_ID_CARD: return "DE_ID_CARD";
+        case PIIType::POSTAL_CODE: return "POSTAL_CODE";
         default: return "UNKNOWN";
     }
 }
@@ -115,6 +676,11 @@ PIIType StringToPIIType(const std::string &str) {
     if (upper == "UK_NINO" || upper == "NINO") return PIIType::UK_NINO;
     if (upper == "MAC_ADDRESS" || upper == "MAC") return PIIType::MAC_ADDRESS;
     if (upper == "API_KEY" || upper == "APIKEY" || upper == "KEY") return PIIType::API_KEY;
+    if (upper == "DATE_OF_BIRTH" || upper == "DOB" || upper == "BIRTH_DATE") return PIIType::DATE_OF_BIRTH;
+    if (upper == "DE_SVNR" || upper == "SVNR" || upper == "RVNR") return PIIType::DE_SVNR;
+    if (upper == "DE_KVNR" || upper == "KVNR" || upper == "KRANKENVERSICHERTENNUMMER") return PIIType::DE_KVNR;
+    if (upper == "DE_ID_CARD" || upper == "PERSONALAUSWEIS") return PIIType::DE_ID_CARD;
+    if (upper == "POSTAL_CODE" || upper == "POSTCODE" || upper == "ZIP" || upper == "PLZ") return PIIType::POSTAL_CODE;
     return PIIType::UNKNOWN;
 }
 
@@ -139,13 +705,29 @@ MaskStrategy StringToMaskStrategy(const std::string &str) {
     return MaskStrategy::NONE;
 }
 
+MaskStrategy ParseMaskStrategy(const std::string &str) {
+    auto parsed = StringToMaskStrategy(str);
+    auto upper = StringUtil::Upper(str);
+    StringUtil::Trim(upper);
+    if (parsed == MaskStrategy::NONE && upper != "NONE") {
+        throw InvalidInputException("Invalid mask strategy: " + str +
+                                    ". Valid values: redact, hash, partial, asterisk, none (case-insensitive)");
+    }
+    return parsed;
+}
+
 // ============================================================================
 // PII Configuration Singleton
 // ============================================================================
 
+bool IsOptInPIIType(PIIType type) {
+    // POSTAL_CODE: too many plain 4-5 digit numbers look like one
+    return type == PIIType::POSTAL_CODE;
+}
+
 bool PIIConfigSnapshot::IsTypeEnabled(PIIType type) const {
     if (enabled_types.empty()) {
-        return true;  // All types enabled when empty
+        return !IsOptInPIIType(type);  // Default set: all types except opt-in ones
     }
     return std::find(enabled_types.begin(), enabled_types.end(), type) != enabled_types.end();
 }
@@ -168,8 +750,47 @@ PIIConfigSnapshot PIIConfig::Snapshot() const {
     snapshot.default_mask_strategy = default_mask_strategy_;
     snapshot.enabled_types = enabled_types_;
     snapshot.deep_validation = deep_validation_;
+    snapshot.require_checksum = require_checksum_;
+    snapshot.ner_required = NERModelManager::Instance().IsRequired();
     return snapshot;
 }
+
+namespace {
+
+// The PII configuration of the statement running in `context` (see
+// StatementSettings): a SET from another connection while the statement runs
+// takes effect with the next statement, never between two of its chunks.
+PIIConfigSnapshot StatementPIIConfig(optional_ptr<ClientContext> context) {
+    return StatementSettings<PIIConfigSnapshot>(context, "anofox_pii_statement_config",
+                                                [] { return PIIConfig::Get().Snapshot(); });
+}
+
+// The configuration the recognizers of this thread read options through while
+// PIIEngine detects with a snapshot (anofox_pii_deep_validation in the phone
+// recognizer); nullptr outside of detection
+thread_local const PIIConfigSnapshot *active_config = nullptr;
+
+// Makes `config` the active configuration of this thread for its lifetime
+class ActiveConfigScope {
+public:
+    explicit ActiveConfigScope(const PIIConfigSnapshot &config) : previous_(active_config) {
+        active_config = &config;
+    }
+    ~ActiveConfigScope() {
+        active_config = previous_;
+    }
+    ActiveConfigScope(const ActiveConfigScope &) = delete;
+    ActiveConfigScope &operator=(const ActiveConfigScope &) = delete;
+
+private:
+    const PIIConfigSnapshot *previous_;
+};
+
+bool DeepValidationEnabled() {
+    return active_config ? active_config->deep_validation : PIIConfig::Get().IsDeepValidationEnabled();
+}
+
+} // namespace
 
 void PIIConfig::SetMinConfidence(double value) {
     if (value < MIN_CONFIDENCE || value > MAX_CONFIDENCE) {
@@ -187,26 +808,26 @@ std::string PIIConfig::GetDefaultMaskStrategyString() const {
 }
 
 void PIIConfig::SetDefaultMaskStrategy(const std::string &strategy) {
-    auto parsed = StringToMaskStrategy(strategy);
-    if (parsed == MaskStrategy::NONE && StringUtil::Upper(strategy) != "NONE") {
-        throw InvalidInputException("Invalid mask strategy: " + strategy +
-                                    ". Valid values: REDACT, HASH, PARTIAL, ASTERISK, NONE");
-    }
+    auto parsed = ParseMaskStrategy(strategy);
     std::lock_guard<std::mutex> guard(mutex_);
     default_mask_strategy_ = parsed;
 }
 
-std::string PIIConfig::GetEnabledTypesString() const {
-    std::lock_guard<std::mutex> guard(mutex_);
-    if (enabled_types_.empty()) {
-        return "";  // Empty means all types enabled
-    }
+namespace {
+// anofox_pii_enabled_types as shown by SET and pii_config(); empty means all types
+std::string EnabledTypesToString(const std::vector<PIIType> &types) {
     std::ostringstream oss;
-    for (size_t i = 0; i < enabled_types_.size(); i++) {
+    for (size_t i = 0; i < types.size(); i++) {
         if (i > 0) oss << ",";
-        oss << PIITypeToString(enabled_types_[i]);
+        oss << PIITypeToString(types[i]);
     }
     return oss.str();
+}
+} // namespace
+
+std::string PIIConfig::GetEnabledTypesString() const {
+    std::lock_guard<std::mutex> guard(mutex_);
+    return EnabledTypesToString(enabled_types_);
 }
 
 void PIIConfig::SetEnabledTypes(const std::string &types_csv) {
@@ -219,11 +840,25 @@ void PIIConfig::SetEnabledTypes(const std::string &types_csv) {
         StringUtil::Trim(token);
         if (token.empty()) continue;
 
+        // DEFAULT expands to the default set (every type except opt-in ones),
+        // so 'DEFAULT,POSTAL_CODE' adds an opt-in type to it
+        if (StringUtil::Upper(token) == "DEFAULT") {
+            for (int t = 0; t < static_cast<int>(PIIType::UNKNOWN); t++) {
+                const auto type = static_cast<PIIType>(t);
+                if (!IsOptInPIIType(type) &&
+                    std::find(parsed_types.begin(), parsed_types.end(), type) == parsed_types.end()) {
+                    parsed_types.push_back(type);
+                }
+            }
+            continue;
+        }
         auto pii_type = StringToPIIType(token);
         if (pii_type == PIIType::UNKNOWN) {
             throw InvalidInputException("Unknown PII type: " + token);
         }
-        parsed_types.push_back(pii_type);
+        if (std::find(parsed_types.begin(), parsed_types.end(), pii_type) == parsed_types.end()) {
+            parsed_types.push_back(pii_type);
+        }
     }
 
     std::lock_guard<std::mutex> guard(mutex_);
@@ -238,6 +873,11 @@ bool PIIConfig::IsDeepValidationEnabled() const {
 void PIIConfig::SetDeepValidation(bool enabled) {
     std::lock_guard<std::mutex> guard(mutex_);
     deep_validation_ = enabled;
+}
+
+void PIIConfig::SetRequireChecksum(bool enabled) {
+    std::lock_guard<std::mutex> guard(mutex_);
+    require_checksum_ = enabled;
 }
 
 // ============================================================================
@@ -355,11 +995,15 @@ std::vector<PIIMatch> RegexRecognizer::FindMatches(const std::string &text) cons
 }
 
 std::string RegexRecognizer::GetPartialMask(const std::string &text) const {
-    // Default: show first and last 2 characters
-    if (text.length() <= 4) {
-        return std::string(text.length(), '*');
+    // Default: keep the first and last character for 5 to 7 characters, the
+    // first and last 2 from 8 characters on (at most a quarter at each end);
+    // short values are masked completely
+    const size_t length = Utf8Length(text);
+    if (length <= PARTIAL_SHORT_WORD) {
+        return std::string(length, '*');
     }
-    return text.substr(0, 2) + std::string(text.length() - 4, '*') + text.substr(text.length() - 2);
+    const size_t keep = std::min<size_t>(2, length / 4);
+    return Utf8Prefix(text, keep) + std::string(length - 2 * keep, '*') + Utf8Suffix(text, keep);
 }
 
 // ============================================================================
@@ -370,13 +1014,193 @@ CreditCardRecognizer::CreditCardRecognizer()
     : RegexRecognizer(
         PIIType::CREDIT_CARD,
         "Credit Card",
-        // Matches major card formats: Visa, Mastercard, Amex, Discover with optional separators
-        R"(\b(?:4[0-9]{3}[\s\-]?[0-9]{4}[\s\-]?[0-9]{4}[\s\-]?[0-9]{4}|5[1-5][0-9]{2}[\s\-]?[0-9]{4}[\s\-]?[0-9]{4}[\s\-]?[0-9]{4}|3[47][0-9]{2}[\s\-]?[0-9]{6}[\s\-]?[0-9]{5}|6(?:011|5[0-9]{2})[\s\-]?[0-9]{4}[\s\-]?[0-9]{4}[\s\-]?[0-9]{4})\b)"
+        // FindMatches scans digit groups directly; the pattern only describes
+        // the accepted shape: 13-19 digits, optionally in groups joined by one
+        // space, dash or dot.
+        R"(\b\d{4}(?:[ .\-]?\d{1,6}){1,6}\b)"
     ) {}
 
 CreditCardRecognizer::~CreditCardRecognizer() {
     // Force non-inline destructor to emit vtable in this translation unit
     (void)type_;
+}
+
+namespace {
+
+bool IsAsciiDigitAt(const std::string &text, size_t pos) {
+    return pos < text.size() && std::isdigit(static_cast<unsigned char>(text[pos]));
+}
+
+bool IsAsciiWordAt(const std::string &text, size_t pos) {
+    if (pos >= text.size()) {
+        return false;
+    }
+    const auto c = static_cast<unsigned char>(text[pos]);
+    return std::isalnum(c) || c == '_';
+}
+
+// Card numbers are at most 19 digits; longer chains of digit groups (tables
+// of figures, long reference numbers) are not searched for card numbers.
+constexpr size_t CARD_MAX_CHAIN_GROUPS = 32;
+
+} // namespace
+
+std::vector<PIIMatch> CreditCardRecognizer::FindMatches(const std::string &text) const {
+    return ScanCardChains(text, false, 1.0);
+}
+
+std::vector<PIIMatch> CreditCardRecognizer::ScanCardChains(const std::string &text, bool checksum_failures,
+                                                           double confidence) const {
+    // A candidate is a chain of digit groups joined by one separator (space,
+    // dash or dot) that is the same throughout: 4111111111111111,
+    // 4111 1111 1111 1111, 3782-822463-10005, 4111.1111.1111.1111.
+    // A chain that continues a longer token (DE89 3704 ..., a decimal
+    // 1.4111..., a phone number +4111...) is skipped. Inside a chain of
+    // space-separated groups the first run of groups with 13-19 digits that
+    // passes the Luhn checksum and carries a brand prefix is a card number
+    // ("Ref 12 4111 1111 1111 1111").
+    std::vector<PIIMatch> matches;
+    const size_t n = text.size();
+    size_t pos = 0;
+    while (pos < n) {
+        if (!IsAsciiDigitAt(text, pos)) {
+            pos++;
+            continue;
+        }
+        // Collect the chain of groups as [begin, end) byte ranges
+        std::vector<std::pair<size_t, size_t>> groups;
+        char separator = 0;
+        size_t end = pos;
+        while (true) {
+            const size_t group_begin = end;
+            while (IsAsciiDigitAt(text, end)) {
+                end++;
+            }
+            groups.emplace_back(group_begin, end);
+            if (end < n && (text[end] == ' ' || text[end] == '-' || text[end] == '.') &&
+                (separator == 0 || text[end] == separator) && IsAsciiDigitAt(text, end + 1)) {
+                separator = text[end];
+                end++;
+                continue;
+            }
+            break;
+        }
+        const size_t chain_begin = pos;
+        pos = end;
+
+        // The chain must stand on its own
+        if (chain_begin > 0) {
+            const char before = text[chain_begin - 1];
+            if (IsAsciiWordAt(text, chain_begin - 1) || before == '+') {
+                continue;
+            }
+            if ((before == '.' || before == ',' || before == '-' || before == '/') && chain_begin >= 2 &&
+                IsAsciiDigitAt(text, chain_begin - 2)) {
+                continue;
+            }
+        }
+        if (IsAsciiWordAt(text, end)) {
+            continue;
+        }
+        if (end < n && (text[end] == '.' || text[end] == ',' || text[end] == '-' || text[end] == '/') &&
+            IsAsciiDigitAt(text, end + 1)) {
+            continue;
+        }
+        if (groups.size() > CARD_MAX_CHAIN_GROUPS) {
+            AnofoxTrace(AnofoxLogLevel::Trace, "pii: digit chain too long for a card number at byte " +
+                                                   std::to_string(chain_begin));
+            continue;
+        }
+
+        // Search the runs of groups [first, last], longest first. Groups
+        // joined by dashes or dots form one token ("4111111111111111-01"),
+        // which is a card number only as a whole; space-separated groups can
+        // hold a card number next to other figures.
+        const bool whole_chain_only = separator == '-' || separator == '.';
+        size_t first = 0;
+        while (first < groups.size()) {
+            bool found = false;
+            for (size_t last = groups.size(); last-- > first;) {
+                if (whole_chain_only && (first != 0 || last + 1 != groups.size())) {
+                    continue;
+                }
+                std::string digits;
+                bool shape_ok = true;
+                for (size_t g = first; g <= last; ++g) {
+                    const size_t len = groups[g].second - groups[g].first;
+                    // Separated: a 4-digit first group, 3-6 digits in the
+                    // middle groups, 1-6 in the last (4-4-4-4, 4-6-5, 4-4-4-4-3)
+                    if (last > first && ((g == first && len != 4) || (g > first && g < last && (len < 3 || len > 6)) ||
+                                         (g == last && len > 6))) {
+                        shape_ok = false;
+                        break;
+                    }
+                    digits.append(text, groups[g].first, len);
+                }
+                if (!shape_ok || digits.size() < 13 || digits.size() > 19) {
+                    continue;
+                }
+                // checksum_failures (anofox_pii_require_checksum = false) looks
+                // for the same branded chains whose Luhn checksum fails
+                if (!HasCardBrandPrefix(digits) || LuhnCheck(digits) == checksum_failures) {
+                    AnofoxTrace(AnofoxLogLevel::Trace, "pii: card candidate failed Luhn or brand check: " + digits);
+                    continue;
+                }
+                const size_t start = groups[first].first;
+                const size_t stop = groups[last].second;
+                matches.emplace_back(type_, text.substr(start, stop - start), start, stop, confidence);
+                first = last + 1;
+                found = true;
+                break;
+            }
+            if (!found) {
+                first++;
+            }
+        }
+    }
+    return matches;
+}
+
+bool CreditCardRecognizer::HasCardBrandPrefix(const std::string &digits) {
+    // IIN ranges and issued lengths of the card brands:
+    // Visa 4 (13, 16, 19); Mastercard 51-55, 2221-2720 (16); Amex 34, 37 (15);
+    // Discover 6011, 644-649, 65 (16-19); Maestro 5018, 5020, 5038, 5893,
+    // 6304, 6759, 6761-6763 (12-19); JCB 3528-3589 (16-19); Diners Club
+    // 300-305, 36, 38, 39 (14-19); UnionPay 62 (16-19)
+    const size_t len = digits.size();
+    if (len < 4) {
+        return false;
+    }
+    const int p2 = std::stoi(digits.substr(0, 2));
+    const int p3 = std::stoi(digits.substr(0, 3));
+    const int p4 = std::stoi(digits.substr(0, 4));
+    auto in = [](int value, int low, int high) { return value >= low && value <= high; };
+
+    if (digits[0] == '4') {
+        return len == 13 || len == 16 || len == 19;
+    }
+    if (in(p2, 51, 55) || in(p4, 2221, 2720)) {
+        return len == 16;
+    }
+    if (p2 == 34 || p2 == 37) {
+        return len == 15;
+    }
+    if (p4 == 6011 || in(p3, 644, 649) || p2 == 65) {
+        return in(static_cast<int>(len), 16, 19);
+    }
+    if (p4 == 5018 || p4 == 5020 || p4 == 5038 || p4 == 5893 || p4 == 6304 || p4 == 6759 || in(p4, 6761, 6763)) {
+        return in(static_cast<int>(len), 12, 19);
+    }
+    if (in(p4, 3528, 3589)) {
+        return in(static_cast<int>(len), 16, 19);
+    }
+    if (in(p3, 300, 305) || p2 == 36 || p2 == 38 || p2 == 39) {
+        return in(static_cast<int>(len), 14, 19);
+    }
+    if (p2 == 62) {
+        return in(static_cast<int>(len), 16, 19);
+    }
+    return false;
 }
 
 bool CreditCardRecognizer::Validate(const std::string &text) const {
@@ -423,13 +1247,14 @@ std::string CreditCardRecognizer::GetPartialMask(const std::string &text) const 
     }
 
     if (clean.length() < 8) {
-        return std::string(text.length(), '*');
+        return Utf8Stars(text);
     }
 
-    // Show first 4 and last 4 digits: 4111********1111
-    std::string first4 = clean.substr(0, 4);
-    std::string last4 = clean.substr(clean.length() - 4);
-    return first4 + std::string(clean.length() - 8, '*') + last4;
+    // Last 4 digits, plus the first 4 (issuer) from 16 digits on, so at most
+    // half of the digits: 4111********1111, Amex ***********0005
+    const size_t first = clean.length() >= 16 ? 4 : 0;
+    return clean.substr(0, first) + std::string(clean.length() - first - 4, '*') +
+           clean.substr(clean.length() - 4);
 }
 
 // ============================================================================
@@ -440,8 +1265,9 @@ USSSNRecognizer::USSSNRecognizer()
     : RegexRecognizer(
         PIIType::US_SSN,
         "US SSN",
-        // Matches XXX-XX-XXXX or XXXXXXXXX
-        R"(\b(?!000|666|9\d{2})([0-8]\d{2}|7([0-6]\d|7[012]))([\-\s]?)(?!00)\d{2}\3(?!0000)\d{4}\b)"
+        // Matches XXX-XX-XXXX or XXX XX XXXX. Bare 9-digit numbers are left
+        // out: contract, order and claim numbers look the same.
+        R"(\b(?!000|666|9\d{2})([0-8]\d{2}|7([0-6]\d|7[012]))([\- ])(?!00)\d{2}\3(?!0000)\d{4}\b)"
     ) {}
 
 USSSNRecognizer::~USSSNRecognizer() {}
@@ -489,7 +1315,8 @@ std::string USSSNRecognizer::GetPartialMask(const std::string &text) const {
         }
     }
 
-    if (digits.length() < 4) {
+    // Last 4 of 9 digits; fewer than 8 digits are no SSN, mask them all
+    if (digits.length() < 8) {
         return "***-**-****";
     }
 
@@ -504,14 +1331,135 @@ IBANRecognizer::IBANRecognizer()
     : RegexRecognizer(
         PIIType::IBAN,
         "IBAN",
-        // Matches IBAN format: 2 letters + 2 check digits + up to 30 alphanumeric
-        R"(\b[A-Z]{2}[0-9]{2}[\s]?[A-Z0-9]{4}[\s]?[A-Z0-9]{4}[\s]?[A-Z0-9]{4}[\s]?[A-Z0-9]{0,14}\b)"
+        // 2 letters + 2 check digits, then groups of four alphanumerics and a
+        // shorter last group. The groups are either all compact or all
+        // separated by the same single space or dash (DE89 3704 0044 ...,
+        // DE89-3704-0044-..., DE89370400440532013000).
+        R"(\b[A-Z]{2}[0-9]{2}([ \-]?)[A-Z0-9]{4}(?:\1[A-Z0-9]{4}){1,6}(?:\1[A-Z0-9]{1,3})?\b)"
     ) {}
 
 IBANRecognizer::~IBANRecognizer() {}
 
+std::vector<PIIMatch> IBANRecognizer::FindMatches(const std::string &text) const {
+    std::vector<PIIMatch> matches;
+    std::sregex_iterator end;
+    for (std::sregex_iterator iter(text.begin(), text.end(), pattern_); iter != end; ++iter) {
+        const auto &match = *iter;
+        auto start = static_cast<size_t>(match.position());
+        std::string candidate = match.str();
+        const std::string separator = match[1].str();
+
+        // A grouped IBAN can be followed by a word that looks like one more
+        // group ("AT61 1904 3002 3457 3201 und"). When the checksum fails,
+        // drop trailing groups until it holds or too little is left.
+        bool valid = Validate(candidate);
+        while (!valid && !separator.empty()) {
+            auto cut = candidate.rfind(separator[0]);
+            if (cut == std::string::npos || cut < 4) {
+                break;
+            }
+            candidate.resize(cut);
+            valid = Validate(candidate);
+        }
+        if (valid) {
+            matches.emplace_back(type_, candidate, start, start + candidate.size(), 1.0);
+        } else {
+            AnofoxTrace(AnofoxLogLevel::Trace, "pii: IBAN candidate failed validation: " + match.str());
+        }
+    }
+
+    // IBANs typed with irregular grouping ("DE89 37040044 0532013000",
+    // "DE 89 370 400 440 532 013 000"): from a country code at the start of a
+    // word, collect upper-case letters and digits across single spaces or
+    // dashes until the length registered for the country is reached. The
+    // value must end there (no letter or digit directly after it) and pass
+    // the registered-length and MOD-97 checks, which keep random digit runs out.
+    // The pattern matches are disjoint and in text order; `next_known` is
+    // the first one that does not end before i
+    const size_t pattern_count = matches.size();
+    size_t next_known = 0;
+    for (size_t i = 0; i + 4 <= text.size(); i++) {
+        if (!std::isupper(static_cast<unsigned char>(text[i])) || !std::isupper(static_cast<unsigned char>(text[i + 1])) ||
+            (i > 0 && std::isalnum(static_cast<unsigned char>(text[i - 1])))) {
+            continue;
+        }
+        while (next_known < pattern_count && matches[next_known].end_pos <= i) {
+            next_known++;
+        }
+        if (next_known < pattern_count && matches[next_known].start_pos <= i) {
+            continue;
+        }
+        const size_t expected = RegisteredLength(text.substr(i, 2));
+        if (expected == 0) {
+            continue;
+        }
+        size_t length = 0;
+        size_t pos = i;
+        bool separated = false;  // a separator was seen
+        while (pos < text.size() && length < expected) {
+            const auto c = static_cast<unsigned char>(text[pos]);
+            if (std::isdigit(c) || std::isupper(c)) {
+                // Country code letters, then two check digits, then the BBAN
+                if ((length < 2 && !std::isupper(c)) || (length >= 2 && length < 4 && !std::isdigit(c))) {
+                    break;
+                }
+                length++;
+                pos++;
+            } else if ((c == ' ' || c == '-') && length > 0 && pos + 1 < text.size() &&
+                       std::isalnum(static_cast<unsigned char>(text[pos + 1]))) {
+                separated = true;
+                pos++;
+            } else {
+                break;
+            }
+        }
+        if (!separated || length != expected ||
+            (pos < text.size() && std::isalnum(static_cast<unsigned char>(text[pos])))) {
+            continue;
+        }
+        const std::string candidate = text.substr(i, pos - i);
+        if (!Validate(candidate)) {
+            AnofoxTrace(AnofoxLogLevel::Trace, "pii: irregularly grouped IBAN candidate failed validation: " + candidate);
+            continue;
+        }
+        AnofoxTrace(AnofoxLogLevel::Trace, "pii: IBAN with irregular grouping: " + candidate);
+        matches.emplace_back(type_, candidate, i, pos, 1.0);
+        i = pos - 1;
+    }
+    std::sort(matches.begin(), matches.end(),
+              [](const PIIMatch &a, const PIIMatch &b) { return a.start_pos < b.start_pos; });
+    return matches;
+}
+
 bool IBANRecognizer::Validate(const std::string &text) const {
-    return Mod97Check(text);
+    return IsValidIban(text);
+}
+
+bool IBANRecognizer::IsValidIban(const std::string &iban) {
+    // MOD-97 alone accepts about 1 in 97 hex ids that start with two letters
+    // (md5 digests, object ids); a real IBAN also has a registered country
+    // code and exactly that country's length.
+    if (!Mod97Check(iban)) {
+        return false;
+    }
+    std::string country;
+    size_t length = 0;
+    for (char c : iban) {
+        if (c == ' ' || c == '-') {
+            continue;
+        }
+        if (country.size() < 2) {
+            country += static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+        }
+        length++;
+    }
+    const size_t expected = RegisteredLength(country);
+    if (expected == 0 || expected != length) {
+        AnofoxTrace(AnofoxLogLevel::Trace, "pii: IBAN candidate passes MOD-97 but has no registered country/length: " +
+                                               country + "/" + std::to_string(length));
+        return false;
+    }
+    return true;
 }
 
 bool IBANRecognizer::Mod97Check(const std::string &iban) {
@@ -560,12 +1508,15 @@ std::string IBANRecognizer::GetPartialMask(const std::string &text) const {
         }
     }
 
-    if (clean.length() < 4) {
-        return std::string(text.length(), '*');
+    if (clean.length() < 10) {
+        return Utf8Stars(clean);
     }
 
-    // Show first 4 (country + check) and last 4
-    return clean.substr(0, 4) + std::string(clean.length() - 8, '*') + clean.substr(clean.length() - 4);
+    // Country code and check digits, plus up to 4 trailing characters while
+    // at most half of the IBAN stays readable: DE89**************3000
+    const size_t last = std::min<size_t>(4, clean.length() / 2 - 4);
+    return clean.substr(0, 4) + std::string(clean.length() - 4 - last, '*') +
+           clean.substr(clean.length() - last);
 }
 
 // ============================================================================
@@ -641,7 +1592,8 @@ std::string DETaxIDRecognizer::GetPartialMask(const std::string &text) const {
         }
     }
 
-    if (digits.length() < 3) {
+    // Last 3 of 11 digits; fewer than 9 digits are masked completely
+    if (digits.length() < 9) {
         return "**-***-***-***";
     }
 
@@ -656,12 +1608,157 @@ IPAddressRecognizer::IPAddressRecognizer()
     : RegexRecognizer(
         PIIType::IP_ADDRESS,
         "IP Address",
-        // IPv4 and simplified IPv6
-        R"(\b(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\b|)"  // IPv4
-        R"(\b(?:[0-9a-fA-F]{1,4}:){7}[0-9a-fA-F]{1,4}\b)"  // Full IPv6
+        // IPv4; IPv6 is found by FindMatches
+        R"(\b(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\b)"
     ) {}
 
 IPAddressRecognizer::~IPAddressRecognizer() {}
+
+namespace {
+
+bool IsHexDigitChar(char c) {
+    return std::isxdigit(static_cast<unsigned char>(c)) != 0;
+}
+
+bool IsValidIPv4(const std::string &text) {
+    size_t octets = 0;
+    size_t pos = 0;
+    while (pos <= text.size()) {
+        const size_t dot = std::min(text.find('.', pos), text.size());
+        const std::string octet = text.substr(pos, dot - pos);
+        if (octet.empty() || octet.size() > 3 ||
+            !std::all_of(octet.begin(), octet.end(), [](char c) { return std::isdigit(static_cast<unsigned char>(c)); }) ||
+            std::stoi(octet) > 255) {
+            return false;
+        }
+        octets++;
+        pos = dot + 1;
+    }
+    return octets == 4;
+}
+
+// RFC 4291 text forms: eight groups of 1-4 hex digits, one "::" for a run of
+// zero groups, and an IPv4 address in place of the last two groups
+// (::ffff:192.0.2.1). Addresses without any decimal digit (cafe::beef, and
+// C++ or Rust paths such as a::b) are not reported.
+bool IsValidIPv6(const std::string &text) {
+    if (text.size() < 3 || text.find(":::") != std::string::npos ||
+        std::none_of(text.begin(), text.end(), [](char c) { return std::isdigit(static_cast<unsigned char>(c)); })) {
+        return false;
+    }
+    const size_t compressed = text.find("::");
+    if (compressed != std::string::npos && text.find("::", compressed + 1) != std::string::npos) {
+        return false;
+    }
+    std::vector<std::string> parts;
+    auto split = [&parts](const std::string &side) {
+        if (side.empty()) {
+            return;
+        }
+        size_t pos = 0;
+        while (pos <= side.size()) {
+            const size_t colon = std::min(side.find(':', pos), side.size());
+            parts.push_back(side.substr(pos, colon - pos));
+            pos = colon + 1;
+        }
+    };
+    if (compressed == std::string::npos) {
+        split(text);
+    } else {
+        split(text.substr(0, compressed));
+        split(text.substr(compressed + 2));
+    }
+    size_t group_count = 0;
+    for (size_t i = 0; i < parts.size(); ++i) {
+        const auto &part = parts[i];
+        if (part.find('.') != std::string::npos) {
+            if (i + 1 != parts.size() || !IsValidIPv4(part)) {
+                return false;
+            }
+            group_count += 2;
+            continue;
+        }
+        if (part.empty() || part.size() > 4 || !std::all_of(part.begin(), part.end(), IsHexDigitChar)) {
+            return false;
+        }
+        group_count++;
+    }
+    return compressed == std::string::npos ? group_count == 8 : (group_count >= 1 && group_count <= 7);
+}
+
+} // namespace
+
+std::vector<PIIMatch> IPAddressRecognizer::FindMatches(const std::string &text) const {
+    std::vector<PIIMatch> ipv6_matches;
+    const size_t n = text.size();
+    auto is_ipv6_char = [&text](size_t pos) {
+        return IsHexDigitChar(text[pos]) || text[pos] == ':' || text[pos] == '.';
+    };
+    size_t pos = 0;
+    while (pos < n) {
+        if (!is_ipv6_char(pos)) {
+            pos++;
+            continue;
+        }
+        size_t begin = pos;
+        size_t end = pos;
+        while (end < n && is_ipv6_char(end)) {
+            end++;
+        }
+        pos = end;
+        if (std::count(text.begin() + static_cast<std::ptrdiff_t>(begin), text.begin() + static_cast<std::ptrdiff_t>(end), ':') < 2) {
+            continue;
+        }
+        // A label colon or sentence punctuation around the address is not
+        // part of it ("IP:2001:db8::1.", "2001:db8::1: unreachable")
+        if (text[begin] == ':' && (begin + 1 >= end || text[begin + 1] != ':')) {
+            begin++;
+        } else if (begin > 0 && IsAsciiWordAt(text, begin - 1)) {
+            continue;
+        }
+        while (end > begin && text[end - 1] == '.') {
+            end--;
+        }
+        if (end - begin >= 2 && text[end - 1] == ':' && text[end - 2] != ':') {
+            end--;
+        }
+        if (IsAsciiWordAt(text, pos) && text[pos] != '%') {
+            continue;
+        }
+        std::string candidate = text.substr(begin, end - begin);
+        if (!IsValidIPv6(candidate)) {
+            AnofoxTrace(AnofoxLogLevel::Trace, "pii: IPv6 candidate rejected: " + candidate);
+            continue;
+        }
+        // Zone index of a link-local address: fe80::1%eth0
+        if (end == pos && end < n && text[end] == '%') {
+            size_t zone_end = end + 1;
+            while (zone_end < n && (IsAsciiWordAt(text, zone_end) || text[zone_end] == '-' || text[zone_end] == '.')) {
+                zone_end++;
+            }
+            if (zone_end > end + 1) {
+                end = zone_end;
+                pos = zone_end;
+            }
+        }
+        ipv6_matches.emplace_back(type_, text.substr(begin, end - begin), begin, end, 1.0);
+    }
+
+    // IPv4, except the IPv4 tail of an IPv6 address (::ffff:192.0.2.1)
+    std::vector<PIIMatch> matches;
+    for (auto &match : RegexRecognizer::FindMatches(text)) {
+        const bool inside_ipv6 = std::any_of(ipv6_matches.begin(), ipv6_matches.end(), [&match](const PIIMatch &v6) {
+            return match.start_pos < v6.end_pos && v6.start_pos < match.end_pos;
+        });
+        if (!inside_ipv6) {
+            matches.push_back(std::move(match));
+        }
+    }
+    matches.insert(matches.end(), ipv6_matches.begin(), ipv6_matches.end());
+    std::sort(matches.begin(), matches.end(),
+              [](const PIIMatch &a, const PIIMatch &b) { return a.start_pos < b.start_pos; });
+    return matches;
+}
 
 std::string IPAddressRecognizer::GetPartialMask(const std::string &text) const {
     // For IPv4: show first octet, mask rest: 192.***.***.**
@@ -685,56 +1782,282 @@ URLRecognizer::URLRecognizer()
     : RegexRecognizer(
         PIIType::URL,
         "URL",
-        R"(\bhttps?://[^\s<>\"\{\}\|\\\^\[\]`]+\b)"
+        // Only the scheme: FindMatches extends the match over the rest of the URL in a loop.
+        // A regex repetition over the URL body ([^...]+) recursed once per character in
+        // libstdc++ before GCC 15 and overflowed the stack on very long URLs.
+        R"(\b(?:https?|ftps?)://)"
     ) {}
 
 URLRecognizer::~URLRecognizer() {}
 
+std::vector<PIIMatch> URLRecognizer::FindMatches(const std::string &text) const {
+    // Characters a URL cannot contain; the URL ends before the first of them
+    auto ends_url = [](unsigned char c) {
+        return std::isspace(c) || c == '<' || c == '>' || c == '"' || c == '{' || c == '}' || c == '|' ||
+               c == '\\' || c == '^' || c == '[' || c == ']' || c == '`';
+    };
+    // The match ends on a word character, as the former trailing \b did
+    auto is_word = [](unsigned char c) { return std::isalnum(c) || c == '_'; };
+
+    std::vector<PIIMatch> matches;
+    std::smatch scheme;
+    auto search_from = text.cbegin();
+    while (std::regex_search(search_from, text.cend(), scheme, pattern_,
+                             search_from == text.cbegin() ? std::regex_constants::match_default
+                                                          : std::regex_constants::match_prev_avail)) {
+        const size_t start = static_cast<size_t>(scheme[0].first - text.cbegin());
+        const size_t body = start + static_cast<size_t>(scheme.length(0));
+        size_t stop = body;
+        while (stop < text.size() && !ends_url(static_cast<unsigned char>(text[stop]))) {
+            stop++;
+        }
+        while (stop > body && !is_word(static_cast<unsigned char>(text[stop - 1]))) {
+            stop--;
+        }
+        if (stop > body) {
+            std::string matched_text = text.substr(start, stop - start);
+            if (Validate(matched_text)) {
+                matches.emplace_back(type_, matched_text, start, stop, 1.0);
+            }
+        }
+        // Continue after the URL (a scheme inside its query belongs to it), or after the scheme
+        search_from = text.cbegin() + static_cast<std::ptrdiff_t>((std::max)(stop, body));
+    }
+    return matches;
+}
+
 std::string URLRecognizer::GetPartialMask(const std::string &text) const {
-    // Show protocol + domain, mask path: https://example.com/***
+    // Keep the scheme and the top-level domain; mask every other host label
+    // and replace path, query and fragment with "/***":
+    // https://crm.example.com/customers/4711 -> https://***.*******.com/***
+    // (a host such as anna-schmidt.blog can name a person)
     size_t protocol_end = text.find("://");
     if (protocol_end == std::string::npos) {
-        return "[URL REDACTED]";
+        return Utf8Stars(text);
     }
 
-    size_t domain_start = protocol_end + 3;
-    size_t path_start = text.find('/', domain_start);
-    if (path_start == std::string::npos) {
-        return text;  // No path, show full URL
+    const size_t host_start = protocol_end + 3;
+    size_t host_end = text.find_first_of("/?#", host_start);
+    const bool has_path = host_end != std::string::npos;
+    if (!has_path) {
+        host_end = text.size();
+    }
+    const std::string host = text.substr(host_start, host_end - host_start);
+
+    // The TLD stays readable when it is letters only (no port, no IP octet)
+    size_t tld_start = host.rfind('.');
+    if (tld_start != std::string::npos) {
+        const std::string tld = host.substr(tld_start + 1);
+        const bool letters_only = !tld.empty() && std::all_of(tld.begin(), tld.end(), [](char c) {
+            return std::isalpha(static_cast<unsigned char>(c));
+        });
+        if (!letters_only) {
+            tld_start = std::string::npos;
+        }
     }
 
-    return text.substr(0, path_start) + "/***";
+    std::string masked_host;
+    const std::string_view masked_part = std::string_view(host).substr(0, tld_start == std::string::npos ? host.size() : tld_start);
+    size_t label_start = 0;
+    while (label_start <= masked_part.size()) {
+        size_t dot = masked_part.find('.', label_start);
+        if (dot == std::string_view::npos) {
+            dot = masked_part.size();
+        }
+        masked_host += Utf8Stars(masked_part.substr(label_start, dot - label_start));
+        if (dot < masked_part.size()) {
+            masked_host += '.';
+        }
+        label_start = dot + 1;
+    }
+    if (tld_start != std::string::npos) {
+        masked_host += host.substr(tld_start);
+    }
+
+    return text.substr(0, host_start) + masked_host + (has_path ? "/***" : "");
 }
 
 // ============================================================================
 // Email Recognizer
 // ============================================================================
 
+namespace {
+
+// Email pattern with non-ASCII letters (jörg, müller, weiß, пётр).
+// std::regex matches bytes, so such a letter is a UTF-8 sequence: a lead byte
+// C3-DF, E1 or E3-EF and one or two continuation bytes. C2 and E2 are left out
+// so NBSP, quotes and dashes (« » „ “ –) around an address stay outside it.
+// The local part and each domain label start with a letter or digit, labels
+// also end with one. The local part has at most 64 characters and a label at
+// most 63 (RFC 5321); the bounds keep every match attempt short.
+std::string BuildEmailPattern() {
+    const std::string utf8_letter = R"([\xC3-\xDF\xE1\xE3-\xEF][\x80-\xBF]{1,2})";
+    const std::string alnum = "(?:[A-Za-z0-9]|" + utf8_letter + ")";
+    const std::string label = alnum + "(?:(?:[A-Za-z0-9-]|" + utf8_letter + "){0,61}" + alnum + ")?";
+    const std::string local = alnum + "(?:[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]|" + utf8_letter + "){0,63}";
+    return local + "@" + label + R"((?:\.)" + label + ")*";
+}
+
+// Bytes that can be part of a local part when scanning back from the '@': the
+// ASCII characters of the pattern and the bytes of the non-ASCII letters it
+// accepts. The URL delimiters '/', '?', '#', '&' and '=' end the local part
+// although RFC 5322 allows them: in practice they separate an address from
+// the path or query before it ("/users/anna@corp.com",
+// "?email=max@web.de&id=7"), and an address that absorbed them would be
+// reported, hashed and masked as "email=max@web.de".
+bool IsEmailLocalByte(unsigned char c) {
+    if (c >= 0x80) {
+        return c <= 0xBF || (c >= 0xC3 && c <= 0xDF) || c == 0xE1 || (c >= 0xE3 && c <= 0xEF);
+    }
+    return std::isalnum(c) || std::strchr(".!$%'*+^_`{|}~-", c) != nullptr;
+}
+
+// A byte that can start the local part: an ASCII letter or digit, or the lead
+// byte of an accepted non-ASCII letter.
+bool IsEmailAlnumStart(unsigned char c) {
+    return std::isalnum(c) || (c >= 0xC3 && c <= 0xDF) || c == 0xE1 || (c >= 0xE3 && c <= 0xEF);
+}
+
+// Upper bound of the bytes an address can span after its '@': 253 characters
+// of domain, of which non-ASCII letters take up to three bytes.
+constexpr size_t EMAIL_DOMAIN_MAX_BYTES = 3 * 253;
+
+} // namespace
+
 EmailRecognizer::EmailRecognizer()
     : RegexRecognizer(
         PIIType::EMAIL,
         "Email",
-        R"(\b[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\b)"
+        BuildEmailPattern()
     ) {}
+
+std::vector<PIIMatch> EmailRecognizer::FindMatches(const std::string &text) const {
+    // Every address contains an '@', so the pattern only runs where there is
+    // one. Searching the whole text instead let std::regex try each byte as a
+    // start and rescan the run of word characters after it: quadratic in the
+    // length of long tokens such as base64 attachments.
+    // The local part is the run of local-part bytes before the '@', starting
+    // at its first letter or digit (the start the leftmost match would pick).
+    // Runs of different '@' do not overlap, so the backward scans are linear
+    // in total; the match itself is bounded by the pattern.
+    std::vector<PIIMatch> matches;
+    size_t consumed = 0;  // Bytes before this belong to an earlier match or '@'
+    for (size_t at = text.find('@'); at != std::string::npos; at = text.find('@', at + 1)) {
+        size_t start = at;
+        while (start > consumed && IsEmailLocalByte(static_cast<unsigned char>(text[start - 1]))) {
+            start--;
+        }
+        while (start < at && !IsEmailAlnumStart(static_cast<unsigned char>(text[start]))) {
+            start++;
+        }
+        if (start == at) {
+            consumed = at + 1;
+            continue;
+        }
+        const auto window_end = text.begin() + static_cast<std::ptrdiff_t>(std::min(text.size(), at + 1 + EMAIL_DOMAIN_MAX_BYTES));
+        std::smatch match;
+        if (!std::regex_search(text.begin() + static_cast<std::ptrdiff_t>(start), window_end, match, pattern_,
+                               std::regex_constants::match_continuous)) {
+            // E.g. a local part over 64 characters or no domain after the '@'
+            AnofoxTrace(AnofoxLogLevel::Trace, "pii: no email address around '@' at byte " + std::to_string(at));
+            consumed = at + 1;
+            continue;
+        }
+        const size_t stop = start + static_cast<size_t>(match.length());
+        matches.emplace_back(type_, text.substr(start, stop - start), start, stop, 1.0);
+        consumed = stop;
+        at = stop - 1;
+    }
+    return matches;
+}
 
 EmailRecognizer::~EmailRecognizer() {}
 
 std::string EmailRecognizer::GetPartialMask(const std::string &text) const {
-    // Show first 2 chars of local part + domain: jo***@example.com
-    auto at_pos = text.find('@');
-    if (at_pos == std::string::npos || at_pos < 2) {
-        return "***@***.***";
+    // Keep the first character of the local part and the top-level domain;
+    // every other character becomes '*' (dots between domain labels stay):
+    // jane.doe@acme-corp.com -> j*******@*********.com, ab@cd.de -> a*@**.de.
+    // The domain is masked too: a company or personal domain identifies the
+    // person as well as the local part does. Characters are code points.
+    auto at_pos = text.rfind('@');
+    if (at_pos == std::string::npos) {
+        return Utf8Stars(text);
     }
 
-    std::string local = text.substr(0, at_pos);
-    std::string domain = text.substr(at_pos);
+    const std::string local = text.substr(0, at_pos);
+    const std::string domain = text.substr(at_pos + 1);
+    const size_t local_length = Utf8Length(local);
+    std::string masked = local_length >= 2 ? Utf8Prefix(local, 1) + std::string(local_length - 1, '*')
+                                           : std::string(local_length, '*');
+    masked += '@';
 
-    if (local.length() <= 2) {
-        return local + "***" + domain;
+    const size_t tld_start = domain.rfind('.');
+    size_t label_start = 0;
+    while (true) {
+        size_t dot = domain.find('.', label_start);
+        if (dot == std::string::npos) {
+            break;
+        }
+        masked += Utf8Stars(std::string_view(domain).substr(label_start, dot - label_start)) + ".";
+        label_start = dot + 1;
     }
-
-    return local.substr(0, 2) + std::string(local.length() - 2, '*') + domain;
+    if (tld_start == std::string::npos) {
+        masked += Utf8Stars(domain);
+    } else {
+        masked += domain.substr(tld_start + 1);
+    }
+    return masked;
 }
+
+// ============================================================================
+// Identifiers that look like keys or MAC addresses
+// ============================================================================
+
+namespace {
+
+bool IsHexRun(const std::string &text, size_t pos, size_t count) {
+    if (pos + count > text.size()) {
+        return false;
+    }
+    return std::all_of(text.begin() + static_cast<std::ptrdiff_t>(pos),
+                       text.begin() + static_cast<std::ptrdiff_t>(pos + count),
+                       [](char c) { return std::isxdigit(static_cast<unsigned char>(c)) != 0; });
+}
+
+// A canonical 8-4-4-4-12 UUID starting at pos (any case)
+bool IsUuidAt(const std::string &text, size_t pos) {
+    static constexpr size_t GROUPS[] = {8, 4, 4, 4, 12};
+    size_t i = pos;
+    for (size_t g = 0; g < 5; g++) {
+        if (g > 0) {
+            if (i >= text.size() || text[i] != '-') {
+                return false;
+            }
+            i++;
+        }
+        if (!IsHexRun(text, i, GROUPS[g])) {
+            return false;
+        }
+        i += GROUPS[g];
+    }
+    return true;
+}
+
+// A UUID, or a md5/sha1/sha256 hex digest (32, 40 or 64 hex characters in
+// one case). These identify records and files; they are no secrets.
+bool IsUuidOrHexDigest(const std::string &text) {
+    if (text.size() == 36 && IsUuidAt(text, 0)) {
+        return true;
+    }
+    if ((text.size() != 32 && text.size() != 40 && text.size() != 64) || !IsHexRun(text, 0, text.size())) {
+        return false;
+    }
+    const bool has_lower = std::any_of(text.begin(), text.end(), [](char c) { return c >= 'a' && c <= 'f'; });
+    const bool has_upper = std::any_of(text.begin(), text.end(), [](char c) { return c >= 'A' && c <= 'F'; });
+    return !(has_lower && has_upper);
+}
+
+} // namespace
 
 // ============================================================================
 // MAC Address Recognizer
@@ -744,12 +2067,48 @@ MACAddressRecognizer::MACAddressRecognizer()
     : RegexRecognizer(
         PIIType::MAC_ADDRESS,
         "MAC Address",
-        // Matches: XX:XX:XX:XX:XX:XX, XX-XX-XX-XX-XX-XX, XXXX.XXXX.XXXX, XXXXXXXXXXXX
-        R"(\b(?:[0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}\b|\b(?:[0-9A-Fa-f]{4}\.){2}[0-9A-Fa-f]{4}\b|\b[0-9A-Fa-f]{12}\b)"
+        // Matches: XX:XX:XX:XX:XX:XX, XX-XX-XX-XX-XX-XX, XXXX.XXXX.XXXX, XXXXXXXXXXXX.
+        // The bare 12-character form is a whole token with at least one
+        // letter A-F and one digit, so plain 12-digit numbers (e.g. the
+        // digits of +491711234567) are not MACs; a Dutch VAT number body
+        // (9 digits, B, 2 digits as in NL 004495445B01) is excluded as well.
+        // The dotted form is exactly three groups with at least one letter
+        // A-F: digit-only groups are card, account or reference numbers
+        // (4111.1111.1111.1111), not MACs.
+        R"(\b(?:[0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}\b|)"
+        R"(\b(?=[0-9.]{0,13}[A-Fa-f])(?:[0-9A-Fa-f]{4}\.){2}[0-9A-Fa-f]{4}\b(?!\.[0-9A-Fa-f])|)"
+        // The lookaheads are bounded to the 12 characters of the token: an unbounded
+        // [0-9A-F]* ran over a whole long hex or digit run and, in libstdc++ before GCC 15,
+        // recursed once per character until the stack overflowed.
+        R"(\b(?!\d{9}B\d{2}\b)(?=[0-9A-F]{0,11}[A-F])(?=[A-F]{0,11}\d)[0-9A-F]{12}\b)"
     ) {}
 
 MACAddressRecognizer::~MACAddressRecognizer() {
     (void)type_;
+}
+
+std::vector<PIIMatch> MACAddressRecognizer::FindMatches(const std::string &text) const {
+    // The pattern cannot look behind: drop a dotted match that continues
+    // earlier groups ("aabb.ccdd.eeff.0011" has four groups, no MAC has)
+    // The bare 12-character form can also be the last group of a UUID
+    // ("9531985d-5d9d-49f8-9818-e811892f902b"), which is no MAC either.
+    auto matches = RegexRecognizer::FindMatches(text);
+    matches.erase(std::remove_if(matches.begin(), matches.end(),
+                                 [&text](const PIIMatch &match) {
+                                     const bool continues_dotted =
+                                         match.matched_text.size() == 14 && match.matched_text[4] == '.' &&
+                                         match.start_pos >= 2 && text[match.start_pos - 1] == '.' &&
+                                         std::isxdigit(static_cast<unsigned char>(text[match.start_pos - 2]));
+                                     const bool uuid_group = match.matched_text.size() == 12 && match.start_pos >= 24 &&
+                                                             IsUuidAt(text, match.start_pos - 24);
+                                     if (uuid_group) {
+                                         AnofoxTrace(AnofoxLogLevel::Trace,
+                                                     "pii: MAC candidate is the last group of a UUID: " + match.matched_text);
+                                     }
+                                     return continues_dotted || uuid_group;
+                                 }),
+                  matches.end());
+    return matches;
 }
 
 std::string MACAddressRecognizer::GetPartialMask(const std::string &text) const {
@@ -768,7 +2127,7 @@ std::string MACAddressRecognizer::GetPartialMask(const std::string &text) const 
     } else if (text.find('.') != std::string::npos) {
         // XXXX.XXXX.XXXX -> XXXX.****.****
         if (text.length() >= 4) {
-            return text.substr(0, 4) + ".****.****.";
+            return text.substr(0, 4) + ".****.****";
         }
     } else {
         // XXXXXXXXXXXX -> XXXX********
@@ -851,8 +2210,10 @@ USPassportRecognizer::USPassportRecognizer()
     : RegexRecognizer(
         PIIType::US_PASSPORT,
         "US Passport",
-        // Matches: 9 digits (current) or 1 letter + 8 digits (legacy)
-        R"(\b(?:[A-Z]\d{8}|\d{9})\b)"
+        // Matches 1 letter + 8 digits. Bare 9-digit passport numbers are not
+        // matched: without a checksum they are indistinguishable from any
+        // other 9-digit reference number.
+        R"(\b[A-Z]\d{8}\b)"
     ) {}
 
 USPassportRecognizer::~USPassportRecognizer() {
@@ -860,11 +2221,12 @@ USPassportRecognizer::~USPassportRecognizer() {
 }
 
 std::string USPassportRecognizer::GetPartialMask(const std::string &text) const {
-    // Show first character, mask rest
-    if (text.length() < 2) {
-        return std::string(text.length(), '*');
+    // Show first character (the letter), mask the digits
+    const size_t length = Utf8Length(text);
+    if (length <= PARTIAL_SHORT_WORD) {
+        return std::string(length, '*');
     }
-    return text.substr(0, 1) + std::string(text.length() - 1, '*');
+    return Utf8Prefix(text, 1) + std::string(length - 1, '*');
 }
 
 // ============================================================================
@@ -875,34 +2237,195 @@ PhoneRecognizer::PhoneRecognizer()
     : RegexRecognizer(
         PIIType::PHONE,
         "Phone Number",
-        // Matches phone formats requiring distinctive features to avoid SSN overlap:
-        // - International prefix (+1, +44, etc.) with 7+ digits following
-        // - US with parentheses: (555) 123-4567
-        // Note: No leading \b for international since + is not a word char.
-        // The trailing boundary is a lookahead, so a following number can
-        // still claim the separating space; punctuation may end a number.
-        R"((?:^|[\s])(\+\d{1,4}[\s\-\.]?\(?\d{1,4}\)?[\s\-\.]?\d{1,4}[\s\-\.]?\d{2,4}[\s\-\.]?\d{2,4})(?=$|[\s,;:.!?)])|(\(\d{3}\)[\s\-\.]?\d{3}[\s\-\.]?\d{4}))"
+        // Group 1: a number that starts at the beginning of the text or after
+        // any character that is no letter, digit or '+' (whitespace, quotes,
+        // '=', ',', '>', '|', '/', ...; ECMAScript has no lookbehind, so that
+        // character is consumed and FindMatches reports group 1 only). This
+        // covers JSON values, CSV fields, HTML cells and "tel=+49...":
+        // - international: +CC or 00CC followed by a separator or "(", then
+        //   up to six digit groups or a parenthesised group such as "(0)",
+        //   "(415)": +49 (0) 221 4711-0, +491711234567, 0049(0)171-2345678
+        // - compact 00CC...: 00491712345678 (Validate() requires the phone
+        //   module to accept it, so order numbers stay unmatched)
+        // - national: an area code 0XX..0XXXXX, compact numbers are not
+        //   matched; "(089) 123 456 78", "0171 1234567", "089/12345678",
+        //   "089 / 12345678", "089-123456-78"
+        // The number must end at the end of text or at a character that is no
+        // letter, digit or '+' ("</td>", '"', '&', ...).
+        // Group 2: US style (555) 123-4567.
+        // Dots are no separator in national numbers so dates (25.10.2026),
+        // amounts and version strings stay unmatched; Validate() checks the
+        // digit count.
+        R"((?:^|[^A-Za-z0-9+]))"
+        R"(((?:\+\d{1,3}|00[1-9]\d{0,2}(?=[ \-./(]))(?:[ \-./]?\(\d{1,4}\)|[ \-./]?\d{1,5}){1,6})"
+        R"(|00[1-9]\d{6,13})"
+        R"(|(?:\(0[1-9]\d{1,4}\) ?|0[1-9]\d{1,4}(?: ?/ ?|[ \-]))\d{2,8}(?:[ \-/]\d{1,8}){0,3}))"
+        R"((?=$|[^A-Za-z0-9+]))"
+        R"(|(\(\d{3}\)[\s\-\.]?\d{3}[\s\-\.]?\d{4}))"
     ) {}
 
 PhoneRecognizer::~PhoneRecognizer() {
     (void)type_;
 }
 
+std::vector<PIIMatch> PhoneRecognizer::FindMatches(const std::string &text) const {
+    std::vector<PIIMatch> matches;
+    std::sregex_iterator end;
+    for (std::sregex_iterator iter(text.begin(), text.end(), pattern_); iter != end; ++iter) {
+        const auto &match = *iter;
+        const size_t group = match[1].matched ? 1 : (match[2].matched ? 2 : 0);
+        if (group == 0) {
+            continue;
+        }
+        auto start = static_cast<size_t>(match.position(group));
+        std::string number = match[group].str();
+
+        // A number without "+" right after a digit and a separator (space,
+        // '/', '.') continues a longer digit sequence, e.g. the
+        // "0044 0532 0130 00" groups of an IBAN. A dash joins it to any
+        // letter or digit before ("20261027-0001", the groups of a UUID).
+        if (group == 1 && number[0] != '+' && start >= 2) {
+            const auto before = static_cast<unsigned char>(text[start - 1]);
+            const auto previous = static_cast<unsigned char>(text[start - 2]);
+            const bool continues = (before == '-' && std::isalnum(previous)) ||
+                                   ((std::isspace(before) || before == '/' || before == '.') && std::isdigit(previous));
+            if (continues) {
+                AnofoxTrace(AnofoxLogLevel::Trace, "pii: phone candidate continues a digit sequence: " + number);
+                continue;
+            }
+        }
+        // Likewise a dash right after the number that leads on to letters or
+        // digits ("0123-4567-8901-abcdef...") makes it part of a longer token
+        const size_t stop = start + number.size();
+        if (group == 1 && stop + 1 < text.size() && text[stop] == '-' &&
+            std::isalnum(static_cast<unsigned char>(text[stop + 1]))) {
+            AnofoxTrace(AnofoxLogLevel::Trace, "pii: phone candidate continues into a longer token: " + number);
+            continue;
+        }
+        if (Validate(number)) {
+            matches.emplace_back(type_, number, start, start + number.size(), 1.0);
+        }
+    }
+
+    // A compact national number ("01701234567") has the shape of an order or
+    // claim number, so it is matched only right after a phone keyword:
+    // "Tel 0170...", "Tel.: 0170...", "Telefon: 0221...", "Mobil", "Handy",
+    // "phone". The keyword is a whole word ("Hotel", "Telefonat" do not count)
+    // and only ':', '.', a "-Nr." / "no." label and spaces may stand between.
+    static const std::regex keyword_number(
+        R"((?:^|[^A-Za-z0-9])(?:tel|telefon|telefonnummer|tel\.-?nr|mobil|mobilnummer|mobiltelefon|handy|handynummer|)"
+        R"(phone|mobile|cell|fon|fax|telefax)(?:\.|-?nr\.?|\s+no\.?|\s+number)?\s*:?\s*(0[1-9][0-9]{5,13})(?![0-9A-Za-z]))",
+        std::regex_constants::ECMAScript | std::regex_constants::icase);
+    // The main pattern's matches are disjoint and in text order: the first one
+    // ending after a keyword number's start is the only one it can overlap
+    const size_t main_count = matches.size();
+    for (std::sregex_iterator iter(text.begin(), text.end(), keyword_number); iter != end; ++iter) {
+        const auto start = static_cast<size_t>(iter->position(1));
+        const std::string number = (*iter)[1].str();
+        const size_t stop = start + number.size();
+        // Skip numbers the main pattern found already (it never matches a compact one, but a
+        // number inside a longer match must not be reported twice)
+        const auto main_end = matches.begin() + static_cast<std::ptrdiff_t>(main_count);
+        const auto candidate = std::partition_point(matches.begin(), main_end,
+                                                    [start](const PIIMatch &m) { return m.end_pos <= start; });
+        const bool known = candidate != main_end && candidate->start_pos < stop;
+        if (known || !Validate(number)) {
+            continue;
+        }
+        AnofoxTrace(AnofoxLogLevel::Trace, "pii: compact phone number after a phone keyword: " + number);
+        matches.emplace_back(type_, number, start, stop, 1.0);
+    }
+    std::sort(matches.begin(), matches.end(),
+              [](const PIIMatch &a, const PIIMatch &b) { return a.start_pos < b.start_pos; });
+    return matches;
+}
+
 bool PhoneRecognizer::Validate(const std::string &text) const {
-    // When deep validation is enabled, use libphonenumber for validation
-    if (PIIConfig::Get().IsDeepValidationEnabled()) {
+    // E.164 numbers have at most 15 digits; fewer than 7 is a short code or
+    // a fragment rather than a phone number.
+    size_t digit_count = 0;
+    for (char c : text) {
+        if (std::isdigit(static_cast<unsigned char>(c))) {
+            digit_count++;
+        }
+    }
+    if (digit_count < 7 || digit_count > 15) {
+        return false;
+    }
+    // The 00 of an international prefix is no part of the number itself;
+    // without this, SSN-like "001-45-6789" would pass as a phone number.
+    if (text.compare(0, 2, "00") == 0 && digit_count - 2 < 8) {
+        return false;
+    }
+    // A compact 00CC... number ("00491712345678") has the shape of an order or
+    // account number, so it is a phone number only when the phone module
+    // accepts it as +CC... (a valid length and number range for that country)
+    if (text.compare(0, 2, "00") == 0 && digit_count == text.size()) {
         try {
-            auto &manager = phonenumber::PhoneNumberManager::Instance();
-            // Use IsPossible for PII detection - checks length and basic format
-            // IsValid would be too strict for detection purposes
-            return manager.IsPossible(text, "");
-        } catch (...) {
-            // If libphonenumber fails, fall back to pattern match (already passed regex)
+            const auto parts = phonenumber::PhoneNumberManager::Instance().Parse("+" + text.substr(2), "");
+            if (!parts.valid) {
+                AnofoxTrace(AnofoxLogLevel::Trace, "pii: compact 00 number is no valid phone number: " + text +
+                                                       " (" + parts.reason + ")");
+                return false;
+            }
+        } catch (const std::exception &e) {
+            AnofoxTrace(AnofoxLogLevel::Debug, "pii: compact 00 number not judged, dropped: " + std::string(e.what()));
+            return false;
+        }
+    }
+
+    // Without deep validation, the pattern and the digit count are enough
+    if (!DeepValidationEnabled()) {
+        return true;
+    }
+    try {
+        return PassesDeepValidation(text);
+    } catch (const std::exception &e) {
+        AnofoxTrace(AnofoxLogLevel::Debug, "pii: phone deep validation failed, keeping the match: " + std::string(e.what()));
+        return true;
+    }
+}
+
+bool PhoneRecognizer::PassesDeepValidation(const std::string &text) {
+    // The phone module judges a number written with +CC (or the default
+    // region's international prefix) for that country and a national number
+    // for anofox_tab_phonenumber_default_region. A match is rejected only
+    // when the number has an impossible length there. A national number in
+    // another country's format (0171 1234567 with the default region US,
+    // which has no trunk prefix 0) cannot be judged and is kept, so deep
+    // validation never unmasks a number just because the region differs.
+    auto &manager = phonenumber::PhoneNumberManager::Instance();
+    const auto parts = manager.Parse(text, "");
+    if (parts.valid) {
+        return true;
+    }
+    if (parts.reason != phonenumber::PhoneNumberInvalidReason::INVALID_LENGTH) {
+        // Unknown country code or unsupported region: no judgement possible
+        AnofoxTrace(AnofoxLogLevel::Trace, "pii: phone deep validation cannot judge " + text + " (" + parts.reason + ")");
+        return true;
+    }
+    std::string digits;
+    for (char c : text) {
+        if (std::isdigit(static_cast<unsigned char>(c))) {
+            digits += c;
+        }
+    }
+    const bool international = !text.empty() && text[0] == '+';
+    if (!international) {
+        const auto region = manager.EffectiveDefaultRegion("");
+        const auto *metadata = phonenumber::GetMetadataForRegion(region);
+        const bool region_idd = metadata && !metadata->international_prefix.empty() &&
+                                digits.compare(0, metadata->international_prefix.size(), metadata->international_prefix) == 0;
+        const bool region_trunk = metadata && !metadata->national_prefix.empty() &&
+                                  digits.compare(0, metadata->national_prefix.size(), metadata->national_prefix) == 0;
+        if (!region_idd && !region_trunk && !digits.empty() && digits[0] == '0') {
+            AnofoxTrace(AnofoxLogLevel::Trace,
+                        "pii: phone deep validation keeps " + text + ": not in the national format of " + region);
             return true;
         }
     }
-    // Without deep validation, regex match is sufficient
-    return true;
+    AnofoxTrace(AnofoxLogLevel::Trace, "pii: phone deep validation rejects " + text + " (invalid length)");
+    return false;
 }
 
 std::string PhoneRecognizer::GetPartialMask(const std::string &text) const {
@@ -915,13 +2438,14 @@ std::string PhoneRecognizer::GetPartialMask(const std::string &text) const {
         }
     }
 
-    if (digits.length() < 4) {
-        return std::string(text.length(), '*');
+    if (digits.length() <= PARTIAL_SHORT_WORD) {
+        return Utf8Stars(text);
     }
 
-    // Show last 4 digits
+    // Show the last 4 digits, never more than half of them
+    const size_t keep = std::min<size_t>(4, digits.length() / 2);
     std::string prefix = has_plus ? "+***-***-" : "***-***-";
-    return prefix + digits.substr(digits.length() - 4);
+    return prefix + digits.substr(digits.length() - keep);
 }
 
 // ============================================================================
@@ -938,6 +2462,24 @@ APIKeyRecognizer::APIKeyRecognizer()
 
 APIKeyRecognizer::~APIKeyRecognizer() {
     (void)type_;
+}
+
+std::vector<PIIMatch> APIKeyRecognizer::FindMatches(const std::string &text) const {
+    // A generic high-entropy run next to '+' or '/' is a piece of a longer
+    // base64 or path token (an inline attachment, a data URI), not a key on
+    // its own; AWS and GitHub keys are recognised by their prefix anyway.
+    auto matches = RegexRecognizer::FindMatches(text);
+    auto is_base64_joint = [&text](size_t pos) { return pos < text.size() && (text[pos] == '+' || text[pos] == '/'); };
+    matches.erase(std::remove_if(matches.begin(), matches.end(),
+                                 [&](const PIIMatch &match) {
+                                     const auto &value = match.matched_text;
+                                     const bool prefixed = value.compare(0, 4, "AKIA") == 0 ||
+                                                           (value.size() > 4 && value.compare(0, 2, "gh") == 0 && value[3] == '_');
+                                     return !prefixed && ((match.start_pos > 0 && is_base64_joint(match.start_pos - 1)) ||
+                                                          is_base64_joint(match.end_pos));
+                                 }),
+                  matches.end());
+    return matches;
 }
 
 double APIKeyRecognizer::CalculateShannonEntropy(const std::string &text) {
@@ -970,6 +2512,12 @@ bool APIKeyRecognizer::Validate(const std::string &text) const {
             text[3] == '_') {
             return true;
         }
+    }
+
+    // UUIDs and md5/sha1/sha256 digests are hex identifiers, not secrets
+    if (IsUuidOrHexDigest(text)) {
+        AnofoxTrace(AnofoxLogLevel::Trace, "pii: API key candidate is a UUID or hex digest: " + text);
+        return false;
     }
 
     // Generic pattern - require high entropy to reduce false positives
@@ -1154,74 +2702,6 @@ std::string CryptoAddressRecognizer::GetPartialMask(const std::string &text) con
 
 namespace {
 
-// Common first names dictionary (top names from US, UK, EU census data)
-// Stored in lowercase for case-insensitive matching
-const std::unordered_set<std::string>& GetCommonNames() {
-    static std::unordered_set<std::string> names = {
-        // Male names (US/UK/EU common)
-        "james", "john", "robert", "michael", "david", "william", "richard", "joseph",
-        "thomas", "charles", "christopher", "daniel", "matthew", "anthony", "mark",
-        "donald", "steven", "paul", "andrew", "joshua", "kenneth", "kevin", "brian",
-        "george", "timothy", "ronald", "edward", "jason", "jeffrey", "ryan", "jacob",
-        "gary", "nicholas", "eric", "jonathan", "stephen", "larry", "justin", "scott",
-        "brandon", "benjamin", "samuel", "raymond", "gregory", "frank", "alexander",
-        "patrick", "jack", "dennis", "jerry", "tyler", "aaron", "jose", "adam", "nathan",
-        "henry", "douglas", "zachary", "peter", "kyle", "noah", "ethan", "jeremy",
-        "walter", "christian", "keith", "roger", "terry", "austin", "sean", "gerald",
-        "carl", "harold", "dylan", "arthur", "lawrence", "jordan", "jesse", "bryan",
-        "billy", "bruce", "gabriel", "joe", "logan", "albert", "willie", "alan", "eugene",
-        "ralph", "roy", "louis", "russell", "philip", "harry", "vincent", "bobby", "johnny", "bob",
-        "martin", "oliver", "charlie", "lucas", "mason", "liam", "aiden", "jackson",
-        // Female names (US/UK/EU common)
-        "mary", "patricia", "jennifer", "linda", "barbara", "elizabeth", "susan",
-        "jessica", "sarah", "karen", "lisa", "nancy", "betty", "margaret", "sandra",
-        "ashley", "kimberly", "emily", "donna", "michelle", "dorothy", "carol", "amanda",
-        "melissa", "deborah", "stephanie", "rebecca", "sharon", "laura", "cynthia",
-        "kathleen", "amy", "angela", "shirley", "anna", "brenda", "pamela", "emma",
-        "nicole", "helen", "samantha", "katherine", "christine", "debra", "rachel",
-        "carolyn", "janet", "catherine", "maria", "heather", "diane", "ruth", "julie",
-        "olivia", "joyce", "virginia", "victoria", "kelly", "lauren", "christina", "joan",
-        "evelyn", "judith", "megan", "andrea", "cheryl", "hannah", "jacqueline", "martha",
-        "gloria", "teresa", "ann", "sara", "madison", "frances", "kathryn", "janice",
-        "jean", "abigail", "alice", "judy", "sophia", "grace", "denise", "amber", "doris",
-        "marilyn", "danielle", "beverly", "isabella", "theresa", "diana", "natalie",
-        "brittany", "charlotte", "marie", "kayla", "alexis", "lori", "jane", "claire",
-        "julia", "lucy", "ella", "chloe", "mia", "ava", "lily", "zoe", "molly", "ruby",
-        // Surnames commonly used as first names
-        "taylor", "morgan", "jordan", "cameron", "bailey", "parker", "hunter", "carter",
-        "riley", "mason", "tyler", "logan", "dylan", "blake", "ryan", "austin", "evan",
-        // International common names (EU)
-        "hans", "franz", "klaus", "andreas", "stefan", "peter", "martin", "thomas",
-        "marie", "anna", "sophie", "laura", "julia", "sarah", "emma", "max", "paul",
-        "pierre", "jean", "michel", "marie", "sophie", "camille", "lea", "chloe",
-        "marco", "luca", "matteo", "giulia", "francesca", "elena", "maria", "giuseppe",
-        "pablo", "carlos", "juan", "jose", "antonio", "maria", "carmen", "lucia",
-        // Additional UK common names
-        "alfie", "archie", "freddie", "oscar", "george", "harry", "leo", "teddy",
-        "poppy", "isla", "jessica", "emily", "daisy", "freya", "florence", "elsie"
-    };
-    return names;
-}
-
-// Helper: convert string to lowercase
-std::string ToLowerCase(const std::string &str) {
-    std::string result;
-    result.reserve(str.size());
-    for (char c : str) {
-        result += static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-    }
-    return result;
-}
-
-// Helper: extract first word from a string
-std::string ExtractFirstWord(const std::string &str) {
-    size_t end = str.find(' ');
-    if (end == std::string::npos) {
-        return str;
-    }
-    return str.substr(0, end);
-}
-
 // Helper: split string into words
 std::vector<std::string> SplitIntoWords(const std::string &str) {
     std::vector<std::string> words;
@@ -1233,18 +2713,136 @@ std::vector<std::string> SplitIntoWords(const std::string &str) {
     return words;
 }
 
+// Byte length of the UTF-8 character at text[pos] if it is a letter, else 0.
+// ASCII letters and non-ASCII characters count as letters, except the Latin-1
+// punctuation and symbols (U+00A0-U+00BF, U+00D7, U+00F7) and the general
+// punctuation block U+2000-U+206F (dashes, quotes, ...).
+size_t Utf8LetterLength(const std::string &text, size_t pos) {
+    const auto c = static_cast<unsigned char>(text[pos]);
+    if (c < 0x80) {
+        return std::isalpha(c) ? 1 : 0;
+    }
+    size_t len = (c & 0xE0) == 0xC0 ? 2 : (c & 0xF0) == 0xE0 ? 3 : (c & 0xF8) == 0xF0 ? 4 : 0;
+    if (len == 0 || pos + len > text.size()) {
+        return 0;
+    }
+    const auto c1 = static_cast<unsigned char>(text[pos + 1]);
+    if ((c == 0xC2 && c1 >= 0xA0) || (c == 0xC3 && (c1 == 0x97 || c1 == 0xB7)) ||
+        (c == 0xE2 && (c1 == 0x80 || c1 == 0x81))) {
+        return 0;
+    }
+    return len;
+}
+
+// Whether the UTF-8 character at text[pos] is an uppercase letter: A-Z, the
+// Latin-1 capitals (U+00C0-U+00DE without U+00D7) and the capitals of Latin
+// Extended-A (U+0100-U+017F; even code points, odd ones in U+0139-U+0148 and
+// U+0179-U+017E).
+bool IsUpperLetterAt(const std::string &text, size_t pos) {
+    const auto c = static_cast<unsigned char>(text[pos]);
+    if (c < 0x80) {
+        return c >= 'A' && c <= 'Z';
+    }
+    if (pos + 1 >= text.size()) {
+        return false;
+    }
+    const auto c1 = static_cast<unsigned char>(text[pos + 1]);
+    if (c == 0xC3) {
+        return c1 >= 0x80 && c1 <= 0x9E && c1 != 0x97;
+    }
+    if (c == 0xC4 || c == 0xC5) {
+        const unsigned cp = ((c & 0x1Fu) << 6) | (c1 & 0x3Fu);
+        if ((cp >= 0x139 && cp <= 0x148) || (cp >= 0x179 && cp <= 0x17E)) {
+            return cp % 2 == 1;
+        }
+        return cp % 2 == 0 && cp != 0x138;
+    }
+    return false;
+}
+
+// Lowercase ASCII and Latin-1 capitals (U+00C0-U+00DE), enough to look a
+// name up in the lowercase dictionary ("JÜRGEN" -> "jürgen")
+std::string LowerLatin(const std::string &str) {
+    std::string result = str;
+    for (size_t i = 0; i < result.size(); ++i) {
+        const auto c = static_cast<unsigned char>(result[i]);
+        if (c < 0x80) {
+            result[i] = static_cast<char>(std::tolower(c));
+        } else if (c == 0xC3 && i + 1 < result.size()) {
+            const auto c1 = static_cast<unsigned char>(result[i + 1]);
+            if (c1 >= 0x80 && c1 <= 0x9E && c1 != 0x97) {
+                result[i + 1] = static_cast<char>(c1 + 0x20);
+            }
+            ++i;
+        }
+    }
+    return result;
+}
+
+// A word of the text for the name fallback: a maximal run of letters, digits
+// and the inner joiners '-' and '\'' ("Klaus-Peter", "O'Brien")
+struct FallbackWord {
+    std::string text;
+    size_t start;
+    size_t end;
+    bool capitalised;  // letters only, uppercase first letter, a lowercase letter after it
+};
+
+std::vector<FallbackWord> SplitFallbackWords(const std::string &text) {
+    std::vector<FallbackWord> words;
+    size_t pos = 0;
+    while (pos < text.size()) {
+        const auto c = static_cast<unsigned char>(text[pos]);
+        const size_t letter = Utf8LetterLength(text, pos);
+        if (letter == 0 && !std::isdigit(c)) {
+            // Skip a separator (one whole UTF-8 character)
+            const size_t len = (c & 0xE0) == 0xC0 ? 2 : (c & 0xF0) == 0xE0 ? 3 : (c & 0xF8) == 0xF0 ? 4 : 1;
+            pos += std::min(len, text.size() - pos);
+            continue;
+        }
+        const size_t start = pos;
+        bool letters_only = true;
+        bool has_lower = false;
+        size_t chars = 0;
+        while (pos < text.size()) {
+            const auto b = static_cast<unsigned char>(text[pos]);
+            const size_t len = Utf8LetterLength(text, pos);
+            if (len > 0) {
+                if (chars > 0 && !IsUpperLetterAt(text, pos)) {
+                    has_lower = true;
+                }
+                chars++;
+                pos += len;
+            } else if (std::isdigit(b)) {
+                letters_only = false;
+                chars++;
+                pos++;
+            } else if ((b == '-' || b == '\'') && pos + 1 < text.size() && Utf8LetterLength(text, pos + 1) > 0 &&
+                       pos > start) {
+                // An inner joiner; the following part restarts the case check
+                pos++;
+            } else {
+                break;
+            }
+        }
+        FallbackWord word {text.substr(start, pos - start), start, pos, false};
+        word.capitalised = letters_only && has_lower && chars >= 2 && chars <= 30 && IsUpperLetterAt(text, start);
+        words.push_back(std::move(word));
+    }
+    return words;
+}
+
+// Lowercase name particles that may sit between a given name and a surname
+// ("Ursula von der Leyen", "Vincent van Gogh")
+bool IsNameParticle(const std::string &word) {
+    static const std::unordered_set<std::string> particles = {"von", "van", "der", "den", "de",  "zu",
+                                                              "vom", "zum", "zur", "di",  "da", "del"};
+    return particles.count(word) > 0;
+}
+
 } // anonymous namespace
 
-NameRecognizer::NameRecognizer() {
-    try {
-        // Match capitalized words (potential names): 1-3 consecutive capitalized words
-        // Pattern: Starts with uppercase, followed by lowercase letters (2-20 chars per word)
-        pattern_ = std::regex(R"(\b([A-Z][a-z]{1,19})(?:\s+([A-Z][a-z]{1,19})){0,2}\b)",
-                              std::regex_constants::ECMAScript);
-    } catch (const std::regex_error &e) {
-        throw InvalidInputException("Invalid regex pattern for NameRecognizer: %s", e.what());
-    }
-}
+NameRecognizer::NameRecognizer() = default;
 
 NameRecognizer::~NameRecognizer() = default;
 
@@ -1300,71 +2898,58 @@ std::vector<PIIMatch> NameRecognizer::FindMatches(const std::string &text) const
     return ExtractWithDictionary(text);
 }
 
-std::vector<PIIMatch> NameRecognizer::ExtractWithDictionary(const std::string &text) const {
+std::vector<PIIMatch> NameRecognizer::ExtractWithDictionary(const std::string &text) {
+    // A capitalised word whose given name is in the dictionary starts a name
+    // ("Sabine", "Jürgen", "Klaus-Peter"); up to two following capitalised
+    // words separated by single spaces, optionally behind name particles
+    // ("von der"), extend it to the full name ("Sabine Weiß", "Peter Müller").
+    // Words are whole words (no match inside "Annabelle") and Unicode-aware.
     std::vector<PIIMatch> matches;
+    const auto words = SplitFallbackWords(text);
+    const auto &given_names = CommonGivenNames();
 
-    // First, find all individual capitalized words with their positions
-    std::regex word_pattern(R"(\b([A-Z][a-z]{1,19})\b)", std::regex_constants::ECMAScript);
-    std::vector<std::tuple<std::string, size_t, size_t>> words; // (word, start, end)
-
-    std::sregex_iterator iter(text.begin(), text.end(), word_pattern);
-    std::sregex_iterator end;
-
-    while (iter != end) {
-        std::smatch match = *iter;
-        words.emplace_back(
-            match.str(),
-            static_cast<size_t>(match.position()),
-            static_cast<size_t>(match.position() + match.length())
-        );
-        ++iter;
-    }
-
-    // Now scan through words looking for dictionary matches
-    const auto& name_dict = GetCommonNames();
-    std::unordered_set<size_t> used_positions; // Track positions we've already included in a match
+    auto is_given_name = [&given_names](const FallbackWord &word) {
+        if (!word.capitalised) {
+            return false;
+        }
+        const auto lower = LowerLatin(word.text);
+        if (given_names.count(lower) > 0) {
+            return true;
+        }
+        // Double names: the first part decides ("Klaus-Peter", "Anna-Lena")
+        const auto hyphen = lower.find('-');
+        return hyphen != std::string::npos && given_names.count(lower.substr(0, hyphen)) > 0;
+    };
+    auto single_space_between = [&text](size_t end, size_t next_start) {
+        return next_start == end + 1 && text[end] == ' ';
+    };
 
     for (size_t i = 0; i < words.size(); ++i) {
-        const auto& [word, start, word_end] = words[i];
-
-        // Skip if this word is already part of a previous match
-        if (used_positions.count(start) > 0) {
+        if (!is_given_name(words[i])) {
             continue;
         }
-
-        std::string lower_word = ToLowerCase(word);
-
-        // Check if this word is a name in our dictionary
-        if (name_dict.count(lower_word) > 0) {
-            // Found a name! Now extend to include consecutive capitalized words
-            std::string full_name = word;
-            size_t name_end = word_end;
-            used_positions.insert(start);
-
-            // Look ahead for consecutive capitalized words (with single space between)
-            for (size_t j = i + 1; j < words.size() && j < i + 3; ++j) { // Max 3 words total
-                const auto& [next_word, next_start, next_end] = words[j];
-
-                // Check if next word immediately follows (single space between)
-                // The space should be at name_end, and next_start should be name_end + 1
-                if (next_start == name_end + 1) {
-                    full_name += " " + next_word;
-                    name_end = next_end;
-                    used_positions.insert(next_start);
-                } else {
-                    break; // Not consecutive
-                }
+        size_t name_end = words[i].end;
+        size_t last = i;
+        size_t surnames = 0;
+        size_t j = i + 1;
+        while (j < words.size() && surnames < 2 && single_space_between(words[j - 1].end, words[j].start)) {
+            // Skip particles, but only when a capitalised word follows them
+            size_t k = j;
+            while (k < words.size() && IsNameParticle(words[k].text) && k + 1 < words.size() &&
+                   single_space_between(words[k].end, words[k + 1].start)) {
+                k++;
             }
-
-            PIIMatch pii_match(
-                PIIType::NAME,
-                full_name,
-                start,
-                name_end,
-                0.5  // Lower confidence for dictionary-based detection
-            );
-            matches.push_back(pii_match);
+            if (!words[k].capitalised) {
+                break;
+            }
+            name_end = words[k].end;
+            last = k;
+            surnames++;
+            j = k + 1;
         }
+        matches.emplace_back(PIIType::NAME, text.substr(words[i].start, name_end - words[i].start), words[i].start,
+                             name_end, 0.5);  // lower confidence for dictionary-based detection
+        i = last;
     }
 
     return matches;
@@ -1376,19 +2961,14 @@ bool NameRecognizer::Validate(const std::string &text) const {
 }
 
 std::string NameRecognizer::GetPartialMask(const std::string &text) const {
-    // Mask: "John Smith" -> "J*** S****"
+    // Mask: "Anna Schmidt" -> "**** S******" (short words are masked completely)
     std::vector<std::string> words = SplitIntoWords(text);
     std::string masked;
 
     for (size_t i = 0; i < words.size(); ++i) {
         if (i > 0) masked += " ";
 
-        if (words[i].size() <= 1) {
-            masked += words[i];
-        } else {
-            masked += words[i][0];
-            masked += std::string(words[i].size() - 1, '*');
-        }
+        masked += MaskWordKeepingPrefix(words[i], 1);
     }
 
     return masked;
@@ -1454,19 +3034,14 @@ bool OrganizationRecognizer::Validate(const std::string &text) const {
 }
 
 std::string OrganizationRecognizer::GetPartialMask(const std::string &text) const {
-    // Mask: "Microsoft Corp" -> "Mic****** C***"
+    // Mask: "Microsoft Corp" -> "Mic****** ****"
     std::vector<std::string> words = SplitIntoWords(text);
     std::string masked;
 
     for (size_t i = 0; i < words.size(); ++i) {
         if (i > 0) masked += " ";
 
-        if (words[i].size() <= 3) {
-            masked += words[i];
-        } else {
-            masked += words[i].substr(0, 3);
-            masked += std::string(words[i].size() - 3, '*');
-        }
+        masked += MaskWordKeepingPrefix(words[i], 3);
     }
 
     return masked;
@@ -1532,20 +3107,18 @@ bool LocationRecognizer::Validate(const std::string &text) const {
 }
 
 std::string LocationRecognizer::GetPartialMask(const std::string &text) const {
-    // Mask: "New York" -> "New ****"
+    // Mask: "Frankfurt am Main" -> "Fra****** ** ****"; words of up to 4
+    // characters are masked completely ("Rome" -> "****", "New York" -> "*** ****")
     std::vector<std::string> words = SplitIntoWords(text);
     std::string masked;
 
     for (size_t i = 0; i < words.size(); ++i) {
         if (i > 0) masked += " ";
 
-        if (i == 0 && words[i].size() <= 3) {
-            masked += words[i];
-        } else if (i == 0) {
-            masked += words[i].substr(0, 3);
-            masked += std::string(words[i].size() - 3, '*');
+        if (i == 0) {
+            masked += MaskWordKeepingPrefix(words[i], 3);
         } else {
-            masked += std::string(words[i].size(), '*');
+            masked += Utf8Stars(words[i]);
         }
     }
 
@@ -1612,19 +3185,14 @@ bool MiscRecognizer::Validate(const std::string &text) const {
 }
 
 std::string MiscRecognizer::GetPartialMask(const std::string &text) const {
-    // Mask: "Nobel Prize" -> "Nob** P****"
+    // Mask: "Nobel Prize" -> "No*** Pr***"
     std::vector<std::string> words = SplitIntoWords(text);
     std::string masked;
 
     for (size_t i = 0; i < words.size(); ++i) {
         if (i > 0) masked += " ";
 
-        if (words[i].size() <= 3) {
-            masked += words[i];
-        } else {
-            masked += words[i].substr(0, 3);
-            masked += std::string(words[i].size() - 3, '*');
-        }
+        masked += MaskWordKeepingPrefix(words[i], 3);
     }
 
     return masked;
@@ -1663,6 +3231,13 @@ void PIIEngine::InitializeDefaultRecognizers() {
     recognizers_.push_back(std::make_unique<CryptoAddressRecognizer>());
     recognizers_.push_back(std::make_unique<APIKeyRecognizer>());
 
+    // German insurance data (F24): context-gated or checksum-validated
+    recognizers_.push_back(std::make_unique<DateOfBirthRecognizer>());
+    recognizers_.push_back(std::make_unique<DESVNRRecognizer>());
+    recognizers_.push_back(std::make_unique<DEKVNRRecognizer>());
+    recognizers_.push_back(std::make_unique<DEIDCardRecognizer>());
+    recognizers_.push_back(std::make_unique<PostalCodeRecognizer>());  // opt-in
+
     // NER-based recognizers (Person, Organization, Location, Misc entities)
     recognizers_.push_back(std::make_unique<NameRecognizer>());          // PER entities
     recognizers_.push_back(std::make_unique<OrganizationRecognizer>());  // ORG entities
@@ -1697,20 +3272,24 @@ bool PIIEngine::ValidateType(const std::string &text, PIIType type) const {
         return false;
     }
 
+    // Unicode space separators count as spaces, as in detection, and so does
+    // a single line break in a wrapped IBAN or card number
+    const std::string folded = FoldSeparators(type, text);
+
     // First check if text matches the pattern
-    auto matches = recognizer->FindMatches(text);
+    auto matches = recognizer->FindMatches(folded);
 
     // Look for an exact match (the entire text should match)
     for (const auto &match : matches) {
-        if (match.matched_text == text) {
+        if (match.matched_text == folded) {
             // Then validate checksum/format
-            return recognizer->Validate(text);
+            return recognizer->Validate(folded);
         }
     }
 
     // Also try validating directly - some validators work on the raw input
     // This handles cases where the text IS the value (not wrapped in context)
-    return recognizer->Validate(text);
+    return recognizer->Validate(folded);
 }
 
 std::vector<PIIMatch> PIIEngine::Detect(
@@ -1728,33 +3307,177 @@ std::vector<PIIMatch> PIIEngine::Detect(
     // An explicit non-empty types argument overrides the configured filter
     const std::vector<PIIType> &effective_types = !types.empty() ? types : config.enabled_types;
 
-    std::vector<PIIMatch> all_matches;
-
-    for (const auto &recognizer : recognizers_) {
-        // Filter by types if specified
-        if (!effective_types.empty() &&
-            std::find(effective_types.begin(), effective_types.end(),
-                      recognizer->GetType()) == effective_types.end()) {
-            continue;
-        }
-
-        auto matches = recognizer->FindMatches(text);
-        for (auto &match : matches) {
-            // Apply the configured minimum confidence threshold centrally
-            if (match.confidence < config.min_confidence) {
-                continue;
-            }
-            if (IsNERType(match.type) && IsFieldLabel(match.matched_text)) {
-                continue;
-            }
-            all_matches.push_back(std::move(match));
-        }
+    // anofox_ner_required: no silent dictionary fallback when the NER model cannot run
+    if (config.ner_required && WantsNERTypes(effective_types)) {
+        NERModelManager::Instance().RequireModel();
     }
 
-    return ResolveOverlaps(std::move(all_matches));
+    bool run_ner = false;
+    auto matches = DetectPatterns(text, effective_types, config, run_ner);
+    if (!run_ner) {
+        return matches;
+    }
+    return AddNERMatches(text, effective_types, config, std::move(matches));
+}
+
+namespace {
+
+// Whether a recognizer of `type` runs for effective_types; without a filter,
+// opt-in types stay off
+bool IsSelectedType(PIIType type, const std::vector<PIIType> &effective_types) {
+    return effective_types.empty()
+               ? !IsOptInPIIType(type)
+               : std::find(effective_types.begin(), effective_types.end(), type) != effective_types.end();
+}
+
+// The matches of one recognizer in text at or above the configured minimum
+// confidence, with the checksum failures when anofox_pii_require_checksum is
+// false (mistyped IBANs, card numbers, reported at lower confidence)
+std::vector<PIIMatch> RecognizerMatches(const PIIRecognizer &recognizer, const std::string &text,
+                                        const PIIConfigSnapshot &config) {
+    auto matches = recognizer.FindMatches(text);
+    if (!config.require_checksum) {
+        auto failures = recognizer.FindChecksumFailures(text);
+        std::move(failures.begin(), failures.end(), std::back_inserter(matches));
+    }
+    matches.erase(std::remove_if(matches.begin(), matches.end(),
+                                 [&config](const PIIMatch &match) { return match.confidence < config.min_confidence; }),
+                  matches.end());
+    return matches;
+}
+
+// Adds to `matches` (the matches of `recognizer` in the text without folded
+// line breaks, mapped to the original) the values wrapped over two lines: the
+// recognizer's validated matches in the line-folded text that span exactly one
+// folded line break and overlap no match found on a single line. Checksum
+// failures are not looked for across lines: without a valid checksum, two
+// unrelated numbers on adjacent lines could join into a false match.
+void AddWrappedMatches(const PIIRecognizer &recognizer, const SpaceFoldedText &wrapped,
+                       const PIIConfigSnapshot &config, std::vector<PIIMatch> &matches) {
+    const size_t single_line_count = matches.size();
+    for (auto &match : recognizer.FindMatches(wrapped.Text())) {
+        if (match.confidence < config.min_confidence || wrapped.LineBreaksIn(match.start_pos, match.end_pos) != 1) {
+            continue;
+        }
+        wrapped.MapToOriginal(match);
+        const bool overlaps = std::any_of(matches.begin(), matches.begin() + single_line_count,
+                                          [&match](const PIIMatch &known) {
+                                              return match.start_pos < known.end_pos && known.start_pos < match.end_pos;
+                                          });
+        if (overlaps) {
+            continue;
+        }
+        AnofoxTrace(AnofoxLogLevel::Trace, "pii: " + PIITypeToString(match.type) + " wrapped over two lines at byte " +
+                                               std::to_string(match.start_pos));
+        matches.push_back(std::move(match));
+    }
+}
+
+} // namespace
+
+std::vector<PIIMatch> PIIEngine::DetectPatterns(const std::string &text, const std::vector<PIIType> &effective_types,
+                                                const PIIConfigSnapshot &config, bool &run_ner) const {
+    const ActiveConfigScope active_scope(config);
+    const SpaceFoldedText folded(text);
+    // The same text with single line breaks folded too, for the types that
+    // find values wrapped over two lines (built only when a line break is there)
+    std::optional<SpaceFoldedText> wrapped;
+    if (text.find_first_of("\r\n") != std::string::npos) {
+        wrapped.emplace(text, true);
+    }
+    bool wants_ner = false;
+    std::vector<PIIMatch> all_matches;
+    for (const auto &recognizer : recognizers_) {
+        const auto type = recognizer->GetType();
+        if (!IsSelectedType(type, effective_types)) {
+            continue;
+        }
+        if (IsNERType(type)) {
+            wants_ner = true;
+            continue;
+        }
+        auto matches = RecognizerMatches(*recognizer, folded.Text(), config);
+        for (auto &match : matches) {
+            folded.MapToOriginal(match);
+        }
+        if (JoinsWrappedLines(type) && wrapped && wrapped->HasLineBreaks()) {
+            AddWrappedMatches(*recognizer, *wrapped, config, matches);
+        }
+        std::move(matches.begin(), matches.end(), std::back_inserter(all_matches));
+    }
+    auto resolved = ResolveOverlaps(std::move(all_matches));
+    // A value made of pattern matches only ("max.mustermann@example.com",
+    // "+49 30 12345678") gives the NER model nothing to find: skip inference
+    run_ner = wants_ner && HasLetterOutside(text, resolved);
+    if (wants_ner && !run_ner) {
+        AnofoxTrace(AnofoxLogLevel::Trace, "pii: NER skipped, the pattern matches cover every letter of the value");
+    }
+    return resolved;
+}
+
+std::vector<PIIMatch> PIIEngine::AddNERMatches(const std::string &text, const std::vector<PIIType> &effective_types,
+                                               const PIIConfigSnapshot &config, std::vector<PIIMatch> matches) const {
+    // NER recognizers see the original text: the tokenizer splits on Unicode spaces itself
+    for (const auto &recognizer : recognizers_) {
+        const auto type = recognizer->GetType();
+        if (!IsNERType(type) || !IsSelectedType(type, effective_types)) {
+            continue;
+        }
+        for (auto &match : RecognizerMatches(*recognizer, text, config)) {
+            if (!WidenToWords(text, match) || !ContainsLetter(match.matched_text) ||
+                IsFieldLabel(match.matched_text) || IsCountryOrCurrencyCode(match.matched_text)) {
+                continue;
+            }
+            matches.push_back(std::move(match));
+        }
+    }
+    return ResolveOverlaps(std::move(matches));
 }
 
 std::vector<PIIMatch> PIIEngine::ResolveOverlaps(std::vector<PIIMatch> matches) {
+    // An email address inside a URL ("https://shop.example.com/unsubscribe?email=max@web.de")
+    // is the personal data of that URL: the URL yields to the EMAIL, so the address is
+    // reported, hashed and masked like the same address in a CRM column, and redaction keeps
+    // scheme, host and path. Without EMAIL among the types the URL is matched as a whole.
+    // The authority of a URL (between "://" and the first '/', '?' or '#') may start with
+    // userinfo closed by '@' ("https://user:password@host/path"). An email-shaped span there
+    // ("password@host") is the userinfo, not an email address: a URL with userinfo never
+    // yields, so the whole URL is one match and neither user name nor password stays
+    // readable, even when its query also holds an address.
+    std::vector<std::pair<size_t, size_t>> email_spans;
+    for (const auto &match : matches) {
+        if (match.type == PIIType::EMAIL) {
+            email_spans.emplace_back(match.start_pos, match.end_pos);
+        }
+    }
+    if (!email_spans.empty()) {
+        const auto url_contains_email = [&email_spans](const PIIMatch &url) {
+            if (url.type != PIIType::URL) {
+                return false;
+            }
+            const auto scheme_end = url.matched_text.find("://");
+            if (scheme_end != std::string::npos) {
+                const size_t authority_start = scheme_end + 3;
+                const size_t authority_end = url.matched_text.find_first_of("/?#", authority_start);
+                const auto authority = std::string_view(url.matched_text)
+                                           .substr(authority_start, authority_end == std::string::npos
+                                                                        ? std::string_view::npos
+                                                                        : authority_end - authority_start);
+                if (authority.find('@') != std::string_view::npos) {
+                    return false;
+                }
+            }
+            return std::any_of(email_spans.begin(), email_spans.end(), [&url](const std::pair<size_t, size_t> &span) {
+                return span.first >= url.start_pos && span.second <= url.end_pos;
+            });
+        };
+        const auto first_url = std::remove_if(matches.begin(), matches.end(), url_contains_email);
+        if (first_url != matches.end()) {
+            AnofoxTrace(AnofoxLogLevel::Trace, "pii: a URL with an email address inside yields to the EMAIL match");
+            matches.erase(first_url, matches.end());
+        }
+    }
+
     // Deterministic priority: earlier start wins; on ties prefer the longer
     // match, then the higher confidence, then the lower PIIType enumeration
     // value (more specific, checksum-validated types come first).
@@ -1775,17 +3498,37 @@ std::vector<PIIMatch> PIIEngine::ResolveOverlaps(std::vector<PIIMatch> matches) 
               });
 
     // Greedily keep non-overlapping matches so Mask() replaces each region
-    // of the input exactly once.
+    // of the input exactly once. Pattern matches (validated formats such as
+    // IBAN or card numbers) are placed first; a NER span is kept only where it
+    // overlaps none of them, so a NER guess like "IBAN DE" can never leave the
+    // rest of an account number unmasked.
+    // The kept spans are disjoint, so they are ordered by start and by end
+    // alike: only the kept span that starts last before a match ends can
+    // overlap it. Looking that one up keeps the resolution O(n log n) for
+    // values with many matches (a mail export with 100,000 addresses).
     std::vector<PIIMatch> resolved;
     resolved.reserve(matches.size());
-    size_t last_end = 0;
-    for (auto &match : matches) {
-        if (!resolved.empty() && match.start_pos < last_end) {
-            continue;  // Overlaps a higher-priority match
+    std::map<size_t, size_t> kept_spans;  // start -> end of every kept match
+    auto overlaps_kept = [&kept_spans](const PIIMatch &match) {
+        auto next = kept_spans.lower_bound(match.end_pos);
+        if (next == kept_spans.begin()) {
+            return false;
         }
-        last_end = match.end_pos;
-        resolved.push_back(std::move(match));
+        const auto &previous = *std::prev(next);
+        return match.start_pos < previous.second && previous.first < match.end_pos;
+    };
+    for (bool ner_pass : {false, true}) {
+        for (auto &match : matches) {
+            // An empty match covers nothing to mask
+            if (IsNERType(match.type) != ner_pass || match.start_pos >= match.end_pos || overlaps_kept(match)) {
+                continue;
+            }
+            kept_spans.emplace(match.start_pos, match.end_pos);
+            resolved.push_back(std::move(match));
+        }
     }
+    std::sort(resolved.begin(), resolved.end(),
+              [](const PIIMatch &a, const PIIMatch &b) { return a.start_pos < b.start_pos; });
     return resolved;
 }
 
@@ -1808,18 +3551,36 @@ std::vector<std::vector<PIIMatch>> PIIEngine::DetectBatch(
         return all_results;
     }
 
-    // Pre-warm NER cache by running batch extraction
-    // This ensures subsequent Detect calls hit the cache instead of re-running inference
-    auto &ner = NERModelManager::Instance();
-    if (ner.IsAvailable()) {
-        AnofoxTrace(AnofoxLogLevel::Debug,
-                    "pii: Pre-warming NER cache for " + std::to_string(texts.size()) + " texts");
-        ner.ExtractEntitiesBatch(texts);
+    const std::vector<PIIType> &effective_types = !types.empty() ? types : config.enabled_types;
+    if (config.ner_required && WantsNERTypes(effective_types)) {
+        NERModelManager::Instance().RequireModel();
     }
 
-    // Now run individual detection for each text (NER calls will hit cache)
-    for (const auto &text : texts) {
-        all_results.push_back(Detect(text, types, config));
+    // Pattern matches first: they tell which texts still need the NER model
+    std::vector<bool> run_ner(texts.size(), false);
+    std::vector<std::string> ner_texts;
+    for (size_t i = 0; i < texts.size(); ++i) {
+        bool needs_ner = false;
+        all_results.push_back(DetectPatterns(texts[i], effective_types, config, needs_ner));
+        run_ner[i] = needs_ner;
+        if (needs_ner) {
+            ner_texts.push_back(texts[i]);
+        }
+    }
+
+    // Pre-warm the NER cache with one batch inference over the texts that
+    // need the model, so the per-text NER recognizers below hit the cache
+    auto &ner = NERModelManager::Instance();
+    if (!ner_texts.empty() && ner.IsAvailable()) {
+        AnofoxTrace(AnofoxLogLevel::Debug, "pii: Pre-warming NER cache for " + std::to_string(ner_texts.size()) +
+                                               " of " + std::to_string(texts.size()) + " texts");
+        ner.ExtractEntitiesBatch(ner_texts);
+    }
+
+    for (size_t i = 0; i < texts.size(); ++i) {
+        if (run_ner[i]) {
+            all_results[i] = AddNERMatches(texts[i], effective_types, config, std::move(all_results[i]));
+        }
     }
 
     return all_results;
@@ -1831,32 +3592,59 @@ std::string PIIEngine::ApplyMask(const PIIMatch &match, MaskStrategy strategy) c
             return "[" + PIITypeToString(match.type) + "]";
 
         case MaskStrategy::HASH: {
-            // SHA-256 hash, truncated to first 8 chars
+            // Pseudonym: the first 16 hex characters (64 bits) of the unsalted
+            // SHA-256 of the normalised value, so equal values join across
+            // formats. Not anonymisation: small value spaces (phone numbers,
+            // card numbers) can be brute-forced back to the value.
+            // Unicode space separators count as spaces: "DE89<NBSP>3704 ..."
+            // hashes like "DE89 3704 ...", and so does "DE89 3704\n0044 ..."
+            const std::string normalized = NormalizeForHash(match.type, FoldSeparators(match.type, match.matched_text));
             unsigned char hash[SHA256_DIGEST_LENGTH];
-            SHA256(reinterpret_cast<const unsigned char*>(match.matched_text.c_str()),
-                   match.matched_text.length(), hash);
+            SHA256(reinterpret_cast<const unsigned char*>(normalized.data()), normalized.size(), hash);
             std::ostringstream oss;
-            for (int i = 0; i < 4; ++i) {
+            for (int i = 0; i < 8; ++i) {
                 oss << std::hex << std::setfill('0') << std::setw(2) << static_cast<int>(hash[i]);
             }
             return oss.str();
         }
 
         case MaskStrategy::PARTIAL: {
-            // Use type-specific partial masking
+            // Type-specific partial mask, checked against the half rule: a
+            // partial mask that reveals more than half of the letters and
+            // digits of the value (or is no valid UTF-8, possible for
+            // arbitrary pii_mask_value input) falls back to one '*' per
+            // character
             const auto *recognizer = GetRecognizer(match.type);
-            if (recognizer) {
-                return recognizer->GetPartialMask(match.matched_text);
+            if (!recognizer) {
+                return Utf8Stars(match.matched_text);
             }
-            return std::string(match.matched_text.length(), '*');
+            // The type's partial mask reads separators as ASCII spaces (and
+            // writes them so); a wrapped IBAN or card number reads as one line
+            std::string masked = recognizer->GetPartialMask(FoldSeparators(match.type, match.matched_text));
+            if (!IsValidUtf8(masked) ||
+                CountLettersAndDigits(masked) > CountLettersAndDigits(match.matched_text) / 2) {
+                AnofoxTrace(AnofoxLogLevel::Debug, "pii: partial mask of a " + PIITypeToString(match.type) +
+                                                       " value reveals too much, masking it completely");
+                return Utf8Stars(match.matched_text);
+            }
+            return masked;
         }
 
         case MaskStrategy::ASTERISK:
-            return std::string(match.matched_text.length(), '*');
+            // One '*' per character, not per byte
+            return Utf8Stars(match.matched_text);
 
         default:
             return match.matched_text;
     }
+}
+
+std::string PIIEngine::MaskValue(const std::string &value, PIIType type, MaskStrategy strategy) const {
+    // Nothing to mask in an empty value; a redact label or hash would claim one
+    if (value.empty()) {
+        return value;
+    }
+    return ApplyMask(PIIMatch(type, value, 0, value.size(), 1.0), strategy);
 }
 
 std::string PIIEngine::Mask(
@@ -1881,12 +3669,18 @@ std::string PIIEngine::Mask(
         return text;
     }
 
-    // Build result by replacing matches (process in reverse to maintain positions)
-    std::string result = text;
-    for (auto it = matches.rbegin(); it != matches.rend(); ++it) {
-        std::string replacement = ApplyMask(*it, strategy);
-        result.replace(it->start_pos, it->end_pos - it->start_pos, replacement);
+    // Build the result front to back: the text between matches, then each
+    // match's mask. Linear in the length of the value also for values with
+    // many matches (replacing in place moves the tail once per match).
+    std::string result;
+    result.reserve(text.size());
+    size_t copied = 0;
+    for (const auto &match : matches) {
+        result.append(text, copied, match.start_pos - copied);
+        result += ApplyMask(match, strategy);
+        copied = match.end_pos;
     }
+    result.append(text, copied, std::string::npos);
 
     return result;
 }
@@ -1897,14 +3691,20 @@ std::string PIIEngine::Mask(
 
 namespace {
 
+// The client context whose interrupt stops NER inference in a scalar function (see
+// NERInterruptScope); nullptr when the expression is evaluated without one
+static ClientContext *InterruptContext(ExpressionState &state) {
+    return state.HasContext() ? &state.GetContext() : nullptr;
+}
+
 // Shared implementation for all detect-style scalars: runs Detect() with the
 // given type filter and writes the matches directly into the LIST(STRUCT)
 // result vector. The input is normalized once per chunk and match rows are
 // written into the list child vectors without per-row Value materialization.
-void ExecutePIIDetectToList(DataChunk &args, Vector &result, const std::vector<PIIType> &filter) {
+void ExecutePIIDetectToList(DataChunk &args, ExpressionState &state, Vector &result, const std::vector<PIIType> &filter) {
     auto &engine = PIIEngine::Instance();
-    // Snapshot the configuration once per chunk; all reads go through it
-    const auto config = PIIConfig::Get().Snapshot();
+    // One configuration for the whole statement; all reads go through it
+    const auto config = StatementPIIConfig(StatementContext(state));
     result.SetVectorType(VectorType::FLAT_VECTOR);
 
     // Get list entries data and child struct vector
@@ -1975,7 +3775,8 @@ void ExecutePIIDetectToList(DataChunk &args, Vector &result, const std::vector<P
 // Returns idiomatic DuckDB types that can be queried with unnest, dot notation, etc.
 struct PIIDetectFunction {
     static void Execute(DataChunk &args, ExpressionState &state, Vector &result) {
-        ExecutePIIDetectToList(args, result, {});
+        NERInterruptScope interrupt_scope(InterruptContext(state));
+        ExecutePIIDetectToList(args, state, result, {});
     }
 
     static ScalarFunction GetFunction() {
@@ -1987,14 +3788,15 @@ struct PIIDetectFunction {
 // anofox_tab_pii_mask(text, strategy) -> masked text (alias: pii_mask)
 struct PIIMaskFunction {
     static void Execute(DataChunk &args, ExpressionState &state, Vector &result) {
+        NERInterruptScope interrupt_scope(InterruptContext(state));
         auto &engine = PIIEngine::Instance();
-        const auto config = PIIConfig::Get().Snapshot();
+        const auto config = StatementPIIConfig(StatementContext(state));
 
         BinaryExecutor::Execute<string_t, string_t, string_t>(
             args.data[0], args.data[1], result, args.size(),
             [&](string_t input, string_t strategy_str) {
                 std::string text = input.GetString();
-                MaskStrategy strategy = StringToMaskStrategy(strategy_str.GetString());
+                MaskStrategy strategy = ParseMaskStrategy(strategy_str.GetString());
 
                 std::string masked = engine.Mask(text, strategy, {}, config);
                 return StringVector::AddString(result, masked);
@@ -2011,8 +3813,9 @@ struct PIIMaskFunction {
 // anofox_tab_pii_mask with default strategy (redact)
 struct PIIMaskDefaultFunction {
     static void Execute(DataChunk &args, ExpressionState &state, Vector &result) {
+        NERInterruptScope interrupt_scope(InterruptContext(state));
         auto &engine = PIIEngine::Instance();
-        const auto config = PIIConfig::Get().Snapshot();
+        const auto config = StatementPIIConfig(StatementContext(state));
 
         UnaryExecutor::Execute<string_t, string_t>(
             args.data[0], result, args.size(),
@@ -2033,8 +3836,9 @@ struct PIIMaskDefaultFunction {
 // anofox_tab_pii_contains(text) -> boolean (true if any PII found) (alias: pii_contains)
 struct PIIContainsFunction {
     static void Execute(DataChunk &args, ExpressionState &state, Vector &result) {
+        NERInterruptScope interrupt_scope(InterruptContext(state));
         auto &engine = PIIEngine::Instance();
-        const auto config = PIIConfig::Get().Snapshot();
+        const auto config = StatementPIIConfig(StatementContext(state));
 
         UnaryExecutor::Execute<string_t, bool>(
             args.data[0], result, args.size(),
@@ -2055,8 +3859,9 @@ struct PIIContainsFunction {
 // anofox_tab_pii_count(text) -> integer (count of PII matches) (alias: pii_count)
 struct PIICountFunction {
     static void Execute(DataChunk &args, ExpressionState &state, Vector &result) {
+        NERInterruptScope interrupt_scope(InterruptContext(state));
         auto &engine = PIIEngine::Instance();
-        const auto config = PIIConfig::Get().Snapshot();
+        const auto config = StatementPIIConfig(StatementContext(state));
 
         UnaryExecutor::Execute<string_t, int64_t>(
             args.data[0], result, args.size(),
@@ -2083,6 +3888,9 @@ template<PIIType Type>
 struct PIIIsValidFunction {
     static void Execute(DataChunk &args, ExpressionState &state, Vector &result) {
         auto &engine = PIIEngine::Instance();
+        // anofox_pii_deep_validation (phone numbers) as of the statement start
+        const auto config = StatementPIIConfig(StatementContext(state));
+        const ActiveConfigScope active_scope(config);
 
         UnaryExecutor::Execute<string_t, bool>(
             args.data[0], result, args.size(),
@@ -2188,7 +3996,7 @@ Value CreatePIIMatchListValue(const std::vector<PIIMatch> &matches) {
 // pii_detect_emails(text) -> LIST(STRUCT(...))
 struct PIIDetectEmailsFunction {
     static void Execute(DataChunk &args, ExpressionState &state, Vector &result) {
-        ExecutePIIDetectToList(args, result, {PIIType::EMAIL});
+        ExecutePIIDetectToList(args, state, result, {PIIType::EMAIL});
     }
 
     static ScalarFunction GetFunction() {
@@ -2200,7 +4008,7 @@ struct PIIDetectEmailsFunction {
 // pii_detect_phones(text) -> LIST(STRUCT(...))
 struct PIIDetectPhonesFunction {
     static void Execute(DataChunk &args, ExpressionState &state, Vector &result) {
-        ExecutePIIDetectToList(args, result, {PIIType::PHONE});
+        ExecutePIIDetectToList(args, state, result, {PIIType::PHONE});
     }
 
     static ScalarFunction GetFunction() {
@@ -2212,7 +4020,7 @@ struct PIIDetectPhonesFunction {
 // pii_detect_credit_cards(text) -> LIST(STRUCT(...))
 struct PIIDetectCreditCardsFunction {
     static void Execute(DataChunk &args, ExpressionState &state, Vector &result) {
-        ExecutePIIDetectToList(args, result, {PIIType::CREDIT_CARD});
+        ExecutePIIDetectToList(args, state, result, {PIIType::CREDIT_CARD});
     }
 
     static ScalarFunction GetFunction() {
@@ -2224,7 +4032,7 @@ struct PIIDetectCreditCardsFunction {
 // pii_detect_ssns(text) -> LIST(STRUCT(...))
 struct PIIDetectSSNsFunction {
     static void Execute(DataChunk &args, ExpressionState &state, Vector &result) {
-        ExecutePIIDetectToList(args, result, {PIIType::US_SSN});
+        ExecutePIIDetectToList(args, state, result, {PIIType::US_SSN});
     }
 
     static ScalarFunction GetFunction() {
@@ -2236,7 +4044,8 @@ struct PIIDetectSSNsFunction {
 // pii_detect_names(text) -> LIST(STRUCT(...))
 struct PIIDetectNamesFunction {
     static void Execute(DataChunk &args, ExpressionState &state, Vector &result) {
-        ExecutePIIDetectToList(args, result, {PIIType::NAME});
+        NERInterruptScope interrupt_scope(InterruptContext(state));
+        ExecutePIIDetectToList(args, state, result, {PIIType::NAME});
     }
 
     static ScalarFunction GetFunction() {
@@ -2248,7 +4057,7 @@ struct PIIDetectNamesFunction {
 // pii_detect_ibans(text) -> LIST(STRUCT(...))
 struct PIIDetectIBANsFunction {
     static void Execute(DataChunk &args, ExpressionState &state, Vector &result) {
-        ExecutePIIDetectToList(args, result, {PIIType::IBAN});
+        ExecutePIIDetectToList(args, state, result, {PIIType::IBAN});
     }
 
     static ScalarFunction GetFunction() {
@@ -2265,8 +4074,9 @@ struct PIIDetectIBANsFunction {
 // Returns an array of results, one for each input text
 struct PIIDetectBatchFunction {
     static void Execute(DataChunk &args, ExpressionState &state, Vector &result) {
+        NERInterruptScope interrupt_scope(InterruptContext(state));
         auto &engine = PIIEngine::Instance();
-        const auto config = PIIConfig::Get().Snapshot();
+        const auto config = StatementPIIConfig(StatementContext(state));
 
         // Process each row (which contains an array)
         for (idx_t i = 0; i < args.size(); i++) {
@@ -2331,35 +4141,22 @@ struct PIIDetectBatchFunction {
 // Useful for UPDATE statements where you know the column contains a specific PII type
 struct PIIMaskColumnFunction {
     static void Execute(DataChunk &args, ExpressionState &state, Vector &result) {
+        NERInterruptScope interrupt_scope(InterruptContext(state));
         auto &engine = PIIEngine::Instance();
-        const auto config = PIIConfig::Get().Snapshot();
+        const auto config = StatementPIIConfig(StatementContext(state));
 
-        // Get the type and strategy arguments (they should be the same for all rows)
-        auto type_arg = args.data[1].GetValue(0);
-        auto strategy_arg = args.data[2].GetValue(0);
-
-        if (type_arg.IsNull() || strategy_arg.IsNull()) {
-            result.SetVectorType(VectorType::CONSTANT_VECTOR);
-            result.SetValue(0, Value(LogicalType::SQLNULL));
-            return;
-        }
-
-        auto pii_type = StringToPIIType(type_arg.GetValue<std::string>());
-        auto strategy = StringToMaskStrategy(strategy_arg.GetValue<std::string>());
-
-        if (pii_type == PIIType::UNKNOWN) {
-            throw InvalidInputException("Unknown PII type: %s", type_arg.GetValue<std::string>());
-        }
-
-        // Use type filter for detection
-        std::vector<PIIType> filter = {pii_type};
-
+        // The type and strategy are read per row; a NULL argument yields NULL for that row.
         // Mask() returns the original text when nothing of the requested type is
         // found, so a single call per row suffices (no separate Detect pass).
-        UnaryExecutor::Execute<string_t, string_t>(
-            args.data[0], result, args.size(),
-            [&](string_t input) {
-                return StringVector::AddString(result, engine.Mask(input.GetString(), strategy, filter, config));
+        TernaryExecutor::Execute<string_t, string_t, string_t, string_t>(
+            args.data[0], args.data[1], args.data[2], result, args.size(),
+            [&](string_t input, string_t type_str, string_t strategy_str) {
+                auto pii_type = StringToPIIType(type_str.GetString());
+                if (pii_type == PIIType::UNKNOWN) {
+                    throw InvalidInputException("Unknown PII type: %s", type_str.GetString());
+                }
+                auto strategy = ParseMaskStrategy(strategy_str.GetString());
+                return StringVector::AddString(result, engine.Mask(input.GetString(), strategy, {pii_type}, config));
             }
         );
     }
@@ -2371,24 +4168,47 @@ struct PIIMaskColumnFunction {
     }
 };
 
+// pii_mask_value(value, pii_type, strategy) -> VARCHAR
+// Masks the whole non-NULL value as the given PII type, without detection: for
+// columns known to hold PII where detection finds nothing ('Li', '01511234567').
+// Type and strategy are read per row; a NULL argument yields NULL.
+struct PIIMaskValueFunction {
+    static void Execute(DataChunk &args, ExpressionState &state, Vector &result) {
+        auto &engine = PIIEngine::Instance();
+
+        TernaryExecutor::Execute<string_t, string_t, string_t, string_t>(
+            args.data[0], args.data[1], args.data[2], result, args.size(),
+            [&](string_t input, string_t type_str, string_t strategy_str) {
+                auto pii_type = StringToPIIType(type_str.GetString());
+                if (pii_type == PIIType::UNKNOWN) {
+                    throw InvalidInputException("Unknown PII type: %s", type_str.GetString());
+                }
+                auto strategy = ParseMaskStrategy(strategy_str.GetString());
+                return StringVector::AddString(result, engine.MaskValue(input.GetString(), pii_type, strategy));
+            }
+        );
+    }
+
+    static ScalarFunction GetFunction() {
+        return ScalarFunction("anofox_tab_pii_mask_value",
+                              {LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR},
+                              LogicalType::VARCHAR, Execute);
+    }
+};
+
 // pii_redact_column(value, strategy) -> VARCHAR
 // Shorthand for masking without specifying type - masks all PII types
 struct PIIRedactColumnFunction {
     static void Execute(DataChunk &args, ExpressionState &state, Vector &result) {
+        NERInterruptScope interrupt_scope(InterruptContext(state));
         auto &engine = PIIEngine::Instance();
-        const auto config = PIIConfig::Get().Snapshot();
+        const auto config = StatementPIIConfig(StatementContext(state));
 
-        // Get strategy argument
-        auto strategy_arg = args.data[1].GetValue(0);
-
-        MaskStrategy strategy = MaskStrategy::REDACT;
-        if (!strategy_arg.IsNull()) {
-            strategy = StringToMaskStrategy(strategy_arg.GetValue<std::string>());
-        }
-
-        UnaryExecutor::Execute<string_t, string_t>(
-            args.data[0], result, args.size(),
-            [&](string_t input) {
+        // The strategy is read per row; a NULL argument yields NULL for that row.
+        BinaryExecutor::Execute<string_t, string_t, string_t>(
+            args.data[0], args.data[1], result, args.size(),
+            [&](string_t input, string_t strategy_str) {
+                auto strategy = ParseMaskStrategy(strategy_str.GetString());
                 return StringVector::AddString(result, engine.Mask(input.GetString(), strategy, {}, config));
             }
         );
@@ -2404,8 +4224,9 @@ struct PIIRedactColumnFunction {
 // pii_redact_column(value) -> VARCHAR (overload with default strategy)
 struct PIIRedactColumnDefaultFunction {
     static void Execute(DataChunk &args, ExpressionState &state, Vector &result) {
+        NERInterruptScope interrupt_scope(InterruptContext(state));
         auto &engine = PIIEngine::Instance();
-        const auto config = PIIConfig::Get().Snapshot();
+        const auto config = StatementPIIConfig(StatementContext(state));
         auto strategy = config.default_mask_strategy;
 
         UnaryExecutor::Execute<string_t, string_t>(
@@ -2459,7 +4280,7 @@ unique_ptr<FunctionData> PIIStatusBind(ClientContext &, TableFunctionBindInput &
     return nullptr;
 }
 
-void PIIStatusFunction(ClientContext &, TableFunctionInput &input, DataChunk &output) {
+void PIIStatusFunction(ClientContext &context, TableFunctionInput &input, DataChunk &output) {
     auto &state = input.global_state->Cast<PIIStatusState>();
 
     if (state.current_index >= state.types.size()) {
@@ -2478,35 +4299,56 @@ void PIIStatusFunction(ClientContext &, TableFunctionInput &input, DataChunk &ou
         {PIIType::DE_TAX_ID, "German Tax ID"},
         {PIIType::URL, "URL"},
         {PIIType::NAME, "Person Name"},
+        {PIIType::ORGANIZATION, "Organization Name"},
+        {PIIType::LOCATION, "Location"},
+        {PIIType::MISC, "Miscellaneous Entity"},
         {PIIType::US_PASSPORT, "US Passport"},
         {PIIType::CRYPTO_ADDRESS, "Crypto Address"},
         {PIIType::UK_NINO, "UK NINO"},
         {PIIType::MAC_ADDRESS, "MAC Address"},
         {PIIType::API_KEY, "API Key"},
+        {PIIType::DATE_OF_BIRTH, "Date of Birth"},
+        {PIIType::DE_SVNR, "German Social Insurance Number"},
+        {PIIType::DE_KVNR, "German Health Insurance Number"},
+        {PIIType::DE_ID_CARD, "German ID Card / Passport"},
+        {PIIType::POSTAL_CODE, "Postal Code"},
         {PIIType::UNKNOWN, "Unknown"}
     };
 
     static const std::unordered_map<PIIType, std::string> pattern_info = {
         {PIIType::EMAIL, "RFC 5322 email pattern"},
-        {PIIType::PHONE, "International phone formats (+XX, parentheses, dashes)"},
-        {PIIType::CREDIT_CARD, "Visa/MC/Amex/Discover with Luhn validation"},
+        {PIIType::PHONE, "International (+XX, 00XX) and national (0XX) formats; compact numbers after a phone keyword"},
+        {PIIType::CREDIT_CARD, "Card brand prefixes (IIN) with Luhn validation"},
         {PIIType::US_SSN, "XXX-XX-XXXX format with area validation"},
         {PIIType::IP_ADDRESS, "IPv4 and IPv6 formats"},
-        {PIIType::IBAN, "ISO 13616 with MOD-97 checksum"},
+        {PIIType::IBAN, "ISO 13616: registered country, its length and MOD-97 checksum"},
         {PIIType::DE_TAX_ID, "11-digit Steueridentifikationsnummer"},
-        {PIIType::URL, "HTTP/HTTPS URLs"},
+        {PIIType::URL, "HTTP, HTTPS, FTP and FTPS URLs"},
 #if HAVE_OPENVINO
-        {PIIType::NAME, "OpenVINO DistilBERT NER (92% F1)"},
+        {PIIType::NAME, "OpenVINO NER model (anofox_ner_model), PER entities; name dictionary fallback"},
+        {PIIType::ORGANIZATION, "OpenVINO NER model (anofox_ner_model), ORG entities (companies, institutions)"},
+        {PIIType::LOCATION, "OpenVINO NER model (anofox_ner_model), LOC entities (cities, countries, regions)"},
+        {PIIType::MISC, "OpenVINO NER model distilbert-en only, MISC entities (events, nationalities, products)"},
 #else
         {PIIType::NAME, "Dictionary-based name detection (200+ first names)"},
+        {PIIType::ORGANIZATION, "Needs the NER model, which this build does not include"},
+        {PIIType::LOCATION, "Needs the NER model, which this build does not include"},
+        {PIIType::MISC, "Needs the NER model, which this build does not include"},
 #endif
-        {PIIType::US_PASSPORT, "9 digits or letter + 8 digits"},
+        {PIIType::US_PASSPORT, "Letter + 8 digits"},
         {PIIType::CRYPTO_ADDRESS, "Bitcoin (P2PKH/P2SH/SegWit) and Ethereum"},
         {PIIType::UK_NINO, "UK National Insurance Number format"},
-        {PIIType::MAC_ADDRESS, "Colon/hyphen/dot/no-separator formats"},
+        {PIIType::MAC_ADDRESS, "Colon/hyphen/dot formats; bare hex needs letter+digit"},
         {PIIType::API_KEY, "AWS/GitHub tokens and high-entropy strings"},
+        {PIIType::DATE_OF_BIRTH, "Date after a birth keyword (geb., Geburtsdatum, DOB, born on), real calendar date"},
+        {PIIType::DE_SVNR, "Rentenversicherungsnummer with check digit"},
+        {PIIType::DE_KVNR, "Krankenversichertennummer: letter + 9 digits with check digit, after a keyword (KVNR, Versichertennummer, eGK)"},
+        {PIIType::DE_ID_CARD, "9-character document number; check digit or keyword (Personalausweis, Reisepass) required"},
+        {PIIType::POSTAL_CODE, "DE/AT/CH, NL and UK postcodes next to an address (off by default)"},
         {PIIType::UNKNOWN, "Unknown pattern"}
     };
+
+    const auto config = StatementPIIConfig(&context);
 
     // Calculate how many rows to output in this batch
     idx_t remaining = state.types.size() - state.current_index;
@@ -2525,8 +4367,8 @@ void PIIStatusFunction(ClientContext &, TableFunctionInput &input, DataChunk &ou
         std::string name = (name_it != recognizer_names.end()) ? name_it->second : "Unknown";
         output.SetValue(1, i, Value(name));
 
-        // Column 2: enabled (always true - no disable mechanism)
-        output.SetValue(2, i, Value::BOOLEAN(true));
+        // Column 2: enabled under anofox_pii_enabled_types (opt-in types are off by default)
+        output.SetValue(2, i, Value::BOOLEAN(config.IsTypeEnabled(type)));
 
         // Column 3: pattern_info
         auto info_it = pattern_info.find(type);
@@ -2637,37 +4479,165 @@ TableFunction CreateNERStatusFunction() {
 
 struct PIIAuditTableBindData : public TableFunctionData {
     std::string table_name;
-    std::vector<std::string> column_filter;  // Empty = all VARCHAR columns
+    std::vector<std::string> column_filter;  // Empty = all columns that hold text
     IdColumn id_column;                      // Optional pass-through identifier (#108)
 
     PIIAuditTableBindData(const std::string &table, const std::vector<std::string> &cols)
         : table_name(table), column_filter(cols) {}
 };
 
-// Resolve the VARCHAR columns of a table, optionally restricted to a filter list.
-// Shared by pii_audit_table and pii_scan_table.
-static std::vector<std::string> ResolvePIIScanColumns(ClientContext &context, const std::string &table_name,
-                                                      const std::vector<std::string> &column_filter) {
-    auto qname = QualifiedName::Parse(table_name);
-    auto &catalog = Catalog::GetCatalog(context, duckdb_compat::Ident(duckdb_compat::QualifiedCatalog(qname)));
-    auto &entry = catalog
-                      .GetEntry(context, CatalogType::TABLE_ENTRY,
-                                duckdb_compat::Ident(duckdb_compat::QualifiedSchema(qname)),
-                                duckdb_compat::Ident(duckdb_compat::QualifiedLocalName(qname)))
-                      .Cast<TableCatalogEntry>();
+// Resolve the columns to scan of a table or view. Without a filter: every column that holds
+// text (VARCHAR, JSON, and STRUCT/LIST/MAP/UNION values with text inside). With a filter: exactly the named columns, matched case-insensitively and of
+// any type (the scan queries cast them to VARCHAR); an unknown name is an error.
+// Shared by pii_audit_table and pii_scan_table. The relation is bound with a sibling
+// connection (LIMIT 0 reads no rows), the same way the scan itself reads it; a catalog
+// lookup would only find tables, and casting a view entry to a table entry crashed.
+// One column of a table to scan: its name and type, and whether it is scanned
+struct PIIScanColumn {
+    std::string name;
+    std::string type;
+    bool scan;
+};
 
+// The error of a query run on a sibling connection, as "<Type> Error: <message>" without the
+// "LINE 1: SELECT ..." excerpt of the internal query (which is not the user's SQL)
+static std::string QueryErrorText(const ErrorData &error) {
+    std::string message = error.Message();
+    const auto line = message.find("\n\nLINE ");
+    if (line != std::string::npos) {
+        message.erase(line);
+    }
+    return message;
+}
+
+// Whether table_name names a TEMP table or view of the calling connection: the table
+// functions read the table through a sibling connection, which cannot see it
+static bool IsTempRelation(ClientContext &context, const std::string &table_name) {
+    // resolved like every other relation name (LookupRelation: search path, attached databases)
+    auto relation = LookupRelation(context, table_name);
+    return relation.found && relation.is_temp;
+}
+
+// Whether a column of this type holds text: VARCHAR (JSON included) or a nested type (STRUCT,
+// LIST, ARRAY, MAP, UNION, in any combination) with a VARCHAR somewhere inside. Such a column
+// is scanned as its VARCHAR rendering ({'email': max@web.de}, [a@x.de, b@y.de]); numbers,
+// dates, BLOBs and nested types of only those hold no free text and are skipped.
+static bool ContainsText(const LogicalType &type) {
+    switch (type.id()) {
+    case LogicalTypeId::VARCHAR:
+        return true;
+    case LogicalTypeId::LIST:
+        return ContainsText(ListType::GetChildType(type));
+    case LogicalTypeId::ARRAY:
+        return ContainsText(ArrayType::GetChildType(type));
+    case LogicalTypeId::MAP:
+        return ContainsText(MapType::KeyType(type)) || ContainsText(MapType::ValueType(type));
+    case LogicalTypeId::STRUCT:
+    case LogicalTypeId::UNION:
+        for (const auto &child : StructType::GetChildTypes(type)) {
+            if (ContainsText(child.second)) {
+                return true;
+            }
+        }
+        return false;
+    default:
+        return false;
+    }
+}
+
+// The columns pii_scan_table reports, in table order. Without a filter: every column, columns
+// that hold text (ContainsText) scanned and the others marked as skipped. With a filter: exactly
+// the named columns, all scanned.
+static std::vector<PIIScanColumn> ResolvePIIScanPlan(ClientContext &context, const std::string &function_name,
+                                                     const std::string &table_name,
+                                                     const std::vector<std::string> &column_filter) {
+    auto con = OpenSiblingConnection(context);
+    auto result = con.Query("SELECT * FROM " + BuildQueryTableRef(table_name) + " LIMIT 0");
+    if (result->HasError()) {
+        if (IsTempRelation(context, table_name)) {
+            throw InvalidInputException("%s: '%s' is a TEMP table, which is not supported: the table is read "
+                                        "through a separate connection that cannot see TEMP tables. Copy it into a "
+                                        "regular table first (CREATE TABLE ... AS SELECT * FROM %s)",
+                                        function_name, table_name, table_name);
+        }
+        // A table the caller cannot read either: "<fn>: table 't' does not exist", like the checks
+        RequireRelationColumns(context, function_name, table_name);
+        throw InvalidInputException("%s: cannot read table '%s': %s", function_name, table_name,
+                                    QueryErrorText(result->GetErrorObject()));
+    }
+    auto result_names = duckdb_compat::ResultNames(*result);
+    auto &result_types = duckdb_compat::ResultTypes(*result);
+    vector<std::string> available_names(result_names.begin(), result_names.end());
+
+    std::vector<bool> selected(available_names.size(), false);
+    if (column_filter.empty()) {
+        for (idx_t i = 0; i < available_names.size(); i++) {
+            selected[i] = ContainsText(result_types[i]);
+        }
+    } else {
+        for (auto idx : MatchColumnNames(function_name, table_name, available_names,
+                                             vector<std::string>(column_filter.begin(), column_filter.end()))) {
+            selected[idx] = true;
+        }
+    }
+
+    std::vector<PIIScanColumn> plan;
+    for (idx_t i = 0; i < available_names.size(); i++) {
+        if (selected[i] || column_filter.empty()) {
+            plan.push_back({available_names[i], result_types[i].ToString(), selected[i]});
+        }
+    }
+    return plan;
+}
+
+// The names of the columns to scan (see ResolvePIIScanPlan)
+static std::vector<std::string> ResolvePIIScanColumns(ClientContext &context, const std::string &function_name,
+                                                      const std::string &table_name,
+                                                      const std::vector<std::string> &column_filter) {
     std::vector<std::string> columns;
-    for (auto &col : entry.GetColumns().Logical()) {
-        if (col.Type().id() != LogicalTypeId::VARCHAR) {
-            continue;
+    for (auto &column : ResolvePIIScanPlan(context, function_name, table_name, column_filter)) {
+        if (column.scan) {
+            columns.push_back(std::move(column.name));
         }
-        if (!column_filter.empty() &&
-            std::find(column_filter.begin(), column_filter.end(), duckdb_compat::Str(col.Name())) == column_filter.end()) {
-            continue;
-        }
-        columns.push_back(duckdb_compat::Str(col.Name()));
     }
     return columns;
+}
+
+// The column filter of pii_audit_table / pii_scan_table: a comma-separated list of
+// column names, given as the second argument or by name (columns := 'a, b'). NULL
+// or an empty list means every column that holds text.
+static const char *PII_COLUMNS_PARAMETER = "columns";
+
+static std::vector<std::string> ParsePIIColumnFilter(TableFunctionBindInput &input, const std::string &function_name) {
+    const Value *columns = nullptr;
+    if (input.inputs.size() > 1) {
+        columns = &input.inputs[1];
+    }
+    const auto *named = duckdb_compat::FindNamedParameter(input.named_parameters, PII_COLUMNS_PARAMETER);
+    if (named) {
+        if (columns) {
+            throw BinderException("%s: give the column filter either as the second argument or as columns := ..., "
+                                  "not both",
+                                  function_name);
+        }
+        columns = named;
+    }
+    std::vector<std::string> column_filter;
+    if (!columns || columns->IsNull()) {
+        return column_filter;
+    }
+    std::stringstream ss(columns->GetValue<std::string>());
+    std::string col;
+    while (std::getline(ss, col, ',')) {
+        col.erase(0, col.find_first_not_of(" \t"));
+        col.erase(col.find_last_not_of(" \t") + 1);
+        if (!col.empty()) {
+            column_filter.push_back(col);
+        }
+    }
+    AnofoxTrace(AnofoxLogLevel::Debug,
+                function_name + ": column filter of " + std::to_string(column_filter.size()) + " column(s)");
+    return column_filter;
 }
 
 struct PIIAuditTableResult {
@@ -2676,6 +4646,7 @@ struct PIIAuditTableResult {
     PIIType pii_type;
     std::string original_value;
     std::string masked_value;
+    std::string matched_text;
     int64_t start_pos;
     int64_t end_pos;
     double confidence;
@@ -2718,23 +4689,15 @@ unique_ptr<FunctionData> PIIAuditTableBind(ClientContext &context, TableFunction
     if (input.inputs.empty()) {
         throw BinderException("pii_audit_table requires a table name");
     }
-    auto table_name = input.inputs[0].GetValue<std::string>();
+    auto table_name = RequireNonNullArgument(input, 0, "pii_audit_table", "table_name");
+    RejectUncommittedChanges(context, "pii_audit_table");
 
-    // Get optional column filter
-    std::vector<std::string> column_filter;
-    if (input.inputs.size() > 1 && !input.inputs[1].IsNull()) {
-        auto cols_str = input.inputs[1].GetValue<std::string>();
-        // Parse comma-separated column names
-        std::stringstream ss(cols_str);
-        std::string col;
-        while (std::getline(ss, col, ',')) {
-            // Trim whitespace
-            col.erase(0, col.find_first_not_of(" \t"));
-            col.erase(col.find_last_not_of(" \t") + 1);
-            if (!col.empty()) {
-                column_filter.push_back(col);
-            }
-        }
+    // Get optional column filter (second argument or columns := ...)
+    auto column_filter = ParsePIIColumnFilter(input, "pii_audit_table");
+    // Resolve the filter now so an unknown column is a bind error; the scan uses the
+    // table's own spelling of each name
+    if (!column_filter.empty()) {
+        column_filter = ResolvePIIScanColumns(context, "pii_audit_table", table_name, column_filter);
     }
 
     // Define output columns matching PIIAuditResult struct
@@ -2762,6 +4725,9 @@ unique_ptr<FunctionData> PIIAuditTableBind(ClientContext &context, TableFunction
     names.emplace_back("confidence");
     return_types.emplace_back(LogicalTypeId::DOUBLE);
 
+    names.emplace_back("matched_text");
+    return_types.emplace_back(LogicalTypeId::VARCHAR);
+
     // Every output row is row-level, so id_column is valid in any call
     auto id_column = BindIdColumn(context, input, "pii_audit_table", table_name, true, "");
     InsertIdColumn(id_column, "pii_audit_table", return_types, names);
@@ -2775,15 +4741,16 @@ void PIIAuditTableFunction(ClientContext &context, TableFunctionInput &input, Da
     auto &state = input.global_state->Cast<PIIAuditTableState>();
     auto &bind_data = input.bind_data->Cast<PIIAuditTableBindData>();
     auto &engine = PIIEngine::Instance();
+    NERInterruptScope interrupt_scope(&context);
 
     try {
         if (!state.initialized) {
             state.initialized = true;
-            // Resolve the VARCHAR columns to audit and snapshot the
+            // Resolve the text columns to audit and snapshot the
             // configuration once for the whole scan; enabled_types and
             // min_confidence are applied centrally by PIIEngine::Detect
-            state.columns_to_scan = ResolvePIIScanColumns(context, bind_data.table_name, bind_data.column_filter);
-            state.config = PIIConfig::Get().Snapshot();
+            state.columns_to_scan = ResolvePIIScanColumns(context, "pii_audit_table", bind_data.table_name, bind_data.column_filter);
+            state.config = StatementPIIConfig(&context);
             state.mask_strategy = state.config.default_mask_strategy;
         }
 
@@ -2801,12 +4768,13 @@ void PIIAuditTableFunction(ClientContext &context, TableFunctionInput &input, Da
                 const auto &col_name = state.columns_to_scan[state.column_idx];
                 // The id column (if any) is read in the same query as the
                 // audited column, so each id stays with its own row
-                std::string query = "SELECT " + QuoteSqlIdentifier(col_name) + bind_data.id_column.SelectSuffix() +
+                std::string query = "SELECT CAST(" + QuoteSqlIdentifier(col_name) + " AS VARCHAR)" +
+                                    bind_data.id_column.SelectSuffix() +
                                     " FROM " + BuildQueryTableRef(bind_data.table_name);
 
                 // Execute as a streaming query on a dedicated connection
                 // (the connection must outlive the streaming result)
-                state.connection = make_uniq<Connection>(*context.db);
+                state.connection = make_uniq<Connection>(OpenSiblingConnection(context));
                 auto result = StreamQuery(*state.connection, query);
                 if (result->HasError()) {
                     AnofoxTrace(AnofoxLogLevel::Warn, "pii_audit_table: Error querying column " + col_name);
@@ -2818,6 +4786,9 @@ void PIIAuditTableFunction(ClientContext &context, TableFunctionInput &input, Da
                 state.source_row = 0;
             }
 
+            // One input chunk is audited per iteration; DuckDB does not check for an interrupt
+            // until this callback returns
+            ThrowIfInterrupted(context);
             auto chunk = state.column_result->Fetch();
             if (!chunk || chunk->size() == 0) {
                 if (state.column_result->HasError()) {
@@ -2861,6 +4832,7 @@ void PIIAuditTableFunction(ClientContext &context, TableFunctionInput &input, Da
                     res.pii_type = match.type;
                     res.original_value = text;
                     res.masked_value = masked;
+                    res.matched_text = match.matched_text;
                     res.start_pos = static_cast<int64_t>(match.start_pos);
                     res.end_pos = static_cast<int64_t>(match.end_pos);
                     res.confidence = match.confidence;
@@ -2870,6 +4842,10 @@ void PIIAuditTableFunction(ClientContext &context, TableFunctionInput &input, Da
                 }
             }
         }
+    } catch (const Exception &) {
+        // Already a DuckDB error with a pii_audit_table message; wrapping it
+        // would show its JSON serialisation
+        throw;
     } catch (const std::exception &e) {
         throw InvalidInputException("pii_audit_table: Failed to audit table - %s", e.what());
     }
@@ -2897,6 +4873,8 @@ void PIIAuditTableFunction(ClientContext &context, TableFunctionInput &input, Da
     auto start_positions = duckdb_compat::FlatData<int64_t>(output.data[base + 4]);
     auto end_positions = duckdb_compat::FlatData<int64_t>(output.data[base + 5]);
     auto confidences = duckdb_compat::FlatData<double>(output.data[base + 6]);
+    auto &matched_text_vec = output.data[base + 7];
+    auto matched_texts = duckdb_compat::FlatData<string_t>(matched_text_vec);
 
     for (idx_t i = 0; i < count; i++) {
         const auto &res = state.pending[state.pending_offset + i];
@@ -2911,6 +4889,7 @@ void PIIAuditTableFunction(ClientContext &context, TableFunctionInput &input, Da
         start_positions[i] = res.start_pos;
         end_positions[i] = res.end_pos;
         confidences[i] = res.confidence;
+        matched_texts[i] = StringVector::AddString(matched_text_vec, res.matched_text);
     }
 
     state.pending_offset += count;
@@ -2924,6 +4903,7 @@ TableFunctionSet CreatePIIAuditTableFunctionSet() {
                         {LogicalType::VARCHAR},
                         DATAZOO_GUARD(ANOFOX_TABULAR_BANNER, PIIAuditTableFunction), DATAZOO_GUARD(ANOFOX_TABULAR_BANNER, PIIAuditTableBind), PIIAuditTableInit);
     AddIdColumnParameter(func1);
+    duckdb_compat::AddNamedParameter(func1, PII_COLUMNS_PARAMETER, LogicalType(LogicalTypeId::VARCHAR));
     set.AddFunction(func1);
 
     // Version 2: table_name + column filter
@@ -2942,36 +4922,94 @@ TableFunctionSet CreatePIIAuditTableFunctionSet() {
 
 struct PIIScanTableBindData : public TableFunctionData {
     std::string table_name;
-    std::vector<std::string> column_filter;  // Empty = all VARCHAR columns
+    std::vector<std::string> column_filter;  // Empty = all columns that hold text
 
     PIIScanTableBindData(const std::string &table, const std::vector<std::string> &cols)
         : table_name(table), column_filter(cols) {}
 };
 
+// One output row of pii_scan_table: a PII type found in a column (status "scanned"), or a
+// column without any match ("no_match"), skipped for its type ("skipped (DATE)") or not
+// readable ("error (...)"); the last three have pii_type UNKNOWN (output NULL)
 struct PIIScanTableResult {
     std::string column_name;
     PIIType pii_type;
     int64_t match_count;
     std::vector<std::string> sample_values;
-    double confidence;
+    double confidence;       // mean match confidence, set once the column is scanned
+    double confidence_sum;   // running sum of match confidences
+    int64_t values_scanned;  // non-NULL values of the column that were scanned
+    std::string status;
+    std::vector<std::string> checked_types;  // PII types applied to the column (sorted)
+    std::string ner_model;                   // NER model that ran on the column ("" = none)
 
-    PIIScanTableResult() : pii_type(PIIType::UNKNOWN), match_count(0), confidence(1.0) {}
+    PIIScanTableResult()
+        : pii_type(PIIType::UNKNOWN), match_count(0), confidence(1.0), confidence_sum(0.0), values_scanned(0),
+          status("scanned") {}
 };
+
+PIIScanTableResult MakePIIScanStatusRow(const std::string &column_name, int64_t values_scanned,
+                                        const std::string &status) {
+    PIIScanTableResult row;
+    row.column_name = column_name;
+    row.values_scanned = values_scanned;
+    row.status = status;
+    return row;
+}
 
 // Streaming scan state: columns are scanned one at a time with streamed
 // input chunks; only the (small) per-column aggregates of columns that have
 // not been emitted yet are buffered.
 struct PIIScanTableState : public GlobalTableFunctionState {
     bool initialized = false;
-    // Columns to scan (resolved from the catalog on first call)
-    std::vector<std::string> columns_to_scan;
+    // Columns to report (resolved on first call), scanned or skipped
+    std::vector<PIIScanColumn> columns_to_scan;
     idx_t column_idx = 0;
     // Configuration snapshot taken once for the whole scan
     PIIConfigSnapshot config;
     // Aggregated results of scanned columns that have not been emitted yet
     std::vector<PIIScanTableResult> pending;
     idx_t pending_offset = 0;
+    // Whether the configured types include NER types, and the values scanned
+    // so far (for the large-scan warning, logged once per scan)
+    bool wants_ner = false;
+    int64_t total_values = 0;
+    bool large_scan_warned = false;
+    // The PII types the configuration applies, sorted by name (see CheckedPIITypes)
+    std::vector<std::string> configured_types;
 };
+
+// The PII types a scan applies under the configuration, sorted by name: the enabled
+// types, without ORGANIZATION, LOCATION and MISC while the NER model cannot run (NAME
+// then still runs on the name dictionary). An empty enabled list means the default
+// set (every type except the opt-in POSTAL_CODE).
+static std::vector<std::string> CheckedPIITypes(const PIIConfigSnapshot &config, bool ner_unavailable) {
+    std::vector<std::string> types;
+    for (const auto type : PIIEngine::Instance().GetSupportedTypes()) {
+        if (!config.IsTypeEnabled(type)) {
+            continue;
+        }
+        if (ner_unavailable && IsNERType(type) && type != PIIType::NAME) {
+            continue;
+        }
+        types.push_back(PIITypeToString(type));
+    }
+    std::sort(types.begin(), types.end());
+    types.erase(std::unique(types.begin(), types.end()), types.end());
+    return types;
+}
+
+// The name of the NER model that runs, or "" when it cannot run
+static std::string ActiveNERModelName() {
+    if (NERUnavailable()) {
+        return std::string();
+    }
+#if HAVE_OPENVINO
+    return NERModelManager::Instance().GetStatusSnapshot().model_name;
+#else
+    return std::string();
+#endif
+}
 
 unique_ptr<GlobalTableFunctionState> PIIScanTableInit(ClientContext &, TableFunctionInitInput &) {
     return make_uniq<PIIScanTableState>();
@@ -2985,23 +5023,15 @@ unique_ptr<FunctionData> PIIScanTableBind(ClientContext &context, TableFunctionB
     if (input.inputs.empty()) {
         throw BinderException("pii_scan_table requires a table name");
     }
-    auto table_name = input.inputs[0].GetValue<std::string>();
+    auto table_name = RequireNonNullArgument(input, 0, "pii_scan_table", "table_name");
+    RejectUncommittedChanges(context, "pii_scan_table");
 
-    // Get optional column filter
-    std::vector<std::string> column_filter;
-    if (input.inputs.size() > 1 && !input.inputs[1].IsNull()) {
-        auto cols_str = input.inputs[1].GetValue<std::string>();
-        // Parse comma-separated column names
-        std::stringstream ss(cols_str);
-        std::string col;
-        while (std::getline(ss, col, ',')) {
-            // Trim whitespace
-            col.erase(0, col.find_first_not_of(" \t"));
-            col.erase(col.find_last_not_of(" \t") + 1);
-            if (!col.empty()) {
-                column_filter.push_back(col);
-            }
-        }
+    // Get optional column filter (second argument or columns := ...)
+    auto column_filter = ParsePIIColumnFilter(input, "pii_scan_table");
+    // Resolve the filter now so an unknown column is a bind error; the scan uses the
+    // table's own spelling of each name
+    if (!column_filter.empty()) {
+        column_filter = ResolvePIIScanColumns(context, "pii_scan_table", table_name, column_filter);
     }
 
     // Define output columns
@@ -3020,6 +5050,20 @@ unique_ptr<FunctionData> PIIScanTableBind(ClientContext &context, TableFunctionB
     names.emplace_back("confidence");
     return_types.emplace_back(LogicalTypeId::DOUBLE);
 
+    names.emplace_back("values_scanned");
+    return_types.emplace_back(LogicalTypeId::BIGINT);
+
+    names.emplace_back("status");
+    return_types.emplace_back(LogicalTypeId::VARCHAR);
+
+    // The record of what the scan checked: the PII types applied to the column and
+    // the NER model that ran on it, so "no_match" can be read correctly
+    names.emplace_back("checked_types");
+    return_types.emplace_back(LogicalType::LIST(LogicalTypeId::VARCHAR));
+
+    names.emplace_back("ner_model");
+    return_types.emplace_back(LogicalTypeId::VARCHAR);
+
     return make_uniq<PIIScanTableBindData>(table_name, column_filter);
 }
 
@@ -3027,14 +5071,16 @@ void PIIScanTableFunction(ClientContext &context, TableFunctionInput &input, Dat
     auto &state = input.global_state->Cast<PIIScanTableState>();
     auto &bind_data = input.bind_data->Cast<PIIScanTableBindData>();
     auto &engine = PIIEngine::Instance();
+    NERInterruptScope interrupt_scope(&context);
 
     try {
         if (!state.initialized) {
             state.initialized = true;
-            // Resolve the VARCHAR columns to scan and snapshot the
+            // Resolve the text columns to scan and snapshot the
             // configuration once for the whole scan
-            state.columns_to_scan = ResolvePIIScanColumns(context, bind_data.table_name, bind_data.column_filter);
-            state.config = PIIConfig::Get().Snapshot();
+            state.columns_to_scan = ResolvePIIScanPlan(context, "pii_scan_table", bind_data.table_name, bind_data.column_filter);
+            state.config = StatementPIIConfig(&context);
+            state.wants_ner = WantsNERTypes(state.config.enabled_types);
         }
 
         // Scan one source column at a time until at least one aggregate row
@@ -3045,27 +5091,40 @@ void PIIScanTableFunction(ClientContext &context, TableFunctionInput &input, Dat
             state.pending.clear();
             state.pending_offset = 0;
 
-            const auto &col_name = state.columns_to_scan[state.column_idx];
+            const auto &column = state.columns_to_scan[state.column_idx];
+            const auto &col_name = column.name;
             state.column_idx++;
 
+            // A column that is not scanned is still reported, so the result
+            // accounts for every column of the table
+            if (!column.scan) {
+                state.pending.push_back(MakePIIScanStatusRow(col_name, 0, "skipped (" + column.type + ")"));
+                continue;
+            }
+
             // Build query to get the non-NULL column values
-            std::string query = "SELECT " + QuoteSqlIdentifier(col_name) + " FROM " +
+            std::string query = "SELECT CAST(" + QuoteSqlIdentifier(col_name) + " AS VARCHAR) FROM " +
                                 BuildQueryTableRef(bind_data.table_name) + " WHERE " +
                                 QuoteSqlIdentifier(col_name) + " IS NOT NULL";
 
             // Execute as a streaming query using a new connection
-            Connection con(*context.db);
+            auto con = OpenSiblingConnection(context);
             auto result = StreamQuery(con, query);
             if (result->HasError()) {
                 AnofoxTrace(AnofoxLogLevel::Warn, "pii_scan_table: Error querying column " + col_name);
+                state.pending.push_back(MakePIIScanStatusRow(col_name, 0, "error (" + QueryErrorText(result->GetErrorObject()) + ")"));
                 continue;
             }
 
             // Aggregate PII detections by type
             std::unordered_map<PIIType, PIIScanTableResult> col_results;
             std::vector<std::string> batch_texts;
+            int64_t values_scanned = 0;
 
             while (true) {
+                // A whole column is scanned in this callback, so DuckDB never checks for an
+                // interrupt in between: check per input chunk (and per NER inference)
+                ThrowIfInterrupted(context);
                 auto chunk = result->Fetch();
                 if (!chunk || chunk->size() == 0) break;
 
@@ -3085,6 +5144,18 @@ void PIIScanTableFunction(ClientContext &context, TableFunctionInput &input, Dat
 
                 // Run batch detection (pre-warms NER cache)
                 auto batch_matches = engine.DetectBatch(batch_texts, {}, state.config);
+                values_scanned += static_cast<int64_t>(batch_texts.size());
+                state.total_values += static_cast<int64_t>(batch_texts.size());
+                if (state.wants_ner && !state.large_scan_warned && state.total_values > NER_LARGE_SCAN_VALUES &&
+                    !NERUnavailable()) {
+                    state.large_scan_warned = true;
+                    AnofoxTrace(AnofoxLogLevel::Warn,
+                                "pii_scan_table: '" + bind_data.table_name + "' has more than " +
+                                    std::to_string(NER_LARGE_SCAN_VALUES) +
+                                    " values to scan with the NER model (NAME, ORGANIZATION, LOCATION, MISC), "
+                                    "which takes tens of milliseconds per distinct text value. To scan faster, "
+                                    "restrict anofox_pii_enabled_types to the pattern-based types you need");
+                }
 
                 // Process results
                 for (size_t i = 0; i < batch_matches.size(); i++) {
@@ -3097,20 +5168,56 @@ void PIIScanTableFunction(ClientContext &context, TableFunctionInput &input, Dat
                         if (res.sample_values.size() < 5) {
                             res.sample_values.push_back(match.matched_text);
                         }
-                        res.confidence = 1.0;  // Regex matches have full confidence
+                        res.confidence_sum += match.confidence;
                     }
                 }
             }
             if (result->HasError()) {
                 AnofoxTrace(AnofoxLogLevel::Warn, "pii_scan_table: Error querying column " + col_name);
+                state.pending.push_back(MakePIIScanStatusRow(col_name, values_scanned, "error (" + QueryErrorText(result->GetErrorObject()) + ")"));
+                continue;
+            }
+            // NER types were requested but the model could not run: say so in
+            // the status, so a clean result is not mistaken for "no names"
+            const bool ner_unavailable = NERUnavailable();
+            const std::string ner_note = state.wants_ner && ner_unavailable ? " (NER unavailable)" : "";
+            // The types and the model are judged after the column is scanned: the
+            // first NER call loads (or fails to load) the model
+            const auto checked_types = CheckedPIITypes(state.config, ner_unavailable);
+            const std::string ner_model = state.wants_ner ? ActiveNERModelName() : std::string();
+            AnofoxTrace(AnofoxLogLevel::Debug, "pii_scan_table: column " + col_name + " checked " +
+                                                   std::to_string(checked_types.size()) + " type(s), NER model '" +
+                                                   ner_model + "'");
+            if (col_results.empty()) {
+                auto row = MakePIIScanStatusRow(col_name, values_scanned, "no_match" + ner_note);
+                row.checked_types = checked_types;
+                row.ner_model = ner_model;
+                state.pending.push_back(std::move(row));
                 continue;
             }
 
-            // Stage this column's aggregates for emission
+            // Stage this column's aggregates for emission, ordered by
+            // pii_type so the output order does not depend on hash order.
+            // confidence is the mean of the match confidences (1.0 for
+            // regex matches, the model score for NER matches)
+            const size_t first_pending = state.pending.size();
             for (auto &[type, res] : col_results) {
+                res.confidence = res.confidence_sum / static_cast<double>(res.match_count);
+                res.values_scanned = values_scanned;
+                res.status += ner_note;
+                res.checked_types = checked_types;
+                res.ner_model = ner_model;
                 state.pending.push_back(std::move(res));
             }
+            std::sort(state.pending.begin() + static_cast<std::ptrdiff_t>(first_pending), state.pending.end(),
+                      [](const PIIScanTableResult &a, const PIIScanTableResult &b) {
+                          return PIITypeToString(a.pii_type) < PIITypeToString(b.pii_type);
+                      });
         }
+    } catch (const Exception &) {
+        // Already a DuckDB error with a pii_scan_table message; wrapping it
+        // would show its JSON serialisation
+        throw;
     } catch (const std::exception &e) {
         throw InvalidInputException("pii_scan_table: Failed to scan table - %s", e.what());
     }
@@ -3126,8 +5233,12 @@ void PIIScanTableFunction(ClientContext &context, TableFunctionInput &input, Dat
         // Column 0: column_name
         output.SetValue(0, i, Value(res.column_name));
 
+        // Rows without a match (no_match, skipped, error) have no type,
+        // samples or confidence
+        const bool has_match = res.pii_type != PIIType::UNKNOWN;
+
         // Column 1: pii_type
-        output.SetValue(1, i, Value(PIITypeToString(res.pii_type)));
+        output.SetValue(1, i, has_match ? Value(PIITypeToString(res.pii_type)) : Value(LogicalType::VARCHAR));
 
         // Column 2: match_count
         output.SetValue(2, i, Value::BIGINT(res.match_count));
@@ -3140,7 +5251,20 @@ void PIIScanTableFunction(ClientContext &context, TableFunctionInput &input, Dat
         output.SetValue(3, i, Value::LIST(LogicalTypeId::VARCHAR, std::move(sample_list)));
 
         // Column 4: confidence
-        output.SetValue(4, i, Value::DOUBLE(res.confidence));
+        output.SetValue(4, i, has_match ? Value::DOUBLE(res.confidence) : Value(LogicalType::DOUBLE));
+
+        // Column 5: values_scanned, column 6: status
+        output.SetValue(5, i, Value::BIGINT(res.values_scanned));
+        output.SetValue(6, i, Value(res.status));
+
+        // Column 7: checked_types (empty for skipped and unreadable columns),
+        // column 8: ner_model (NULL when the model did not run on the column)
+        std::vector<Value> checked;
+        for (const auto &type : res.checked_types) {
+            checked.push_back(Value(type));
+        }
+        output.SetValue(7, i, Value::LIST(LogicalTypeId::VARCHAR, std::move(checked)));
+        output.SetValue(8, i, res.ner_model.empty() ? Value(LogicalType::VARCHAR) : Value(res.ner_model));
     }
 
     state.pending_offset += count;
@@ -3153,6 +5277,7 @@ TableFunctionSet CreatePIIScanTableFunctionSet() {
     TableFunction func1("anofox_tab_pii_scan_table",
                         {LogicalType::VARCHAR},
                         DATAZOO_GUARD(ANOFOX_TABULAR_BANNER, PIIScanTableFunction), DATAZOO_GUARD(ANOFOX_TABULAR_BANNER, PIIScanTableBind), PIIScanTableInit);
+    duckdb_compat::AddNamedParameter(func1, PII_COLUMNS_PARAMETER, LogicalType(LogicalTypeId::VARCHAR));
     set.AddFunction(func1);
 
     // Version 2: table_name + column filter
@@ -3260,6 +5385,11 @@ unique_ptr<FunctionData> PIIMaskColumnBind(ClientContext &) {
     return nullptr;
 }
 
+unique_ptr<FunctionData> PIIMaskValueBind(ClientContext &) {
+    PostHogTelemetry::Instance().RecordFunctionCall("pii_mask_value");
+    return nullptr;
+}
+
 unique_ptr<FunctionData> PIIRedactColumnBind(ClientContext &) {
     PostHogTelemetry::Instance().RecordFunctionCall("pii_redact_column");
     return nullptr;
@@ -3283,6 +5413,15 @@ void SetPIIDefaultMaskStrategyOption(ClientContext &, SetScope, Value &parameter
         throw InvalidInputException("anofox_pii_default_mask_strategy cannot be NULL");
     }
     auto strategy = parameter.ToString();
+    // 'none' is valid as an explicit argument, but as the default it would
+    // silently turn pii_redact_column(value) and pii_audit_table.masked_value
+    // into pass-throughs of raw PII. Unknown names still raise the generic
+    // "Invalid mask strategy" error from ParseMaskStrategy
+    if (ParseMaskStrategy(strategy) == MaskStrategy::NONE) {
+        throw InvalidInputException("anofox_pii_default_mask_strategy cannot be 'none': a default that "
+                                    "disables masking would expose raw PII. Use redact, hash, partial or "
+                                    "asterisk (pass 'none' explicitly to pii_mask and friends instead)");
+    }
     PIIConfig::Get().SetDefaultMaskStrategy(strategy);
     parameter = Value(PIIConfig::Get().GetDefaultMaskStrategyString());
 }
@@ -3296,6 +5435,13 @@ void SetPIIEnabledTypesOption(ClientContext &, SetScope, Value &parameter) {
     auto types_csv = parameter.ToString();
     PIIConfig::Get().SetEnabledTypes(types_csv);
     parameter = Value(PIIConfig::Get().GetEnabledTypesString());
+}
+
+void SetPIIRequireChecksumOption(ClientContext &, SetScope, Value &parameter) {
+    if (parameter.IsNull()) {
+        throw InvalidInputException("anofox_pii_require_checksum cannot be NULL");
+    }
+    PIIConfig::Get().SetRequireChecksum(BooleanValue::Get(parameter));
 }
 
 void SetPIIDeepValidationOption(ClientContext &, SetScope, Value &parameter) {
@@ -3335,7 +5481,7 @@ unique_ptr<GlobalTableFunctionState> PIIConfigInit(ClientContext &, TableFunctio
     return make_uniq<PIIConfigState>();
 }
 
-void PIIConfigFunction(ClientContext &, TableFunctionInput &input, DataChunk &output) {
+void PIIConfigFunction(ClientContext &context, TableFunctionInput &input, DataChunk &output) {
     auto &state = input.global_state->Cast<PIIConfigState>();
 
     struct ConfigOption {
@@ -3345,22 +5491,25 @@ void PIIConfigFunction(ClientContext &, TableFunctionInput &input, DataChunk &ou
     };
 
     // Single consistent snapshot of the configuration
-    const auto config = PIIConfig::Get().Snapshot();
-    const auto enabled_types_str = PIIConfig::Get().GetEnabledTypesString();
+    const auto config = StatementPIIConfig(&context);
+    const auto enabled_types_str = EnabledTypesToString(config.enabled_types);
 
     std::vector<ConfigOption> options = {
         {"anofox_pii_min_confidence",
          std::to_string(config.min_confidence),
-         "Minimum confidence threshold for NER-based detection (0.0 - 1.0)"},
+         "Minimum confidence of a PII match (0.0 - 1.0); applies to every match: pattern matches have 1.0, " "checksum failures 0.6, dictionary names 0.5, NER matches the model score"},
         {"anofox_pii_default_mask_strategy",
          MaskStrategyToString(config.default_mask_strategy),
-         "Default masking strategy (REDACT, HASH, PARTIAL, ASTERISK, NONE)"},
+         "Default masking strategy (REDACT, HASH, PARTIAL, ASTERISK; NONE is rejected)"},
         {"anofox_pii_enabled_types",
-         enabled_types_str.empty() ? "(all types)" : enabled_types_str,
-         "Comma-separated list of PII types to detect (empty = all)"},
+         enabled_types_str.empty() ? "(all types except POSTAL_CODE)" : enabled_types_str,
+         "Comma-separated list of PII types to detect (empty = all types except POSTAL_CODE; DEFAULT stands " "for that set)"},
         {"anofox_pii_deep_validation",
          config.deep_validation ? "true" : "false",
-         "Enable deep validation using libphonenumber for phone numbers"}
+         "Validate detected phone numbers with the built-in phone module and drop those whose length is " "impossible for their country"},
+        {"anofox_pii_require_checksum",
+         config.require_checksum ? "true" : "false",
+         "Drop IBAN and credit card matches that fail their checksum (false: report them at confidence 0.6)"}
     };
 
     if (state.current_row >= options.size()) {
@@ -3396,28 +5545,35 @@ void RegisterPIIOptions(ExtensionLoader &loader) {
     auto &config = DBConfig::GetConfig(loader.GetDatabaseInstance());
 
     config.AddExtensionOption("anofox_pii_min_confidence",
-                              "Minimum confidence threshold for NER-based PII detection (0.0 - 1.0)",
+                              "Minimum confidence of a PII match (0.0 - 1.0); applies to every match: pattern matches have 1.0, " "checksum failures 0.6, dictionary names 0.5, NER matches the model score",
                               LogicalTypeId::DOUBLE,
                               Value::DOUBLE(PIIConfig::DEFAULT_MIN_CONFIDENCE),
                               SetPIIMinConfidenceOption);
 
     config.AddExtensionOption("anofox_pii_default_mask_strategy",
-                              "Default masking strategy (REDACT, HASH, PARTIAL, ASTERISK, NONE)",
+                              "Default masking strategy (REDACT, HASH, PARTIAL, ASTERISK; NONE is rejected)",
                               LogicalTypeId::VARCHAR,
                               Value(PIIConfig::DEFAULT_MASK_STRATEGY),
                               SetPIIDefaultMaskStrategyOption);
 
     config.AddExtensionOption("anofox_pii_enabled_types",
-                              "Comma-separated list of PII types to detect (empty = all)",
+                              "Comma-separated list of PII types to detect (empty = all types except POSTAL_CODE; DEFAULT stands " "for that set)",
                               LogicalTypeId::VARCHAR,
                               Value(""),
                               SetPIIEnabledTypesOption);
 
     config.AddExtensionOption("anofox_pii_deep_validation",
-                              "Enable deep validation using libphonenumber for phone numbers (default: false)",
+                              "Validate detected phone numbers with the built-in phone module and drop those whose length is " "impossible for their country (default: false)",
                               LogicalTypeId::BOOLEAN,
                               Value::BOOLEAN(false),
                               SetPIIDeepValidationOption);
+
+    config.AddExtensionOption("anofox_pii_require_checksum",
+                              "Drop IBAN and credit card matches that fail their checksum (false: report them "
+                              "at confidence 0.6 so mistyped values can still be masked)",
+                              LogicalTypeId::BOOLEAN,
+                              Value::BOOLEAN(true),
+                              SetPIIRequireChecksumOption);
 
     AnofoxTrace(AnofoxLogLevel::Info, "PII configuration options registered");
 }
@@ -3633,6 +5789,20 @@ void RegisterPIIFunctions(ExtensionLoader &loader) {
         pii_mask_column_func.SetBindCallback(&ScalarContextBind<PIIMaskColumnBind>::Bind);
         RegisterScalarFunctionWithAlias(loader, pii_mask_column_func, "pii_mask_column", {std::move(desc)});
     }
+    // pii_mask_value(value, pii_type, strategy) - mask a whole value of a known type
+    {
+        FunctionDescription desc;
+        desc.description = "Masks a whole value as the given PII type, without detection: for columns known to hold "
+                           "PII ('redact', 'partial', 'asterisk', 'hash', 'none').";
+        desc.parameter_names = {"value", "pii_type", "strategy"};
+        desc.parameter_types = {LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR};
+        desc.examples = {"SELECT pii_mask_value('Li', 'NAME', 'redact');",
+                         "SELECT pii_mask_value('01511234567', 'PHONE', 'partial');"};
+        desc.categories = {"pii", "masking"};
+        auto pii_mask_value_func = PIIMaskValueFunction::GetFunction();
+        pii_mask_value_func.SetBindCallback(&ScalarContextBind<PIIMaskValueBind>::Bind);
+        RegisterScalarFunctionWithAlias(loader, pii_mask_value_func, "pii_mask_value", {std::move(desc)});
+    }
     // pii_redact_column(value, strategy?) - mask all PII, optional strategy
     {
         FunctionDescription desc;
@@ -3662,7 +5832,7 @@ void RegisterPIIFunctions(ExtensionLoader &loader) {
     {
         FunctionDescription desc;
         desc.description = "Scans all string columns of a table and returns a summary of detected PII types per column.";
-        desc.parameter_names = {"table_name"};
+        desc.parameter_names = {"table_name", "columns"};
         desc.examples = {"SELECT * FROM pii_scan_table('customers');"};
         desc.categories = {"pii", "audit"};
         auto pii_scan_set = CreatePIIScanTableFunctionSet();
@@ -3672,7 +5842,7 @@ void RegisterPIIFunctions(ExtensionLoader &loader) {
     {
         FunctionDescription desc;
         desc.description = "Returns a row-level audit of PII detected in all string columns of a table.";
-        desc.parameter_names = {"table_name"};
+        desc.parameter_names = {"table_name", "columns"};
         desc.examples = {"SELECT * FROM pii_audit_table('customers');"};
         desc.categories = {"pii", "audit"};
         auto pii_audit_set = CreatePIIAuditTableFunctionSet();

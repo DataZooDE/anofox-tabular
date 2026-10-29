@@ -85,3 +85,428 @@ class TestProfile:
         result = conn.profile(df)
         row = result[result["column"] == "x"].iloc[0]
         assert abs(row["null_rate"] - 0.75) < 0.01
+
+
+class TestQualityCheckRules:
+    def test_unknown_rule_raises(self, conn):
+        import pandas as pd
+        df = pd.DataFrame({"a": [1, None]})
+        with pytest.raises(ValueError) as exc:
+            conn.quality_check(df, {"null-rate": {"column": "a"}, "zscore": {"column": "a"}})
+        message = str(exc.value)
+        assert "null-rate" in message and "zscore" in message
+        assert "volume" in message and "null_rate" in message and "distinct_count" in message
+
+    def test_unknown_rule_creates_no_table(self, conn):
+        import pandas as pd
+        before = conn.execute(
+            "SELECT count(*) FROM information_schema.tables WHERE table_name LIKE '_anofox_%'"
+        ).fetchone()[0]
+        with pytest.raises(ValueError):
+            conn.quality_check(pd.DataFrame({"a": [1]}), {"nope": {}})
+        after = conn.execute(
+            "SELECT count(*) FROM information_schema.tables WHERE table_name LIKE '_anofox_%'"
+        ).fetchone()[0]
+        assert after == before
+
+    def test_known_rules_still_run(self, conn):
+        import pandas as pd
+        result = conn.quality_check(pd.DataFrame({"a": [1, None]}), {"null_rate": {"column": "a"}})
+        assert result["status"] == "fail"
+        assert set(result["checks"]) == {"null_rate"}
+
+
+def _signups():
+    import pandas as pd
+    return pd.DataFrame({
+        "customer_id": [f"C-{i:04d}" for i in range(1, 9)],
+        "email": ["ana@example.com", None, "li@example.org", "jo@example.net",
+                  None, "max@example.de", "eva@example.at", "tim@example.ch"],
+        "country": ["DE", "DE", "AT", "CH", "DE", "DE", "AT", "CH"],
+    })
+
+
+class TestQualityCheckRuleKeys:
+    """Keys inside a rule are validated: a misspelled threshold must not be ignored."""
+
+    def test_unknown_key_in_volume_raises(self, conn):
+        with pytest.raises(ValueError) as exc:
+            conn.quality_check(_signups(), {"volume": {"min": 10}})
+        message = str(exc.value)
+        assert "'min'" in message and "volume" in message
+        assert "min_rows" in message and "max_rows" in message
+
+    def test_unknown_key_in_null_rate_raises(self, conn):
+        with pytest.raises(ValueError) as exc:
+            conn.quality_check(_signups(), {"null_rate": {"column": "email", "max_rate": 0.1}})
+        message = str(exc.value)
+        assert "'max_rate'" in message and "max_null_rate" in message
+
+    def test_missing_column_raises_value_error(self, conn):
+        with pytest.raises(ValueError) as exc:
+            conn.quality_check(_signups(), {"null_rate": {"max_null_rate": 0.1}})
+        assert "'column'" in str(exc.value) and "null_rate" in str(exc.value)
+        with pytest.raises(ValueError, match="distinct_count"):
+            conn.quality_check(_signups(), {"distinct_count": {"min_distinct": 2}})
+
+    def test_rule_params_must_be_a_dict(self, conn):
+        with pytest.raises(ValueError, match="volume"):
+            conn.quality_check(_signups(), {"volume": 10})
+
+    def test_valid_rules_run(self, conn):
+        from anofox._connection import QualityResult
+        result = conn.quality_check(_signups(), {
+            "volume": {"min_rows": 5, "max_rows": 100},
+            "null_rate": {"column": "email", "max_null_rate": 0.1},
+            "distinct_count": {"column": "country", "min_distinct": 2, "max_distinct": 5},
+        })
+        assert isinstance(result, QualityResult)
+        assert result.status == "fail"
+        assert {n: c["status"] for n, c in result.checks.items()} == {
+            "volume": "pass", "null_rate": "fail", "distinct_count": "pass",
+        }
+
+
+class TestPendingResults:
+    """
+    A wrapper call must leave no unfinished query result behind, and must not
+    trip over one left by the caller. The DuckDB 2.0 client refuses
+    register(), unregister() and sql() while a result of execute() is not read
+    to its end (fetchone() on a one-row result does not end it).
+    """
+
+    @pytest.fixture
+    def fresh(self, ext_path):
+        if ext_path is None:
+            pytest.skip("No extension binary")
+        import anofox
+        conn = anofox.connect(extension_path=ext_path)
+        yield conn
+        conn.close()
+
+    def test_scalar_wrapper_then_dataframe_wrapper(self, fresh):
+        import pandas as pd
+        from anofox import money, validate, vat
+
+        assert money.currency_name(fresh, "EUR")
+        assert vat.vat_is_valid(fresh, "DE123456789") in (True, False)
+        df = pd.DataFrame({"email": ["a@example.com", "bad"]})
+        out = validate.email_is_valid(fresh, df, column="email")
+        assert list(out["email_is_valid"]) == [True, False]
+
+    def test_connection_methods_after_partly_read_result(self, fresh):
+        import pandas as pd
+        from anofox.validate import EmailRule
+
+        fresh.execute("SELECT * FROM range(3)").fetchone()
+        assert fresh.is_extension_loaded()
+        df = pd.DataFrame({"email": ["a@example.com", "bad"]})
+        fresh.execute("SELECT * FROM range(3)").fetchone()
+        assert not fresh.validate(df, {"email": EmailRule()}).passed
+        fresh.execute("SELECT * FROM range(3)").fetchone()
+        assert len(fresh.profile(df)) == 1
+
+    def test_register_and_sql_after_partly_read_result(self, fresh):
+        import pandas as pd
+
+        fresh.execute("SELECT 42").fetchone()
+        fresh.register("pending_v", pd.DataFrame({"a": [1, 2]}))
+        fresh.execute("SELECT * FROM range(3)").fetchone()
+        assert fresh.sql("SELECT sum(a) FROM pending_v").fetchall() == [(3,)]
+        fresh.execute("SELECT * FROM range(3)").fetchone()
+        fresh.unregister("pending_v")
+
+
+class TestValidateRules:
+    """conn.validate() rejects rule objects it cannot check instead of skipping them."""
+
+    @staticmethod
+    def _contacts():
+        import pandas as pd
+        return pd.DataFrame({
+            "customer_id": [1001, 1002, 1003],
+            "email": ["ana.lopez@example.com", "bad-email", "j.meyer@example.org"],
+            "phone": ["+49 30 901820", "123", "+1 650-253-0000"],
+        })
+
+    @pytest.mark.parametrize("rule", ["email", "phone", None, 42, {"mode": "regex"}])
+    def test_unsupported_rule_raises(self, conn, rule):
+        with pytest.raises(TypeError, match=r"'email'.*EmailRule.*PhoneRule"):
+            conn.validate(self._contacts(), {"email": rule})
+
+    def test_message_shows_the_rule(self, conn):
+        with pytest.raises(TypeError, match=r"got 'email'"):
+            conn.validate(self._contacts(), {"email": "email"})
+
+    def test_bad_rule_checks_nothing(self, conn):
+        from anofox.validate import EmailRule
+        # The unsupported rule is reported even after a supported one.
+        with pytest.raises(TypeError, match="'phone'"):
+            conn.validate(self._contacts(), {"email": EmailRule(), "phone": "phone"})
+
+    def test_supported_rules_still_work(self, conn):
+        from anofox.validate import EmailRule, PhoneRule
+        result = conn.validate(self._contacts(), {"email": EmailRule(), "phone": PhoneRule(region="DE")})
+        assert result.passed is False
+        assert sorted(result.failures["column"].tolist()) == ["email", "phone"]
+
+
+class TestPhoneRuleDefaultRegion:
+    """PhoneRule() leaves the region to anofox_tab_phonenumber_default_region,
+    like the phone helpers (it used to hard-code 'US')."""
+
+    def test_default_region_follows_the_setting(self, conn):
+        import pandas as pd
+        from anofox.validate import PhoneRule
+
+        assert PhoneRule().region is None
+        conn.execute("SET anofox_tab_phonenumber_default_region = 'DE'").fetchall()
+        try:
+            df = pd.DataFrame({"phone": ["030 12345678"]})
+            assert conn.validate(df, {"phone": PhoneRule()}).passed
+        finally:
+            conn.execute("RESET anofox_tab_phonenumber_default_region").fetchall()
+
+
+class TestPhoneRuleRegionColumn:
+    """PhoneRule(region_column=...) takes each row's region from a column,
+    like validate.phone_is_valid(region_column=...)."""
+
+    @staticmethod
+    def _customers():
+        import pandas as pd
+        return pd.DataFrame({
+            "customer_id": [2001, 2002, 2003, 2004],
+            "country": ["DE", "US", "GB", "DE"],
+            "phone": ["030 12345678", "(650) 253-0000", "020 7946 0018", "12"],
+        }, index=[10, 11, 12, 13])
+
+    def test_region_per_row(self, conn):
+        from anofox.validate import PhoneRule
+        result = conn.validate(self._customers(), {"phone": PhoneRule(region_column="country")})
+        assert result.passed is False
+        assert result.failures["row_id"].tolist() == [13]
+        assert result.failures["value"].tolist() == ["12"]
+        assert result.failures["rule"].tolist() == ["phone(region_column=country)"]
+
+    def test_one_region_fails_the_foreign_numbers(self, conn):
+        from anofox.validate import PhoneRule
+        result = conn.validate(self._customers(), {"phone": PhoneRule(region="US")})
+        assert result.failures["row_id"].tolist() == [10, 12, 13]
+
+    def test_polars(self, conn):
+        pl = pytest.importorskip("polars")
+        from anofox.validate import PhoneRule
+        result = conn.validate(pl.from_pandas(self._customers()),
+                               {"phone": PhoneRule(region_column="country")})
+        assert result.failures["row_id"].to_list() == [3]
+
+    def test_region_and_region_column_are_exclusive(self):
+        from anofox.validate import PhoneRule
+        with pytest.raises(ValueError, match="region.*region_column"):
+            PhoneRule(region="DE", region_column="country")
+
+    def test_missing_region_column_is_named(self, conn):
+        from anofox.validate import PhoneRule
+        with pytest.raises(Exception, match="country_code"):
+            conn.validate(self._customers(), {"phone": PhoneRule(region_column="country_code")})
+
+
+class TestProfileSchemas:
+    """conn.profile('t') profiles the table the name resolves to, not every table named 't'."""
+
+    @pytest.fixture
+    def two_schemas(self, conn):
+        conn.execute("CREATE SCHEMA IF NOT EXISTS staging")
+        conn.execute(
+            "CREATE OR REPLACE TABLE customers AS SELECT * FROM (VALUES "
+            "(1, 'ana@example.com'), (2, NULL), (3, 'carla@example.org')) t(customer_id, email)"
+        )
+        conn.execute(
+            "CREATE OR REPLACE TABLE staging.customers AS SELECT * FROM (VALUES "
+            "(1, 'Ana', 'DE', DATE '2026-01-03'), (2, 'Bob', NULL, NULL)) "
+            "t(customer_id, full_name, country, signup_date)"
+        )
+        yield
+        conn.execute("DROP TABLE IF EXISTS customers")
+        conn.execute("DROP TABLE IF EXISTS staging.customers")
+        conn.execute("DROP SCHEMA IF EXISTS staging")
+
+    def test_plain_name_uses_search_path(self, conn, two_schemas):
+        result = conn.profile("customers")
+        assert result["column"].tolist() == ["customer_id", "email"]
+        assert result["row_count"].tolist() == [3, 3]
+        assert result[result["column"] == "email"]["null_count"].iloc[0] == 1
+
+    def test_schema_qualified_name(self, conn, two_schemas):
+        result = conn.profile("staging.customers")
+        assert result["column"].tolist() == ["customer_id", "full_name", "country", "signup_date"]
+        assert result["row_count"].tolist() == [2] * 4
+        assert result[result["column"] == "country"]["null_count"].iloc[0] == 1
+
+    def test_unknown_table_raises_catalog_error(self, conn, two_schemas):
+        import duckdb
+        with pytest.raises(duckdb.CatalogException):
+            conn.profile("staging.orders")
+
+
+class TestValidateNulls:
+    """conn.validate() skips missing values like SQL and the row-wise helpers;
+    include_nulls=True reports them as failures."""
+
+    @staticmethod
+    def _signups():
+        import pandas as pd
+        return pd.DataFrame({
+            "customer_id": [3001, 3002, 3003, 3004],
+            "email": ["lena.fischer@example.de", None, "not-an-email", "tom.berg@example.com"],
+            "phone": ["+49 89 12345678", "+49 40 87654321", None, "+49 30 901820"],
+        }, index=[100, 101, 102, 103])
+
+    def test_nulls_are_skipped_by_default(self, conn):
+        from anofox.validate import EmailRule, PhoneRule
+        result = conn.validate(self._signups(), {"email": EmailRule(), "phone": PhoneRule(region="DE")})
+        assert result.passed is False
+        assert result.failures.to_dict("records") == [
+            {"column": "email", "row_id": 102, "value": "not-an-email", "rule": "email(regex)"},
+        ]
+
+    def test_all_valid_with_nulls_passes(self, conn):
+        from anofox.validate import EmailRule
+        df = self._signups().drop(index=102)
+        result = conn.validate(df, {"email": EmailRule()})
+        assert result.passed is True
+        assert len(result.failures) == 0
+
+    def test_include_nulls_reports_missing_values(self, conn):
+        from anofox.validate import EmailRule, PhoneRule
+        result = conn.validate(self._signups(), {"email": EmailRule(), "phone": PhoneRule(region="DE")},
+                               include_nulls=True)
+        records = result.failures.to_dict("records")
+        assert [(r["column"], r["row_id"], r["rule"]) for r in records] == [
+            ("email", 101, "email(regex) missing"),
+            ("email", 102, "email(regex)"),
+            ("phone", 102, "phone(DE) missing"),
+        ]
+        assert records[0]["value"] is None or records[0]["value"] != records[0]["value"]
+
+    def test_include_nulls_counts_nan(self, conn):
+        import numpy as np
+        import pandas as pd
+        from anofox.validate import PhoneRule
+        df = pd.DataFrame({"phone": ["+49 89 12345678", np.nan]})
+        assert conn.validate(df, {"phone": PhoneRule(region="DE")}).passed is True
+        result = conn.validate(df, {"phone": PhoneRule(region="DE")}, include_nulls=True)
+        assert result.failures["row_id"].tolist() == [1]
+        assert result.failures["rule"].tolist() == ["phone(DE) missing"]
+
+    def test_polars_nulls(self, conn):
+        pl = pytest.importorskip("polars")
+        from anofox.validate import EmailRule
+        df = pl.from_pandas(self._signups().reset_index(drop=True))
+        assert conn.validate(df, {"email": EmailRule()}).failures["row_id"].to_list() == [2]
+        result = conn.validate(df, {"email": EmailRule()}, include_nulls=True)
+        assert result.failures["row_id"].to_list() == [1, 2]
+
+
+class TestValidateUnknownColumn:
+    """A schema key or region_column that is not a column of the DataFrame raises
+    the same ValueError as the row-wise validators, before anything runs."""
+
+    @staticmethod
+    def _orders():
+        import pandas as pd
+        return pd.DataFrame({
+            "order_id": ["SO-1001", "SO-1002"],
+            "contact_email": ["buyer@example.com", "ops@example.org"],
+            "country": ["DE", "US"],
+        })
+
+    def test_unknown_schema_key(self, conn):
+        from anofox.validate import EmailRule
+        with pytest.raises(ValueError) as info:
+            conn.validate(self._orders(), {"email": EmailRule()})
+        message = str(info.value)
+        assert message == ("column 'email' not found in the DataFrame; its columns are "
+                           "'order_id', 'contact_email', 'country'")
+        assert "__anofox_pos_" not in message
+
+    def test_unknown_region_column(self, conn):
+        from anofox.validate import PhoneRule
+        with pytest.raises(ValueError, match=r"column 'country_code' not found in the DataFrame"):
+            conn.validate(self._orders(), {"contact_email": PhoneRule(region_column="country_code")})
+
+    def test_polars_unknown_schema_key(self, conn):
+        pl = pytest.importorskip("polars")
+        from anofox.validate import EmailRule
+        with pytest.raises(ValueError, match=r"column 'email' not found.*'contact_email'"):
+            conn.validate(pl.from_pandas(self._orders()), {"email": EmailRule()})
+
+
+class TestValidateIdColumn:
+    """conn.validate(..., id_column=) carries the business key of each failing row."""
+
+    @staticmethod
+    def _rows():
+        return {
+            "customer_id": ["C-1001", "C-1002", "C-1003", "C-1004"],
+            "email": ["ana.lopez@example.com", "bad-email", None, "j.meyer@example.org"],
+            "phone": ["+49 30 901820", "+49 30 901821", "123", "+1 650-253-0000"],
+        }
+
+    @pytest.fixture(params=["pandas", "polars"])
+    def customers(self, request):
+        if request.param == "pandas":
+            import pandas as pd
+            # A non-default index: the failures still name the customer, not the label.
+            return pd.DataFrame(self._rows(), index=[10, 20, 30, 40])
+        import polars as pl
+        return pl.DataFrame(self._rows())
+
+    @staticmethod
+    def _records(frame):
+        if type(frame).__module__.startswith("polars"):
+            return frame.to_dicts()
+        return frame.to_dict("records")
+
+    def test_failures_carry_the_key(self, conn, customers):
+        from anofox.validate import EmailRule, PhoneRule
+        result = conn.validate(
+            customers, {"email": EmailRule(), "phone": PhoneRule(region="DE")}, id_column="customer_id"
+        )
+        assert result.passed is False
+        assert list(result.failures.columns) == ["column", "row_id", "customer_id", "value", "rule"]
+        records = self._records(result.failures)
+        assert [(r["column"], r["customer_id"], r["value"]) for r in records] == [
+            ("email", "C-1002", "bad-email"), ("phone", "C-1003", "123"),
+        ]
+        is_pandas = not type(customers).__module__.startswith("polars")
+        assert [r["row_id"] for r in records] == ([20, 30] if is_pandas else [1, 2])
+
+    def test_include_nulls_keyed(self, conn, customers):
+        from anofox.validate import EmailRule
+        result = conn.validate(customers, {"email": EmailRule()}, include_nulls=True,
+                               id_column="customer_id")
+        records = self._records(result.failures)
+        assert [(r["customer_id"], r["rule"]) for r in records] == [
+            ("C-1002", "email(regex)"), ("C-1003", "email(regex) missing"),
+        ]
+
+    def test_no_failures_keeps_the_columns(self, conn, customers):
+        from anofox.validate import EmailRule
+        ok = conn.validate(customers.head(1), {"email": EmailRule()}, id_column="customer_id")
+        assert ok.passed is True
+        assert list(ok.failures.columns) == ["column", "row_id", "customer_id", "value", "rule"]
+
+    def test_unknown_id_column(self, conn, customers):
+        from anofox.validate import EmailRule
+        with pytest.raises(ValueError, match="column 'cust_no' not found"):
+            conn.validate(customers, {"email": EmailRule()}, id_column="cust_no")
+
+    @pytest.mark.parametrize("name", ["column", "row_id", "value", "rule"])
+    def test_id_column_named_like_a_result_column(self, conn, name):
+        import pandas as pd
+        from anofox.validate import EmailRule
+        df = pd.DataFrame({name: ["K-1"], "email": ["bad"]})
+        with pytest.raises(ValueError, match="id_column"):
+            conn.validate(df, {"email": EmailRule()}, id_column=name)

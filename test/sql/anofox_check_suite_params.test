@@ -1,0 +1,196 @@
+# name: test/sql/anofox_check_suite_params.test
+# description: run_checks on a nightly order suite: malformed typed params (dates, timestamps) and
+#              misspelled params keys become 'error' rows instead of aborting the suite or being
+#              ignored; fail messages name the violated bound and show sample offending values;
+#              a check without thresholds is a monitor row; expressions TRY() cannot wrap
+#              (subqueries, volatile functions) run unwrapped.
+# group: [anofox_tabular]
+
+require anofox_tabular
+
+statement ok
+LOAD anofox_tabular
+
+statement ok
+CREATE TABLE customers AS SELECT * FROM (VALUES
+  (1, 'Brandt GmbH'), (2, 'Keller & Sohn'), (3, 'Nordlicht AG'), (4, 'Weber KG'), (5, 'Otto Fischer')
+) t(id, name)
+
+# Order 5004 and 5006 reference customers that do not exist, 5005 was loaded twice,
+# two status values are not in the allowed set
+statement ok
+CREATE TABLE orders AS SELECT * FROM (VALUES
+  (5001, 1,  'shipped',   DATE '2026-10-19', TIMESTAMP '2026-10-19 09:12:00', 129.90),
+  (5002, 2,  'shipped',   DATE '2026-10-20', TIMESTAMP '2026-10-20 10:40:00',  45.00),
+  (5003, 3,  'pending',   DATE '2026-10-20', TIMESTAMP '2026-10-20 16:05:00', 310.50),
+  (5004, 9,  'shipped',   DATE '2026-10-21', TIMESTAMP '2026-10-21 08:30:00',  18.75),
+  (5005, 4,  'shiped',    DATE '2026-10-21', TIMESTAMP '2026-10-21 11:00:00',  99.00),
+  (5005, 5,  'cancelled', DATE '2026-10-21', TIMESTAMP '2026-10-21 11:00:00',  99.00),
+  (5006, 12, 'SHIPPED',   DATE '2026-10-21', TIMESTAMP '2026-10-21 13:20:00',  12.10),
+  (5007, 1,  'pending',   DATE '2026-10-21', TIMESTAMP '2026-10-21 17:45:00', 250.00)
+) t(order_id, cust_id, status, order_date, created_at, amount)
+
+statement ok
+CREATE TABLE nightly_checks(check_name VARCHAR, check_type VARCHAR, table_name VARCHAR,
+  column_name VARCHAR, params VARCHAR, lower_threshold DOUBLE, upper_threshold DOUBLE,
+  monitor_only BOOLEAN, identifier_column VARCHAR, filter_expr VARCHAR)
+
+# B-F1: one malformed date/timestamp parameter among good checks
+statement ok
+INSERT INTO nightly_checks VALUES
+  ('rows_loaded',   'volume',    'orders', NULL, NULL, 1, NULL, false, NULL, NULL),
+  ('orders_fresh',  'freshness', 'orders', 'created_at', '{"reference_time": "29.10.2026"}',
+     NULL, 86400, false, NULL, NULL),
+  ('orders_change', 'rel_count_change', 'orders', NULL,
+     '{"date_column": "order_date", "reference_date": "2026-13-01"}', -0.5, NULL, false, NULL, NULL),
+  ('amount_iqr',    'metric_anomaly_iqr', 'orders', NULL,
+     '{"date_column": "order_date", "metric_column": "amount", "reference_date": "yesterday"}',
+     NULL, NULL, false, NULL, NULL),
+  ('status_rolling', 'rolling_values_in_set', 'orders', 'status',
+     '{"date_column": "order_date", "allowed_values": ["shipped", "pending"], "reference_date": "21/10/2026"}',
+     0.5, NULL, false, NULL, NULL),
+  ('orders_window', 'rel_count_change', 'orders', NULL,
+     '{"date_column": "order_date", "window_days": "a week"}', -0.5, NULL, false, NULL, NULL),
+  ('fresh_ok',      'freshness', 'orders', 'created_at', '{"reference_time": "2026-10-22 06:00:00"}',
+     NULL, 86400, false, NULL, NULL)
+
+query TTT
+SELECT check_name, status, message FROM run_checks('nightly_checks') ORDER BY check_name
+----
+amount_iqr	error	check 'amount_iqr' (metric_anomaly_iqr) cannot run: params.reference_date 'yesterday' is not a valid date (expected YYYY-MM-DD)
+fresh_ok	pass	freshness value 44100.0 seconds is within thresholds
+orders_change	error	check 'orders_change' (rel_count_change) cannot run: params.reference_date '2026-13-01' is not a valid date (expected YYYY-MM-DD)
+orders_fresh	error	check 'orders_fresh' (freshness) cannot run: params.reference_time '29.10.2026' is not a valid timestamp (expected YYYY-MM-DD[ HH:MM[:SS]][+HH[:MM]])
+orders_window	error	check 'orders_window' (rel_count_change) cannot run: params.window_days 'a week' is not a positive integer
+rows_loaded	pass	volume value 8.0 is within thresholds
+status_rolling	error	check 'status_rolling' (rolling_values_in_set) cannot run: params.reference_date '21/10/2026' is not a valid date (expected YYYY-MM-DD)
+
+# A valid reference_date still works (rel_count_change on 2026-10-20: 2 orders vs 1 the day before)
+statement ok
+DELETE FROM nightly_checks
+
+statement ok
+INSERT INTO nightly_checks VALUES
+  ('orders_change', 'rel_count_change', 'orders', NULL,
+     '{"date_column": "order_date", "reference_date": "2026-10-20"}', -0.5, NULL, false, NULL, NULL)
+
+query TTR
+SELECT check_name, status, value FROM run_checks('nightly_checks')
+----
+orders_change	pass	1.0
+
+# B-F5: a misspelled params key is an error, not silently ignored (before, the check
+# evaluated the latest day, 2026-10-21, and passed)
+statement ok
+DELETE FROM nightly_checks
+
+statement ok
+INSERT INTO nightly_checks VALUES
+  ('orders_change', 'rel_count_change', 'orders', NULL,
+     '{"date_column": "order_date", "refernce_date": "2026-10-20"}', -0.5, NULL, false, NULL, NULL),
+  ('rows_loaded',   'volume', 'orders', NULL, '{"window_days": 7}', 1, NULL, false, NULL, NULL),
+  ('status_ok',     'values_in_set', 'orders', 'status',
+     '{"allowed_values": ["shipped"], "alowed": ["pending"], "patern": "x"}', 0.1, NULL, false, NULL, NULL),
+  ('rows_plain',    'volume', 'orders', NULL, '{}', 1, NULL, false, NULL, NULL)
+
+query TTT
+SELECT check_name, status, message FROM run_checks('nightly_checks') ORDER BY check_name
+----
+orders_change	error	check 'orders_change' (rel_count_change) cannot run: unknown params key 'refernce_date' (valid keys for rel_count_change: date_column, count_column, window_days, reference_date, fill_missing_days, fail_on_empty)
+rows_loaded	error	check 'rows_loaded' (volume) cannot run: unknown params key 'window_days' (valid keys for volume: fail_on_empty)
+rows_plain	pass	volume value 8.0 is within thresholds
+status_ok	error	check 'status_ok' (values_in_set) cannot run: unknown params keys 'alowed', 'patern' (valid keys for values_in_set: allowed_values, fail_on_empty)
+
+# B-F7: the message names the violated bound and shows up to 5 sample offending values
+# B-F8: a check with neither threshold is a monitor row
+statement ok
+DELETE FROM nightly_checks
+
+statement ok
+INSERT INTO nightly_checks VALUES
+  ('status_ok',      'values_in_set',   'orders', 'status',
+     '{"allowed_values": ["shipped", "pending", "cancelled"]}', 0.95, NULL, false, NULL, NULL),
+  ('order_id_dupes', 'duplicate_count', 'orders', 'order_id', NULL, NULL, 0, false, NULL, NULL),
+  ('customer_fk',    'match_rate',      'orders', 'cust_id',
+     '{"right_table": "customers", "right_keys": "id"}', 1.0, NULL, false, NULL, NULL),
+  ('big_basket',     'agg',             'orders', 'amount', '{"agg": "max"}', NULL, 200, true, NULL, NULL),
+  ('customers_seen', 'distinct_count',  'orders', 'cust_id', NULL, NULL, NULL, false, NULL, NULL),
+  ('status_mix',     'values_in_set',   'orders', 'status',
+     '{"allowed_values": ["shipped", "pending", "cancelled"]}', 0.5, NULL, false, NULL, NULL)
+
+query TTT
+SELECT check_name, status, message FROM run_checks('nightly_checks') ORDER BY check_name
+----
+big_basket	warn	agg value 310.50 violates thresholds (310.50 > upper 200.00)
+customer_fk	fail	match_rate value 0.75 violates thresholds (0.75 < lower 1.0); samples: '12', '9'
+customers_seen	pass	distinct_count value 7.0: no thresholds configured (monitor)
+order_id_dupes	fail	duplicate_count value 1.0 violates thresholds (1.0 > upper 0.0); samples: '5005'
+status_mix	pass	values_in_set value 0.75 is within thresholds
+status_ok	fail	values_in_set value 0.75 violates thresholds (0.75 < lower 0.95); samples: 'SHIPPED', 'shiped'
+
+# Samples are per identifier partition and capped at 5 distinct values
+statement ok
+CREATE TABLE ticket_import AS SELECT * FROM (VALUES
+  ('berlin', 'open'), ('berlin', 'opne'), ('berlin', 'closd'), ('berlin', 'n/a'), ('berlin', 'tbd'),
+  ('berlin', '?'), ('berlin', 'OPEN'), ('berlin', 'open'), ('hamburg', 'closed'), ('hamburg', 'clsoed'),
+  ('hamburg', 'clsoed')
+) t(site, state)
+
+statement ok
+DELETE FROM nightly_checks
+
+statement ok
+INSERT INTO nightly_checks VALUES
+  ('ticket_state', 'values_in_set', 'ticket_import', 'state',
+     '{"allowed_values": ["open", "closed"]}', 0.9, NULL, false, 'site', NULL),
+  ('ticket_dupes', 'duplicate_count', 'ticket_import', 'site, state', NULL, NULL, 0, false, 'site', NULL)
+
+query TTTT
+SELECT check_name, identifier, status, message FROM run_checks('nightly_checks') ORDER BY check_name, identifier
+----
+ticket_dupes	berlin	fail	duplicate_count value 1.0 violates thresholds (1.0 > upper 0.0); samples: '(berlin, open)'
+ticket_dupes	hamburg	fail	duplicate_count value 1.0 violates thresholds (1.0 > upper 0.0); samples: '(hamburg, clsoed)'
+ticket_state	berlin	fail	values_in_set value 0.25 violates thresholds (0.25 < lower 0.9); samples: '?', 'OPEN', 'closd', 'n/a', 'opne'
+ticket_state	hamburg	fail	values_in_set value 0.333 violates thresholds (0.333 < lower 0.9); samples: 'clsoed'
+
+# A-F10: referential integrity via a subquery, and a sampled filter with random();
+# TRY() cannot wrap either, so they run unwrapped instead of becoming error rows
+statement ok
+DELETE FROM nightly_checks
+
+statement ok
+INSERT INTO nightly_checks VALUES
+  ('cust_exists',        'compliance', 'orders', NULL,
+     '{"expression": "cust_id IN (SELECT id FROM customers)"}', 1.0, NULL, false, NULL, NULL),
+  ('cust_exists_loose',  'compliance', 'orders', NULL,
+     '{"expression": "cust_id IN (SELECT id FROM customers)"}', 0.7, NULL, false, NULL, NULL),
+  ('orphans',            'volume',     'orders', NULL, NULL, NULL, 0, false, NULL,
+     'cust_id NOT IN (SELECT id FROM customers)'),
+  ('sampled_rows',       'volume',     'orders', NULL, NULL, 1, NULL, false, NULL, 'random() < 1.0'),
+  ('sampled_amounts',    'compliance', 'orders', NULL,
+     '{"expression": "amount > 0 AND random() >= 0"}', 1.0, NULL, false, NULL, NULL)
+
+query TTR
+SELECT check_name, status, round(value, 3) FROM run_checks('nightly_checks') ORDER BY check_name
+----
+cust_exists	fail	0.75
+cust_exists_loose	pass	0.75
+orphans	fail	2.0
+sampled_amounts	pass	1.0
+sampled_rows	pass	8.0
+
+query T
+SELECT message FROM run_checks('nightly_checks') WHERE check_name = 'orphans'
+----
+volume value 2.0 violates thresholds (2.0 > upper 0.0); filter matched 2/8 rows
+
+# When all customers exist the referential check passes
+statement ok
+INSERT INTO customers VALUES (9, 'Haas OHG'), (12, 'Lindner Logistik')
+
+query TTR
+SELECT check_name, status, round(value, 3) FROM run_checks('nightly_checks') WHERE check_name LIKE 'cust%' OR check_name = 'orphans' ORDER BY check_name
+----
+cust_exists	pass	1.0
+cust_exists_loose	pass	1.0
+orphans	pass	0.0

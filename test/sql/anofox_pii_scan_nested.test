@@ -1,0 +1,104 @@
+# name: test/sql/anofox_pii_scan_nested.test
+# description: pii_scan_table and pii_audit_table scan nested columns that contain text
+#              (STRUCT, LIST, MAP and their combinations) by default, as their VARCHAR rendering;
+#              columns without any text inside (numbers, dates, BLOB) stay skipped (F7)
+# group: [anofox_tabular]
+
+# Scan statuses are compared without the ' (NER unavailable)' suffix, which builds without
+# the NER model (e.g. macOS ARM, no OpenVINO) append; these tests do not depend on NER.
+
+require anofox_tabular
+
+statement ok
+LOAD anofox_tabular
+
+# Pattern types only, so the results do not depend on the NER model
+statement ok
+SET anofox_pii_enabled_types = 'EMAIL,PHONE,IBAN';
+
+# A CRM export: contact person as a STRUCT, cc addresses as a list, channel tags as a MAP,
+# order history as a list of structs, plus numbers, dates, a BLOB and numeric-only nesting
+statement ok
+CREATE TABLE crm_accounts AS SELECT * FROM (VALUES
+    (4711, 'Bäckerei Schmidt GmbH',
+     {'name': 'Lena Schmidt', 'email': 'lena.schmidt@baeckerei-schmidt.de', 'phone': '+49 171 2345678'},
+     ['buchhaltung@baeckerei-schmidt.de', 'info@baeckerei-schmidt.de'],
+     MAP {'kanal': 'newsletter', 'ansprechpartner': 'max.mustermann@web.de'},
+     [{'order_id': 900101, 'note': 'Lieferung an Filiale'}],
+     12500.50, DATE '2024-02-01', '\x00\x01'::BLOB, [3, 7, 9], {'umsatz': 1200, 'jahr': 2024}),
+    (4712, 'Café Nord',
+     {'name': 'Jonas Weber', 'email': NULL, 'phone': '0171 1234567'},
+     [],
+     MAP {'kanal': 'telefon'},
+     [{'order_id': 900102, 'note': 'Erstattung auf DE89370400440532013000'}],
+     830.00, DATE '2025-06-15', NULL::BLOB, [], {'umsatz': 830, 'jahr': 2025}),
+    (4713, 'Kiosk am Markt', NULL, NULL, NULL, NULL, 0.00, DATE '2026-01-10', NULL::BLOB, NULL, NULL)
+) t(account_id, company, contact, cc, tags, orders, revenue, customer_since, logo, ratings, kpis);
+
+# Nested columns with text are scanned; numeric, temporal, BLOB and numeric-only nesting stay skipped
+query TTIIT
+SELECT column_name, pii_type, match_count, values_scanned, status
+FROM pii_scan_table('crm_accounts');
+----
+account_id	NULL	0	0	skipped (INTEGER)
+company	NULL	0	3	no_match
+contact	EMAIL	1	2	scanned
+contact	PHONE	2	2	scanned
+cc	EMAIL	2	2	scanned
+tags	EMAIL	1	2	scanned
+orders	IBAN	1	2	scanned
+revenue	NULL	0	0	skipped (DECIMAL(7,2))
+customer_since	NULL	0	0	skipped (DATE)
+logo	NULL	0	0	skipped (BLOB)
+ratings	NULL	0	0	skipped (INTEGER[])
+kpis	NULL	0	0	skipped (STRUCT(umsatz INTEGER, jahr INTEGER))
+
+# The samples are the matched values themselves (an address inside a MAP is the bare address)
+query TT
+SELECT column_name, sample_values FROM pii_scan_table('crm_accounts')
+WHERE pii_type = 'EMAIL' ORDER BY column_name;
+----
+cc	[buchhaltung@baeckerei-schmidt.de, info@baeckerei-schmidt.de]
+contact	[lena.schmidt@baeckerei-schmidt.de]
+tags	[max.mustermann@web.de]
+
+# pii_audit_table without a column list audits the same columns
+query TITT
+SELECT column_name, row_id, pii_type, matched_text
+FROM pii_audit_table('crm_accounts')
+ORDER BY column_name, row_id, start_pos;
+----
+cc	1	EMAIL	buchhaltung@baeckerei-schmidt.de
+cc	1	EMAIL	info@baeckerei-schmidt.de
+contact	1	EMAIL	lena.schmidt@baeckerei-schmidt.de
+contact	1	PHONE	+49 171 2345678
+contact	2	PHONE	0171 1234567
+orders	2	IBAN	DE89370400440532013000
+tags	1	EMAIL	max.mustermann@web.de
+
+# The masked value is the masked text rendering of the nested value
+query T
+SELECT masked_value FROM pii_audit_table('crm_accounts', 'tags');
+----
+{kanal=newsletter, ansprechpartner=[EMAIL]}
+
+# Deeper nesting: a map of lists of structs, a fixed-size array and a union with text
+statement ok
+CREATE TABLE support_tickets AS SELECT
+    1001 AS ticket_id,
+    MAP {'reporter': [{'mail': 'anna@gmx.net'}]} AS participants,
+    ['kontakt@firma.de', 'n/a']::VARCHAR[2] AS reply_to,
+    union_value(phone := '+49 30 1234567')::UNION(phone VARCHAR, ext INTEGER) AS callback,
+    [[1, 2], [3]] AS scores;
+
+query TTIT
+SELECT column_name, pii_type, match_count, regexp_replace(status, ' \(NER unavailable\)$', '') AS status FROM pii_scan_table('support_tickets');
+----
+ticket_id	NULL	0	skipped (INTEGER)
+participants	EMAIL	1	scanned
+reply_to	EMAIL	1	scanned
+callback	PHONE	1	scanned
+scores	NULL	0	skipped (INTEGER[][])
+
+statement ok
+RESET anofox_pii_enabled_types;

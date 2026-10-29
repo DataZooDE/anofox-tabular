@@ -1,0 +1,50 @@
+# name: test/sql/anofox_pii_regex_stack.test
+# description: long tokens must not exhaust the stack in the pattern recognizers. libstdc++
+#              before GCC 15 matches std::regex repetitions recursively (one stack frame per
+#              repeated character), so an unbounded repetition over a 100,000-character token
+#              crashed the process (seen in CI builds with GCC 14). Every repetition the
+#              MAC address and URL patterns run over a token is bounded.
+# group: [anofox_tabular]
+
+require anofox_tabular
+
+statement ok
+LOAD anofox_tabular
+
+# A pasted hex dump and a long digit run: no MAC address in either
+statement ok
+SET anofox_pii_enabled_types = 'MAC_ADDRESS'
+
+query I
+SELECT len(pii_detect(repeat('1234567890', 10000)));
+----
+0
+
+query I
+SELECT len(pii_detect(repeat('ABCDEF', 20000)));
+----
+0
+
+# Real MAC addresses next to the long tokens are still found
+query I
+SELECT list_transform(pii_detect('router 00:1A:2B:3C:4D:5E ' || repeat('ABCDEF', 20000) || ' ap 001A2B3C4D5F'), lambda m: m.text);
+----
+['00:1A:2B:3C:4D:5E', 001A2B3C4D5F]
+
+# A tracking link with a 100,000-character query string is one URL, masked as a whole
+statement ok
+SET anofox_pii_enabled_types = 'URL'
+
+query II
+SELECT len(pii_detect(u)), pii_mask(u)
+FROM (SELECT 'see https://shop.example.com/t?d=' || repeat('a', 100000) || ' thanks' AS u);
+----
+1	see [URL] thanks
+
+query I
+SELECT list_transform(pii_detect('https://example.com/p ' || repeat('x', 100000) || ' http://example.org/q'), lambda m: m.text);
+----
+['https://example.com/p', 'http://example.org/q']
+
+statement ok
+RESET anofox_pii_enabled_types

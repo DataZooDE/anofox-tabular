@@ -1,0 +1,118 @@
+# name: test/sql/anofox_check_overflow.test
+# description: SUM and AVG of a HUGEINT or DECIMAL(38) column whose exact sum leaves its range.
+#              run_checks reports an 'error' row for that check (or partition) only, naming the
+#              aggregate and the column type, and the other checks of the suite still run;
+#              agg_check raises a clear error; profile_table reports the statistics that would
+#              overflow as NULL and still profiles every column.
+# group: [anofox_tabular]
+
+require anofox_tabular
+
+statement ok
+LOAD anofox_tabular
+
+statement ok
+SET anofox_tab_trace_enabled = false
+
+# Token balances of a blockchain ledger in the smallest unit (wei): three treasury wallets hold
+# 9e37 wei each, so the exact sum (2.7e38) is beyond DECIMAL(38,0) and HUGEINT
+statement ok
+CREATE TABLE token_balances (
+    wallet VARCHAR, wallet_group VARCHAR, balance_wei DECIMAL(38, 0), supply_wei HUGEINT,
+    net_flow_wei DECIMAL(38, 0), fee_eur DECIMAL(10, 2))
+
+statement ok
+INSERT INTO token_balances VALUES
+    ('0xA11CE', 'treasury', 90000000000000000000000000000000000000, 90000000000000000000000000000000000000,
+     -90000000000000000000000000000000000000, 1.25),
+    ('0xB0B00', 'treasury', 90000000000000000000000000000000000000, 90000000000000000000000000000000000000,
+     90000000000000000000000000000000000000, 0.80),
+    ('0xCAFE0', 'treasury', 90000000000000000000000000000000000000, 90000000000000000000000000000000000000,
+     0, 2.10),
+    ('0xD00D0', 'retail', 1500000000000000000, 1500000000000000000, 1000000000000000000, 0.35),
+    ('0xE1E10', 'retail', 2500000000000000000, 2500000000000000000, -500000000000000000, 0.40)
+
+# ===--------------------------------------------------------------------===
+# run_checks
+# ===--------------------------------------------------------------------===
+
+statement ok
+CREATE TABLE ledger_checks (
+    check_name VARCHAR, check_type VARCHAR, table_name VARCHAR, column_name VARCHAR,
+    params VARCHAR, lower_threshold DOUBLE, upper_threshold DOUBLE, monitor_only BOOLEAN,
+    identifier_column VARCHAR, filter_expr VARCHAR)
+
+statement ok
+INSERT INTO ledger_checks VALUES
+    ('avg_balance', 'agg', 'token_balances', 'balance_wei', '{"agg": "avg"}', 0, NULL, false, NULL, NULL),
+    ('sum_supply', 'agg', 'token_balances', 'supply_wei', '{"agg": "sum"}', NULL, NULL, false, NULL, NULL),
+    ('max_balance', 'agg', 'token_balances', 'balance_wei', '{"agg": "max"}', 0, NULL, false, NULL, NULL),
+    ('stddev_balance', 'agg', 'token_balances', 'balance_wei', '{"agg": "stddev"}', NULL, NULL, false, NULL, NULL),
+    ('sum_fees', 'agg', 'token_balances', 'fee_eur', '{"agg": "sum"}', NULL, 10, false, NULL, NULL),
+    ('wallets', 'volume', 'token_balances', NULL, NULL, 1, NULL, false, NULL, NULL),
+    ('avg_balance_by_group', 'agg', 'token_balances', 'balance_wei', '{"agg": "avg"}', 0, NULL, false, 'wallet_group', NULL),
+    ('sum_retail_balance', 'agg', 'token_balances', 'balance_wei', '{"agg": "sum"}', 0, NULL, false, NULL, 'wallet_group = ''retail''')
+
+query TTTT
+SELECT check_name, identifier, status, message FROM run_checks('ledger_checks')
+----
+avg_balance	NULL	error	check 'avg_balance' (agg) cannot run: avg of DECIMAL(38,0) column 'balance_wei' overflows its exact sum
+avg_balance_by_group	retail	pass	agg value 2e+18 is within thresholds
+avg_balance_by_group	treasury	error	check 'avg_balance_by_group' (agg) cannot run: avg of DECIMAL(38,0) column 'balance_wei' overflows its exact sum
+max_balance	NULL	pass	agg value 90000000000000000000000000000000000000 is within thresholds
+stddev_balance	NULL	pass	agg value 4.929503017546495e+37: no thresholds configured (monitor)
+sum_fees	NULL	pass	agg value 4.90 is within thresholds
+sum_retail_balance	NULL	pass	agg value 4000000000000000000 is within thresholds; filter matched 2/5 rows
+sum_supply	NULL	error	check 'sum_supply' (agg) cannot run: sum of HUGEINT column 'supply_wei' overflows its exact sum
+wallets	NULL	pass	volume value 5.0 is within thresholds
+
+# The value of an error row is NULL
+query TR
+SELECT check_name, value FROM run_checks('ledger_checks') WHERE status = 'error' ORDER BY 1, 2
+----
+avg_balance	NULL
+avg_balance_by_group	NULL
+sum_supply	NULL
+
+# ===--------------------------------------------------------------------===
+# agg_check
+# ===--------------------------------------------------------------------===
+
+statement error
+SELECT * FROM agg_check('token_balances', 'balance_wei', 'avg', 0, NULL)
+----
+agg_check: avg of DECIMAL(38,0) column 'balance_wei' overflows its exact sum
+
+statement error
+SELECT * FROM agg_check('token_balances', 'supply_wei', 'sum', NULL, NULL)
+----
+agg_check: sum of HUGEINT column 'supply_wei' overflows its exact sum
+
+# Aggregates that do not sum still work, and so does the sum of a column that fits
+query TT
+SELECT status, CAST(value AS VARCHAR) FROM agg_check('token_balances', 'balance_wei', 'max', 0, NULL)
+----
+pass	9e+37
+
+query TT
+SELECT status, message FROM agg_check('token_balances', 'net_flow_wei', 'sum', NULL, NULL)
+----
+pass	sum value 500000000000000000 is within acceptable range
+
+# ===--------------------------------------------------------------------===
+# profile_table
+# ===--------------------------------------------------------------------===
+
+# The mean of balance_wei and supply_wei would overflow: NULL. net_flow_wei sums to a value that
+# fits, but its range (1.8e38) does not fit DECIMAL(38,0): the spread and shape statistics are
+# NULL. The other statistics and columns are profiled.
+query TTRRRR
+SELECT column_name, max_val, round(mean, 6), median, round(stddev, 6), round(skewness, 6)
+FROM profile_table('token_balances') ORDER BY column_name
+----
+balance_wei	90000000000000000000000000000000000000	NULL	9e+37	4.929503017546495e+37	-0.608581
+fee_eur	2.10	0.98	0.8	0.72336	1.071802
+net_flow_wei	90000000000000000000000000000000000000	1e+17	0.0	NULL	NULL
+supply_wei	90000000000000000000000000000000000000	NULL	9e+37	4.929503017546495e+37	-0.608581
+wallet	0xE1E10	NULL	NULL	NULL	NULL
+wallet_group	treasury	NULL	NULL	NULL	NULL

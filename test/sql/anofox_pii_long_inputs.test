@@ -1,0 +1,120 @@
+# name: test/sql/anofox_pii_long_inputs.test
+# description: PII detection stays linear on long tokens (inline base64 attachments, 100k-character tokens) and reports no false matches in them
+# group: [anofox_tabular]
+
+require anofox_tabular
+
+statement ok
+LOAD anofox_tabular
+
+# All pattern types; NER on long inputs is covered in anofox_pii_ner_long_inputs.test
+statement ok
+SET anofox_pii_enabled_types = 'EMAIL,PHONE,CREDIT_CARD,US_SSN,IBAN,IP_ADDRESS,URL,MAC_ADDRESS,UK_NINO,US_PASSPORT,DE_TAX_ID,API_KEY,CRYPTO_ADDRESS';
+
+# 20 support tickets, each an HTML mail with an inline screenshot as a data
+# URI: 4.3 to 8.3 KB of base64 in one token without spaces
+statement ok
+CREATE TABLE tickets AS
+SELECT
+    t AS ticket_id,
+    'Ticket #' || (48200 + t) || ' von jörg.k' || t || '@müller-gmbh.de' || chr(10) ||
+    'Hallo Support, die Rechnung ist falsch. Bitte rufen Sie mich an unter +49 171 123456' || (t % 10) || '.' || chr(10) ||
+    '<p>Screenshot:</p><img alt="screenshot" src="data:image/png;base64,' ||
+    (SELECT to_base64(unhex(string_agg(sha256('png' || t || '-' || i), '' ORDER BY i)))
+     FROM range(100 + 5 * t) r(i)) ||
+    '">' || chr(10) || 'Erstattung bitte auf IBAN DE89 3704 0044 0532 0130 00.' AS body
+FROM range(20) s(t);
+
+query II
+SELECT min(len(body)) > 4400, max(len(body)) > 8000 FROM tickets;
+----
+true	true
+
+# Exactly the email, the phone number and the IBAN of each ticket; nothing in the attachment
+query I
+SELECT count(*) FROM tickets
+WHERE list_transform(pii_detect(body), lambda m: m.type) <> ['EMAIL', 'PHONE', 'IBAN'];
+----
+0
+
+query III
+SELECT list_transform(pii_detect(body), lambda m: m.text)[1], list_transform(pii_detect(body), lambda m: m.text)[2], list_transform(pii_detect(body), lambda m: m.text)[3]
+FROM tickets WHERE ticket_id = 7;
+----
+jörg.k7@müller-gmbh.de	+49 171 1234567	DE89 3704 0044 0532 0130 00
+
+query I
+SELECT pii_mask(body) LIKE 'Ticket #48207 von [EMAIL]%unter [PHONE].%base64,%IBAN [IBAN].' FROM tickets WHERE ticket_id = 7;
+----
+true
+
+# The attachment alone holds no PII; base64 pieces between '+' and '/' are no API keys
+query I
+SELECT count(*) FROM tickets WHERE pii_contains(regexp_extract(body, 'base64,([^"]+)', 1));
+----
+0
+
+# A 100,000-character token: a hex session dump, then a long run of one letter
+query I
+SELECT len(pii_detect((SELECT string_agg(md5('session' || i), '' ORDER BY i) FROM range(3125) r(i))));
+----
+0
+
+query I
+SELECT len(pii_detect(repeat('x', 100000)));
+----
+0
+
+query I
+SELECT len(pii_detect(repeat('1234567890', 10000)));
+----
+0
+
+# Addresses at both ends of a 100,000-character token are still found
+query I
+SELECT list_transform(pii_detect('mail anna@example.org ' || repeat('a', 100000) || ' oder bob@example.com'), lambda m: m.text);
+----
+[anna@example.org, bob@example.com]
+
+# An '@' inside a long token is no address: the local part is over 64 characters
+query I
+SELECT len(pii_detect(repeat('a', 100000) || '@example.com'));
+----
+0
+
+query I
+SELECT len(pii_detect(repeat('a', 65) || '@example.com'));
+----
+0
+
+query I
+SELECT list_transform(pii_detect(repeat('a', 64) || '@example.com'), lambda m: len(m.text));
+----
+[76]
+
+# Many '@' in one token: each "a@a" is a (dotless) address, as before
+query I
+SELECT len(pii_detect(repeat('a@', 50000)));
+----
+25000
+
+query I
+SELECT len(pii_detect(repeat('ab@cd.de ', 10000)));
+----
+10000
+
+# The '@' scan keeps the earlier address boundaries
+query I
+SELECT list_transform(pii_detect('a@b@c.de, „jörg@müller.de“, -x.y@z.org; "q@r.st"'), lambda m: m.text);
+----
+[a@b, jörg@müller.de, x.y@z.org, q@r.st]
+
+# A key on its own is still an API key
+query I
+SELECT list_transform(pii_detect('export TOKEN=Xk9fQ2mZ7pLw4RtV8sNb3HyJ6cDe1GaU'), lambda m: m.type);
+----
+[API_KEY]
+
+# Restore the process-wide PII settings for the tests that follow
+statement ok
+SET anofox_pii_enabled_types = '';

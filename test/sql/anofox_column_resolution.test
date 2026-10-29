@@ -1,0 +1,132 @@
+# name: test/sql/anofox_column_resolution.test
+# description: Column-name arguments resolve case-insensitively (like DuckDB identifiers) and an
+#              unknown name is an error instead of a silent miss: profile_table,
+#              profile_correlations, pii_scan_table, pii_audit_table and schema_check. Columns
+#              named explicitly in pii_scan_table/pii_audit_table are scanned even when they are
+#              not VARCHAR (cast to VARCHAR).
+# group: [anofox_tabular]
+
+# Scan statuses are compared without the ' (NER unavailable)' suffix, which builds without
+# the NER model (e.g. macOS ARM, no OpenVINO) append; these tests do not depend on NER.
+
+require anofox_tabular
+
+require json
+
+statement ok
+LOAD anofox_tabular
+
+statement ok
+LOAD json
+
+statement ok
+SET anofox_tab_trace_enabled = false
+
+# Regular tables: these functions read through a sibling connection
+statement ok
+CREATE TABLE cr_t (id BIGINT, Email VARCHAR, Amount DOUBLE, Qty INTEGER)
+
+statement ok
+INSERT INTO cr_t VALUES (1, 'anna@example.com', 10.0, 1), (2, 'ben@example.com', 20.0, 2), (3, NULL, 30.0, 3)
+
+# ---------------------------------------------------------------------------
+# profile_table / profile_correlations
+# ---------------------------------------------------------------------------
+
+query TII
+SELECT column_name, row_count, null_count FROM profile_table('cr_t', ['EMAIL'])
+----
+Email	3	1
+
+query T
+SELECT column_name FROM profile_table('cr_t', ['amount', 'ID']) ORDER BY column_name
+----
+Amount
+id
+
+statement error
+SELECT * FROM profile_table('cr_t', ['missing'])
+----
+profile_table: column 'missing' not found in table 'cr_t'
+
+statement error
+SELECT * FROM profile_table('cr_t', ['Email', 'emial'])
+----
+profile_table: column 'emial' not found in table 'cr_t'
+
+query TTR
+SELECT column_a, column_b, round(pearson, 6) FROM profile_correlations('cr_t', ['AMOUNT', 'qty'])
+----
+Amount	Qty	1.0
+
+statement error
+SELECT * FROM profile_correlations('cr_t', ['amount', 'nope'])
+----
+profile_correlations: column 'nope' not found in table 'cr_t'
+
+# ---------------------------------------------------------------------------
+# schema_check
+# ---------------------------------------------------------------------------
+
+query TT
+SELECT status, missing_columns FROM schema_check('cr_t', ['EMAIL', 'amount'])
+----
+pass	[]
+
+query TT
+SELECT status, missing_columns FROM schema_check('cr_t', ['EMAIL', 'phone'])
+----
+fail	[phone]
+
+# ---------------------------------------------------------------------------
+# pii_scan_table / pii_audit_table
+# ---------------------------------------------------------------------------
+
+statement ok
+CREATE TABLE cr_crm (id BIGINT, Email VARCHAR, card BIGINT, big HUGEINT, doc JSON, s STRUCT(mail VARCHAR), l VARCHAR[])
+
+statement ok
+INSERT INTO cr_crm VALUES
+    (1, 'anna@example.com', 4111111111111111, 4111111111111111, '{"mail":"x@example.org"}', {'mail': 's@example.net'}, ['l@example.de'])
+
+# Default (no filter): columns that hold text: VARCHAR, JSON and nested types with a VARCHAR inside
+query TTI
+SELECT column_name, pii_type, match_count FROM pii_scan_table('cr_crm') WHERE regexp_replace(status, ' \(NER unavailable\)$', '') = 'scanned' ORDER BY column_name
+----
+Email	EMAIL	1
+doc	EMAIL	1
+l	EMAIL	1
+s	EMAIL	1
+
+# Case-insensitive match; the output uses the table's spelling
+query TTI
+SELECT column_name, pii_type, match_count FROM pii_scan_table('cr_crm', 'EMAIL')
+----
+Email	EMAIL	1
+
+# Unknown or misspelled names are errors
+statement error
+SELECT * FROM pii_scan_table('cr_crm', 'emial')
+----
+pii_scan_table: column 'emial' not found in table 'cr_crm'
+
+statement error
+SELECT * FROM pii_audit_table('cr_crm', 'email, phone')
+----
+pii_audit_table: column 'phone' not found in table 'cr_crm'
+
+# Explicitly named non-VARCHAR columns are cast to VARCHAR and scanned
+query TTI
+SELECT column_name, pii_type, match_count FROM pii_scan_table('cr_crm', 'card, BIG, s, l, doc') ORDER BY column_name
+----
+big	CREDIT_CARD	1
+card	CREDIT_CARD	1
+doc	EMAIL	1
+l	EMAIL	1
+s	EMAIL	1
+
+query ITTT
+SELECT row_id, column_name, pii_type, original_value FROM pii_audit_table('cr_crm', 'Card, email') ORDER BY column_name
+----
+1	Email	EMAIL	anna@example.com
+1	card	CREDIT_CARD	4111111111111111

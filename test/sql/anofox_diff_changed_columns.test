@@ -1,0 +1,133 @@
+# name: test/sql/anofox_diff_changed_columns.test
+# description: diff_joindiff / diff_hashdiff return a last output column changed_columns VARCHAR[]:
+#              for a 'changed' row the compare columns that differ (in compare order), [] for an
+#              'unchanged' row, NULL for 'added' / 'removed' rows (no counterpart to compare).
+#              Exercised on a product catalog migration with a retyped column, a NULL -> value
+#              change, a compound key and an explicit compare set.
+# group: [anofox_tabular]
+
+require anofox_tabular
+
+statement ok
+LOAD anofox_tabular
+
+statement ok
+SET anofox_tab_trace_enabled = false
+
+# Product catalog in the old ERP
+statement ok
+CREATE TABLE catalog_v1 (
+    sku        VARCHAR,
+    name       VARCHAR,
+    list_price DECIMAL(10, 2),
+    ean        BIGINT,
+    weight_kg  DOUBLE,
+    category   VARCHAR
+)
+
+statement ok
+INSERT INTO catalog_v1 VALUES
+    ('BRK-1001', 'Espresso Machine Classic', 349.00, 4006381333931, 7.2,  'kitchen'),
+    ('BRK-1002', 'Milk Frother Duo',          59.90, 4006381333948, 0.8,  'kitchen'),
+    ('BRK-1003', 'Burr Grinder Pro',         189.00, 4006381333955, NULL, 'kitchen'),
+    ('BRK-1004', 'Descaler 6-Pack',           24.50, 4006381333962, 1.5,  'supplies'),
+    ('BRK-1005', 'Tamper Steel 58mm',         39.00, 4006381333979, 0.4,  'accessories')
+
+# After the migration to the new PIM: ean became VARCHAR (GTIN-14 with a leading zero),
+# prices were updated, weights back-filled, one product renamed, one discontinued, one added
+statement ok
+CREATE TABLE catalog_v2 (
+    sku        VARCHAR,
+    name       VARCHAR,
+    list_price DECIMAL(10, 2),
+    ean        VARCHAR,
+    weight_kg  DOUBLE,
+    category   VARCHAR
+)
+
+statement ok
+INSERT INTO catalog_v2 VALUES
+    ('BRK-1001', 'Espresso Machine Classic', 369.00, '4006381333931',  7.2,  'kitchen'),
+    ('BRK-1002', 'Milk Frother Duo',          59.90, '04006381333948', 0.8,  'kitchen'),
+    ('BRK-1003', 'Burr Grinder Pro X',       199.00, '4006381333955',  2.9,  'kitchen'),
+    ('BRK-1004', 'Descaler 6-Pack',           24.50, '4006381333962',  1.5,  'supplies'),
+    ('BRK-1006', 'Knock Box Walnut',          45.00, '4006381333986',  1.1,  'accessories')
+
+# changed_columns is the last output column
+query TT
+SELECT column_name, column_type FROM (DESCRIBE SELECT * FROM diff_joindiff('catalog_v1', 'catalog_v2', 'sku'))
+----
+diff_type	VARCHAR
+sku	VARCHAR
+name	VARCHAR
+list_price	DECIMAL(10,2)
+ean	VARCHAR
+weight_kg	DOUBLE
+category	VARCHAR
+changed_columns	VARCHAR[]
+
+query TTT
+SELECT diff_type, sku, changed_columns FROM diff_joindiff('catalog_v1', 'catalog_v2', 'sku') ORDER BY sku
+----
+changed	BRK-1001	[list_price]
+changed	BRK-1002	[ean]
+changed	BRK-1003	[name, list_price, weight_kg]
+removed	BRK-1005	NULL
+added	BRK-1006	NULL
+
+# include_all: unchanged rows have an empty list
+query TTT
+SELECT diff_type, sku, changed_columns FROM diff_joindiff('catalog_v1', 'catalog_v2', 'sku', include_all := true)
+WHERE diff_type = 'unchanged'
+----
+unchanged	BRK-1004	[]
+
+# Count the changes per column, e.g. for a migration report
+query TI
+SELECT col, count(*) FROM diff_joindiff('catalog_v1', 'catalog_v2', 'sku'), unnest(changed_columns) AS u(col)
+GROUP BY col ORDER BY col
+----
+ean	1
+list_price	2
+name	1
+weight_kg	1
+
+# An explicit compare set lists only the compared columns, in the order given
+query TTT
+SELECT diff_type, sku, changed_columns
+FROM diff_joindiff('catalog_v1', 'catalog_v2', 'sku', ['weight_kg', 'name'])
+ORDER BY sku
+----
+changed	BRK-1003	[weight_kg, name]
+removed	BRK-1005	NULL
+added	BRK-1006	NULL
+
+# diff_hashdiff returns the same column
+query TTT
+SELECT diff_type, sku, changed_columns FROM diff_hashdiff('catalog_v1', 'catalog_v2', 'sku') ORDER BY sku
+----
+changed	BRK-1001	[list_price]
+changed	BRK-1002	[ean]
+changed	BRK-1003	[name, list_price, weight_kg]
+removed	BRK-1005	NULL
+added	BRK-1006	NULL
+
+# Compound key (warehouse, sku): stock levels per warehouse
+statement ok
+CREATE TABLE stock_v1 (warehouse VARCHAR, sku VARCHAR, on_hand INTEGER, bin VARCHAR)
+
+statement ok
+INSERT INTO stock_v1 VALUES ('HAM', 'BRK-1001', 12, 'A-01'), ('HAM', 'BRK-1002', 40, 'A-02'), ('MUC', 'BRK-1001', 3, 'C-07')
+
+statement ok
+CREATE TABLE stock_v2 (warehouse VARCHAR, sku VARCHAR, on_hand INTEGER, bin VARCHAR)
+
+statement ok
+INSERT INTO stock_v2 VALUES ('HAM', 'BRK-1001', 12, 'A-01'), ('HAM', 'BRK-1002', 35, 'B-02'), ('MUC', 'BRK-1001', 3, NULL)
+
+query TTTT
+SELECT diff_type, warehouse, sku, changed_columns FROM diff_joindiff('stock_v1', 'stock_v2', ['warehouse', 'sku'])
+ORDER BY warehouse, sku
+----
+changed	HAM	BRK-1002	[on_hand, bin]
+changed	MUC	BRK-1001	[bin]

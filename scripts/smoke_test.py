@@ -23,7 +23,9 @@ import os
 import platform
 import subprocess
 import sys
+import tarfile
 import tempfile
+import urllib.error
 import urllib.request
 import zipfile
 
@@ -39,38 +41,63 @@ EXTENSION_NAME = "anofox_tabular"
 SMOKE_QUERY = "SELECT anofox_tab_email_validate('a@b.com') IS NOT NULL AS ok;"
 # ─────────────────────────────────────────────────────────────────────────────
 
-ARCH_TO_CLI_ZIP: dict[str, str] = {
-    "linux_amd64": "duckdb_cli-linux-amd64.zip",
-    "linux_arm64": "duckdb_cli-linux-aarch64.zip",
-    "linux_amd64_musl": "duckdb_cli-linux-amd64.zip",
-    "osx_amd64": "duckdb_cli-osx-universal.zip",
-    "osx_arm64": "duckdb_cli-osx-universal.zip",
-    "windows_amd64": "duckdb_cli-windows-amd64.zip",
+# CLI release assets per arch, in the order tried: DuckDB up to 1.5 publishes
+# zip archives, DuckDB 2.0 tar.gz archives with different names.
+ARCH_TO_CLI_ASSETS: dict[str, tuple[str, ...]] = {
+    "linux_amd64": ("duckdb_cli-linux-amd64.zip", "duckdb-cli-linux-amd64.tar.gz"),
+    "linux_arm64": ("duckdb_cli-linux-aarch64.zip", "duckdb-cli-linux-arm64.tar.gz"),
+    "linux_amd64_musl": ("duckdb_cli-linux-amd64.zip", "duckdb-cli-linux-amd64-musl.tar.gz"),
+    "osx_amd64": ("duckdb_cli-osx-universal.zip", "duckdb-cli-osx-universal.tar.gz"),
+    "osx_arm64": ("duckdb_cli-osx-universal.zip", "duckdb-cli-osx-universal.tar.gz"),
+    "windows_amd64": ("duckdb_cli-windows-amd64.zip", "duckdb-cli-windows-amd64.tar.gz"),
 }
 
 
-def _download_duckdb_cli(version: str, arch: str, dest_dir: str) -> str:
-    zip_name = ARCH_TO_CLI_ZIP.get(arch)
-    if zip_name is None:
+def _download_cli_archive(version: str, arch: str, dest_dir: str) -> str:
+    """Download the first CLI asset of *arch* that the release has; return its path."""
+    assets = ARCH_TO_CLI_ASSETS.get(arch)
+    if assets is None:
         raise SystemExit(
-            f"Unsupported arch '{arch}'. Supported: {sorted(ARCH_TO_CLI_ZIP)}"
+            f"Unsupported arch '{arch}'. Supported: {sorted(ARCH_TO_CLI_ASSETS)}"
         )
+    tried = []
+    for asset in assets:
+        url = f"https://github.com/duckdb/duckdb/releases/download/{version}/{asset}"
+        archive = os.path.join(dest_dir, asset)
+        try:
+            urllib.request.urlretrieve(url, archive)
+        except urllib.error.HTTPError as exc:
+            if exc.code != 404:
+                raise
+            tried.append(url)
+            continue
+        print(f"Downloaded official DuckDB {version} CLI ({arch}):\n  {url}")
+        return archive
+    raise SystemExit(
+        f"No DuckDB {version} CLI release asset for {arch}; tried:\n  " + "\n  ".join(tried)
+    )
 
-    url = f"https://github.com/duckdb/duckdb/releases/download/{version}/{zip_name}"
-    zip_path = os.path.join(dest_dir, "duckdb_cli.zip")
 
-    print(f"Downloading official DuckDB {version} CLI ({arch}):\n  {url}")
-    urllib.request.urlretrieve(url, zip_path)
-
-    with zipfile.ZipFile(zip_path, "r") as zf:
-        zf.extractall(dest_dir)
+def _download_duckdb_cli(version: str, arch: str, dest_dir: str) -> str:
+    archive = _download_cli_archive(version, arch, dest_dir)
+    if archive.endswith(".zip"):
+        with zipfile.ZipFile(archive, "r") as zf:
+            zf.extractall(dest_dir)
+            contents = zf.namelist()
+    else:
+        with tarfile.open(archive, "r:gz") as tf:
+            if hasattr(tarfile, "data_filter"):
+                tf.extractall(dest_dir, filter="data")
+            else:
+                tf.extractall(dest_dir)
+            contents = tf.getnames()
 
     bin_name = "duckdb.exe" if platform.system() == "Windows" else "duckdb"
     binary = os.path.join(dest_dir, bin_name)
     if not os.path.isfile(binary):
         raise SystemExit(
             f"DuckDB binary not found after extraction: {binary}\n"
-            f"Zip contents: {zipfile.ZipFile(zip_path).namelist()}"
+            f"Archive contents: {contents}"
         )
 
     if platform.system() != "Windows":

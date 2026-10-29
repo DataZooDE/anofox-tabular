@@ -6,6 +6,7 @@
 
 #include "catch.hpp"
 
+#include "anofox_email.hpp"
 #include "anofox_email_dns.hpp"
 #include "anofox_email_smtp.hpp"
 
@@ -106,5 +107,88 @@ TEST_CASE("test/cpp/anofox_email_smtp_deadline_clamp", "[anofox_email]") {
 
 	SECTION("negative op timeouts are floored at zero") {
 		REQUIRE(ClampToDeadline(milliseconds(-5), now, now + seconds(1)) == milliseconds(0));
+	}
+}
+
+TEST_CASE("test/cpp/anofox_email_reserved_domains", "[anofox_email]") {
+	SECTION("loopback and reserved TLDs are reserved, case-insensitively") {
+		for (const char *domain : {"localhost", "LocalHost", "mail.localhost", "example", "shop.example",
+		                           "nonexistent.invalid", "INVALID", "ci.test", "printer.local"}) {
+			INFO(domain);
+			REQUIRE(IsReservedMailDomain(domain));
+		}
+	}
+
+	SECTION("ordinary domains, including RFC 2606 second-level names, are not") {
+		for (const char *domain : {"web.de", "example.com", "example.org", "testing.com", "localhost.de",
+		                           "mytest", "locale.fr", "invalid-domain.com"}) {
+			INFO(domain);
+			REQUIRE_FALSE(IsReservedMailDomain(domain));
+		}
+	}
+}
+
+TEST_CASE("test/cpp/anofox_email_dns_cacheability", "[anofox_email]") {
+	DnsResult result;
+	result.success = true;
+	REQUIRE(IsCacheableDnsResult(result));
+	result.success = false;
+	for (const char *reason : {"dns_domain_not_found", "dns_no_records", "dns_null_mx"}) {
+		result.reason = reason;
+		REQUIRE(IsCacheableDnsResult(result));
+	}
+	for (const char *reason : {"dns_timeout", "dns_server_unreachable", "dns_init_failed"}) {
+		result.reason = reason;
+		REQUIRE_FALSE(IsCacheableDnsResult(result));
+	}
+}
+
+// A failed check is either a definite answer about the address (valid = false)
+// or an unknown outcome (valid = NULL): timeouts and unreachable servers say
+// nothing about the address.
+TEST_CASE("test/cpp/anofox_email_failure_classification", "[anofox_email]") {
+	auto is_definite = [](const std::string &reason) {
+		return ClassifyEmailFailure(reason) == EmailFailureKind::DEFINITE;
+	};
+
+	SECTION("syntax and definite DNS/SMTP answers are definite") {
+		for (const char *reason :
+		     {"invalid_format", "invalid_length", "dns_resolution_failed",
+		      "dns_empty_domain", "dns_reserved_domain", "dns_domain_not_found", "dns_no_records", "dns_null_mx",
+		      "smtp_no_hosts", "smtp_dns_reserved_domain", "smtp_dns_domain_not_found", "smtp_dns_no_records",
+		      "smtp_dns_no_addresses", "smtp_recipient_rejected"}) {
+			INFO(reason);
+			REQUIRE(is_definite(reason));
+		}
+	}
+
+	SECTION("timeouts, unreachable servers and local errors are unknown") {
+		for (const char *reason :
+		     {"dns_timeout", "dns_server_unreachable", "dns_out_of_memory", "dns_init_failed", "dns_loop_failure",
+		      "dns_pending_incomplete", "dns_poll_failed_4", "dns_error_11", "smtp_dns_timeout",
+		      "smtp_dns_incomplete", "smtp_dns_init_failed", "smtp_dns_server_unreachable",
+		      "smtp_socket_init_failed", "smtp_connect_error", "smtp_connect_timeout", "smtp_greeting_error",
+		      "smtp_greeting_timeout", "smtp_invalid_greeting", "smtp_helo_rejected", "smtp_mail_from_rejected",
+		      "smtp_recipient_deferred", "smtp_read_error", "smtp_read_timeout", "smtp_write_error",
+		      "smtp_write_timeout", "smtp_invalid_response", "smtp_response_too_large", "smtp_overall_timeout",
+		      "smtp_verification_failed"}) {
+			INFO(reason);
+			REQUIRE_FALSE(is_definite(reason));
+		}
+	}
+
+	SECTION("an unrecognised code is unknown, never a false 'invalid'") {
+		REQUIRE_FALSE(is_definite(""));
+		REQUIRE_FALSE(is_definite("dns_something_new"));
+	}
+
+	SECTION("the definite DNS answers are exactly the cacheable failures") {
+		for (const char *reason : {"dns_domain_not_found", "dns_no_records", "dns_null_mx", "dns_timeout",
+		                           "dns_server_unreachable", "dns_error_11"}) {
+			DnsResult result;
+			result.reason = reason;
+			INFO(reason);
+			REQUIRE(IsCacheableDnsResult(result) == is_definite(reason));
+		}
 	}
 }

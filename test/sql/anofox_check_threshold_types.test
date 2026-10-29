@@ -1,0 +1,126 @@
+# name: test/sql/anofox_check_threshold_types.test
+# description: Threshold output columns of the standalone checks have a fixed type: DOUBLE
+#              for rates, multipliers and value bounds, BIGINT for count bounds, whatever
+#              literal (0.015, 1, NULL, a default) the caller passed.
+# group: [anofox_tabular]
+
+require anofox_tabular
+
+statement ok
+LOAD anofox_tabular
+
+statement ok
+SET anofox_tab_trace_enabled = false
+
+statement ok
+CREATE TABLE support_tickets (
+    ticket_id   INTEGER,
+    customer    VARCHAR,
+    channel     VARCHAR,
+    priority    VARCHAR,
+    opened_on   DATE,
+    first_reply_minutes DOUBLE
+)
+
+statement ok
+INSERT INTO support_tickets VALUES
+    (5001, 'Brauhaus Mueller GmbH', 'email', 'high',   DATE '2026-10-01',  42.0),
+    (5002, 'Kaffeeroesterei Wien',  'phone', 'low',    DATE '2026-10-01',  15.5),
+    (5003, 'Nordsee Fisch KG',      'email', 'medium', DATE '2026-10-02', 128.0),
+    (5004, 'Alpine Outdoor AG',     'chat',  'high',   DATE '2026-10-02',   3.0),
+    (5005, 'Atelier Lumiere SARL',  NULL,    'low',    DATE '2026-10-03',  NULL)
+
+query TT
+SELECT typeof(min_threshold), typeof(max_threshold) FROM volume('support_tickets', 1, 10)
+----
+BIGINT	BIGINT
+
+query TT
+SELECT typeof(min_threshold), typeof(max_threshold) FROM volume('support_tickets', 1, NULL)
+----
+BIGINT	BIGINT
+
+query TR
+SELECT typeof(threshold), threshold FROM null_rate('support_tickets', 'channel', 0.015)
+----
+DOUBLE	0.015
+
+query TT
+SELECT typeof(min_threshold), typeof(max_threshold) FROM distinct_count('support_tickets', 'channel', 2, 5)
+----
+BIGINT	BIGINT
+
+query TR
+SELECT typeof(threshold), threshold FROM zscore('support_tickets', 'first_reply_minutes', 3)
+----
+DOUBLE	3.0
+
+query TR
+SELECT typeof(multiplier), multiplier FROM iqr('support_tickets', 'first_reply_minutes', 1.5)
+----
+DOUBLE	1.5
+
+query TT
+SELECT typeof(min_threshold), typeof(max_threshold) FROM regex_match('support_tickets', 'customer', '[A-Z]', 0.9)
+----
+DOUBLE	DOUBLE
+
+query TR
+SELECT typeof(threshold), threshold FROM values_in_set('support_tickets', 'priority', ['low', 'medium', 'high'])
+----
+DOUBLE	1.0
+
+query TT
+SELECT typeof(lower_threshold), typeof(upper_threshold) FROM agg_check('support_tickets', 'first_reply_minutes', 'avg', 0, 60)
+----
+DOUBLE	DOUBLE
+
+query TT
+SELECT typeof(threshold), threshold FROM duplicate_count('support_tickets', 'ticket_id')
+----
+BIGINT	0
+
+query TT
+SELECT typeof(lower_threshold), typeof(upper_threshold) FROM occurrence('support_tickets', 'customer', 'max', NULL, 3)
+----
+BIGINT	BIGINT
+
+query TR
+SELECT typeof(threshold), threshold FROM match_rate('support_tickets', 'support_tickets', 'ticket_id', 'ticket_id', 0.95)
+----
+DOUBLE	0.95
+
+query TR
+SELECT typeof(threshold), threshold FROM compliance('support_tickets', 'first_reply_minutes < 240', 0.8)
+----
+DOUBLE	0.8
+
+# rel_count_change defaults (-0.5, 0.5) and explicit values have the same type
+query TTRR
+SELECT typeof(lower_threshold), typeof(upper_threshold), lower_threshold, upper_threshold
+FROM rel_count_change('support_tickets', 'opened_on')
+----
+DOUBLE	DOUBLE	-0.5	0.5
+
+query TT
+SELECT typeof(lower_threshold), typeof(upper_threshold) FROM rel_count_change('support_tickets', 'opened_on', NULL, 7, -1, 2)
+----
+DOUBLE	DOUBLE
+
+query TR
+SELECT typeof(threshold), threshold
+FROM rolling_values_in_set('support_tickets', 'priority', ['low', 'medium', 'high'], 'opened_on', 7, 1)
+----
+DOUBLE	1.0
+
+# Checks combine with UNION ALL BY NAME into one threshold column of one type
+query T
+SELECT DISTINCT typeof(threshold) FROM (
+    SELECT threshold FROM null_rate('support_tickets', 'channel', 0.25)
+    UNION ALL
+    SELECT threshold FROM null_rate('support_tickets', 'first_reply_minutes', 0.015)
+    UNION ALL
+    SELECT threshold FROM compliance('support_tickets', 'ticket_id > 0')
+)
+----
+DOUBLE

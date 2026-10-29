@@ -1,0 +1,83 @@
+# name: test/sql/anofox_phonenumber_match_not_a_number.test
+# description: phonenumber_match returns NOT_A_NUMBER when either side does not parse
+#              as a phone number (blank, placeholder, letters, a single digit), so a
+#              dedup self-join never pairs customers on an empty or placeholder phone.
+# group: [anofox_tabular]
+
+require anofox_tabular
+
+statement ok
+LOAD anofox_tabular;
+
+# Identical strings that are no phone number are no match of anything
+query TTTTTTT
+SELECT phonenumber_match('', '', 'US'),
+       phonenumber_match('   ', '   ', 'US'),
+       phonenumber_match('abc', 'abc', 'US'),
+       phonenumber_match('-', '-', 'US'),
+       phonenumber_match('0', '0', 'US'),
+       phonenumber_match('0', '0', 'DE'),
+       phonenumber_match('n/a', 'n/a', 'DE');
+----
+NOT_A_NUMBER	NOT_A_NUMBER	NOT_A_NUMBER	NOT_A_NUMBER	NOT_A_NUMBER	NOT_A_NUMBER	NOT_A_NUMBER
+
+# One side not a number: NOT_A_NUMBER, whichever side it is
+query TTT
+SELECT phonenumber_match('invalid', '6502530000', 'US'),
+       phonenumber_match('6502530000', 'invalid', 'US'),
+       phonenumber_match('+1 650 253 0000', '', NULL);
+----
+NOT_A_NUMBER	NOT_A_NUMBER	NOT_A_NUMBER
+
+# An unknown country code or an unsupported region hint: the number cannot be read
+query TT
+SELECT phonenumber_match('+999 1234 5678', '+999 1234 5678', NULL),
+       phonenumber_match('0664 1234567', '0664 1234567', 'AT');
+----
+NOT_A_NUMBER	NOT_A_NUMBER
+
+# Short numbers that parse keep their behaviour: identical is an exact match
+query TT
+SELECT phonenumber_match('411', '411', 'US'), phonenumber_match('112', '110', 'DE');
+----
+EXACT_MATCH	NO_MATCH
+
+# NULL in, NULL out
+query T
+SELECT phonenumber_match(NULL, '411', 'US');
+----
+NULL
+
+# Dedup self-join over a CRM extract with blank and placeholder phones: only the
+# two real duplicates pair up
+statement ok
+CREATE TABLE crm_customers AS SELECT * FROM (VALUES
+    (3001, 'Jane Doe',        '+1 650 253 0000', 'US'),
+    (3002, 'Jane Doe (dup)',  '(650) 253-0000',  'US'),
+    (3003, 'John Roe',        '',                'US'),
+    (3004, 'Jim Poe',         '',                'US'),
+    (3005, 'Ann Loe',         '-',               'US'),
+    (3006, 'Bea Moe',         '-',               'US'),
+    (3007, 'Cid Noe',         'n/a',             'US'),
+    (3008, 'Dee Koe',         'n/a',             'US'),
+    (3009, 'Eve Zoe',         '0',               'US'),
+    (3010, 'Fay Yoe',         '0',               'US'),
+    (3011, 'Gus Xoe',         NULL,              'US')
+) t(customer_id, name, phone, region);
+
+query IIT
+SELECT a.customer_id, b.customer_id, phonenumber_match(a.phone, b.phone, a.region) AS m
+FROM crm_customers a JOIN crm_customers b ON a.customer_id < b.customer_id
+WHERE phonenumber_match(a.phone, b.phone, a.region) IN ('EXACT_MATCH', 'NSN_MATCH', 'SHORT_NSN_MATCH')
+ORDER BY ALL;
+----
+3001	3002	EXACT_MATCH
+
+query TI
+SELECT phonenumber_match(a.phone, b.phone, a.region) AS m, count(*)
+FROM crm_customers a JOIN crm_customers b ON a.customer_id < b.customer_id
+WHERE a.phone IS NOT NULL AND b.phone IS NOT NULL
+GROUP BY ALL ORDER BY m;
+----
+EXACT_MATCH	1
+NOT_A_NUMBER	44

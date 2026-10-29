@@ -1,0 +1,177 @@
+# name: test/sql/anofox_check_infinity.test
+# description: Infinite thresholds and infinite timestamps. A -inf lower / +inf upper threshold
+#              means no bound (like NULL), a NaN threshold is an error; 'infinity' and
+#              '-infinity' timestamps (SCD2 valid_to of the current version) are ignored by the
+#              freshness and time-aware checks, which say how many rows they ignored.
+# group: [anofox_tabular]
+
+require anofox_tabular
+
+statement ok
+LOAD anofox_tabular
+
+statement ok
+SET anofox_tab_trace_enabled = false
+
+# An SCD2 customer dimension: the first version of each customer is valid from -infinity, the
+# current version until infinity
+statement ok
+CREATE TABLE customer_dim (customer_id INTEGER, customer_name VARCHAR, segment VARCHAR, valid_from TIMESTAMP, valid_to TIMESTAMP);
+
+statement ok
+INSERT INTO customer_dim VALUES
+    (1001, 'Brauhaus Mueller GmbH', 'retail',    '-infinity',           '2026-10-18 09:15:00'),
+    (1002, 'Kaffeeroesterei Wien',  'retail',    '-infinity',           '2026-10-18 11:40:00'),
+    (1003, 'Nordsee Fisch KG',      'wholesale', '-infinity',           '2026-10-19 08:05:00'),
+    (1004, 'Alpine Outdoor AG',     'retail',    '-infinity',           '2026-10-19 16:20:00'),
+    (1005, 'Atelier Lumiere SARL',  'retail',    '-infinity',           '2026-10-20 10:00:00'),
+    (1001, 'Brauhaus Mueller GmbH', 'wholesale', '2026-10-18 09:15:00', '2026-10-20 13:30:00'),
+    (1002, 'Kaffeeroesterei Wien',  'wholesale', '2026-10-18 11:40:00', '2026-10-21 07:45:00'),
+    (1003, 'Nordsee Fisch KG',      'retail',    '2026-10-19 08:05:00', '2026-10-21 12:00:00'),
+    (1004, 'Alpine Outdoor AG',     'wholesale', '2026-10-19 16:20:00', '2026-10-22 09:10:00'),
+    (1005, 'Atelier Lumiere SARL',  'wholesale', '2026-10-20 10:00:00', '2026-10-22 15:55:00'),
+    (1001, 'Brauhaus Mueller GmbH', 'key',       '2026-10-20 13:30:00', '2026-10-23 08:30:00'),
+    (1002, 'Kaffeeroesterei Wien',  'key',       '2026-10-21 07:45:00', '2026-10-23 17:00:00'),
+    (1003, 'Nordsee Fisch KG',      'key',       '2026-10-21 12:00:00', '2026-10-24 06:30:00'),
+    (1004, 'Alpine Outdoor AG',     'key',       '2026-10-22 09:10:00', '2026-10-24 09:00:00'),
+    (1005, 'Atelier Lumiere SARL',  'key',       '2026-10-22 15:55:00', '2026-10-24 11:20:00'),
+    (1001, 'Brauhaus Mueller GmbH', 'retail',    '2026-10-23 08:30:00', '2026-10-24 14:45:00'),
+    (1002, 'Kaffeeroesterei Wien',  'retail',    '2026-10-23 17:00:00', '2026-10-24 16:10:00'),
+    (1003, 'Nordsee Fisch KG',      'wholesale', '2026-10-24 06:30:00', '2026-10-24 18:00:00'),
+    (1001, 'Brauhaus Mueller GmbH', 'wholesale', '2026-10-24 14:45:00', 'infinity'),
+    (1002, 'Kaffeeroesterei Wien',  'wholesale', '2026-10-24 16:10:00', 'infinity'),
+    (1003, 'Nordsee Fisch KG',      'retail',    '2026-10-24 18:00:00', 'infinity'),
+    (1004, 'Alpine Outdoor AG',     'retail',    '2026-10-24 09:00:00', 'infinity'),
+    (1005, 'Atelier Lumiere SARL',  'retail',    '2026-10-24 11:20:00', 'infinity')
+
+# ===--------------------------------------------------------------------===
+# Direct functions
+# ===--------------------------------------------------------------------===
+
+query TIT
+SELECT status, age_seconds, message FROM freshness('customer_dim', 'valid_to', INTERVAL '2 days', TIMESTAMP '2026-10-25 06:00:00')
+----
+pass	43200	Data is fresh. Latest update: 2026-10-24 18:00:00 (age: 43200s). 5 row(s) with an infinite timestamp ignored
+
+query TTT
+SELECT status, CAST(reference_date AS VARCHAR), message FROM rel_count_change('customer_dim', 'valid_to')
+----
+fail	2026-10-24	Count 6 on 2026-10-24 deviates by 2.0 from baseline average 2.0; 5 row(s) with an infinite date ignored
+
+query TTT
+SELECT status, CAST(reference_date AS VARCHAR), message FROM rel_count_change('customer_dim', 'valid_from')
+----
+fail	2026-10-24	Count 6 on 2026-10-24 deviates by 2.0 from baseline average 2.0; 5 row(s) with an infinite date ignored
+
+query TT
+SELECT status, CAST(reference_date AS VARCHAR) FROM metric_anomaly_iqr('customer_dim', 'valid_to')
+----
+fail	2026-10-24
+
+query TT
+SELECT status, CAST(reference_date AS VARCHAR) FROM rolling_values_in_set('customer_dim', 'segment', ['retail', 'wholesale', 'key'], 'valid_to')
+----
+pass	2026-10-24
+
+# -inf lower / +inf upper: no bound, reported as NULL
+query TTT
+SELECT status, lower_threshold IS NULL, upper_threshold IS NULL FROM agg_check('customer_dim', 'customer_id', 'max', '-inf'::DOUBLE, 'inf'::DOUBLE)
+----
+pass	true	true
+
+query TT
+SELECT status, message FROM agg_check('customer_dim', 'customer_id', 'max', 1001, 'infinity'::DOUBLE)
+----
+pass	max value 1005 is within acceptable range
+
+statement error
+SELECT * FROM agg_check('customer_dim', 'customer_id', 'max', NULL, 'nan'::DOUBLE)
+----
+agg_check: upper_threshold must not be NaN (NULL or +inf mean no upper bound)
+
+statement error
+SELECT * FROM agg_check('customer_dim', 'customer_id', 'max', 'inf'::DOUBLE, NULL)
+----
+agg_check: lower_threshold must not be +inf (NULL or -inf mean no lower bound)
+
+statement error
+SELECT * FROM agg_check('customer_dim', 'customer_id', 'max', NULL, '-inf'::DOUBLE)
+----
+agg_check: upper_threshold must not be -inf (NULL or +inf mean no upper bound)
+
+query TT
+SELECT status, upper_threshold IS NULL FROM rel_count_change('customer_dim', 'valid_to', NULL, 7, -0.5, 'inf'::DOUBLE)
+----
+pass	true
+
+statement error
+SELECT * FROM rel_count_change('customer_dim', 'valid_to', NULL, 7, 'nan'::DOUBLE, 0.5)
+----
+rel_count_change: lower_threshold must not be NaN (NULL or -inf mean no lower bound)
+
+# A reference at infinity is a clear error
+statement error
+SELECT * FROM rel_count_change('customer_dim', 'valid_to', NULL, 7, -0.5, 0.5, 'infinity'::DATE)
+----
+rel_count_change: reference_date must be a finite date
+
+statement error
+SELECT * FROM freshness('customer_dim', 'valid_to', INTERVAL '2 days', 'infinity'::TIMESTAMP)
+----
+freshness: reference_time must be a finite timestamp
+
+# ===--------------------------------------------------------------------===
+# run_checks
+# ===--------------------------------------------------------------------===
+
+statement ok
+CREATE TABLE dim_checks (
+    check_name VARCHAR, check_type VARCHAR, table_name VARCHAR, column_name VARCHAR, params VARCHAR,
+    lower_threshold DOUBLE, upper_threshold DOUBLE, monitor_only BOOLEAN, identifier_column VARCHAR,
+    filter_expr VARCHAR)
+
+statement ok
+INSERT INTO dim_checks VALUES
+    ('dim_fresh', 'freshness', 'customer_dim', 'valid_to', '{"reference_time": "2026-10-25 06:00:00"}', NULL, 172800, false, NULL, NULL),
+    ('dim_changes', 'rel_count_change', 'customer_dim', NULL, '{"date_column": "valid_to"}', -0.5, 0.5, false, NULL, NULL),
+    ('dim_changes_iqr', 'metric_anomaly_iqr', 'customer_dim', NULL, '{"date_column": "valid_to"}', NULL, NULL, false, NULL, NULL),
+    ('dim_segments', 'rolling_values_in_set', 'customer_dim', 'segment', '{"date_column": "valid_to", "allowed_values": ["retail", "wholesale", "key"]}', 1.0, NULL, false, NULL, NULL),
+    ('dim_rows', 'volume', 'customer_dim', NULL, NULL, 10, 'inf', false, NULL, NULL),
+    ('dim_rows_unbounded', 'volume', 'customer_dim', NULL, NULL, '-inf', 'inf', false, NULL, NULL),
+    ('dim_name_nulls', 'null_rate', 'customer_dim', 'customer_name', NULL, '-infinity', 'infinity', false, NULL, NULL),
+    ('dim_rows_nan', 'volume', 'customer_dim', NULL, NULL, NULL, 'nan', false, NULL, NULL),
+    ('dim_rows_never', 'volume', 'customer_dim', NULL, NULL, 'inf', NULL, false, NULL, NULL),
+    ('dim_changes_forever', 'rel_count_change', 'customer_dim', NULL, '{"date_column": "valid_to", "reference_date": "infinity"}', -0.5, 0.5, false, NULL, NULL)
+
+query TRTTTT
+SELECT check_name, value, lower_threshold IS NULL, upper_threshold IS NULL, status, message FROM run_checks('dim_checks')
+----
+dim_changes	2.0	false	false	fail	rel_count_change value 2.0 violates thresholds (2.0 > upper 0.5); 5 row(s) with an infinite date ignored
+dim_changes_forever	NULL	true	true	error	check 'dim_changes_forever' (rel_count_change) cannot run: params.reference_date must be a finite date
+dim_changes_iqr	6.0	false	false	fail	metric_anomaly_iqr value 6.0 violates thresholds (6.0 > upper 2.0); 5 row(s) with an infinite date ignored
+dim_fresh	43200.0	true	false	pass	freshness value 43200.0 seconds is within thresholds; 5 row(s) with an infinite timestamp ignored
+dim_name_nulls	0.0	true	true	pass	null_rate value 0.0: no thresholds configured (monitor)
+dim_rows	23.0	false	true	pass	volume value 23.0 is within thresholds
+dim_rows_nan	NULL	true	true	error	check 'dim_rows_nan' (volume) cannot run: upper_threshold must not be NaN (NULL or +inf mean no upper bound)
+dim_rows_never	NULL	true	true	error	check 'dim_rows_never' (volume) cannot run: lower_threshold must not be +inf (NULL or -inf mean no lower bound)
+dim_rows_unbounded	23.0	true	true	pass	volume value 23.0: no thresholds configured (monitor)
+dim_segments	1.0	false	true	pass	rolling_values_in_set value 1.0 is within thresholds; 5 row(s) with an infinite date ignored
+
+# A text date column holding 'infinity' is ignored the same way
+statement ok
+CREATE TABLE shipments_text AS SELECT * FROM (VALUES
+    ('SH-1', '2026-10-22'), ('SH-2', '2026-10-23'), ('SH-3', '2026-10-24'), ('SH-4', 'infinity'), ('SH-5', 'n/a')) t(shipment_no, shipped_on)
+
+statement ok
+CREATE TABLE ship_checks AS SELECT * FROM dim_checks LIMIT 0
+
+statement ok
+INSERT INTO ship_checks VALUES
+    ('ship_fresh', 'freshness', 'shipments_text', 'shipped_on', '{"reference_time": "2026-10-25 00:00:00"}', NULL, 86400, false, NULL, NULL),
+    ('ship_volume', 'rel_count_change', 'shipments_text', NULL, '{"date_column": "shipped_on"}', -0.5, 0.5, false, NULL, NULL)
+
+query TRTT
+SELECT check_name, value, status, message FROM run_checks('ship_checks')
+----
+ship_fresh	86400.0	pass	freshness value 86400.0 seconds is within thresholds; 1 row(s) skipped (shipped_on is not a timestamp); 1 row(s) with an infinite timestamp ignored
+ship_volume	0.0	pass	rel_count_change value 0.0 is within thresholds; 1 row(s) skipped (shipped_on is not a date); 1 row(s) with an infinite date ignored

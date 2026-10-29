@@ -1,4 +1,5 @@
 #include "anofox_profile.hpp"
+#include "anofox_check.hpp"
 #include "anofox_trace.hpp"
 #include "anofox_function_alias.hpp"
 #include "anofox_sql_utils.hpp"
@@ -67,6 +68,11 @@ static ColumnCategory ClassifyColumn(const string &data_type) {
 		return ColumnCategory::LIST;
 	}
 
+	// INTERVAL before the numeric check, which would match its "INT"
+	if (upper_type == "INTERVAL") {
+		return ColumnCategory::TEMPORAL;
+	}
+
 	// Scalar types
 	if (upper_type.find("INT") != string::npos || upper_type == "DOUBLE" ||
 	    upper_type == "FLOAT" || upper_type == "REAL" ||
@@ -90,6 +96,14 @@ static ColumnCategory ClassifyColumn(const string &data_type) {
 	return ColumnCategory::OTHER;
 }
 
+// A correlation coefficient clamped to [-1, 1]. An undefined coefficient (CORR is NaN for a
+// single pair or a constant column) is NULL: NaN must be tested first, since NaN > 1 is true
+// in DuckDB and would clamp it to 1.0. NULL stays NULL.
+static string ClampUnitSQL(const string &expr) {
+	return "CASE WHEN isnan(" + expr + ") THEN NULL WHEN " + expr + " > 1 THEN 1.0 WHEN " + expr +
+	       " < -1 THEN -1.0 ELSE " + expr + " END";
+}
+
 static bool IsComplexCategory(ColumnCategory cat) {
 	return cat == ColumnCategory::LIST || cat == ColumnCategory::MAP_TYPE ||
 	       cat == ColumnCategory::STRUCT_TYPE || cat == ColumnCategory::UNION_TYPE;
@@ -99,29 +113,38 @@ static bool IsComplexCategory(ColumnCategory cat) {
 // Schema introspection
 //===--------------------------------------------------------------------===//
 
-static vector<pair<string, string>> IntrospectColumns(Connection &con, const string &table_name,
+// The columns of `table_name` (name, type) in table order. A non-empty `filter` restricts
+// them to the named columns; names match case-insensitively like DuckDB identifiers, and an
+// unknown name is an error naming `function_name` instead of a silent miss.
+static vector<pair<string, string>> IntrospectColumns(ClientContext &context, Connection &con,
+                                                       const string &function_name, const string &table_name,
                                                        const vector<string> &filter) {
 	vector<pair<string, string>> result;
+
+	// Bind in the caller's context first: a missing table or column is reported by name
+	// ("<fn>: table 't' does not exist"), not as an error of the internal query below
+	RequireRelationColumns(context, function_name, table_name, filter);
 
 	string sql = "SELECT * FROM query_table('" + EscapeStringLiteral(table_name) + "') LIMIT 0";
 
 	auto res = con.Query(sql);
 	if (res->HasError()) {
-		throw InvalidInputException("Failed to introspect table '%s': %s", table_name, res->GetError());
+		auto cause = res->GetErrorObject().RawMessage();
+		throw BinderException("%s: cannot read table '%s': %s", function_name, table_name,
+		                      cause.substr(0, cause.find('\n')));
 	}
 
 	auto res_names = duckdb_compat::ResultNames(*res);
-	for (idx_t i = 0; i < res_names.size(); i++) {
-		string col_name = res_names[i];
-		string col_type = duckdb_compat::ResultTypes(*res)[i].ToString();
-
-		if (!filter.empty()) {
-			bool found = std::find(filter.begin(), filter.end(), col_name) != filter.end();
-			if (!found) {
-				continue;
-			}
+	vector<string> available_names(res_names.begin(), res_names.end());
+	vector<bool> selected(available_names.size(), filter.empty());
+	for (auto idx : MatchColumnNames(function_name, table_name, available_names, filter)) {
+		selected[idx] = true;
+	}
+	for (idx_t i = 0; i < available_names.size(); i++) {
+		if (!selected[i]) {
+			continue;
 		}
-		result.push_back({col_name, col_type});
+		result.push_back({available_names[i], duckdb_compat::ResultTypes(*res)[i].ToString()});
 	}
 
 	return result;
@@ -165,7 +188,8 @@ static int64_t ComputeTotalNulls(Connection &con, const string &table_name,
 static string GenerateSummarySQL(const string &table_name, int64_t total_nulls,
                                   int64_t complex_columns, int64_t column_count,
                                   int64_t numeric_columns, int64_t string_columns,
-                                  int64_t temporal_columns, int64_t boolean_columns) {
+                                  int64_t temporal_columns, int64_t boolean_columns,
+                                  int64_t other_columns) {
 	string tbl = EscapeStringLiteral(table_name);
 	string tn_lit = std::to_string(total_nulls);
 	string cc_lit = std::to_string(complex_columns);
@@ -174,6 +198,7 @@ static string GenerateSummarySQL(const string &table_name, int64_t total_nulls,
 	string str_count_lit = std::to_string(string_columns);
 	string tmp_count_lit = std::to_string(temporal_columns);
 	string bool_count_lit = std::to_string(boolean_columns);
+	string other_count_lit = std::to_string(other_columns);
 
 	// estimated_memory_bytes: rough approximation as row_count * column_count * 8.
 	// Assumes an average of 8 bytes per cell across all column types.
@@ -195,6 +220,7 @@ static string GenerateSummarySQL(const string &table_name, int64_t total_nulls,
 	       "  " + tmp_count_lit + "::BIGINT AS temporal_columns,"
 	       "  " + bool_count_lit + "::BIGINT AS boolean_columns,"
 	       "  " + cc_lit + "::BIGINT AS complex_columns,"
+	       "  " + other_count_lit + "::BIGINT AS other_columns,"
 	       "  " + tn_lit + "::BIGINT AS total_nulls,"
 	       "  CASE WHEN r.row_count = 0 OR " + col_count_lit + " = 0 THEN 0.0"
 	       "       ELSE CAST(" + tn_lit + " AS DOUBLE)"
@@ -211,14 +237,17 @@ static unique_ptr<TableRef> ProfileSummaryBindReplace(ClientContext &context,
 	if (input.inputs.empty()) {
 		throw BinderException("profile_summary requires 1 argument: table_name");
 	}
-	string table_name = input.inputs[0].ToString();
+	string table_name = RequireNonNullArgument(input, 0, "profile_summary", "table_name");
+	RejectTempTable(context, "profile_summary", table_name);
+	RejectUncommittedChanges(context, "profile_summary");
 
 	AnofoxTrace(AnofoxLogLevel::Debug,
 	            "profile: profile_summary introspecting '" + table_name + "'");
 
 	// Open a sibling connection to introspect columns and compute null counts at bind time.
-	Connection con(*context.db);
-	auto columns = IntrospectColumns(con, table_name, {});
+	auto con = OpenSiblingConnection(context);
+	SiblingInterruptForwarder forward_interrupt(context, con);
+	auto columns = IntrospectColumns(context, con, "profile_summary", table_name, {});
 
 	int64_t column_count = 0;
 	int64_t numeric_columns = 0;
@@ -226,6 +255,9 @@ static unique_ptr<TableRef> ProfileSummaryBindReplace(ClientContext &context,
 	int64_t temporal_columns = 0;
 	int64_t boolean_columns = 0;
 	int64_t complex_columns = 0;
+	// Every column lands in exactly one bucket, so the buckets add up to column_count:
+	// types outside the named buckets (UUID, BIT, ENUM, JSON, ...) count as other
+	int64_t other_columns = 0;
 	for (auto &[col_name, col_type] : columns) {
 		auto category = ClassifyColumn(col_type);
 		column_count++;
@@ -240,9 +272,12 @@ static unique_ptr<TableRef> ProfileSummaryBindReplace(ClientContext &context,
 		}
 		if (IsComplexCategory(category)) {
 			complex_columns++;
+		} else if (category == ColumnCategory::OTHER) {
+			other_columns++;
 		}
 	}
 	int64_t total_nulls = ComputeTotalNulls(con, table_name, columns);
+	ThrowIfInterrupted(context);
 
 	AnofoxTrace(AnofoxLogLevel::Debug,
 	            "profile: total_nulls=" + std::to_string(total_nulls) +
@@ -250,7 +285,7 @@ static unique_ptr<TableRef> ProfileSummaryBindReplace(ClientContext &context,
 
 	string sql = GenerateSummarySQL(table_name, total_nulls, complex_columns, column_count,
 	                                numeric_columns, string_columns, temporal_columns,
-	                                boolean_columns);
+	                                boolean_columns, other_columns);
 	return ParseSubquery(sql, context, "Failed to parse profile_summary query");
 }
 
@@ -260,11 +295,12 @@ static unique_ptr<TableRef> ProfileSummaryBindReplace(ClientContext &context,
 
 struct ProfileTableBindData : public TableFunctionData {
 	string table_name;
-	vector<string> columns;
+	// The profiled columns (name, type), resolved and validated at bind time
+	vector<pair<string, string>> columns;
 	int64_t sample_size;
 	bool exact;
 
-	ProfileTableBindData(string tbl, vector<string> cols, int64_t sample, bool exact_mode)
+	ProfileTableBindData(string tbl, vector<pair<string, string>> cols, int64_t sample, bool exact_mode)
 	    : table_name(std::move(tbl)), columns(std::move(cols)), sample_size(sample),
 	      exact(exact_mode) {}
 };
@@ -291,7 +327,9 @@ static unique_ptr<FunctionData> ProfileTableBind(ClientContext &context,
 		throw BinderException("profile_table requires at least 1 argument: table_name");
 	}
 
-	string table_name = input.inputs[0].ToString();
+	string table_name = RequireNonNullArgument(input, 0, "profile_table", "table_name");
+	RejectTempTable(context, "profile_table", table_name);
+	RejectUncommittedChanges(context, "profile_table");
 
 	vector<string> columns;
 	if (input.inputs.size() > 1 && !input.inputs[1].IsNull() &&
@@ -317,7 +355,7 @@ static unique_ptr<FunctionData> ProfileTableBind(ClientContext &context,
 		exact = input.inputs[3].GetValue<bool>();
 	}
 
-	// Output schema — 27 columns
+	// Output schema — 29 columns
 	names.emplace_back("column_name");        return_types.emplace_back(LogicalType(LogicalTypeId::VARCHAR));
 	names.emplace_back("column_type");        return_types.emplace_back(LogicalType(LogicalTypeId::VARCHAR));
 	names.emplace_back("row_count");          return_types.emplace_back(LogicalType(LogicalTypeId::BIGINT));
@@ -345,13 +383,69 @@ static unique_ptr<FunctionData> ProfileTableBind(ClientContext &context,
 	names.emplace_back("negative_count");     return_types.emplace_back(LogicalType(LogicalTypeId::BIGINT));
 	names.emplace_back("is_sampled");         return_types.emplace_back(LogicalType(LogicalTypeId::BOOLEAN));
 	names.emplace_back("actual_sample_size"); return_types.emplace_back(LogicalType(LogicalTypeId::BIGINT));
+	names.emplace_back("nan_count");          return_types.emplace_back(LogicalType(LogicalTypeId::BIGINT));
+	names.emplace_back("inf_count");          return_types.emplace_back(LogicalType(LogicalTypeId::BIGINT));
 
-	return make_uniq<ProfileTableBindData>(table_name, columns, sample_size, exact);
+	// Resolve the table and the requested columns now: an unknown table or column is a bind
+	// error, raised before the result (and its header) is produced
+	auto con = OpenSiblingConnection(context);
+	SiblingInterruptForwarder forward_interrupt(context, con);
+	auto resolved_columns = IntrospectColumns(context, con, "profile_table", table_name, columns);
+
+	return make_uniq<ProfileTableBindData>(table_name, std::move(resolved_columns), sample_size, exact);
 }
 
 static unique_ptr<GlobalTableFunctionState> ProfileTableInit(ClientContext &,
                                                               TableFunctionInitInput &) {
 	return make_uniq<ProfileTableGlobalState>();
+}
+
+// The bound (SumOverflowRiskSQL) for the exact AVG of a column of type `col_type`, and for the
+// spread of a DECIMAL's exact centring, not to overflow; empty for a type whose sum cannot
+// overflow (AggregateOverflowBoundSQL)
+static string ProfileOverflowBoundSQL(const string &col_type) {
+	auto upper = StringUtil::Upper(col_type);
+	if (upper == "HUGEINT") {
+		return AggregateOverflowBoundSQL("SUM", LogicalType(LogicalTypeId::HUGEINT));
+	}
+	// DECIMAL(width,scale) as LogicalType::ToString renders it
+	auto open = upper.find('(');
+	auto comma = upper.find(',');
+	auto close = upper.find(')');
+	if (!StringUtil::StartsWith(upper, "DECIMAL(") || comma == string::npos || close == string::npos ||
+	    close < comma) {
+		return string();
+	}
+	try {
+		auto width = std::stoi(upper.substr(open + 1, comma - open - 1));
+		auto scale = std::stoi(upper.substr(comma + 1, close - comma - 1));
+		return AggregateOverflowBoundSQL("SUM", LogicalType::DECIMAL(static_cast<uint8_t>(width),
+		                                                             static_cast<uint8_t>(scale)));
+	} catch (std::exception &) {
+		return string();
+	}
+}
+
+// Trace the statistics profile_table reports as NULL because they would overflow (see
+// ProfileOverflowBoundSQL); `row` is one result row of BuildColumnProfileSQL
+static void TraceOverflowedStatistics(const vector<Value> &row) {
+	const auto column_type = row[1].ToString();
+	if (ProfileOverflowBoundSQL(column_type).empty()) {
+		return;
+	}
+	const int64_t values = row[2].GetValue<int64_t>() - row[3].GetValue<int64_t>();
+	vector<string> overflowed;
+	if (values > 0 && row[9].IsNull()) {
+		overflowed.push_back("mean");
+	}
+	if (values > 1 && row[11].IsNull()) {
+		overflowed.push_back("stddev, skewness, kurtosis");
+	}
+	if (!overflowed.empty()) {
+		AnofoxTrace(AnofoxLogLevel::Warn, "profile_table: " + StringUtil::Join(overflowed, ", ") + " of column '" +
+		                                      row[0].ToString() + "' (" + column_type +
+		                                      ") would overflow the exact sum; reported as NULL");
+	}
 }
 
 static string BuildColumnProfileSQL(const string &col_name, const string &col_type,
@@ -373,19 +467,60 @@ static string BuildColumnProfileSQL(const string &col_name, const string &col_ty
 		return (cat == ColumnCategory::NUMERIC) ? expr : "NULL::BIGINT";
 	};
 
-	string mean_sql    = num_dbl("AVG(TRY_CAST(" + ec + " AS DOUBLE))");
-	string median_sql  = num_dbl("MEDIAN(TRY_CAST(" + ec + " AS DOUBLE))");
-	string stddev_sql  = num_dbl("STDDEV_SAMP(TRY_CAST(" + ec + " AS DOUBLE))");
-	string p25_sql     = num_dbl("PERCENTILE_CONT(0.25) WITHIN GROUP"
-	                             " (ORDER BY TRY_CAST(" + ec + " AS DOUBLE))");
-	string p75_sql     = num_dbl("PERCENTILE_CONT(0.75) WITHIN GROUP"
-	                             " (ORDER BY TRY_CAST(" + ec + " AS DOUBLE))");
-	string skewness_sql = num_dbl("SKEWNESS(TRY_CAST(" + ec + " AS DOUBLE))");
-	string kurtosis_sql = num_dbl("KURTOSIS(TRY_CAST(" + ec + " AS DOUBLE))");
+	// Moments and percentiles over the finite values only: one NaN would turn the mean into
+	// NaN, and SKEWNESS/KURTOSIS/STDDEV_SAMP raise "out of range" on NaN/Inf, failing the
+	// whole profile. NaN and Inf values are counted in nan_count / inf_count instead.
+	string dbl = "TRY_CAST(" + ec + " AS DOUBLE)";
+	string finite = "(CASE WHEN isfinite(" + dbl + ") THEN " + dbl + " END)";
+	string mean_sql    = num_dbl("AVG(" + finite + ")");
+	string median_sql  = num_dbl("MEDIAN(" + finite + ")");
+	string stddev_sql  = num_dbl("STDDEV_SAMP(" + finite + ")");
+	string p25_sql     = num_dbl("PERCENTILE_CONT(0.25) WITHIN GROUP (ORDER BY " + finite + ")");
+	string p75_sql     = num_dbl("PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY " + finite + ")");
+	string skewness_sql = num_dbl("SKEWNESS(" + finite + ")");
+	string kurtosis_sql = num_dbl("KURTOSIS(" + finite + ")");
+	// Integer and DECIMAL columns (always finite) are exact above 2^53 only before the DOUBLE
+	// cast: the mean and quantiles are taken on the column itself, and the spread and shape
+	// statistics on the exact differences to a reference value (ExactCenteringType), so
+	// 9007199254740992 and 9007199254740993 do not collapse into a constant column.
+	string centering_type = cat == ColumnCategory::NUMERIC ? ExactCenteringType(col_type) : "";
+	if (!centering_type.empty()) {
+		string centred =
+		    CenteredDoubleSQL(ec, centering_type, "(SELECT " + CenteringReferenceSQL(ec, centering_type) + " FROM src)");
+		mean_sql = "CAST(AVG(" + ec + ") AS DOUBLE)";
+		median_sql = "CAST(MEDIAN(" + ec + ") AS DOUBLE)";
+		p25_sql = "CAST(PERCENTILE_CONT(0.25) WITHIN GROUP (ORDER BY " + ec + ") AS DOUBLE)";
+		p75_sql = "CAST(PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY " + ec + ") AS DOUBLE)";
+		stddev_sql = "STDDEV_SAMP(" + centred + ")";
+		skewness_sql = "SKEWNESS(" + centred + ")";
+		kurtosis_sql = "KURTOSIS(" + centred + ")";
+	}
+	// SUM-based statistics of a HUGEINT or wide DECIMAL column (ProfileOverflowBoundSQL): where
+	// the exact sum (mean) or the exact differences (spread and shape of a DECIMAL) could leave
+	// their type, the statistic is NULL instead of an Out of Range error failing the profile
+	string overflow_bound = cat == ColumnCategory::NUMERIC ? ProfileOverflowBoundSQL(col_type) : "";
+	if (!overflow_bound.empty()) {
+		string safe_sum = "(SELECT NOT " + SumOverflowRiskSQL(ec, overflow_bound) + " FROM src)";
+		mean_sql = "CAST(AVG(CASE WHEN " + safe_sum + " THEN " + ec + " END) AS DOUBLE)";
+		if (StringUtil::StartsWith(centering_type, "DECIMAL")) {
+			string safe_range = "(SELECT COALESCE(MAX(CAST(" + ec + " AS DOUBLE)) - MIN(CAST(" + ec +
+			                    " AS DOUBLE)), 0) < " + overflow_bound + " FROM src)";
+			string centred = CenteredDoubleSQL("(CASE WHEN " + safe_range + " THEN " + ec + " END)", centering_type,
+			                                   "(SELECT " + CenteringReferenceSQL(ec, centering_type) + " FROM src)");
+			stddev_sql = "STDDEV_SAMP(" + centred + ")";
+			skewness_sql = "SKEWNESS(" + centred + ")";
+			kurtosis_sql = "KURTOSIS(" + centred + ")";
+		}
+	}
+	string nan_sql = num_bint("CAST(COUNT(*) FILTER (WHERE isnan(" + dbl + ")) AS BIGINT)");
+	string inf_sql = num_bint("CAST(COUNT(*) FILTER (WHERE isinf(" + dbl + ")) AS BIGINT)");
 
-	// min_val / max_val — guard against MIN/MAX on complex types (undefined ordering)
-	string min_val_sql = is_complex ? "NULL::VARCHAR" : "CAST(MIN(" + ec + ") AS VARCHAR)";
-	string max_val_sql = is_complex ? "NULL::VARCHAR" : "CAST(MAX(" + ec + ") AS VARCHAR)";
+	// min_val / max_val — guard against MIN/MAX on complex types (undefined ordering). Numeric
+	// columns take the finite values only: DuckDB orders NaN above +Inf, so MAX would be 'nan'.
+	// The value keeps its own type (DECIMAL scale, integer) in the VARCHAR rendering.
+	string min_max_input = (cat == ColumnCategory::NUMERIC) ? "(CASE WHEN isfinite(" + dbl + ") THEN " + ec + " END)" : ec;
+	string min_val_sql = is_complex ? "NULL::VARCHAR" : "CAST(MIN(" + min_max_input + ") AS VARCHAR)";
+	string max_val_sql = is_complex ? "NULL::VARCHAR" : "CAST(MAX(" + min_max_input + ") AS VARCHAR)";
 
 	// distinct_count — cast complex types to VARCHAR for GROUP BY consistency
 	string dc = is_complex ? "CAST(" + ec + " AS VARCHAR)" : ec;
@@ -458,13 +593,17 @@ static string BuildColumnProfileSQL(const string &col_name, const string &col_ty
 	    "CAST(COALESCE(SUM(CASE WHEN TRY_CAST(" + ec + " AS DOUBLE) < 0 THEN 1 ELSE 0 END), 0)"
 	    " AS BIGINT)");
 
-	// top_values — cast column to VARCHAR to handle all types uniformly
+	// top_values — values are grouped and ordered in the column's own type, then shown as
+	// VARCHAR; ties in count are ordered by value (9 before 10, not '10' before '9') so the
+	// result is deterministic. Numeric columns list finite values only (NaN/Inf are in
+	// nan_count / inf_count)
+	string top_val_filter = (cat == ColumnCategory::NUMERIC) ? "isfinite(" + dbl + ")" : ec + " IS NOT NULL";
 	string top_val_sql =
-	    "(SELECT LIST({'value': CAST(v AS VARCHAR), 'count': cnt})"
-	    " FROM (SELECT CAST(" + ec + " AS VARCHAR) AS v, COUNT(*) AS cnt FROM src"
-	    "       WHERE " + ec + " IS NOT NULL"
-	    "       GROUP BY CAST(" + ec + " AS VARCHAR)"
-	    "       ORDER BY cnt DESC LIMIT 5))";
+	    "(SELECT LIST({'value': CAST(v AS VARCHAR), 'count': cnt} ORDER BY cnt DESC, v)"
+	    " FROM (SELECT " + ec + " AS v, COUNT(*) AS cnt FROM src"
+	    "       WHERE " + top_val_filter +
+	    "       GROUP BY " + ec +
+	    "       ORDER BY cnt DESC, v LIMIT 5))";
 
 	return "SELECT"
 	       " " + col_name_lit + " AS column_name,"
@@ -497,7 +636,9 @@ static string BuildColumnProfileSQL(const string &col_name, const string &col_ty
 	       " " + zero_sql + " AS zero_count,"
 	       " " + neg_sql + " AS negative_count,"
 	       " " + is_sampled_str + "::BOOLEAN AS is_sampled,"
-	       " " + sample_size_str + "::BIGINT AS actual_sample_size"
+	       " " + sample_size_str + "::BIGINT AS actual_sample_size,"
+	       " " + nan_sql + " AS nan_count,"
+	       " " + inf_sql + " AS inf_count"
 	       " FROM src";
 }
 
@@ -508,7 +649,8 @@ static string BuildProfileTableSQL(const string &table_name,
 	string tbl = EscapeStringLiteral(table_name);
 	string sql = "WITH src AS (SELECT * FROM query_table('" + tbl + "')";
 	if (is_sampled) {
-		sql += " USING SAMPLE " + std::to_string(sample_size) + " ROWS REPEATABLE (42)";
+		// REPEATABLE needs an explicit sampling method; "USING SAMPLE n ROWS REPEATABLE (s)" is a syntax error
+		sql += " USING SAMPLE reservoir(" + std::to_string(sample_size) + " ROWS) REPEATABLE (42)";
 	}
 	sql += ")";
 
@@ -539,7 +681,8 @@ static void ProfileTableExecute(ClientContext &context, TableFunctionInput &data
 		                ", sample_size=" + std::to_string(bind_data.sample_size) +
 		                ", exact=" + (bind_data.exact ? "true" : "false") + ")");
 
-		Connection con(*context.db);
+		auto con = OpenSiblingConnection(context);
+		SiblingInterruptForwarder forward_interrupt(context, con);
 
 		// Determine actual row count to decide if sampling is needed
 		int64_t actual_row_count = 0;
@@ -558,8 +701,7 @@ static void ProfileTableExecute(ClientContext &context, TableFunctionInput &data
 		bool is_sampled = !bind_data.exact && actual_row_count > bind_data.sample_size;
 		int64_t actual_sample_size = is_sampled ? bind_data.sample_size : actual_row_count;
 
-		// Introspect columns
-		auto columns = IntrospectColumns(con, bind_data.table_name, bind_data.columns);
+		auto &columns = bind_data.columns;
 		if (columns.empty()) {
 			return;
 		}
@@ -576,6 +718,7 @@ static void ProfileTableExecute(ClientContext &context, TableFunctionInput &data
 
 		auto profile_res = con.Query(profile_sql);
 		if (profile_res->HasError()) {
+			ThrowIfInterrupted(context);
 			throw InvalidInputException("profile_table query failed: %s",
 			                           profile_res->GetError());
 		}
@@ -592,6 +735,7 @@ static void ProfileTableExecute(ClientContext &context, TableFunctionInput &data
 				for (idx_t col = 0; col < chunk->ColumnCount(); col++) {
 					row_vals.push_back(chunk->GetValue(col, row));
 				}
+				TraceOverflowedStatistics(row_vals);
 				state.rows.push_back(std::move(row_vals));
 			}
 		}
@@ -620,9 +764,10 @@ static void ProfileTableExecute(ClientContext &context, TableFunctionInput &data
 
 struct ProfileCorrelationsBindData : public TableFunctionData {
 	string table_name;
-	vector<string> columns;
+	// The candidate columns (name, type), resolved and validated at bind time
+	vector<pair<string, string>> columns;
 
-	ProfileCorrelationsBindData(string tbl, vector<string> cols)
+	ProfileCorrelationsBindData(string tbl, vector<pair<string, string>> cols)
 	    : table_name(std::move(tbl)), columns(std::move(cols)) {}
 };
 
@@ -641,7 +786,9 @@ static unique_ptr<FunctionData> ProfileCorrelationsBind(ClientContext &context,
 		throw BinderException("profile_correlations requires at least 1 argument: table_name");
 	}
 
-	string table_name = input.inputs[0].ToString();
+	string table_name = RequireNonNullArgument(input, 0, "profile_correlations", "table_name");
+	RejectTempTable(context, "profile_correlations", table_name);
+	RejectUncommittedChanges(context, "profile_correlations");
 
 	vector<string> columns;
 	if (input.inputs.size() > 1 && !input.inputs[1].IsNull() &&
@@ -660,7 +807,12 @@ static unique_ptr<FunctionData> ProfileCorrelationsBind(ClientContext &context,
 	names.emplace_back("spearman"); return_types.emplace_back(LogicalType(LogicalTypeId::DOUBLE));
 	names.emplace_back("n");        return_types.emplace_back(LogicalType(LogicalTypeId::BIGINT));
 
-	return make_uniq<ProfileCorrelationsBindData>(table_name, columns);
+	// Resolve the table and the requested columns at bind time (see profile_table)
+	auto con = OpenSiblingConnection(context);
+	SiblingInterruptForwarder forward_interrupt(context, con);
+	auto resolved_columns = IntrospectColumns(context, con, "profile_correlations", table_name, columns);
+
+	return make_uniq<ProfileCorrelationsBindData>(table_name, std::move(resolved_columns));
 }
 
 static unique_ptr<GlobalTableFunctionState> ProfileCorrelationsInit(ClientContext &,
@@ -679,14 +831,25 @@ static void ProfileCorrelationsExecute(ClientContext &context, TableFunctionInpu
 		AnofoxTrace(AnofoxLogLevel::Debug,
 		            "profile_correlations: scanning '" + bind_data.table_name + "'");
 
-		Connection con(*context.db);
+		auto con = OpenSiblingConnection(context);
+		SiblingInterruptForwarder forward_interrupt(context, con);
 
-		// Get all (or filtered) numeric columns
-		auto all_cols = IntrospectColumns(con, bind_data.table_name, bind_data.columns);
+		// The numeric columns among the resolved ones, with the SQL of their values as DOUBLE:
+		// integer and DECIMAL columns as the exact difference to a reference value
+		// (ExactCenteringType), so values above 2^53 stay distinct; Pearson's r does not
+		// change under the shift
 		vector<string> numeric_cols;
-		for (auto &[name, type] : all_cols) {
+		vector<string> numeric_vals;
+		for (auto &[name, type] : bind_data.columns) {
 			if (ClassifyColumn(type) == ColumnCategory::NUMERIC) {
+				string ec = EscapeIdentifier(name);
+				auto centering_type = ExactCenteringType(type);
 				numeric_cols.push_back(name);
+				numeric_vals.push_back(centering_type.empty()
+				                           ? "TRY_CAST(" + ec + " AS DOUBLE)"
+				                           : CenteredDoubleSQL(ec, centering_type,
+				                                               "(SELECT " + CenteringReferenceSQL(ec, centering_type) +
+				                                                   " FROM src)"));
 			}
 		}
 
@@ -715,28 +878,34 @@ static void ProfileCorrelationsExecute(ClientContext &context, TableFunctionInpu
 
 				// Pearson: CORR on raw values
 				// Spearman: CORR on rank-transformed values (subquery to separate window from agg)
-				sql += "SELECT"
+				// Both clamped to [-1, 1]: floating-point rounding can yield 1.0000000000000002
+				sql += "SELECT column_a, column_b, " + ClampUnitSQL("pearson") + " AS pearson, " +
+				       ClampUnitSQL("spearman") + " AS spearman, n FROM (SELECT"
 				       " " + col_a_lit + " AS column_a,"
 				       " " + col_b_lit + " AS column_b,"
 				       " CORR(a_val, b_val) AS pearson,"
 				       " CORR(a_rank, b_rank) AS spearman,"
 				       " CAST(COUNT(*) AS BIGINT) AS n"
 				       " FROM ("
+				       // ranks over the column itself: exact for large integers, the same
+				       // order as the DOUBLE cast otherwise
 				       "   SELECT"
-				       "     TRY_CAST(" + ea + " AS DOUBLE) AS a_val,"
-				       "     TRY_CAST(" + eb + " AS DOUBLE) AS b_val,"
-				       "     CAST(RANK() OVER (ORDER BY TRY_CAST(" + ea + " AS DOUBLE)) AS DOUBLE)"
+				       "     " + numeric_vals[i] + " AS a_val,"
+				       "     " + numeric_vals[j] + " AS b_val,"
+				       "     CAST(RANK() OVER (ORDER BY " + ea + ") AS DOUBLE)"
 				       "       AS a_rank,"
-				       "     CAST(RANK() OVER (ORDER BY TRY_CAST(" + eb + " AS DOUBLE)) AS DOUBLE)"
+				       "     CAST(RANK() OVER (ORDER BY " + eb + ") AS DOUBLE)"
 				       "       AS b_rank"
 				       "   FROM src"
-				       "   WHERE " + ea + " IS NOT NULL AND " + eb + " IS NOT NULL"
-				       " ) _corr_sub";
+				       // finite pairs only: one NaN/Inf turns CORR into NaN
+				       "   WHERE isfinite(TRY_CAST(" + ea + " AS DOUBLE)) AND isfinite(TRY_CAST(" + eb + " AS DOUBLE))"
+				       " ) _corr_sub) _corr_pair";
 			}
 		}
 
 		auto corr_res = con.Query(sql);
 		if (corr_res->HasError()) {
+			ThrowIfInterrupted(context);
 			throw InvalidInputException("profile_correlations query failed: %s",
 			                           corr_res->GetError());
 		}

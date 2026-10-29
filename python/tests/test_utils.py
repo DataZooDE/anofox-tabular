@@ -47,6 +47,21 @@ class TestDetectDfType:
         with pytest.raises(TypeError):
             detect_df_type(None)
 
+    @pytest.mark.parametrize("lib", ["pandas", "polars"])
+    def test_raises_for_series(self, lib):
+        mod = pytest.importorskip(lib)
+        with pytest.raises(TypeError, match=r"Series.*to_frame"):
+            detect_df_type(mod.Series("email", ["ana@example.com", "bad-email"]) if lib == "polars"
+                           else mod.Series(["ana@example.com", "bad-email"], name="email"))
+
+    def test_accepts_dataframe_subclass(self):
+        import pandas as pd
+
+        class Orders(pd.DataFrame):
+            pass
+
+        assert detect_df_type(Orders({"order_id": [1, 2]})) == "pandas"
+
 
 # ---------------------------------------------------------------------------
 # register_df_as_table
@@ -89,6 +104,23 @@ class TestRegisterDfAsTable:
         name1 = register_df_as_table(conn, df)
         name2 = register_df_as_table(conn, df)
         assert name1 != name2
+
+    def test_filtered_pandas_df_adds_no_index_column(self):
+        import pandas as pd
+        conn = self._make_conn()
+        df = pd.DataFrame({"x": [1, 2, 3, 4]}, index=[10, 40, 20, 30])
+        filtered = df[df["x"] != 2]  # index [10, 20, 30], not a RangeIndex
+        name = register_df_as_table(conn, filtered)
+        columns = [r[0] for r in conn.execute(f'DESCRIBE "{name}"').fetchall()]
+        assert columns == ["x"]
+
+    def test_named_index_is_not_copied(self):
+        import pandas as pd
+        conn = self._make_conn()
+        df = pd.DataFrame({"x": [1, 2]}, index=pd.Index([7, 9], name="key"))
+        name = register_df_as_table(conn, df)
+        columns = [r[0] for r in conn.execute(f'DESCRIBE "{name}"').fetchall()]
+        assert columns == ["x"]
 
 
 # ---------------------------------------------------------------------------

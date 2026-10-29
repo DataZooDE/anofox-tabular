@@ -1,0 +1,126 @@
+# name: test/sql/anofox_check_metric_iqr_missing_day.test
+# description: metric_anomaly_iqr in row-count mode (no metric_column) counts a reference day
+#              without rows as 0 rows, like rel_count_change: a nightly feed that stops fails
+#              instead of passing trivially, in the direct function, its _events companion and
+#              run_checks. The baseline keeps averaging the days with rows only. With a
+#              metric_column a day without values keeps passing trivially, unless the suite
+#              check sets params.fail_on_empty.
+# group: [anofox_tabular]
+
+require anofox_tabular
+
+statement ok
+LOAD anofox_tabular
+
+statement ok
+SET anofox_tab_trace_enabled = false
+
+# The nightly order feed of a web shop: 38 to 44 orders a day from 2026-10-01 to 2026-10-20,
+# then the export job broke and nothing arrived after 2026-10-20
+statement ok
+CREATE TABLE shop_orders AS
+SELECT 'ORD-' || strftime(day, '%Y%m%d') || '-' || lpad(CAST(i AS VARCHAR), 3, '0') AS order_id,
+       'CUST-' || lpad(CAST((i * 37 + day_no) % 500 AS VARCHAR), 4, '0') AS customer_id,
+       CAST(19.90 + (i * 7 % 50) AS DECIMAL(10, 2)) AS amount,
+       CAST(day AS TIMESTAMP) + INTERVAL (2 * 60 + i) MINUTE AS loaded_at
+FROM (SELECT CAST(d AS DATE) AS day, row_number() OVER (ORDER BY d) AS day_no
+      FROM generate_series(DATE '2026-10-01', DATE '2026-10-20', INTERVAL 1 DAY) g(d)) days,
+     range(44) r(i)
+WHERE i < 38 + (day_no % 7)
+
+# A day without orders is a metric of 0 rows: below the IQR bounds of the trailing month
+query TRT
+SELECT status, metric_value, message
+FROM metric_anomaly_iqr('shop_orders', 'loaded_at', reference_date := DATE '2026-10-25')
+----
+fail	0.0	Metric 0.0 on 2026-10-25 is outside IQR bounds [34.875, 47.875] (mode: both)
+
+# mode 'upper' only flags a jump up: 0 rows is no violation there
+query TR
+SELECT status, metric_value
+FROM metric_anomaly_iqr('shop_orders', 'loaded_at', NULL, 30, 1.5, 'upper', DATE '2026-10-25')
+----
+pass	0.0
+
+# The date range: every day after the feed stopped fails; the baseline days stay the days
+# with rows (20 of them), as rel_count_change counts them by default
+query TTRI
+SELECT CAST(reference_date AS VARCHAR), status, metric_value, baseline_days
+FROM metric_anomaly_iqr('shop_orders', 'loaded_at', start_date := DATE '2026-10-19', end_date := DATE '2026-10-23')
+----
+2026-10-19	pass	43.0	18
+2026-10-20	pass	44.0	19
+2026-10-21	fail	0.0	20
+2026-10-22	fail	0.0	20
+2026-10-23	fail	0.0	20
+
+# The _events companion reports the silent days
+query TTRR
+SELECT CAST(ds AS VARCHAR), severity, value, threshold
+FROM metric_anomaly_iqr_events('shop_orders', 'loaded_at', start_date := DATE '2026-10-19', end_date := DATE '2026-10-23')
+----
+2026-10-21	alarm	0.0	34.875
+2026-10-22	alarm	0.0	34.875
+2026-10-23	alarm	0.0	34.875
+
+# rel_count_change agrees: the same day is a drop of 100%
+query TR
+SELECT status, rel_change FROM rel_count_change('shop_orders', 'loaded_at', reference_date := DATE '2026-10-25')
+----
+fail	-1.0
+
+# The days before the first order have no baseline: they still pass trivially
+query TT
+SELECT status, message FROM metric_anomaly_iqr('shop_orders', 'loaded_at', reference_date := DATE '2026-09-28')
+----
+pass	No baseline window before 2026-09-28; check passed trivially
+
+# With a metric_column a day without values has no metric: it passes trivially
+query TRT
+SELECT status, metric_value, message
+FROM metric_anomaly_iqr('shop_orders', 'loaded_at', 'amount', reference_date := DATE '2026-10-25')
+----
+pass	NULL	No metric value on 2026-10-25; check passed trivially
+
+# ===--------------------------------------------------------------------===
+# run_checks
+# ===--------------------------------------------------------------------===
+
+statement ok
+CREATE TABLE feed_checks (
+    check_name VARCHAR, check_type VARCHAR, table_name VARCHAR, column_name VARCHAR,
+    params VARCHAR, lower_threshold DOUBLE, upper_threshold DOUBLE, monitor_only BOOLEAN,
+    identifier_column VARCHAR, filter_expr VARCHAR)
+
+statement ok
+INSERT INTO feed_checks VALUES
+    ('orders_per_day', 'metric_anomaly_iqr', 'shop_orders', NULL,
+     '{"date_column": "loaded_at", "reference_date": "2026-10-25"}', NULL, NULL, false, NULL, NULL),
+    ('orders_per_day_latest', 'metric_anomaly_iqr', 'shop_orders', NULL,
+     '{"date_column": "loaded_at"}', NULL, NULL, false, NULL, NULL),
+    ('avg_amount', 'metric_anomaly_iqr', 'shop_orders', 'amount',
+     '{"date_column": "loaded_at", "reference_date": "2026-10-25"}', NULL, NULL, false, NULL, NULL),
+    ('avg_amount_required', 'metric_anomaly_iqr', 'shop_orders', 'amount',
+     '{"date_column": "loaded_at", "reference_date": "2026-10-25", "fail_on_empty": true}', NULL, NULL, false, NULL, NULL),
+    ('avg_amount_required_warn', 'metric_anomaly_iqr', 'shop_orders', 'amount',
+     '{"date_column": "loaded_at", "reference_date": "2026-10-25", "fail_on_empty": true}', NULL, NULL, true, NULL, NULL)
+
+query TRRRTT
+SELECT check_name, value, round(lower_threshold, 3), round(upper_threshold, 3), status, message
+FROM run_checks('feed_checks')
+----
+avg_amount	NULL	43.286	44.992	pass	No value to evaluate; check passed trivially
+avg_amount_required	NULL	43.286	44.992	fail	No metric value on 2026-10-25 (fail_on_empty)
+avg_amount_required_warn	NULL	43.286	44.992	warn	No metric value on 2026-10-25 (fail_on_empty)
+orders_per_day	0.0	34.875	47.875	fail	metric_anomaly_iqr value 0.0 violates thresholds (0.0 < lower 34.875)
+orders_per_day_latest	44.0	35.0	47.0	pass	metric_anomaly_iqr value 44.0 is within thresholds
+
+# fail_on_empty on a day that has values changes nothing
+statement ok
+UPDATE feed_checks SET params = '{"date_column": "loaded_at", "reference_date": "2026-10-20", "fail_on_empty": true}'
+WHERE check_name = 'avg_amount_required'
+
+query TT
+SELECT status, message FROM run_checks('feed_checks') WHERE check_name = 'avg_amount_required'
+----
+pass	metric_anomaly_iqr value 44.264 is within thresholds

@@ -1,0 +1,108 @@
+# name: test/sql/anofox_ner_model_distilbert_multi.test
+# description: The multilingual NER model distilbert-multi (DistilBERT) finds German names, companies and places
+#              (umlauts, ß, double names, GmbH/AG) that the English distilbert-en misses or
+#              mistags. Selecting the model before the first NER call loads it; switching to
+#              another model afterwards is rejected.
+# group: [anofox_tabular]
+
+# Needs an OpenVINO build and downloads the distilbert-multi model (~135 MB) on first use, so it
+# runs only when ANOFOX_TEST_NER_MODELS is set. The model can only be chosen before the first
+# NER call of the process: run this file in a process of its own (make test_ner_models).
+require-env OPENVINO_AVAILABLE
+
+require-env ANOFOX_TEST_NER_MODELS
+
+require anofox_tabular
+
+statement ok
+LOAD anofox_tabular
+
+statement ok
+SET anofox_tab_trace_level = 'warn';
+
+# Selecting the model before the first NER call: accepted, loaded on first use
+statement ok
+SET anofox_ner_model = 'distilbert-multi';
+
+query T
+SELECT current_setting('anofox_ner_model');
+----
+distilbert-multi
+
+query T
+SELECT model_status IN ('NOT_LOADED', 'NOT_DOWNLOADED') FROM anofox_ner_status();
+----
+true
+
+statement ok
+CREATE TABLE tickets AS SELECT * FROM (VALUES
+  (1, 'Sehr geehrte Frau Weiß, vielen Dank für Ihre Schadenmeldung. Mit freundlichen Grüßen Jürgen Schäfer, Allianz Versicherungs-AG'),
+  (2, 'Ticket #48213: Kundin Sabine Weiß aus München meldet einen Wasserschaden in der Leopoldstraße 41.'),
+  (3, 'Rückruf erbeten: Frau Anna-Lena Müller-Lüdenscheidt, wohnhaft in Köln-Ehrenfeld.'),
+  (4, 'Ich, Sören Weiß, geboren am 03.07.1981 in Rostock, bevollmächtige die Kanzlei Schulze & Partner.'),
+  (5, 'Laut Aussage von „Ayşe Yılmaz“ (Zeugin) war die Ampel grün.')
+) t(id, txt);
+
+query IT
+SELECT id, pii_mask(txt) FROM tickets ORDER BY id;
+----
+1	Sehr geehrte Frau [NAME], vielen Dank für Ihre Schadenmeldung. Mit freundlichen Grüßen [NAME], [ORGANIZATION]
+2	Ticket #48213: Kundin [NAME] aus [LOCATION] meldet einen Wasserschaden in der [LOCATION] 41.
+3	Rückruf erbeten: Frau [NAME], wohnhaft in [LOCATION].
+4	Ich, [NAME], geboren am [DATE_OF_BIRTH] in [LOCATION], bevollmächtige die [ORGANIZATION].
+5	Laut Aussage von „[NAME]“ (Zeugin) war die Ampel grün.
+
+query TT
+SELECT model_status, starts_with(status_message, 'Model loaded successfully (distilbert-multi,') FROM anofox_ner_status();
+----
+LOADED	true
+
+# The names are model matches (confidence of the model), not dictionary matches (0.5)
+query IT
+SELECT id, list_sort(list_transform(list_filter(pii_detect(txt), lambda m: m.type = 'NAME' AND m.confidence >= 0.7), lambda m: m.text))
+FROM tickets ORDER BY id;
+----
+1	[Jürgen Schäfer, Weiß]
+2	[Sabine Weiß]
+3	[Anna-Lena Müller-Lüdenscheidt]
+4	[Sören Weiß]
+5	[Ayşe Yılmaz]
+
+# The model also tags dates (DATE); they are no NER type and stay in clear text when only
+# the NER types are enabled (dates of birth are the DATE_OF_BIRTH pattern type)
+statement ok
+SET anofox_pii_enabled_types = 'NAME,ORGANIZATION,LOCATION';
+
+query T
+SELECT pii_mask(txt) FROM tickets WHERE id = 4;
+----
+Ich, [NAME], geboren am 03.07.1981 in [LOCATION], bevollmächtige die [ORGANIZATION].
+
+# English and other European languages (DistilBERT takes "agence" for part of an organization)
+query IT
+SELECT id, pii_mask(txt) FROM (VALUES
+  (1, 'Please contact Mr. David O''Connor at Lloyds Banking Group regarding the claim filed in Edinburgh.'),
+  (2, 'Bonjour Madame Dubois, votre dossier a été transmis à notre agence de Lyon. Cordialement, Pierre Lefèvre'),
+  (3, 'La clienta María José Ortega llamó desde Sevilla para reclamar un cargo de Telefónica.')
+) t(id, txt) ORDER BY id;
+----
+1	Please contact Mr. [NAME] at [ORGANIZATION] regarding the claim filed in [LOCATION].
+2	Bonjour Madame [NAME], votre dossier a été transmis à notre [ORGANIZATION] de [LOCATION]. Cordialement, [NAME]
+3	La clienta [NAME] llamó desde [LOCATION] para reclamar un cargo de [ORGANIZATION].
+
+# Once loaded, the model cannot be switched: compiled model and tokenizer are immutable
+statement error
+SET anofox_ner_model = 'distilbert-en';
+----
+anofox_ner_model cannot be changed after the NER model has been loaded (currently 'distilbert-multi')
+
+# Setting the loaded model again is a no-op
+statement ok
+SET anofox_ner_model = 'distilbert-multi';
+
+# Reset the process-wide PII settings (the model itself stays loaded for this process)
+statement ok
+SET anofox_pii_enabled_types = '';
+
+statement ok
+SET anofox_tab_trace_level = 'info';

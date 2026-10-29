@@ -1,0 +1,109 @@
+# name: test/sql/anofox_pii_card_brands.test
+# description: Card numbers of all major brands are detected wherever pii_is_valid_credit_card accepts them; other digit runs are not cards
+# group: [anofox_tabular]
+
+require anofox_tabular
+
+statement ok
+LOAD anofox_tabular
+
+statement ok
+SET anofox_pii_enabled_types = 'CREDIT_CARD';
+
+# Published test card numbers of the card networks and payment providers
+statement ok
+CREATE TABLE test_pans (brand VARCHAR, pan VARCHAR);
+
+statement ok
+INSERT INTO test_pans VALUES
+    ('Visa', '4111111111111111'),
+    ('Visa', '4012888888881881'),
+    ('Visa', '4000056655665556'),
+    ('Visa 13 digits', '4222222222222'),
+    ('Visa 19 digits', '4111111111111111110'),
+    ('Mastercard', '5555555555554444'),
+    ('Mastercard', '5105105105105100'),
+    ('Mastercard 2-series', '2223003122003222'),
+    ('Mastercard 2-series', '2221000000000009'),
+    ('American Express', '378282246310005'),
+    ('American Express', '371449635398431'),
+    ('Discover', '6011111111111117'),
+    ('Discover', '6011000990139424'),
+    ('Discover 644', '6445644564456445'),
+    ('Maestro', '6759649826438453'),
+    ('Maestro', '5018000000000009'),
+    ('Maestro', '6304000000000000'),
+    ('JCB', '3530111333300000'),
+    ('JCB', '3566002020360505'),
+    ('Diners Club', '36227206271667'),
+    ('Diners Club', '30569309025904'),
+    ('Diners Club', '38520000023237'),
+    ('UnionPay', '6200000000000005'),
+    ('UnionPay 19 digits', '6205500000000000004'),
+    ('Luhn fails', '4111111111111112'),
+    ('Luhn fails', '6200000000000006'),
+    ('Luhn fails', '36227206271668');
+
+# Detection agrees with the checksum function on every number
+query I
+SELECT count(*) FROM test_pans WHERE pii_contains(pan) <> pii_is_valid_credit_card(pan);
+----
+0
+
+query I
+SELECT count(*) FROM test_pans WHERE pii_contains(pan);
+----
+24
+
+# Formatted in sentences: grouped by spaces, dashes or dots
+query I
+SELECT list_transform(pii_detect(s), lambda m: m.text) FROM (VALUES
+    ('Bitte belasten Sie meine Karte 2223 0031 2200 3222 mit 49,90 EUR.'),
+    ('Amex 3782-822463-10005, gültig bis 12/28'),
+    ('Diners: 3622 720627 1667.'),
+    ('JCB card 3530 1113 3330 0000 expires 04/27'),
+    ('UnionPay 6200-0000-0000-0005'),
+    ('Maestro 6759 6498 2643 8453 und Visa 4222 2222 2222 2'),
+    ('Karte 4111.1111.1111.1111'),
+    ('Ref 12 4111 1111 1111 1111 erhalten'),
+    ('Visa 4111 1111 1111 1111 110 (19 Stellen)')
+) v(s);
+----
+[2223 0031 2200 3222]
+[3782-822463-10005]
+[3622 720627 1667]
+[3530 1113 3330 0000]
+[6200-0000-0000-0005]
+[6759 6498 2643 8453, 4222 2222 2222 2]
+[4111.1111.1111.1111]
+[4111 1111 1111 1111]
+[4111 1111 1111 1111 110]
+
+query I
+SELECT pii_mask('Karte 4111.1111.1111.1111, Ablauf 09/27');
+----
+Karte [CREDIT_CARD], Ablauf 09/27
+
+# Other digit runs are not card numbers, even where the Luhn checksum holds
+query I
+SELECT count(*) FROM (VALUES
+    ('Bestellnummer 1234567890123452 vom 25.10.2026'),
+    ('IBAN DE89 3704 0044 0532 0130 00'),
+    ('IBAN DE44500105175407324931'),
+    ('Zeitstempel 2026-10-25 14:30:00.123456'),
+    ('Log 20261025143000123 OK'),
+    ('Tracking 1Z999AA10123456784'),
+    ('Betrag 4.111.111.111.111,11 EUR'),
+    ('Version 4111111111111111.2'),
+    ('Telefon +4111111111111111'),
+    ('Seriennummer SN4111111111111111'),
+    ('Rechnung 4111111111111111-01'),
+    ('Kundennummer 41111111111111111111 (20 Stellen)'),
+    ('Messwerte 4111 1111 1111 1111 1111 1111 1111 1111 1111 1111 1111 1111 1111 1111 1111 1111 1111 1111 1111 1111 1111 1111 1111 1111 1111 1111 1111 1111 1111 1111 1111 1111 1111')
+) v(s) WHERE pii_contains(s);
+----
+0
+
+# Restore the process-wide PII settings for the tests that follow
+statement ok
+SET anofox_pii_enabled_types = '';

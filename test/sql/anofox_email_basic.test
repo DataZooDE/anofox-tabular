@@ -48,10 +48,11 @@ SET anofox_tab_trace_enabled=true;
 statement ok
 SET anofox_tab_trace_level='debug';
 
+# The error names the real setting and the accepted levels
 statement error
 SET anofox_tab_trace_level='verbose';
 ----
-Unsupported anofox_trace_level value
+Unsupported anofox_tab_trace_level value 'verbose' (expected trace, debug, info, warn, error, critical or off)
 
 statement ok
 SET anofox_tab_email_regex_pattern='^user@[A-Za-z0-9.-]+$';
@@ -78,29 +79,86 @@ SET anofox_tab_email_smtp_connect_timeout_ms=50;
 statement ok
 SET anofox_tab_email_smtp_read_timeout_ms=50;
 
+# localhost is a reserved name: the DNS stage rejects it without a lookup, so
+# no loopback address is reported and no SMTP connection is attempted
 query TTT
-SELECT (result).valid, (result).stage, COALESCE((result).reason, '') <> '' AS has_reason
+SELECT (result).valid, (result).stage, (result).reason
 FROM (SELECT anofox_tab_email_validate('user@localhost', 'smtp') AS result);
 ----
-false	smtp	true
+false	dns	dns_reserved_domain
 
-query T
-SELECT array_length((result).mx_hosts)
+query TT
+SELECT array_length((result).mx_hosts), array_length((result).smtp_debug.transcript)
 FROM (SELECT anofox_tab_email_validate('user@localhost', 'smtp') AS result);
 ----
-2
+0	0
 
-query T
-SELECT array_length((result).smtp_debug.transcript) >= 1
-FROM (SELECT anofox_tab_email_validate('user@localhost', 'smtp') AS result);
+# An unknown mode is an error, not a silent valid = false for every row:
+# a typo such as 'mx' would otherwise score 0% compliance without a hint.
+statement error
+SELECT anofox_tab_email_validate('user@example.com', 'unknown');
 ----
-true
+Unknown email validation mode: unknown (expected regex, dns, smtp)
 
+statement error
+SELECT email_is_valid('a@gmail.com', 'mx');
+----
+Unknown email validation mode: mx (expected regex, dns, smtp)
+
+# The error does not depend on the address: a regex failure does not hide it
+statement error
+SELECT email_validate('not-an-email', 'mx');
+----
+Unknown email validation mode: mx
+
+# The former stage name is not a mode either
+statement error
+SELECT email_validate('user@example.com', 'unsupported');
+----
+Unknown email validation mode: unsupported
+
+# Back to the default pattern for the realistic addresses below
+statement ok
+RESET anofox_tab_email_regex_pattern;
+
+# Modes are trimmed and case-insensitive; 'full' stays an alias of smtp
 query TTT
-SELECT (result).valid, (result).stage, COALESCE((result).reason, '')
-FROM (SELECT anofox_tab_email_validate('user@example.com', 'unknown') AS result);
+SELECT email_is_valid('max.mustermann@example.com', '  REGEX '),
+       (email_validate('max@localhost', ' Dns')).reason,
+       (email_validate('max@localhost', 'FULL')).reason;
 ----
-false	unsupported	validation_not_implemented
+true	dns_reserved_domain	dns_reserved_domain
+
+# Realistic: a CRM extract scored per row, with the mode taken from a column.
+# One mistyped mode fails the whole query instead of marking rows invalid.
+statement ok
+CREATE TABLE crm_contacts AS SELECT * FROM (VALUES
+    (1001, 'anna.schmidt@mueller-gmbh.de', 'regex'),
+    (1002, 'j.dupont@orange.fr', 'Regex'),
+    (1003, 'info@bäckerei-klein', 'regex'),
+    (1004, 'sales@acme-industries.com', NULL)
+) t(contact_id, email, check_mode);
+
+query IT
+SELECT contact_id, email_is_valid(email, check_mode) FROM crm_contacts ORDER BY contact_id;
+----
+1001	true
+1002	true
+1003	false
+1004	true
+
+statement ok
+INSERT INTO crm_contacts VALUES (1005, 'p.rossi@libero.it', 'mx');
+
+statement error
+SELECT contact_id, email_is_valid(email, check_mode) FROM crm_contacts ORDER BY contact_id;
+----
+Unknown email validation mode: mx (expected regex, dns, smtp)
+
+statement error
+SET anofox_tab_email_default_validation = 'mx';
+----
+Unknown email validation mode: mx (expected regex, dns, smtp)
 
 statement error anofox_tab_email_dns_timeout_ms must be between 1 and 5000
 SET anofox_tab_email_dns_timeout_ms=0;
@@ -120,3 +178,19 @@ SET anofox_tab_trace_enabled=false;
 
 statement ok
 SET anofox_tab_trace_enabled=true;
+
+# The email settings are process-wide: restore the defaults this file changed so
+# later test files start from a clean configuration
+statement ok
+RESET anofox_tab_email_regex_pattern;
+
+statement ok
+SET anofox_tab_email_smtp_connect_timeout_ms = 5000;
+
+statement ok
+SET anofox_tab_email_smtp_read_timeout_ms = 5000;
+
+query T
+SELECT email_is_valid('first.last@example.com', 'regex');
+----
+true

@@ -1,0 +1,131 @@
+# name: test/sql/anofox_check_suite_schema.test
+# description: run_checks validates the checks table before reading it: a missing required
+#              column is named (no binder error leaking the internal query), the optional
+#              columns may be left out (they default to NULL / false), a TEMP checks table works,
+#              and a check type that exists only as a direct
+#              function (zscore, iqr, schema_check, ...) is reported as such, not as a typo.
+# group: [anofox_tabular]
+
+require anofox_tabular
+
+statement ok
+LOAD anofox_tabular
+
+statement ok
+SET anofox_tab_trace_enabled = false
+
+statement ok
+CREATE TABLE shop_orders (order_id INTEGER, customer_id INTEGER, status VARCHAR, amount DECIMAL(10, 2),
+                          ordered_at TIMESTAMP)
+
+statement ok
+INSERT INTO shop_orders VALUES
+    (7001, 301, 'completed', 129.90, TIMESTAMP '2026-10-26 08:10:00'),
+    (7002, 302, 'completed',  15.00, TIMESTAMP '2026-10-26 09:12:00'),
+    (7003, 303, 'pending',    48.50, TIMESTAMP '2026-10-26 10:15:00'),
+    (7004, NULL, 'shipped',  310.00, TIMESTAMP '2026-10-26 11:20:00')
+
+# ===--------------------------------------------------------------------===
+# A checks table with only the required columns
+# ===--------------------------------------------------------------------===
+
+statement ok
+CREATE TABLE minimal_checks (check_name VARCHAR, check_type VARCHAR, table_name VARCHAR)
+
+statement ok
+INSERT INTO minimal_checks VALUES ('orders_volume', 'volume', 'shop_orders')
+
+# no thresholds: a monitor row
+query TTRT
+SELECT check_name, status, value, message FROM run_checks('minimal_checks')
+----
+orders_volume	pass	4.0	volume value 4.0: no thresholds configured (monitor)
+
+# Optional columns may be given in any subset and order; extra columns are ignored
+statement ok
+CREATE TABLE partial_checks (owner VARCHAR, check_name VARCHAR, table_name VARCHAR, check_type VARCHAR,
+                             column_name VARCHAR, upper_threshold DOUBLE, description VARCHAR)
+
+statement ok
+INSERT INTO partial_checks VALUES
+    ('data-team', 'customer_nulls', 'shop_orders', 'null_rate', 'customer_id', 0.1, 'every order needs a customer'),
+    ('data-team', 'orders_volume',  'shop_orders', 'volume',    NULL,          10,  'small nightly batch')
+
+query TTRR
+SELECT check_name, status, value, upper_threshold FROM run_checks('partial_checks')
+----
+customer_nulls	fail	0.25	0.1
+orders_volume	pass	4.0	10.0
+
+# ===--------------------------------------------------------------------===
+# Missing required columns are named
+# ===--------------------------------------------------------------------===
+
+statement ok
+CREATE TABLE checks_without_type (check_name VARCHAR, table_name VARCHAR, column_name VARCHAR)
+
+statement error
+SELECT * FROM run_checks('checks_without_type')
+----
+run_checks: checks table 'checks_without_type' is missing the required column check_type (required: check_name, check_type, table_name; optional: column_name, params, lower_threshold, upper_threshold, monitor_only, identifier_column, filter_expr)
+
+statement ok
+CREATE TABLE checks_bare (name VARCHAR, kind VARCHAR)
+
+statement error
+SELECT * FROM run_checks('checks_bare')
+----
+run_checks: checks table 'checks_bare' is missing the required columns check_name, check_type, table_name
+
+# The internal query is not leaked
+statement error
+SELECT * FROM run_checks('checks_bare')
+----
+<!REGEX>:.*query_table.*
+
+# ===--------------------------------------------------------------------===
+# Unknown or TEMP checks table
+# ===--------------------------------------------------------------------===
+
+statement error
+SELECT * FROM run_checks('nightly_chekcs')
+----
+run_checks: checks table 'nightly_chekcs' does not exist
+
+statement ok
+CREATE TEMP TABLE temp_checks AS SELECT * FROM minimal_checks
+
+# A TEMP checks table is read in the caller's context
+query TT
+SELECT check_name, status FROM run_checks('temp_checks')
+----
+orders_volume	pass
+
+# ===--------------------------------------------------------------------===
+# Check types that exist only as direct functions
+# ===--------------------------------------------------------------------===
+
+statement ok
+CREATE TABLE direct_only_checks (check_name VARCHAR, check_type VARCHAR, table_name VARCHAR, column_name VARCHAR,
+                                 lower_threshold DOUBLE, upper_threshold DOUBLE)
+
+statement ok
+INSERT INTO direct_only_checks VALUES
+    ('a_amount_zscore', 'zscore',       'shop_orders', 'amount',   NULL, 3),
+    ('b_amount_iqr',    'IQR',          'shop_orders', 'amount',   NULL, 1.5),
+    ('c_schema',        'schema_check', 'shop_orders', NULL,       NULL, NULL),
+    ('d_avg_amount',    'agg_check',    'shop_orders', 'amount',   10,   500),
+    ('e_typo',          'null_rat',     'shop_orders', 'status',   NULL, 0.1)
+
+query TTT
+SELECT check_name, status, message FROM run_checks('direct_only_checks')
+----
+a_amount_zscore	error	check 'a_amount_zscore' (zscore) cannot run: check type 'zscore' is not supported in run_checks (use the zscore() function)
+b_amount_iqr	error	check 'b_amount_iqr' (iqr) cannot run: check type 'iqr' is not supported in run_checks (use the iqr() function)
+c_schema	error	check 'c_schema' (schema_check) cannot run: check type 'schema_check' is not supported in run_checks (use the schema_check() function)
+d_avg_amount	error	check 'd_avg_amount' (agg_check) cannot run: check type 'agg_check' is called 'agg' in run_checks (set params to {"agg": "avg"} etc.)
+e_typo	error	check 'e_typo' (null_rat) cannot run: unknown check_type 'null_rat' in check 'e_typo' (supported: volume, null_rate, distinct_count, regex_match, values_in_set, agg, duplicate_count, occurrence, match_rate, compliance, freshness, rel_count_change, metric_anomaly_iqr, rolling_values_in_set)
+
+statement ok
+DROP TABLE minimal_checks; DROP TABLE partial_checks; DROP TABLE checks_without_type; DROP TABLE checks_bare;
+DROP TABLE direct_only_checks; DROP TABLE shop_orders

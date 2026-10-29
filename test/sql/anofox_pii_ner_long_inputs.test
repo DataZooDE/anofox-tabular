@@ -1,0 +1,50 @@
+# name: test/sql/anofox_pii_ner_long_inputs.test
+# description: NER detection on texts with very long tokens (inline base64, 100k-character words) finishes quickly; a word over 100 characters is one unknown token
+# group: [anofox_tabular]
+
+require-env OPENVINO_AVAILABLE
+
+require anofox_tabular
+
+statement ok
+LOAD anofox_tabular
+
+statement ok
+SET anofox_pii_enabled_types = 'NAME,ORGANIZATION,LOCATION,MISC';
+
+query I
+SELECT len(pii_detect(repeat('x', 100000)));
+----
+0
+
+query I
+SELECT len(pii_detect('Ticket ' || repeat('Zm9vYmFy', 12500) || ' closed'));
+----
+0
+
+# All types on a support ticket with an 8 KB inline attachment: the pattern
+# matches are complete and none lies in the attachment (NER may still guess
+# at short base64 pieces between '+' and '/')
+statement ok
+SET anofox_pii_enabled_types = '';
+
+statement ok
+CREATE TABLE ticket AS SELECT
+    'Ticket von jörg.k@müller-gmbh.de, Rückruf unter +49 171 1234567.' || chr(10) ||
+    '<img src="data:image/png;base64,' ||
+    (SELECT to_base64(unhex(string_agg(sha256('png' || i), '' ORDER BY i))) FROM range(190) r(i)) ||
+    '">' || chr(10) || 'IBAN DE89 3704 0044 0532 0130 00' AS body;
+
+query I
+SELECT list_filter(list_transform(pii_detect(body), lambda m: m.type), lambda t: t IN ('EMAIL', 'PHONE', 'IBAN')) FROM ticket;
+----
+[EMAIL, PHONE, IBAN]
+
+query I
+SELECT len(list_filter(pii_detect(body), lambda m: m.type NOT IN ('NAME', 'ORGANIZATION', 'LOCATION', 'MISC') AND m.start_pos >= strpos(body, 'base64,') AND m.end_pos <= strpos(body, '">'))) FROM ticket;
+----
+0
+
+# Restore the process-wide PII settings for the tests that follow
+statement ok
+SET anofox_pii_enabled_types = '';

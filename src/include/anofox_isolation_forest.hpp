@@ -10,6 +10,7 @@
 #include <unordered_map>
 #include <string>
 #include <variant>
+#include <functional>
 
 namespace duckdb {
 namespace anofox {
@@ -370,6 +371,7 @@ private:
     std::vector<double> sample_weights_;  // Sample weights for weighted sampling (empty = uniform)
     double total_volume_;  // Total feature space volume (for density scoring)
     size_t ntry_;          // SCiForest: number of split candidates to evaluate (1=random IF)
+    std::function<void()> interrupt_check_;  // Called per tree and per scored block; may throw
     double prob_pick_avg_gain_;  // SCiForest: probability of selecting best-gain split
 
     /**
@@ -433,6 +435,14 @@ public:
           prob_pick_avg_gain_(prob_pick_avg_gain) {}
 
     /**
+     * Install a callback that fitting calls before each tree and scoring every
+     * INTERRUPT_CHECK_ROWS rows; it stops the computation by throwing (the SQL
+     * functions throw InterruptException when the query is interrupted).
+     */
+    void SetInterruptCheck(std::function<void()> interrupt_check) { interrupt_check_ = std::move(interrupt_check); }
+    static constexpr size_t INTERRUPT_CHECK_ROWS = 1024;
+
+    /**
      * Fit forest to numeric-only data (legacy)
      * Resets all model state, so refitting behaves exactly like fitting a
      * freshly constructed forest with the same parameters.
@@ -489,11 +499,26 @@ public:
     std::vector<double> ScoreBatchMixed(const std::vector<ColumnData>& data) const;
 
     /**
-     * Compute anomaly threshold based on contamination parameter
+     * Compute the anomaly threshold for the contamination parameter.
+     *
+     * The cut is the score at the (1 - contamination) quantile, sorted[floor((1 - c) * (n - 1))];
+     * normally the rows scoring above it (k = (n - 1) - floor(...) rows) are anomalies, and a
+     * tie with the cut score is not flagged. Exception: when the cut score ties with the
+     * highest score (identical outliers fill the top), the whole tied top group is flagged,
+     * even when that exceeds contamination * n. When k == 0 or all scores are equal (constant
+     * data) the threshold is +infinity and nothing is flagged. Ties use a relative tolerance
+     * of 1e-9. Use IsAnomaly(score, threshold) to apply the returned threshold.
+     *
      * @param scores: Vector of anomaly scores
-     * @return Threshold value (points > threshold are anomalies)
+     * @return Threshold value (see IsAnomaly)
      */
     double ComputeThreshold(const std::vector<double>& scores) const;
+
+    /**
+     * Whether a score is an anomaly for a threshold from ComputeThreshold.
+     * Scores within a relative tolerance of 1e-9 below the threshold count as ties.
+     */
+    static bool IsAnomaly(double score, double threshold);
 
     /**
      * Get number of trees in forest

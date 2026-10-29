@@ -147,9 +147,12 @@ SELECT status FROM agg_check('check_users', 'amount', 'sum', 100.0, 500.0)
 ----
 pass
 
-# empty table passes trivially with NULL value
+# empty table passes trivially with NULL value (agg_check needs a numeric column)
+statement ok
+CREATE TEMP TABLE check_empty_numeric (v DOUBLE)
+
 query TR
-SELECT status, value FROM agg_check('check_empty', 'v', 'avg', 0.0, 1.0)
+SELECT status, value FROM agg_check('check_empty_numeric', 'v', 'avg', 0.0, 1.0)
 ----
 pass	NULL
 

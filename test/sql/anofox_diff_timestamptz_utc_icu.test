@@ -1,0 +1,94 @@
+# name: test/sql/anofox_diff_timestamptz_utc_icu.test
+# description: With ICU loaded, the diff of a TIMESTAMP WITH TIME ZONE column whose type changed
+#              (to VARCHAR or TIMESTAMP) does not depend on the session TimeZone: the TIMESTAMPTZ
+#              side is compared as its UTC instant in Europe/Berlin, Pacific/Kiritimati (+14)
+#              and America/Los_Angeles alike.
+# group: [anofox_tabular]
+
+require anofox_tabular
+
+require icu
+
+statement ok
+LOAD anofox_tabular
+
+statement ok
+SET anofox_tab_trace_enabled = false
+
+statement ok
+CREATE TABLE tickets_v1 (ticket_id INTEGER, opened_at TIMESTAMPTZ, status VARCHAR)
+
+statement ok
+INSERT INTO tickets_v1 VALUES
+    (5001, TIMESTAMPTZ '2026-03-01 08:30:00+00',    'open'),
+    (5002, TIMESTAMPTZ '2026-03-01 23:30:00.25+00', 'closed'),
+    (5003, TIMESTAMPTZ '2026-03-02 00:15:00+00',    'open')
+
+statement ok
+CREATE TABLE tickets_text (ticket_id INTEGER, opened_at VARCHAR, status VARCHAR)
+
+statement ok
+INSERT INTO tickets_text VALUES
+    (5001, '2026-03-01 08:30:00+00',    'open'),
+    (5002, '2026-03-01 23:30:00.25+00', 'closed'),
+    (5003, '2026-03-02 00:20:00+00',    'open')
+
+statement ok
+CREATE TABLE tickets_naive (ticket_id INTEGER, opened_at TIMESTAMP, status VARCHAR)
+
+statement ok
+INSERT INTO tickets_naive VALUES
+    (5001, TIMESTAMP '2026-03-01 08:30:00',    'open'),
+    (5002, TIMESTAMP '2026-03-01 23:30:00.25', 'closed'),
+    (5003, TIMESTAMP '2026-03-02 00:15:00',    'pending')
+
+statement ok
+CREATE TABLE logins_v1 (login_at TIMESTAMPTZ, user_name VARCHAR)
+
+statement ok
+INSERT INTO logins_v1 VALUES
+    (TIMESTAMPTZ '2026-05-04 07:00:00+00', 'mkeller'),
+    (TIMESTAMPTZ '2026-05-04 22:45:10+00', 'aschmidt')
+
+statement ok
+CREATE TABLE logins_v2 (login_at VARCHAR, user_name VARCHAR)
+
+statement ok
+INSERT INTO logins_v2 VALUES
+    ('2026-05-04 07:00:00+00', 'mkeller'),
+    ('2026-05-04 22:45:10+00', 'aschmidt')
+
+foreach tz Europe/Berlin Pacific/Kiritimati America/Los_Angeles UTC
+
+statement ok
+SET TimeZone = '${tz}'
+
+query TIT rowsort
+SELECT diff_type, ticket_id, opened_at FROM diff_joindiff('tickets_v1', 'tickets_text', 'ticket_id')
+----
+changed	5003	2026-03-02 00:20:00+00
+
+query TI rowsort
+SELECT diff_type, ticket_id FROM diff_hashdiff('tickets_v1', 'tickets_text', 'ticket_id')
+----
+changed	5003
+
+query TIT rowsort
+SELECT diff_type, ticket_id, status FROM diff_joindiff('tickets_v1', 'tickets_naive', 'ticket_id')
+----
+changed	5003	pending
+
+query TI rowsort
+SELECT diff_type, ticket_id FROM diff_joindiff('tickets_naive', 'tickets_v1', 'ticket_id')
+----
+changed	5003
+
+query I
+SELECT count(*) FROM diff_joindiff('logins_v1', 'logins_v2', 'login_at')
+----
+0
+
+endloop
+
+statement ok
+RESET TimeZone

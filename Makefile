@@ -11,6 +11,13 @@ endif
 EXT_NAME=anofox_tabular
 EXT_CONFIG=${PROJ_DIR}extension_config.cmake
 
+# DuckDB 2.0 takes its version from scripts/ci/release_version.txt instead of
+# git, so a local build of the v2.0.0 tag is stamped as a dev version
+# (v2.0.0-devNNNNN) that released DuckDB clients, e.g. the Python package,
+# refuse to load. When ./duckdb sits exactly on a release tag, stamp that tag.
+# An explicit OVERRIDE_GIT_DESCRIBE (CI) wins.
+OVERRIDE_GIT_DESCRIBE ?= $(shell git -C $(PROJ_DIR)duckdb describe --tags --exact-match 2>/dev/null)
+
 # Include the Makefile from extension-ci-tools
 include extension-ci-tools/makefiles/duckdb_extension.Makefile
 
@@ -60,8 +67,14 @@ POSTAL_TEST_ENV := $(if $(POSTAL_AVAILABLE),POSTAL_AVAILABLE=1,)
 # This prevents local tests and CI/CD from polluting PostHog telemetry data
 # DNNL_MAX_CPU_ISA=AVX2: limits OneDNN (used by OpenVINO) to AVX2 at most,
 # preventing SIGILL in manylinux Docker containers that restrict AVX-512 CPUID
+# Tests that need a process in which libpostal was not initialised yet run on their own.
+POSTAL_FRESH_TESTS := test/sql/anofox_postal_data_path.test
+
 test_release_internal:
 	DATAZOO_DISABLE_TELEMETRY=1 DNNL_MAX_CPU_ISA=AVX2 $(POSTAL_TEST_ENV) ./build/release/test/unittest "test/*"
+	@for t in $(POSTAL_FRESH_TESTS); do \
+		DATAZOO_DISABLE_TELEMETRY=1 $(POSTAL_TEST_ENV) ANOFOX_TEST_POSTAL_FRESH_PROCESS=1 ./build/release/test/unittest "$$t" || exit 1; \
+	done
 
 test_debug_internal:
 	DATAZOO_DISABLE_TELEMETRY=1 DNNL_MAX_CPU_ISA=AVX2 $(POSTAL_TEST_ENV) ./build/debug/test/unittest "test/*"
@@ -71,15 +84,29 @@ test_reldebug_internal:
 
 # The NER sqllogictests guard on OPENVINO_AVAILABLE because they need an
 # OpenVINO build and download the NER model from Hugging Face on first use
-# (~66 MB, cached in ~/.duckdb/extensions/anofox/ner). The regular test
+# (bert-multi, ~178 MB, cached in ~/.duckdb/extensions/anofox/ner). The regular test
 # targets skip them; this target runs them, and fails if the extension was
 # built without OpenVINO rather than letting every NER assertion degrade.
-NER_TESTS := test/sql/anofox_pii_ner.test test/sql/anofox_ner_cache_zero.test test/sql/anofox_ner_truncation.test
+# The tests of the non-default models (test_ner_models) also guard on
+# ANOFOX_TEST_NER_MODELS: the model is chosen once per process, so each of them
+# runs in a process of its own (distilbert-en downloads 66 MB, distilbert-multi
+# 135 MB). test_ner also runs each file in a process of its own and sets
+# ANOFOX_TEST_NER_FRESH_PROCESS for the tests that need a process in which no
+# detection has loaded the model yet (anofox_ner_device_retry.test).
+NER_MODEL_TESTS := test/sql/anofox_ner_model_distilbert_en.test test/sql/anofox_ner_model_distilbert_multi.test
+NER_TESTS := $(filter-out $(NER_MODEL_TESTS),$(shell command grep -l 'require-env OPENVINO_AVAILABLE' test/sql/*.test))
+NER_CHECK_OPENVINO := $(PROJ_DIR)scripts/duckdb-dev.sh -noheader -list -c "SELECT onnx_available FROM anofox_ner_status()" 2>/dev/null | grep -qx true \
+		|| { echo "the extension was built without OpenVINO"; exit 1; }
 test_ner: release
-	@./build/release/duckdb -noheader -list -c "SELECT onnx_available FROM anofox_ner_status()" | grep -qx true \
-		|| { echo "test_ner: the extension was built without OpenVINO"; exit 1; }
+	@$(NER_CHECK_OPENVINO)
 	@for t in $(NER_TESTS); do \
-		DATAZOO_DISABLE_TELEMETRY=1 DNNL_MAX_CPU_ISA=AVX2 OPENVINO_AVAILABLE=1 ./build/release/test/unittest "$$t" || exit 1; \
+		DATAZOO_DISABLE_TELEMETRY=1 DNNL_MAX_CPU_ISA=AVX2 OPENVINO_AVAILABLE=1 ANOFOX_TEST_NER_FRESH_PROCESS=1 ./build/release/test/unittest "$$t" || exit 1; \
 	done
 
-.PHONY: test_ner
+test_ner_models: release
+	@$(NER_CHECK_OPENVINO)
+	@for t in $(NER_MODEL_TESTS); do \
+		DATAZOO_DISABLE_TELEMETRY=1 DNNL_MAX_CPU_ISA=AVX2 OPENVINO_AVAILABLE=1 ANOFOX_TEST_NER_MODELS=1 ./build/release/test/unittest "$$t" || exit 1; \
+	done
+
+.PHONY: test_ner test_ner_models

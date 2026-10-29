@@ -27,20 +27,32 @@ struct PhoneNumberType {
 	static constexpr const char* UNKNOWN = "unknown";
 };
 
+// One layout rule for a region, modelled on libphonenumber's <numberFormat>.
+// The first rule whose leading_digits match the start of the national
+// significant number (NSN) and whose pattern matches the whole NSN wins.
+struct NumberFormat {
+	std::string leading_digits;       // Regex matched at the start of the NSN; empty matches any NSN
+	std::string pattern;              // Regex over the whole NSN with one capture group per block
+	std::string national_format;      // NATIONAL layout incl. the national prefix, e.g. "0$1 $2"
+	std::string international_format; // INTERNATIONAL layout after "+<cc> ", e.g. "$1 $2"
+};
+
 // Metadata for a single country/region
 struct CountryMetadata {
 	int country_code;
 	std::string region_code;
-	std::vector<int> valid_lengths;          // Valid national number lengths
-	std::string national_prefix;             // E.g., "0" for GB, empty for US
+	std::vector<int> valid_lengths;          // Possible national significant number lengths
+	std::string national_prefix;             // E.g., "0" for GB, "1" for US, empty for IT
 	std::string international_prefix;        // E.g., "011" for US, "00" for GB
 	std::string example_number;              // Example national number
-	std::string national_format_pattern;     // Pattern for national formatting
 
 	// Regex patterns for different phone number types (stored as strings, compiled on first use)
 	std::string fixed_line_pattern;
 	std::string mobile_pattern;
 	std::string toll_free_pattern;
+
+	// Layout rules for NATIONAL, INTERNATIONAL and RFC3966 output, tried in order
+	std::vector<NumberFormat> number_formats;
 
 	// Check if a length is valid for this country
 	bool IsValidLength(size_t length) const {
@@ -55,10 +67,17 @@ struct CountryMetadata {
 
 // Precompiled regex patterns for a region. Compiled once on first use and
 // shared across all rows/threads (read-only after construction).
+struct CompiledNumberFormat {
+	std::optional<std::regex> leading_digits; // nullopt matches any NSN
+	std::regex pattern;
+	const NumberFormat *format;
+};
+
 struct CompiledRegionPatterns {
 	std::optional<std::regex> fixed_line;
 	std::optional<std::regex> mobile;
 	std::optional<std::regex> toll_free;
+	std::vector<CompiledNumberFormat> number_formats;
 };
 
 // Global metadata maps (defined in anofox_phonenumber_metadata.cpp)
@@ -69,6 +88,11 @@ extern const std::unordered_set<int> NANPA_CODES;
 // Returns the precompiled patterns for a region, or nullptr if the region is
 // unknown. The underlying map is built once (thread-safe magic static).
 const CompiledRegionPatterns *GetCompiledPatternsForRegion(const std::string &region_code);
+
+// Returns the first layout rule of the region that applies to the national
+// significant number, or nullptr when none does (callers then emit the NSN as is).
+const NumberFormat *FindNumberFormat(const std::string &region_code, const std::string &national_number,
+                                     std::smatch &match);
 
 // Helper functions
 inline const CountryMetadata* GetMetadataForRegion(const std::string& region_code) {

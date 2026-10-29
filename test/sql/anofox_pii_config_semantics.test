@@ -76,18 +76,20 @@ SET anofox_pii_enabled_types = '';
 # anofox_pii_min_confidence must be honored by the scalar APIs
 # ============================================================================
 # Dictionary-based NAME matches carry confidence 0.5; regex matches carry 1.0.
+# "Contact John" is a dictionary match: the NER model (where available) does not
+# tag "John" in it ("Contact John for details" it tags at 0.999).
 
 statement ok
 SET anofox_pii_min_confidence = 0.99;
 
 # Dictionary-based NAME match (confidence 0.5) is filtered out
 query I
-SELECT pii_contains('Contact John for details');
+SELECT pii_contains('Contact John');
 ----
 false
 
 query I
-SELECT pii_detect('Contact John for details');
+SELECT pii_detect('Contact John');
 ----
 []
 
@@ -102,7 +104,7 @@ SET anofox_pii_min_confidence = 0.5;
 
 # At the default threshold the dictionary match (confidence 0.5) is kept
 query I
-SELECT pii_contains('Contact John for details');
+SELECT pii_contains('Contact John');
 ----
 true
 
@@ -124,23 +126,27 @@ SELECT pii_mask('Visit https://user@example.com/path now', 'redact');
 ----
 Visit [URL] now
 
-# Identical span matched by two recognizers (bare 9 digits: US_SSN and US_PASSPORT):
-# the checksum-validated US_SSN wins deterministically
+# Bare 9-digit reference numbers are neither US_SSN nor US_PASSPORT
 query I
 SELECT list_transform(pii_detect('Ref: 123456789'), lambda x: x.type);
 ----
-[US_SSN]
+[]
 
 query I
 SELECT pii_mask('Ref: 123456789 end', 'redact');
 ----
-Ref: [US_SSN] end
+Ref: 123456789 end
 
-# A 9-digit number that cannot be an SSN (9xx area) is still reported as a passport
 query I
 SELECT list_transform(pii_detect('Ref: 987654321'), lambda x: x.type);
 ----
-[US_PASSPORT]
+[]
+
+# With separators the number is an SSN
+query I
+SELECT pii_mask('Ref: 123-45-6789 end', 'redact');
+----
+Ref: [US_SSN] end
 
 # Crypto address also matches the generic API_KEY pattern over the same span:
 # CRYPTO_ADDRESS wins deterministically

@@ -90,18 +90,21 @@ SELECT ds FROM anofox_tab_rel_count_change_events('daily_orders', 'order_date')
 # metric_anomaly_iqr_events
 # ===--------------------------------------------------------------------===
 
+# 2026-01-16 has no orders: a row count of 0 is an event too
 query TTTRRT
 SELECT ds, kind, severity, value, threshold, series
 FROM metric_anomaly_iqr_events('daily_orders', 'order_date', NULL, 30, 1.5, 'both', start_date := DATE '2026-01-01', end_date := DATE '2026-01-16')
 ----
 2026-01-14	metric_anomaly_iqr	alarm	2.0	10.0	daily_orders
 2026-01-15	metric_anomaly_iqr	alarm	40.0	10.0	daily_orders
+2026-01-16	metric_anomaly_iqr	alarm	0.0	10.0	daily_orders
 
-# mode 'lower' only reports the collapse
+# mode 'lower' only reports the collapse and the day without orders
 query T
 SELECT ds FROM metric_anomaly_iqr_events('daily_orders', 'order_date', NULL, 30, 1.5, 'lower', start_date := DATE '2026-01-01', end_date := DATE '2026-01-16')
 ----
 2026-01-14
+2026-01-16
 
 query I
 SELECT COUNT(*) FROM (

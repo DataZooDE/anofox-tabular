@@ -1,0 +1,252 @@
+# name: test/sql/anofox_pii_detect_formats.test
+# description: Pattern recognizers find PII in the formats people actually type
+#              (grouped IBANs, national phone numbers, non-ASCII email addresses)
+#              and stay quiet on look-alikes (bare 9-digit references, VAT numbers,
+#              dates, amounts, postcodes)
+# group: [sql]
+
+require anofox_tabular
+
+statement ok
+LOAD anofox_tabular;
+
+# Restrict detection to the pattern types so the results do not depend on
+# whether the NER model is available.
+statement ok
+SET anofox_pii_enabled_types = 'EMAIL,PHONE,CREDIT_CARD,US_SSN,IP_ADDRESS,IBAN,DE_TAX_ID,URL,US_PASSPORT,CRYPTO_ADDRESS,UK_NINO,MAC_ADDRESS,API_KEY';
+
+# ============================================================================
+# IBAN: separators between every group of four
+# ============================================================================
+
+query T
+SELECT array_to_string(list_transform(pii_detect(s), lambda x: x.type || ':' || x.text), '; ')
+FROM (VALUES
+    (1, 'DE89 3704 0044 0532 0130 00'),
+    (2, 'DE89-3704-0044-0532-0130-00'),
+    (3, 'DE89370400440532013000'),
+    (4, 'GB82 WEST 1234 5698 7654 32'),
+    (5, 'GB82-WEST-1234-5698-7654-32'),
+    (6, 'GB82WEST12345698765432'),
+    (7, 'AT61 1904 3002 3457 3201'),
+    (8, 'AT61-1904-3002-3457-3201'),
+    (9, 'AT611904300234573201'),
+    (10, 'NL91 ABNA 0417 1643 00'),
+    (11, 'NL91-ABNA-0417-1643-00'),
+    (12, 'NL91ABNA0417164300')
+) t(i, s) ORDER BY i;
+----
+IBAN:DE89 3704 0044 0532 0130 00
+IBAN:DE89-3704-0044-0532-0130-00
+IBAN:DE89370400440532013000
+IBAN:GB82 WEST 1234 5698 7654 32
+IBAN:GB82-WEST-1234-5698-7654-32
+IBAN:GB82WEST12345698765432
+IBAN:AT61 1904 3002 3457 3201
+IBAN:AT61-1904-3002-3457-3201
+IBAN:AT611904300234573201
+IBAN:NL91 ABNA 0417 1643 00
+IBAN:NL91-ABNA-0417-1643-00
+IBAN:NL91ABNA0417164300
+
+# Grouped IBANs inside a sentence, followed by more words
+query T
+SELECT pii_mask('Bitte an DE89 3704 0044 0532 0130 00 bis Freitag, oder AT61 1904 3002 3457 3201 und fertig');
+----
+Bitte an [IBAN] bis Freitag, oder [IBAN] und fertig
+
+# Masking leaves no IBAN digits in clear text
+query T
+SELECT pii_mask('IBAN: GB82 WEST 1234 5698 7654 32, NL91-ABNA-0417-1643-00');
+----
+IBAN: [IBAN], [IBAN]
+
+# A grouped IBAN with a wrong checksum is not reported as an IBAN
+query T
+SELECT list_contains(list_transform(pii_detect('DE00 3704 0044 0532 0130 00'), lambda x: x.type), 'IBAN');
+----
+false
+
+# ============================================================================
+# MAC_ADDRESS: a bare 12-character token needs a letter and a digit
+# ============================================================================
+
+query T
+SELECT pii_mask('Tel:+491711234567', 'redact') NOT LIKE '%MAC_ADDRESS%';
+----
+true
+
+query T
+SELECT array_to_string(list_transform(pii_detect(s), lambda x: x.type || ':' || x.text), '; ')
+FROM (VALUES
+    (1, 'Nummer 491711234567'),
+    (2, 'BTW NL 004495445B01'),
+    (3, 'USt-IdNr. NL004495445B01'),
+    (4, 'Token ABCDEFABCDEF'),
+    (5, 'Gerät 00265e8b1c2a'),
+    (6, 'Gerät 00:26:5E:8B:1C:2A'),
+    (7, 'Gerät 00-26-5E-8B-1C-2A'),
+    (8, 'Gerät 0026.5e8b.1c2a'),
+    (9, 'Seriennummer X00265e8b1c2a')
+) t(i, s) ORDER BY i;
+----
+(empty)
+(empty)
+(empty)
+(empty)
+MAC_ADDRESS:00265e8b1c2a
+MAC_ADDRESS:00:26:5E:8B:1C:2A
+MAC_ADDRESS:00-26-5E-8B-1C-2A
+MAC_ADDRESS:0026.5e8b.1c2a
+(empty)
+
+# ============================================================================
+# PHONE: national and international forms
+# ============================================================================
+
+query T
+SELECT array_to_string(list_transform(pii_detect(s), lambda x: x.type || ':' || x.text), '; ')
+FROM (VALUES
+    (1, 'Tel. 0171 1234567'),
+    (2, 'Zentrale 089/12345678'),
+    (3, 'Büro (089) 123 456 78'),
+    (4, 'Fax 089-123456-78'),
+    (5, 'Tel.: +49 (0) 221 4711-0'),
+    (6, 'Mobil 0049 171 1234567'),
+    (7, 'Tel:+491711234567'),
+    (8, 'Rückruf (+49 30 1234567) erbeten'),
+    (9, 'Call +1 (415) 555-1234 today'),
+    (10, 'US office (555) 123-4567'),
+    (11, '+49 171 1234567'),
+    (12, '+49 170 1234567 +44 20 7946 0958')
+) t(i, s) ORDER BY i;
+----
+PHONE:0171 1234567
+PHONE:089/12345678
+PHONE:(089) 123 456 78
+PHONE:089-123456-78
+PHONE:+49 (0) 221 4711-0
+PHONE:0049 171 1234567
+PHONE:+491711234567
+PHONE:+49 30 1234567
+PHONE:+1 (415) 555-1234
+PHONE:(555) 123-4567
+PHONE:+49 171 1234567
+PHONE:+49 170 1234567; PHONE:+44 20 7946 0958
+
+# Masking a phone number glued to its label masks the whole number
+query T
+SELECT pii_mask('Tel:+491711234567');
+----
+Tel:[PHONE]
+
+query T
+SELECT pii_mask('Rückruf (+49 30 1234567) erbeten');
+----
+Rückruf ([PHONE]) erbeten
+
+# Dates, amounts, postcodes, times, versions and plain numbers are not phone numbers
+query T
+SELECT array_to_string(list_transform(pii_detect(s), lambda x: x.type || ':' || x.text), '; ')
+FROM (VALUES
+    (1, 'Termin am 2026-10-25'),
+    (2, 'Termin am 25.10.2026'),
+    (3, 'Betrag 1.234,56 EUR'),
+    (4, '80331 München'),
+    (5, 'PLZ 01067 Dresden'),
+    (6, 'Beginn 09:30, Ende 17:45:00'),
+    (7, 'Version 10.0.19045 und 0.9.12'),
+    (8, 'Bestellung 12345 und 54321'),
+    (9, 'Zeitraum 01.01.2026 - 31.12.2026'),
+    (10, 'Menge 0,50 kg'),
+    (11, 'SSN 001-45-6789')
+) t(i, s) ORDER BY i;
+----
+(empty)
+(empty)
+(empty)
+(empty)
+(empty)
+(empty)
+(empty)
+(empty)
+(empty)
+(empty)
+US_SSN:001-45-6789
+
+# The digit groups of an IBAN are not reported as a phone number
+query T
+SELECT array_to_string(list_transform(pii_detect_phones(s), lambda x: x.text), '; ')
+FROM (VALUES
+    (1, 'DE89 3704 0044 0532 0130 00'),
+    (2, 'DE89 0044 0532 0130 0000 00')
+) t(i, s) ORDER BY i;
+----
+(empty)
+(empty)
+
+# ============================================================================
+# EMAIL: non-ASCII letters in the local part and the domain
+# ============================================================================
+
+query T
+SELECT pii_mask(s)
+FROM (VALUES
+    (1, 'Mail an jörg.k@example.com'),
+    (2, 'info@müller-gmbh.de'),
+    (3, 'j.weiß@beispiel.de'),
+    (4, 'Kontakt: ömer@straße.de, danke'),
+    (5, 'an (anna@example.com).'),
+    (6, 'Mail an jörg.k@example.com und info@müller-gmbh.de'),
+    (7, 'Schreiben Sie an „anna@example.com“ oder «пётр@пример.рф»')
+) t(i, s) ORDER BY i;
+----
+Mail an [EMAIL]
+[EMAIL]
+[EMAIL]
+Kontakt: [EMAIL], danke
+an ([EMAIL]).
+Mail an [EMAIL] und [EMAIL]
+Schreiben Sie an „[EMAIL]“ oder «[EMAIL]»
+
+query T
+SELECT array_to_string(list_transform(pii_detect_emails(s), lambda x: x.text), '; ')
+FROM (VALUES
+    (1, 'Mail an jörg.k@example.com'),
+    (2, 'info@müller-gmbh.de'),
+    (3, 'j.weiß@beispiel.de')
+) t(i, s) ORDER BY i;
+----
+jörg.k@example.com
+info@müller-gmbh.de
+j.weiß@beispiel.de
+
+# Partial masking keeps whole characters of the local part
+query T
+SELECT pii_mask('Mail an ömer.k@example.com', 'partial');
+----
+Mail an ö*****@*******.com
+
+# ============================================================================
+# US_SSN and US_PASSPORT: no bare 9-digit numbers
+# ============================================================================
+
+query T
+SELECT array_to_string(list_transform(pii_detect('Vertragsnummer 123456789, Schadennummer 987654321'), lambda x: x.type || ':' || x.text), '; ');
+----
+(empty)
+
+query T
+SELECT array_to_string(list_transform(pii_detect(s), lambda x: x.type || ':' || x.text), '; ')
+FROM (VALUES
+    (1, 'SSN 123-45-6789'),
+    (2, 'SSN 123 45 6789'),
+    (3, 'Passport C12345678')
+) t(i, s) ORDER BY i;
+----
+US_SSN:123-45-6789
+US_SSN:123 45 6789
+US_PASSPORT:C12345678
+
+statement ok
+SET anofox_pii_enabled_types = '';

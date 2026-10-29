@@ -110,21 +110,21 @@ removed	3
 #############################
 
 # Test 1: Basic JoinDiff with single primary key
-query IIII rowsort
+query IIIIT rowsort
 SELECT * FROM diff_joindiff('source_data', 'target_data', 'id');
 ----
-added	4	David	400
-changed	2	Bob	250
-removed	3	NULL	NULL
+added	4	David	400	NULL
+changed	2	Bob	250	[value]
+removed	3	NULL	NULL	NULL
 
 # Test 2: JoinDiff with include_all parameter
-query IIII rowsort
+query IIIIT rowsort
 SELECT * FROM diff_joindiff('source_data', 'target_data', 'id', NULL, true);
 ----
-added	4	David	400
-changed	2	Bob	250
-removed	3	NULL	NULL
-unchanged	1	Alice	100
+added	4	David	400	NULL
+changed	2	Bob	250	[value]
+removed	3	NULL	NULL	NULL
+unchanged	1	Alice	100	[]
 
 # Test 3: Compound primary key
 statement ok
@@ -155,12 +155,12 @@ INSERT INTO orders_target VALUES
     (1, '2024-01-02', 200.00, 'completed'),
     (3, '2024-01-03', 300.00, 'pending');
 
-query IIIII rowsort
+query IIIIIT rowsort
 SELECT * FROM diff_joindiff('orders_source', 'orders_target', ['user_id', 'order_date']);
 ----
-added	3	2024-01-03	300.00	pending
-changed	1	2024-01-02	200.00	completed
-removed	2	2024-01-01	NULL	NULL
+added	3	2024-01-03	300.00	pending	NULL
+changed	1	2024-01-02	200.00	completed	[status]
+removed	2	2024-01-01	NULL	NULL	NULL
 
 # Test 4: Compare specific columns only
 statement ok
@@ -199,11 +199,11 @@ SELECT COUNT(*) FROM diff_joindiff('products_source', 'products_target', 'id', [
 ----
 2
 
-query IIIIII
+query IIIIIIT
 SELECT * FROM diff_joindiff('products_source', 'products_target', 'id', ['price', 'stock'])
 WHERE diff_type = 'changed' AND id = 2;
 ----
-changed	2	Gadget	25.00	50	2024-01-02 15:00:00
+changed	2	Gadget	25.00	50	2024-01-02 15:00:00	[price]
 
 # Test 5: Empty diff (identical tables)
 statement ok
@@ -264,10 +264,10 @@ INSERT INTO test_schema.schema_source VALUES (1, 'Alice');
 statement ok
 INSERT INTO test_schema.schema_target VALUES (1, 'Bob');
 
-query III rowsort
+query IIIT rowsort
 SELECT * FROM diff_joindiff('test_schema.schema_source', 'test_schema.schema_target', 'id');
 ----
-changed	1	Bob
+changed	1	Bob	[name]
 
 #############################
 # Phase 2: HashDiff Implementation Tests
@@ -280,20 +280,20 @@ SELECT COUNT(*) > 0 FROM duckdb_functions() WHERE function_name = 'anofox_tab_di
 true
 
 # Test 2: Basic HashDiff with single primary key
-query IIII rowsort
+query IIIIT rowsort
 SELECT * FROM diff_hashdiff('source_data', 'target_data', 'id');
 ----
-added	4	David	400
-changed	2	Bob	250
-removed	3	NULL	NULL
+added	4	David	400	NULL
+changed	2	Bob	250	[value]
+removed	3	NULL	NULL	NULL
 
 # Test 3: HashDiff with compound primary key
-query IIIII rowsort
+query IIIIIT rowsort
 SELECT * FROM diff_hashdiff('orders_source', 'orders_target', ['user_id', 'order_date']);
 ----
-added	3	2024-01-03	300.00	pending
-changed	1	2024-01-02	200.00	completed
-removed	2	2024-01-01	NULL	NULL
+added	3	2024-01-03	300.00	pending	NULL
+changed	1	2024-01-02	200.00	completed	[status]
+removed	2	2024-01-01	NULL	NULL	NULL
 
 # Test 4: HashDiff rejects the unimplemented bisection_threshold parameter
 statement error

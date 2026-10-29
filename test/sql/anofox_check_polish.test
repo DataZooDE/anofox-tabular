@@ -1,0 +1,115 @@
+# name: test/sql/anofox_check_polish.test
+# description: Small consistency fixes of the check functions: run_checks reports an empty
+#              check_name as '' (not NULL) and trims the check_type; iqr() rounds the bounds in
+#              its message like the other checks; the direct duplicate_count and match_rate list
+#              sample offending keys in the message of a failing check, as run_checks does.
+# group: [anofox_tabular]
+
+require anofox_tabular
+
+statement ok
+LOAD anofox_tabular
+
+statement ok
+SET anofox_tab_trace_enabled = false
+
+# Support tickets and the customers they belong to
+statement ok
+CREATE TABLE crm_customers AS
+SELECT * FROM (VALUES ('C-1001', 'Acme GmbH'), ('C-1002', 'Globex AG'), ('C-1003', 'Initech SE')) t(customer_id, name)
+
+statement ok
+CREATE TABLE crm_tickets AS
+SELECT * FROM (VALUES
+    ('T-5001', 'C-1001', 2.25),
+    ('T-5002', 'C-1002', 3.10),
+    ('T-5002', 'C-1002', 3.10),
+    ('T-5003', 'C-1009', 4.75),
+    ('T-5004', 'C-1001', 1.333),
+    ('T-5004', 'C-1001', 1.333),
+    ('T-5005', 'C-2000', 2.9),
+    ('T-5006', 'C-1003', 48.0)) t(ticket_id, customer_id, handling_hours)
+
+# ===--------------------------------------------------------------------===
+# run_checks: check_name and check_type
+# ===--------------------------------------------------------------------===
+
+statement ok
+CREATE TABLE crm_checks (
+    check_name VARCHAR, check_type VARCHAR, table_name VARCHAR, column_name VARCHAR,
+    params VARCHAR, lower_threshold DOUBLE, upper_threshold DOUBLE)
+
+statement ok
+INSERT INTO crm_checks VALUES
+    ('', 'volume', 'crm_tickets', NULL, NULL, 1, NULL),
+    (NULL, 'volume', 'crm_tickets', NULL, NULL, 1, NULL),
+    ('ticket_volume', '  Volume ', 'crm_tickets', NULL, NULL, 1, NULL),
+    ('unique_tickets', ' duplicate_count', 'crm_tickets', 'ticket_id', NULL, NULL, 0)
+
+query TTT
+SELECT COALESCE('''' || check_name || '''', 'NULL'), check_type, status FROM run_checks('crm_checks')
+----
+''	volume	error
+'ticket_volume'	volume	pass
+'unique_tickets'	duplicate_count	fail
+NULL	volume	error
+
+query T
+SELECT message FROM run_checks('crm_checks') WHERE check_name = ''
+----
+check without check_name (volume) cannot run: every check needs a check_name
+
+# ===--------------------------------------------------------------------===
+# iqr(): rounded bounds in the message
+# ===--------------------------------------------------------------------===
+
+query TT
+SELECT status, message FROM iqr('crm_tickets', 'handling_hours', 1.5)
+----
+fail	1 outlier(s) detected outside bounds [-0.217, 5.75]
+
+query TT
+SELECT status, message FROM iqr('crm_tickets', 'handling_hours', 30)
+----
+pass	No outliers detected by IQR method (bounds: [-42.732, 48.265])
+
+# ===--------------------------------------------------------------------===
+# duplicate_count / match_rate: samples in the message
+# ===--------------------------------------------------------------------===
+
+query TT
+SELECT status, message FROM duplicate_count('crm_tickets', 'ticket_id')
+----
+fail	2 duplicate(s) in 8 rows exceeds maximum 0; samples: 'T-5002', 'T-5004'
+
+query TT
+SELECT status, message FROM duplicate_count('crm_tickets', ['ticket_id', 'customer_id'], 5)
+----
+pass	2 duplicate(s) in 8 rows is acceptable
+
+query TT
+SELECT status, message FROM duplicate_count('crm_tickets', 'ticket_id, customer_id')
+----
+fail	2 duplicate(s) in 8 rows exceeds maximum 0; samples: '(T-5002, C-1002)', '(T-5004, C-1001)'
+
+query TT
+SELECT status, message FROM match_rate('crm_tickets', 'crm_customers', 'customer_id', 'customer_id', 0.9)
+----
+fail	Match rate 0.75 (6/8) is below minimum 0.9; samples: 'C-1009', 'C-2000'
+
+query TT
+SELECT status, message FROM match_rate('crm_tickets', 'crm_customers', 'customer_id', 'customer_id', 0.5)
+----
+pass	Match rate 0.75 (6/8) is acceptable
+
+# The same samples as run_checks
+statement ok
+INSERT INTO crm_checks VALUES
+    ('known_customers', 'match_rate', 'crm_tickets', 'customer_id',
+     '{"right_table": "crm_customers", "right_keys": "customer_id"}', 0.9, NULL)
+
+query T
+SELECT message FROM run_checks('crm_checks') WHERE check_name IN ('unique_tickets', 'known_customers') ORDER BY check_name
+----
+match_rate value 0.75 violates thresholds (0.75 < lower 0.9); samples: 'C-1009', 'C-2000'
+duplicate_count value 2.0 violates thresholds (2.0 > upper 0.0); samples: 'T-5002', 'T-5004'

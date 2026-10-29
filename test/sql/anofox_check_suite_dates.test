@@ -1,0 +1,135 @@
+# name: test/sql/anofox_check_suite_dates.test
+# description: A nightly run_checks suite over a carrier feed imported from CSV: the shipped_on
+#              column is text and holds 'n/a' / 'unknown' for some rows, and a legacy table keys
+#              its days as BIGINT (20261021). The time-aware checks skip the rows whose date
+#              does not parse (and say how many), the BIGINT date column is an 'error' row of its
+#              check, and the healthy checks run. reference_date / reference_time accept the
+#              ${today}/${yesterday}/${today-N} tokens (UTC dates) like filter_expr.
+# group: [anofox_tabular]
+
+require anofox_tabular
+
+statement ok
+LOAD anofox_tabular
+
+statement ok
+SET anofox_tab_trace_enabled = false
+
+# ===--------------------------------------------------------------------===
+# Carrier feed: 4 shipments a day from 2026-10-14 to 2026-10-20, 2 on 2026-10-21,
+# and two rows whose shipped_on the carrier left as 'n/a' / 'unknown'
+# ===--------------------------------------------------------------------===
+
+statement ok
+CREATE TABLE carrier_shipments (shipment_id INTEGER, carrier VARCHAR, shipped_on VARCHAR, weight_kg DOUBLE)
+
+statement ok
+INSERT INTO carrier_shipments
+SELECT 70000 + i, CASE WHEN i % 2 = 0 THEN 'DHL' ELSE 'UPS' END,
+       CAST(DATE '2026-10-14' + CAST(i // 4 AS INTEGER) AS VARCHAR), 2.0 + i % 4
+FROM range(0, 28) t(i)
+
+statement ok
+INSERT INTO carrier_shipments VALUES
+    (70100, 'DHL', '2026-10-21', 3.5),
+    (70101, 'GLS', '2026-10-21', 1.2),
+    (70102, 'DHL', 'n/a',        4.0),
+    (70103, 'UPS', 'unknown',    2.5)
+
+statement ok
+CREATE TABLE legacy_events (event_id INTEGER, event_day BIGINT, kind VARCHAR)
+
+statement ok
+INSERT INTO legacy_events VALUES (1, 20261020, 'login'), (2, 20261021, 'login'), (3, 20261021, 'logout')
+
+statement ok
+CREATE TABLE feed_checks (check_name VARCHAR, check_type VARCHAR, table_name VARCHAR, column_name VARCHAR,
+                          params VARCHAR, lower_threshold DOUBLE, upper_threshold DOUBLE, monitor_only BOOLEAN,
+                          identifier_column VARCHAR, filter_expr VARCHAR)
+
+statement ok
+INSERT INTO feed_checks VALUES
+    ('daily_shipments', 'rel_count_change', 'carrier_shipments', NULL,
+     '{"date_column": "shipped_on", "reference_date": "2026-10-21"}', -0.6, 0.5, false, NULL, NULL),
+    ('shipment_volume_iqr', 'metric_anomaly_iqr', 'carrier_shipments', NULL,
+     '{"date_column": "shipped_on", "reference_date": "2026-10-21", "window_days": 7}', NULL, NULL, true, NULL, NULL),
+    ('known_carriers', 'rolling_values_in_set', 'carrier_shipments', 'carrier',
+     '{"date_column": "shipped_on", "allowed_values": ["DHL", "UPS"], "reference_date": "2026-10-21"}',
+     0.9, NULL, false, NULL, NULL),
+    ('legacy_daily', 'rel_count_change', 'legacy_events', NULL,
+     '{"date_column": "event_day"}', -0.5, 0.5, false, NULL, NULL),
+    ('shipments_loaded', 'volume', 'carrier_shipments', NULL, NULL, 1, NULL, false, NULL, NULL)
+
+query TTRT
+SELECT check_name, status, round(value, 4), message FROM run_checks('feed_checks') ORDER BY check_name
+----
+daily_shipments	pass	-0.5	rel_count_change value -0.5 is within thresholds; 2 row(s) skipped (shipped_on is not a date)
+known_carriers	pass	0.9615	rolling_values_in_set value 0.962 is within thresholds; 2 row(s) skipped (shipped_on is not a date)
+legacy_daily	error	NULL	check 'legacy_daily' (rel_count_change) cannot run: params.date_column 'event_day' has type BIGINT; expected DATE, TIMESTAMP, TIMESTAMP WITH TIME ZONE or a VARCHAR holding dates
+shipment_volume_iqr	warn	2.0	metric_anomaly_iqr value 2.0 violates thresholds (2.0 < lower 4.0); 2 row(s) skipped (shipped_on is not a date)
+shipments_loaded	pass	32.0	volume value 32.0 is within thresholds
+
+# A filter_expr narrows the skipped rows too: only the UPS rows are evaluated
+statement ok
+UPDATE feed_checks SET filter_expr = 'carrier = ''UPS''' WHERE check_name = 'daily_shipments'
+
+query TT
+SELECT status, message FROM run_checks('feed_checks') WHERE check_name = 'daily_shipments'
+----
+fail	rel_count_change value -1.0 violates thresholds (-1.0 < lower -0.6); 1 row(s) skipped (shipped_on is not a date); filter matched 15/32 rows
+
+# The direct functions leave such rows out as well, and count them
+query TTRT
+SELECT status, reference_date, rel_change, message
+FROM rel_count_change('carrier_shipments', 'shipped_on', NULL, 7, -0.5, 0.5, DATE '2026-10-21')
+----
+pass	2026-10-21	-0.5	Count 2 on 2026-10-21 is within -0.5 of baseline average 4.0; 2 row(s) skipped (shipped_on is not a date)
+
+# ===--------------------------------------------------------------------===
+# reference_date / reference_time with date tokens: a nightly config that needs no daily
+# UPDATE. Web orders arrive 3 a day; today's partial day has 1 order so far.
+# ===--------------------------------------------------------------------===
+
+statement ok
+CREATE TABLE web_orders AS
+SELECT 90000 + i AS order_id, CAST(make_timestamp(epoch_us(now())) AS DATE) - CAST(1 + i // 3 AS INTEGER) AS order_day,
+       CAST(CAST(make_timestamp(epoch_us(now())) AS DATE) AS TIMESTAMP) - INTERVAL 2 HOUR AS loaded_at
+FROM range(0, 24) t(i)
+
+statement ok
+INSERT INTO web_orders VALUES (90100, CAST(make_timestamp(epoch_us(now())) AS DATE), NULL)
+
+statement ok
+CREATE TABLE nightly_checks (check_name VARCHAR, check_type VARCHAR, table_name VARCHAR, column_name VARCHAR,
+                             params VARCHAR, lower_threshold DOUBLE, upper_threshold DOUBLE, monitor_only BOOLEAN,
+                             identifier_column VARCHAR, filter_expr VARCHAR)
+
+statement ok
+INSERT INTO nightly_checks VALUES
+    ('orders_latest_day', 'rel_count_change', 'web_orders', NULL,
+     '{"date_column": "order_day"}', -0.5, 0.5, false, NULL, NULL),
+    ('orders_yesterday', 'rel_count_change', 'web_orders', NULL,
+     '{"date_column": "order_day", "reference_date": "${yesterday}"}', -0.5, 0.5, false, NULL, NULL),
+    ('orders_two_days_ago', 'rel_count_change', 'web_orders', NULL,
+     '{"date_column": "order_day", "reference_date": "${today-2}"}', -0.5, 0.5, false, NULL, NULL),
+    ('orders_iqr_yesterday', 'metric_anomaly_iqr', 'web_orders', NULL,
+     '{"date_column": "order_day", "reference_date": "${yesterday}", "window_days": 5}', NULL, NULL, false, NULL, NULL),
+    ('load_by_midnight', 'freshness', 'web_orders', 'loaded_at',
+     '{"reference_time": "${today}"}', NULL, 10800, false, NULL, NULL),
+    ('bad_token', 'rel_count_change', 'web_orders', NULL,
+     '{"date_column": "order_day", "reference_date": "${tomorrow}"}', -0.5, 0.5, false, NULL, NULL)
+
+query TTR
+SELECT check_name, status, round(value, 4) FROM run_checks('nightly_checks') ORDER BY check_name
+----
+bad_token	error	NULL
+load_by_midnight	pass	7200.0
+orders_iqr_yesterday	pass	3.0
+orders_latest_day	fail	-0.6667
+orders_two_days_ago	pass	0.0
+orders_yesterday	pass	0.0
+
+query T
+SELECT message FROM run_checks('nightly_checks') WHERE check_name = 'bad_token'
+----
+check 'bad_token' (rel_count_change) cannot run: unknown token '${tomorrow}' in params.reference_date (supported: today, yesterday, today+N, today-N, yesterday-N)

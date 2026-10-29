@@ -1,0 +1,45 @@
+# name: test/sql/anofox_pii_scan_confidence_ner.test
+# description: pii_scan_table confidence is the mean NER confidence of the matches, not 1.0
+# group: [sql]
+
+require-env OPENVINO_AVAILABLE
+
+require anofox_tabular
+
+statement ok
+LOAD anofox_tabular;
+
+statement ok
+CREATE TABLE scn AS SELECT * FROM (VALUES
+    ('Thomas Müller met John Smith'),
+    ('Angela Merkel visited Paris'),
+    ('mail a@b.com')
+) t(txt);
+
+query TTI
+SELECT column_name, pii_type, match_count FROM pii_scan_table('scn');
+----
+txt	EMAIL	1
+txt	LOCATION	1
+txt	NAME	3
+
+query I
+SELECT confidence < 1.0 FROM pii_scan_table('scn') WHERE pii_type = 'NAME';
+----
+true
+
+query I
+SELECT confidence FROM pii_scan_table('scn') WHERE pii_type = 'EMAIL';
+----
+1.0
+
+# Equal to the mean of the per-match confidences that pii_detect reports
+query I
+SELECT abs(s.confidence - d.avg_conf) < 1e-9
+FROM pii_scan_table('scn') s,
+     (SELECT avg(m.confidence) AS avg_conf
+      FROM scn, unnest(pii_detect(txt)) u(m)
+      WHERE m.type = 'NAME') d
+WHERE s.pii_type = 'NAME';
+----
+true

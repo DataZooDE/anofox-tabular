@@ -3,6 +3,7 @@
 #include "anofox_function_alias.hpp"
 #include "anofox_trace.hpp"
 #include "telemetry.hpp"
+#include "duckdb/common/string_util.hpp"
 #include "duckdb/common/types/value.hpp"
 #include "duckdb/common/types/vector.hpp"
 #include "duckdb/common/types/decimal.hpp"
@@ -39,16 +40,33 @@ static LogicalType GetMoneyAmountType() {
 
 //! Converts a DOUBLE amount in major units to the scaled DECIMAL(18,3) representation.
 //! Rejects NaN/Inf and rounds half away from zero to MONEY_SCALE fractional digits.
+//!
+//! The integer and fractional parts are scaled separately: `amount * 1000`
+//! as a DOUBLE is not exact above 2^53 (~9e15), which would corrupt the low
+//! digits of large amounts (123456789012345 became ...344.992) and let a value
+//! just below the maximum round up past it. Splitting keeps every amount the
+//! DOUBLE itself holds exactly; a DOUBLE has ~15-17 significant digits, so use
+//! the DECIMAL overload for amounts that need all 18.
 static int64_t ScaledFromDouble(double amount) {
     if (!std::isfinite(amount)) {
         throw InvalidInputException("Money amount must be finite, got: %s", std::to_string(amount));
     }
-    double scaled = std::round(amount * static_cast<double>(MONEY_SCALE_FACTOR));
-    if (!(scaled >= -static_cast<double>(MONEY_MAX_SCALED) && scaled <= static_cast<double>(MONEY_MAX_SCALED))) {
+    constexpr double MAX_INTEGER_PART = static_cast<double>(MONEY_MAX_SCALED / MONEY_SCALE_FACTOR);
+    const double integer_part = std::trunc(amount);
+    if (!(std::fabs(integer_part) <= MAX_INTEGER_PART)) {
         throw OutOfRangeException("Money amount %s is out of range for DECIMAL(%d,%d)", std::to_string(amount),
                                   MONEY_WIDTH, MONEY_SCALE);
     }
-    return static_cast<int64_t>(scaled);
+    // Both steps are exact: trunc() of a finite double and the difference of a
+    // double and its truncation are representable.
+    const double fraction = amount - integer_part;
+    const int64_t scaled = static_cast<int64_t>(integer_part) * MONEY_SCALE_FACTOR +
+                           static_cast<int64_t>(std::llround(fraction * static_cast<double>(MONEY_SCALE_FACTOR)));
+    if (scaled > MONEY_MAX_SCALED || scaled < -MONEY_MAX_SCALED) {
+        throw OutOfRangeException("Money amount %s is out of range for DECIMAL(%d,%d)", std::to_string(amount),
+                                  MONEY_WIDTH, MONEY_SCALE);
+    }
+    return scaled;
 }
 
 //! Verifies that a scaled value fits the DECIMAL(18,3) width.
@@ -155,6 +173,45 @@ static void AnofoxMoneyFunction(DataChunk &args, ExpressionState &state, Vector 
 }
 
 //----------------------------------------------------------------------------------------------------------------------
+// Scalar Function: anofox_money(DECIMAL(18,3) amount, currency_code) -> STRUCT
+//----------------------------------------------------------------------------------------------------------------------
+
+//! Exact overload: DECIMAL arguments of any width/scale bind here (DuckDB casts
+//! them to DECIMAL(18,3), rounding extra fractional digits and raising a
+//! conversion error for values that do not fit), so no amount goes through
+//! DOUBLE. DECIMAL(18,3) is physically an int64 scaled by 10^3, the money
+//! representation itself.
+static void AnofoxMoneyDecimalFunction(DataChunk &args, ExpressionState &state, Vector &result) {
+    auto &amount_vec = args.data[0];
+    auto &currency_vec = args.data[1];
+    idx_t count = args.size();
+
+    UnifiedVectorFormat amount_data;
+    UnifiedVectorFormat currency_data;
+    amount_vec.ToUnifiedFormat(count, amount_data);
+    currency_vec.ToUnifiedFormat(count, currency_data);
+
+    auto amount_values = UnifiedVectorFormat::GetData<int64_t>(amount_data);
+    auto currency_values = UnifiedVectorFormat::GetData<string_t>(currency_data);
+    auto builder = PrepareMoneyResult(result);
+
+    auto &registry = CurrencyRegistry::GetInstance();
+
+    for (idx_t i = 0; i < count; i++) {
+        auto amount_idx = amount_data.sel->get_index(i);
+        auto currency_idx = currency_data.sel->get_index(i);
+
+        if (!amount_data.validity.RowIsValid(amount_idx) || !currency_data.validity.RowIsValid(currency_idx)) {
+            SetMoneyResultNull(result, i);
+        } else {
+            auto currency_code = currency_values[currency_idx].GetString();
+            auto &currency = LookupCurrencyOrThrow(registry, currency_code);
+            SetMoneyResult(builder, i, CheckScaledRange(amount_values[amount_idx], true, "amount"), currency.iso_code);
+        }
+    }
+}
+
+//----------------------------------------------------------------------------------------------------------------------
 // Scalar Function: anofox_money_from_cents(cents, currency_code) -> STRUCT
 //----------------------------------------------------------------------------------------------------------------------
 
@@ -248,10 +305,16 @@ static void AnofoxIsValidCurrencyFunction(DataChunk &args, ExpressionState &stat
 
 static void AnofoxCurrencySymbolFunction(DataChunk &args, ExpressionState &state, Vector &result) {
     auto &registry = CurrencyRegistry::GetInstance();
+    // An unsupported code yields NULL (like vat_country_name), so the function
+    // can run over unclean columns without TRY or a prior is_valid_currency.
     IterateCurrencyCode(args, result, [&](const std::string& code, idx_t i) {
-        auto &currency = LookupCurrencyOrThrow(registry, code);
+        auto currency = registry.GetCurrency(code);
+        if (!currency) {
+            FlatVector::SetNull(result, i, true);
+            return;
+        }
         auto result_data = duckdb_compat::FlatData<string_t>(result);
-        result_data[i] = StringVector::AddString(result, currency.symbol);
+        result_data[i] = StringVector::AddString(result, currency->symbol);
     });
 }
 
@@ -343,7 +406,13 @@ static void AnofoxMoneyFormatFunction(DataChunk &args, ExpressionState &state, V
         } else {
             auto scaled = data.Amount(i);
             auto currency_code = data.Currency(i).GetString();
-            auto format_style = style_values[style_idx].GetString();
+            // Styles are case-insensitive; an unknown style is an error rather
+            // than a silent fallback to 'code' (like vat_format/phonenumber_format)
+            auto format_style = StringUtil::Lower(style_values[style_idx].GetString());
+            if (format_style != "symbol" && format_style != "long" && format_style != "code") {
+                throw InvalidInputException("Unsupported money format style: %s (expected 'symbol', 'long' or 'code')",
+                                            style_values[style_idx].GetString());
+            }
 
             auto &currency = LookupCurrencyOrThrow(registry, currency_code);
 
@@ -351,10 +420,15 @@ static void AnofoxMoneyFormatFunction(DataChunk &args, ExpressionState &state, V
             // rounding from currency metadata, issue #57)
             std::string formatted;
             if (format_style == "symbol") {
-                // Localized: $1,234.56 or 1.234,56 € depending on symbol_first
+                // Localized: $1,234.56 or 1.234,56 € depending on symbol_first.
+                // A leading symbol goes after the minus sign: -$42.50, not $-42.50
                 auto amount_str = FormatMoneyAmount(scaled, currency, true);
                 if (currency.symbol_first) {
-                    formatted = currency.symbol + amount_str;
+                    if (!amount_str.empty() && amount_str[0] == '-') {
+                        formatted = "-" + currency.symbol + amount_str.substr(1);
+                    } else {
+                        formatted = currency.symbol + amount_str;
+                    }
                 } else {
                     formatted = amount_str + " " + currency.symbol;
                 }
@@ -362,7 +436,7 @@ static void AnofoxMoneyFormatFunction(DataChunk &args, ExpressionState &state, V
                 // Localized amount with the full currency name: 1.234,56 Euro
                 formatted = FormatMoneyAmount(scaled, currency, true) + " " + currency.name;
             } else {
-                // 'code' and default: canonical machine-readable amount with the ISO code
+                // 'code': canonical machine-readable amount with the ISO code
                 formatted = FormatMoneyAmount(scaled, currency, false) + " " + currency.iso_code;
             }
 
@@ -541,10 +615,15 @@ static void AnofoxMoneySameCurrencyFunction(DataChunk &args, ExpressionState &st
 
 static void AnofoxCurrencyNameFunction(DataChunk &args, ExpressionState &state, Vector &result) {
     auto &registry = CurrencyRegistry::GetInstance();
+    // An unsupported code yields NULL, like currency_symbol
     IterateCurrencyCode(args, result, [&](const std::string& code, idx_t i) {
-        auto &currency = LookupCurrencyOrThrow(registry, code);
+        auto currency = registry.GetCurrency(code);
+        if (!currency) {
+            FlatVector::SetNull(result, i, true);
+            return;
+        }
         auto result_data = duckdb_compat::FlatData<string_t>(result);
-        result_data[i] = StringVector::AddString(result, currency.name);
+        result_data[i] = StringVector::AddString(result, currency->name);
     });
 }
 
@@ -644,16 +723,39 @@ void RegisterMoneyOptions(ExtensionLoader &loader) {
 
 void RegisterMoneyFunctions(ExtensionLoader &loader) {
     {
-        FunctionDescription desc;
-        desc.description = "Creates a money value from a decimal amount and ISO 4217 currency code.";
-        desc.parameter_names = {"amount", "currency_code"};
-        desc.parameter_types = {LogicalType::DOUBLE, LogicalType::VARCHAR};
-        desc.examples = {"SELECT money(19.99, 'USD');"};
-        desc.categories = {"money"};
-        ScalarFunction money_func("anofox_tab_money", {LogicalTypeId::DOUBLE, LogicalTypeId::VARCHAR}, GetMoneyType(), AnofoxMoneyFunction);
-        money_func.SetBindCallback(&ScalarContextBind<MoneyBind>::Bind);
-        money_func.SetFallible();
-        RegisterScalarFunctionWithAlias(loader, money_func, "money", {std::move(desc)});
+        // Two overloads: DECIMAL amounts (including literals such as 19.99) bind
+        // to the exact DECIMAL(18,3) one; DOUBLE and integer amounts to the
+        // DOUBLE one (DuckDB prefers DOUBLE over DECIMAL for integer inputs).
+        ScalarFunctionSet money_set("anofox_tab_money");
+        ScalarFunction money_decimal("anofox_tab_money", {GetMoneyAmountType(), LogicalTypeId::VARCHAR}, GetMoneyType(),
+                                     AnofoxMoneyDecimalFunction);
+        money_decimal.SetBindCallback(&ScalarContextBind<MoneyBind>::Bind);
+        money_decimal.SetFallible();
+        // The function sets NULL rows itself; with the default handling DuckDB
+        // v1.5 folds money(NULL, ...) into an untyped NULL constant
+        duckdb_compat::SetNullHandling(money_decimal, FunctionNullHandling::SPECIAL_HANDLING);
+        money_set.AddFunction(money_decimal);
+        ScalarFunction money_double("anofox_tab_money", {LogicalTypeId::DOUBLE, LogicalTypeId::VARCHAR}, GetMoneyType(),
+                                    AnofoxMoneyFunction);
+        money_double.SetBindCallback(&ScalarContextBind<MoneyBind>::Bind);
+        money_double.SetFallible();
+        duckdb_compat::SetNullHandling(money_double, FunctionNullHandling::SPECIAL_HANDLING);
+        money_set.AddFunction(money_double);
+
+        FunctionDescription decimal_desc;
+        decimal_desc.description = "Creates a money value from an exact DECIMAL amount and ISO 4217 currency code.";
+        decimal_desc.parameter_names = {"amount", "currency_code"};
+        decimal_desc.parameter_types = {GetMoneyAmountType(), LogicalType::VARCHAR};
+        decimal_desc.examples = {"SELECT money(19.99, 'USD');"};
+        decimal_desc.categories = {"money"};
+        FunctionDescription double_desc;
+        double_desc.description =
+            "Creates a money value from a DOUBLE amount (about 15 significant digits) and ISO 4217 currency code.";
+        double_desc.parameter_names = {"amount", "currency_code"};
+        double_desc.parameter_types = {LogicalType::DOUBLE, LogicalType::VARCHAR};
+        double_desc.examples = {"SELECT money(19.99::DOUBLE, 'USD');"};
+        double_desc.categories = {"money"};
+        RegisterScalarFunctionSetWithAlias(loader, money_set, "money", {std::move(decimal_desc), std::move(double_desc)});
     }
     {
         FunctionDescription desc;
@@ -704,7 +806,7 @@ void RegisterMoneyFunctions(ExtensionLoader &loader) {
     }
     {
         FunctionDescription desc;
-        desc.description = "Returns the currency symbol for a given ISO 4217 currency code (e.g., '$' for USD).";
+        desc.description = "Returns the currency symbol for a given ISO 4217 currency code (e.g., '$' for USD), or NULL for an unsupported code.";
         desc.parameter_names = {"currency_code"};
         desc.parameter_types = {LogicalType::VARCHAR};
         desc.examples = {"SELECT currency_symbol('EUR');"};
@@ -716,7 +818,7 @@ void RegisterMoneyFunctions(ExtensionLoader &loader) {
     }
     {
         FunctionDescription desc;
-        desc.description = "Returns the full English name of a currency given its ISO 4217 code (e.g., 'US Dollar').";
+        desc.description = "Returns the full English name of a currency given its ISO 4217 code (e.g., 'United States Dollar'), or NULL for an unsupported code.";
         desc.parameter_names = {"currency_code"};
         desc.parameter_types = {LogicalType::VARCHAR};
         desc.examples = {"SELECT currency_name('EUR');"};
@@ -728,7 +830,7 @@ void RegisterMoneyFunctions(ExtensionLoader &loader) {
     }
     {
         FunctionDescription desc;
-        desc.description = "Formats a money value as a string using the specified style ('symbol', 'code', or 'plain').";
+        desc.description = "Formats a money value as a string using the specified style ('symbol', 'long' or 'code', case-insensitive); any other style is an error.";
         desc.parameter_names = {"money", "format_style"};
         desc.parameter_types = {GetMoneyType(), LogicalType::VARCHAR};
         desc.examples = {"SELECT money_format(money(19.99, 'USD'), 'symbol');"};

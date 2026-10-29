@@ -14,3 +14,6 @@ third_party/
 
 # Codex delegation data (AI session responses)
 .codex-delegate/
+
+# agent-crew runs
+.crew/

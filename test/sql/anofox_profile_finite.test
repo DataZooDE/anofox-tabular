@@ -1,0 +1,89 @@
+# name: test/sql/anofox_profile_finite.test
+# description: profile_table reports min_val, max_val and top_values over the finite values of
+#              a numeric column (NaN and +/-Inf are only counted in nan_count / inf_count),
+#              and validates the table and its columns at bind time, so an unknown column is
+#              an error before any result is produced.
+# group: [anofox_tabular]
+
+require anofox_tabular
+
+statement ok
+LOAD anofox_tabular
+
+statement ok
+SET anofox_tab_trace_enabled = false
+
+# Meter readings from a smart-meter export: one meter failed to report (nan), one counter
+# overflowed (inf), one was reset to a sentinel (-inf)
+statement ok
+CREATE TABLE meter_readings (meter_id VARCHAR, read_at TIMESTAMP, kwh DOUBLE, voltage FLOAT, tariff_eur DECIMAL(6, 4))
+
+statement ok
+INSERT INTO meter_readings VALUES
+    ('DE-MUC-0001', TIMESTAMP '2026-10-24 00:00:00', 12.5,           230.1, 0.3120),
+    ('DE-MUC-0002', TIMESTAMP '2026-10-24 00:00:00', 'nan'::DOUBLE,  229.8, 0.3120),
+    ('DE-MUC-0003', TIMESTAMP '2026-10-24 00:00:00', 8.25,           'nan'::FLOAT, 0.2890),
+    ('DE-HAM-0001', TIMESTAMP '2026-10-24 00:00:00', 'inf'::DOUBLE,  231.0, 0.2890),
+    ('DE-HAM-0002', TIMESTAMP '2026-10-24 00:00:00', '-inf'::DOUBLE, 'inf'::FLOAT, 0.3340),
+    ('DE-HAM-0003', TIMESTAMP '2026-10-24 00:00:00', 'nan'::DOUBLE,  230.4, NULL),
+    ('DE-BER-0001', TIMESTAMP '2026-10-24 00:00:00', 8.25,           230.1, 0.3120)
+
+query TTTRII
+SELECT column_name, min_val, max_val, round(mean, 4), nan_count, inf_count
+FROM profile_table('meter_readings', ['kwh', 'voltage', 'tariff_eur'])
+----
+kwh	8.25	12.5	9.6667	2	2
+voltage	229.8	231.0	230.28	1	1
+tariff_eur	0.2890	0.3340	0.308	0	0
+
+# top_values lists finite values only; the NaN/Inf readings are in nan_count / inf_count
+query TT
+SELECT column_name, top_values::VARCHAR
+FROM profile_table('meter_readings', ['kwh', 'voltage'])
+----
+kwh	[{'value': 8.25, 'count': 2}, {'value': 12.5, 'count': 1}]
+voltage	[{'value': 230.1, 'count': 2}, {'value': 229.8, 'count': 1}, {'value': 230.4, 'count': 1}, {'value': 231.0, 'count': 1}]
+
+# A column of only non-finite values has no min, max or top values
+statement ok
+CREATE TABLE broken_sensor AS SELECT * FROM (VALUES ('nan'::DOUBLE), ('inf'::DOUBLE), (NULL)) t(reading)
+
+query TTTII
+SELECT min_val, max_val, top_values::VARCHAR, nan_count, inf_count FROM profile_table('broken_sensor')
+----
+NULL	NULL	NULL	1	1
+
+# Non-numeric columns are unaffected: a VARCHAR 'nan' is an ordinary string
+statement ok
+CREATE TABLE status_codes AS SELECT * FROM (VALUES ('nan'), ('ok'), ('ok')) t(code)
+
+query TTT
+SELECT min_val, max_val, top_values::VARCHAR FROM profile_table('status_codes')
+----
+nan	ok	[{'value': ok, 'count': 2}, {'value': nan, 'count': 1}]
+
+# ===--------------------------------------------------------------------===
+# Validation at bind time: an unknown column or table fails before execution,
+# so EXPLAIN / DESCRIBE (which only bind) already raise the error
+# ===--------------------------------------------------------------------===
+
+statement error
+EXPLAIN SELECT * FROM profile_table('meter_readings', ['kwh', 'kwh_total'])
+----
+profile_table: column 'kwh_total' not found in table 'meter_readings'
+
+statement error
+DESCRIBE SELECT * FROM profile_table('meter_reading')
+----
+meter_reading
+
+statement error
+EXPLAIN SELECT * FROM profile_correlations('meter_readings', ['kwh', 'kwh_total'])
+----
+profile_correlations: column 'kwh_total' not found in table 'meter_readings'
+
+# Column names still match case-insensitively
+query T
+SELECT column_name FROM profile_table('meter_readings', ['KWH'])
+----
+kwh

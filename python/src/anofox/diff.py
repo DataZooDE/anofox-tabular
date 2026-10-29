@@ -1,12 +1,13 @@
 """
-Data diff wrappers (join-based and hash-based).
+Data diff wrappers (join-based and hash-based row diffs, schema diff).
 """
 
 from __future__ import annotations
 
 from typing import Any, Optional, Union
 
-from ._table import cleanup_table, resolve_table
+from ._sql import fetch_frame
+from ._table import DataFrame, column_label, column_list, output_df_type, table_inputs
 
 
 def joindiff(
@@ -16,7 +17,7 @@ def joindiff(
     primary_keys: Union[str, list[str]],
     compare_columns: Optional[list[str]] = None,
     include_unchanged: bool = False,
-) -> Any:
+) -> DataFrame:
     """
     Compare two tables using a full-outer-join strategy.
 
@@ -34,39 +35,31 @@ def joindiff(
         Column name(s) forming the primary key.  Either a string (single
         key) or a list of strings (compound key).
     compare_columns:
-        Columns to compare.  When *None* all non-key columns are compared.
+        Columns to compare (a list; a single name means that one column).
+        When *None* all non-key columns are compared.
     include_unchanged:
         Include unchanged rows in the result (default False).
 
     Returns
     -------
-    pd.DataFrame
-        Rows with ``diff_type`` column indicating change type.
+    DataFrame (pandas, or polars when a polars DataFrame is passed)
+        Rows with ``diff_type`` column indicating change type and a last
+        ``changed_columns`` column listing the differing columns of each
+        changed row (``NULL`` for added and removed rows).
     """
-    src_name, src_registered = resolve_table(conn, src)
-    tgt_name, tgt_registered = resolve_table(conn, tgt)
-    pk_arg = _format_pk(primary_keys)
+    pk_sql, pk_value = _format_pk(primary_keys)
+    labels = ["the source DataFrame", "the target DataFrame"]
+    with table_inputs(conn, src, tgt, labels=labels) as (src_name, tgt_name):
+        params: list = [src_name, tgt_name, pk_value]
+        query = f"SELECT * FROM anofox_tab_diff_joindiff(?, ?, {pk_sql}"
+        if compare_columns is not None:
+            query += ", ?::VARCHAR[]"
+            params.append(column_list(compare_columns))
+            if include_unchanged:
+                query += ", true"
+        query += ")"
 
-    try:
-        if compare_columns is not None and include_unchanged:
-            cols_list = "[" + ", ".join(f"'{c}'" for c in compare_columns) + "]"
-            query = (
-                f"SELECT * FROM anofox_tab_diff_joindiff("
-                f"'{src_name}', '{tgt_name}', {pk_arg}, {cols_list}, true)"
-            )
-        elif compare_columns is not None:
-            cols_list = "[" + ", ".join(f"'{c}'" for c in compare_columns) + "]"
-            query = (
-                f"SELECT * FROM anofox_tab_diff_joindiff("
-                f"'{src_name}', '{tgt_name}', {pk_arg}, {cols_list})"
-            )
-        else:
-            query = f"SELECT * FROM anofox_tab_diff_joindiff('{src_name}', '{tgt_name}', {pk_arg})"
-
-        result = conn.native.sql(query).df()
-    finally:
-        cleanup_table(conn, src_name, src_registered)
-        cleanup_table(conn, tgt_name, tgt_registered)
+        result = fetch_frame(conn, query, params, output_df_type(src, tgt))
     return result
 
 
@@ -77,7 +70,7 @@ def hashdiff(
     primary_keys: Union[str, list[str]],
     bisection_threshold: Optional[int] = None,
     bisection_factor: Optional[int] = None,
-) -> Any:
+) -> DataFrame:
     """
     Compare two tables using row hashes.
 
@@ -100,39 +93,76 @@ def hashdiff(
 
     Returns
     -------
-    pd.DataFrame
-        Rows where hashes differ, with ``diff_type`` column.
+    DataFrame (pandas, or polars when a polars DataFrame is passed)
+        Rows where hashes differ, with ``diff_type`` column and a last
+        ``changed_columns`` column (as for :func:`joindiff`).
     """
-    src_name, src_registered = resolve_table(conn, src)
-    tgt_name, tgt_registered = resolve_table(conn, tgt)
-    pk_arg = _format_pk(primary_keys)
+    pk_sql, pk_value = _format_pk(primary_keys)
+    labels = ["the source DataFrame", "the target DataFrame"]
+    with table_inputs(conn, src, tgt, labels=labels) as (src_name, tgt_name):
+        params: list = [src_name, tgt_name, pk_value]
+        query = f"SELECT * FROM anofox_tab_diff_hashdiff(?, ?, {pk_sql}"
+        if bisection_threshold is not None:
+            query += ", ?::BIGINT"
+            params.append(bisection_threshold)
+            if bisection_factor is not None:
+                query += ", ?::BIGINT"
+                params.append(bisection_factor)
+        query += ")"
 
-    try:
-        if bisection_threshold is not None and bisection_factor is not None:
-            query = (
-                f"SELECT * FROM anofox_tab_diff_hashdiff("
-                f"'{src_name}', '{tgt_name}', {pk_arg}, {bisection_threshold}, {bisection_factor})"
-            )
-        elif bisection_threshold is not None:
-            query = (
-                f"SELECT * FROM anofox_tab_diff_hashdiff("
-                f"'{src_name}', '{tgt_name}', {pk_arg}, {bisection_threshold})"
-            )
-        else:
-            query = f"SELECT * FROM anofox_tab_diff_hashdiff('{src_name}', '{tgt_name}', {pk_arg})"
-
-        result = conn.native.sql(query).df()
-    finally:
-        cleanup_table(conn, src_name, src_registered)
-        cleanup_table(conn, tgt_name, tgt_registered)
+        result = fetch_frame(conn, query, params, output_df_type(src, tgt))
     return result
 
 
-def _format_pk(primary_keys: Union[str, list[str]]) -> str:
-    """Format primary key argument for SQL."""
+def diff_schema(
+    conn: Any,
+    source: Union[str, Any],
+    target: Union[str, Any],
+) -> DataFrame:
+    """
+    Compare the columns of two tables.
+
+    Returns one row per column of either table with its type on each side and
+    the drift: ``same``, ``added`` (target only), ``removed`` (source only) or
+    ``retyped``.  Columns match case-insensitively; the rows come in source
+    column order, followed by the added columns in target column order.  Run
+    it before :func:`joindiff` / :func:`hashdiff` to see which columns those
+    compare.
+
+    Parameters
+    ----------
+    conn:
+        An :class:`~anofox.AnofoxConnection`.
+    source:
+        Old table name (tables, views, TEMP tables, ``schema.table``) or
+        DataFrame.
+    target:
+        New table name or DataFrame.
+
+    Returns
+    -------
+    DataFrame (pandas, or polars when a polars DataFrame is passed)
+        Columns ``column_name``, ``source_type``, ``target_type`` (missing,
+        i.e. ``NaN`` in pandas and ``null`` in polars, on the side that lacks
+        the column) and ``drift``.
+    """
+    labels = ["the source DataFrame", "the target DataFrame"]
+    with table_inputs(conn, source, target, labels=labels) as (src_name, tgt_name):
+        result = fetch_frame(
+            conn,
+            "SELECT * FROM anofox_tab_diff_schema(?, ?)",
+            [src_name, tgt_name],
+            output_df_type(source, target),
+        )
+    return result
+
+
+def _format_pk(primary_keys: Union[str, list[str]]) -> tuple[str, Any]:
+    """Return the placeholder SQL and the bound value of the primary key argument."""
+    primary_keys = column_label(primary_keys)
     if isinstance(primary_keys, str):
-        return f"'{primary_keys}'"
+        return "?", primary_keys
     if len(primary_keys) == 1:
-        return f"'{primary_keys[0]}'"
-    # Compound key — pass as a LIST<VARCHAR> literal
-    return "[" + ", ".join(f"'{k}'" for k in primary_keys) + "]"
+        return "?", primary_keys[0]
+    # Compound key — pass as a LIST<VARCHAR>
+    return "?::VARCHAR[]", list(primary_keys)

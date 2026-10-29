@@ -7,14 +7,21 @@ Usage::
     anofox quality <file> [--volume-min N] [--null-max F] [--column COL] [--format table|json] [--ext <path>]
 
 Supported file formats: .parquet, .csv, .tsv, .json, .ndjson
+
+``anofox quality`` exits with 0 when every check passes, 1 when a check
+fails and 2 when it cannot run the checks (bad arguments, unreadable file,
+unknown column, ...); the error is printed to stderr.
 """
 
 from __future__ import annotations
 
 import argparse
+import datetime
 import json
 import os
+import re
 import sys
+from decimal import Decimal
 from pathlib import Path
 from typing import Optional
 
@@ -103,11 +110,11 @@ def _cmd_quality(args, console=None) -> int:
             "No quality rules specified. Use --volume-min or --null-max."
         )
 
+    from ._sql import run
+
     conn = _connect(args.ext)
     try:
-        conn.execute(
-            f"CREATE OR REPLACE TABLE _cli_quality AS SELECT * FROM {read_fn}"
-        )
+        run(conn, f"CREATE OR REPLACE TABLE _cli_quality AS SELECT * FROM {read_fn}")
 
         from anofox import quality as q
 
@@ -123,7 +130,7 @@ def _cmd_quality(args, console=None) -> int:
                 max_null_rate=args.null_max,
             )
 
-        conn.execute("DROP TABLE IF EXISTS _cli_quality")
+        run(conn, "DROP TABLE IF EXISTS _cli_quality")
     finally:
         conn.close()
 
@@ -132,7 +139,9 @@ def _cmd_quality(args, console=None) -> int:
     ) else "fail"
 
     if args.format == "json":
-        print(json.dumps({"status": overall_status, "checks": results}, indent=2))
+        print(json.dumps(
+            {"status": overall_status, "checks": results}, indent=2, default=_json_value
+        ))
     else:
         status_str = (
             f"[green]{overall_status}[/green]"
@@ -146,6 +155,41 @@ def _cmd_quality(args, console=None) -> int:
             console.print(f"  {name}: {styled}")
 
     return 0 if overall_status == "pass" else 1
+
+
+def _json_value(value):
+    """JSON form of a value json.dumps cannot encode: DECIMAL as a number, dates as ISO text."""
+    if isinstance(value, Decimal):
+        return float(value)
+    if isinstance(value, (datetime.date, datetime.time)):
+        return value.isoformat()
+    return str(value)
+
+
+#: The CLI's internal copy of the file, as an error message names it.
+_CLI_TABLE = re.compile(r"""(?:\btable\s+)?(['"]?)_cli_quality\1""")
+
+
+def _about_file(message: str, file_path: str) -> str:
+    """*message* naming *file_path* instead of the internal table, without the query excerpt."""
+    from ._table import without_query_excerpt
+
+    message = _CLI_TABLE.sub(lambda _: f"file '{file_path}'", message)
+    return without_query_excerpt(message)
+
+
+def _run_quality(args, console=None) -> int:
+    """Run ``anofox quality``: 0 = all checks pass, 1 = a check fails, 2 = an error."""
+    try:
+        return _cmd_quality(args, console=console)
+    except SystemExit as exc:
+        if exc.code is None or isinstance(exc.code, int):
+            raise
+        error = exc.code
+    except Exception as exc:  # noqa: BLE001 - any failure to run the checks is exit code 2
+        error = _about_file(f"{type(exc).__name__}: {exc}", args.file)
+    print(f"anofox quality: error: {error}", file=sys.stderr)
+    return 2
 
 
 def main(console=None) -> None:
@@ -197,4 +241,4 @@ def main(console=None) -> None:
     if args.cmd == "profile":
         sys.exit(_cmd_profile(args, console=console))
     elif args.cmd == "quality":
-        sys.exit(_cmd_quality(args, console=console))
+        sys.exit(_run_quality(args, console=console))

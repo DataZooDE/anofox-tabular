@@ -1,0 +1,85 @@
+# name: test/sql/anofox_blank_input_reason.test
+# description: A blank or whitespace-only value (a quoted '' CSV cell) gets the reason
+#              'empty' with valid = false in email_validate, phonenumber_parse and
+#              vat_validate; the *_is_valid functions return false; NULL stays NULL.
+# group: [anofox_tabular]
+
+require anofox_tabular
+
+statement ok
+LOAD anofox_tabular;
+
+# A customer master loaded from CSV: empty quoted cells, cells holding only
+# spaces, a tab or a line break, real values and SQL NULLs side by side
+statement ok
+CREATE TABLE customer_master AS SELECT * FROM (VALUES
+    (4001, 'Huber Maschinenbau GmbH', 'einkauf@huber-maschinenbau.de', '+49 89 1234567', 'DE 811 128 135'),
+    (4002, 'Lechner Bau KG',          '',                              '',               ''),
+    (4003, 'Moser Transporte',        '   ',                           '   ',            '   '),
+    (4004, 'Pichler Elektro',         chr(9),                          chr(9),           chr(9)),
+    (4005, 'Gruber Holz',             ' ' || chr(13) || chr(10),       chr(10),          chr(10) || ' '),
+    (4006, 'Wagner Logistik',         NULL,                            NULL,             NULL),
+    (4007, 'Bauer Druck',             'not-an-email',                  '-',              '811128135')
+) t(customer_id, name, email, phone, vat_id);
+
+query ITTTTTTTTT
+SELECT customer_id,
+       (email_validate(email)).valid, (email_validate(email)).stage, (email_validate(email)).reason,
+       (phonenumber_parse(phone, 'DE')).valid, (phonenumber_parse(phone, 'DE')).region,
+       (phonenumber_parse(phone, 'DE')).reason,
+       (vat_validate(vat_id)).valid, (vat_validate(vat_id)).country, (vat_validate(vat_id)).reason
+FROM customer_master ORDER BY customer_id;
+----
+4001	true	regex	NULL	true	DE	NULL	true	DE	NULL
+4002	false	regex	empty	false	NULL	empty	false	NULL	empty
+4003	false	regex	empty	false	NULL	empty	false	NULL	empty
+4004	false	regex	empty	false	NULL	empty	false	NULL	empty
+4005	false	regex	empty	false	NULL	empty	false	NULL	empty
+4006	NULL	NULL	NULL	NULL	NULL	NULL	NULL	NULL	NULL
+4007	false	regex	invalid_format	false	NULL	not_a_number	false	NULL	missing_prefix
+
+# The is_valid functions agree: false for blank, NULL for NULL
+query ITTT
+SELECT customer_id, email_is_valid(email), phonenumber_is_valid(phone, 'DE'), vat_is_valid(vat_id)
+FROM customer_master ORDER BY customer_id;
+----
+4001	true	true	true
+4002	false	false	false
+4003	false	false	false
+4004	false	false	false
+4005	false	false	false
+4006	NULL	NULL	NULL
+4007	false	false	false
+
+# The reason does not depend on the validation mode or the region argument:
+# a blank address is never looked up, a blank phone needs no region
+query TTT
+SELECT (email_validate('  ', 'dns')).reason, (email_validate('', 'smtp')).stage,
+       (phonenumber_parse('  ', NULL)).reason;
+----
+empty	regex	empty
+
+query T
+SELECT (phonenumber_parse('', 'AT')).reason;
+----
+empty
+
+# A blank value never formats
+query T
+SELECT phonenumber_format('  ', 'DE', 'E164');
+----
+NULL
+
+# A data-quality summary that tells missing values apart from bad ones
+query TTI
+SELECT CASE WHEN email IS NULL THEN 'null'
+            ELSE coalesce((email_validate(email)).reason, 'ok') END AS email_status,
+       CASE WHEN vat_id IS NULL THEN 'null'
+            ELSE coalesce((vat_validate(vat_id)).reason, 'ok') END AS vat_status,
+       count(*)
+FROM customer_master GROUP BY ALL ORDER BY ALL;
+----
+empty	empty	4
+invalid_format	missing_prefix	1
+null	null	1
+ok	ok	1
