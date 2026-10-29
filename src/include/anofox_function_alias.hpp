@@ -53,6 +53,26 @@ void NameParameters(INFO &info) {
 	});
 }
 
+// A scalar function whose arguments are all constant must return a constant vector:
+// DuckDB folds such calls at bind time and reads the result as a constant (debug builds
+// assert it). Our functions fill a flat result row by row, so mark it constant here, the
+// way DuckDB's own row-by-row functions do. SetVectorType keeps row 0 and converts the
+// children of STRUCT results as well. A volatile function (postal_load_data) can return
+// a different value per row and is left as it is; a non-volatile one without arguments
+// (anofox_contract_version) is folded like any other.
+inline void ConstantResultForConstantArguments(ScalarFunction &func) {
+	if (!func.HasFunctionCallback() || func.GetStability() == FunctionStability::VOLATILE) {
+		return;
+	}
+	auto inner = func.GetFunctionCallback();
+	func.SetFunctionCallback([inner](DataChunk &args, ExpressionState &state, Vector &result) {
+		inner(args, state, result);
+		if (args.AllConstant() && result.GetVectorType() != VectorType::CONSTANT_VECTOR) {
+			result.SetVectorType(VectorType::CONSTANT_VECTOR);
+		}
+	});
+}
+
 template <class INFO>
 void RegisterWithAlias(ExtensionLoader &loader, INFO primary_info, INFO alias_info,
                        const vector<FunctionDescription> &descriptions) {
@@ -87,6 +107,7 @@ inline void RegisterScalarFunctionWithAlias(ExtensionLoader &loader, ScalarFunct
                                             const std::string &alias_name,
                                             vector<FunctionDescription> descriptions = {}) {
 	duckdb_compat::SetFallible(func);
+	detail::ConstantResultForConstantArguments(func);
 	CreateScalarFunctionInfo primary_info(func);
 
 	// Alias: copy-then-rename so all metadata survives
@@ -102,7 +123,10 @@ inline void RegisterScalarFunctionWithAlias(ExtensionLoader &loader, ScalarFunct
 inline void RegisterScalarFunctionSetWithAlias(ExtensionLoader &loader, ScalarFunctionSet func_set,
                                                const std::string &alias_name,
                                                vector<FunctionDescription> descriptions = {}) {
-	duckdb_compat::ForEachFunction(func_set, [](ScalarFunction &func) { duckdb_compat::SetFallible(func); });
+	duckdb_compat::ForEachFunction(func_set, [](ScalarFunction &func) {
+		duckdb_compat::SetFallible(func);
+		detail::ConstantResultForConstantArguments(func);
+	});
 	CreateScalarFunctionInfo primary_info(func_set);
 
 	// Alias: copy-then-rename every overload so all metadata survives

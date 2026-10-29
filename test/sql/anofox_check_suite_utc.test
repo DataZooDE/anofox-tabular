@@ -8,11 +8,12 @@ require anofox_tabular
 statement ok
 LOAD anofox_tabular
 
-# A warehouse feed stores its load time twice: naive UTC and as TIMESTAMPTZ
+# A warehouse feed stores its load time twice: naive UTC and as TIMESTAMPTZ. The fixed loads lie in
+# the past: the ${today} check below must count only the load inserted with the current time.
 statement ok
 CREATE TABLE warehouse_feed AS SELECT * FROM (VALUES
-  ('WH-HAM', TIMESTAMP '2026-10-29 04:30:00', TIMESTAMPTZ '2026-10-29 04:30:00+00', '2026-10-29 04:30:00'),
-  ('WH-MUC', TIMESTAMP '2026-10-29 05:00:00', TIMESTAMPTZ '2026-10-29 07:00:00+02', '2026-10-29 05:00:00')
+  ('WH-HAM', TIMESTAMP '2020-03-15 04:30:00', TIMESTAMPTZ '2020-03-15 04:30:00+00', '2020-03-15 04:30:00'),
+  ('WH-MUC', TIMESTAMP '2020-03-15 05:00:00', TIMESTAMPTZ '2020-03-15 07:00:00+02', '2020-03-15 05:00:00')
 ) t(warehouse, loaded_at, loaded_at_tz, loaded_at_txt)
 
 statement ok
@@ -24,13 +25,13 @@ CREATE TABLE feed_checks(check_name VARCHAR, check_type VARCHAR, table_name VARC
 statement ok
 INSERT INTO feed_checks VALUES
   ('fresh_naive',      'freshness', 'warehouse_feed', 'loaded_at',
-     '{"reference_time": "2026-10-29 08:00:00+02:00"}', NULL, 7200, false, NULL, NULL),
+     '{"reference_time": "2020-03-15 08:00:00+02:00"}', NULL, 7200, false, NULL, NULL),
   ('fresh_tz',         'freshness', 'warehouse_feed', 'loaded_at_tz',
-     '{"reference_time": "2026-10-29 08:00:00+02:00"}', NULL, 7200, false, NULL, NULL),
+     '{"reference_time": "2020-03-15 08:00:00+02:00"}', NULL, 7200, false, NULL, NULL),
   ('fresh_txt',        'freshness', 'warehouse_feed', 'loaded_at_txt',
-     '{"reference_time": "2026-10-29 06:00:00"}', NULL, 7200, false, NULL, NULL),
+     '{"reference_time": "2020-03-15 06:00:00"}', NULL, 7200, false, NULL, NULL),
   ('fresh_tz_per_wh',  'freshness', 'warehouse_feed', 'loaded_at_tz',
-     '{"reference_time": "2026-10-29 06:00:00"}', NULL, 4000, false, 'warehouse', NULL)
+     '{"reference_time": "2020-03-15 06:00:00"}', NULL, 4000, false, 'warehouse', NULL)
 
 query TTTR
 SELECT check_name, identifier, status, value FROM run_checks('feed_checks') ORDER BY check_name, identifier
