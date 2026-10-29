@@ -33,11 +33,10 @@ constexpr ContractProducer CONTRACT_PRODUCERS[] = {
 
 constexpr const char *CONTRACT_VERSION_FUNCTION = "anofox_contract_version";
 
-void ContractVersionFunction(DataChunk &args, ExpressionState &, Vector &result) {
-	auto result_data = duckdb_compat::FlatData<string_t>(result);
-	for (idx_t i = 0; i < args.size(); i++) {
-		result_data[i] = StringVector::AddString(result, ANOFOX_CONTRACT_VERSION);
-	}
+void ContractVersionFunction(DataChunk &, ExpressionState &, Vector &result) {
+	// The same value for every row: a constant vector, as DuckDB expects when it folds the call
+	result.SetVectorType(VectorType::CONSTANT_VECTOR);
+	ConstantVector::GetData<string_t>(result)[0] = StringVector::AddString(result, ANOFOX_CONTRACT_VERSION);
 }
 
 } // anonymous namespace
