@@ -1,0 +1,55 @@
+# name: test/sql/anofox_money_dictionary_input.test
+# description: Money functions read a filtered (dictionary) money column correctly, also when a
+#              child of the stored struct is constant (one currency for the whole table) and when
+#              TRY() re-runs single rows. DuckDB v1.5.6 crashed or returned wrong NULLs here.
+# group: [anofox_tabular]
+
+require anofox_tabular
+
+statement ok
+LOAD anofox_tabular;
+
+statement ok
+SET anofox_tab_trace_level = 'warn';
+
+# Payouts of one Swiss subsidiary: every amount is in CHF, so the currency child is stored as
+# one constant segment.
+statement ok
+CREATE TABLE payouts AS
+SELECT 'PO-' || lpad(i::VARCHAR, 5, '0') AS payout_no,
+       money(100 + i * 25, 'CHF') AS amount,
+       CASE WHEN i % 4 = 0 THEN NULL ELSE 150.0 END AS min_amount,
+       CASE WHEN i % 3 = 0 THEN NULL ELSE 2000.0 END AS max_amount
+FROM range(1, 3001) t(i);
+
+# A filter hands the functions a dictionary over the stored rows
+query IIRT
+SELECT count(*), count(money_in_range(amount, min_amount, max_amount)),
+       sum(money_amount(amount)), min(money_currency(amount))
+FROM payouts WHERE payout_no >= 'PO-02900';
+----
+101	101	7458850.000	CHF
+
+query TT
+SELECT payout_no, money_in_range(amount, min_amount, max_amount)
+FROM payouts WHERE payout_no IN ('PO-02995', 'PO-02996', 'PO-02997', 'PO-02998') ORDER BY payout_no;
+----
+PO-02995	false
+PO-02996	false
+PO-02997	true
+PO-02998	false
+
+query TT
+SELECT payout_no, money_in_range(amount, 0, NULL)
+FROM payouts WHERE payout_no IN ('PO-00002', 'PO-02998') ORDER BY payout_no;
+----
+PO-00002	true
+PO-02998	true
+
+# TRY() re-runs the rows of a failing chunk one by one: only the rows with swapped bounds
+# become NULL
+query II
+SELECT count(*), count(TRY(money_in_range(amount, max_amount, min_amount)))
+FROM payouts WHERE payout_no >= 'PO-02900';
+----
+101	51
