@@ -271,6 +271,12 @@ print(checks.checks["null_rate"]["null_rate"])
 | `anofox.money` | `make_money(conn, amount, currency)` (or a DataFrame with `column=` and `currency=` / `currency_column=`), `money_from_cents`, `is_valid_currency`, `currency_symbol`, `money_add`, etc. |
 | `anofox.vat` | `make_vat`, `vat_is_valid`, `vat_is_valid_syntax`, `vat_validate` (valid, country, reason), `vat_exists` (prefix check only), `vat_split`, `vat_normalize`, `vat_format(conn, vat, style="plain"\|"iso")`, `is_valid_vat_country`, `vat_is_eu_member`, `vat_country_name` |
 
+The package namespace itself holds `anofox.connect`, `anofox.AnofoxConnection`,
+`anofox.UnsupportedDuckDBVersionError` and the modules above; `from anofox import *` imports
+exactly these and `__version__` (the names in `anofox.__all__`). `anofox.__version__` is the
+version of the installed `anofox-tabular` package (for example `"2026.10.31"`), read from the
+package metadata; a source checkout used without installing it reports `"0.0.0+unknown"`.
+
 ## CLI
 
 ```bash
