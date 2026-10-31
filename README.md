@@ -57,8 +57,9 @@ To upgrade to the newest release:
 FORCE INSTALL anofox_tabular FROM community;
 ```
 
-Supported: DuckDB v1.5.6 and 2.0 on `linux_amd64`, `osx_arm64`, `osx_amd64` and
-`windows_amd64`. Releases use date versions such as `v2026.10.29`.
+Supported: DuckDB v1.5.6 and 2.0 on `linux_amd64`, `osx_arm64` (Apple silicon) and
+`windows_amd64`. Intel Macs (`osx_amd64`) are no longer supported since v2026.10.31. Releases use
+date versions such as `v2026.10.29`.
 
 The community build can be older than these docs. Check which release you have:
 

@@ -31,7 +31,7 @@ jobs:
       # Exclude musl builds - OpenVINO binary components require glibc
       # Exclude ARM64 Linux builds - vcpkg OpenVINO build timeout issues
       # Note: Windows builds WITHOUT OpenVINO (NER unavailable, pattern-based PII works)
-      exclude_archs: wasm_mvp;wasm_eh;wasm_threads;windows_amd64_mingw;linux_amd64_musl;linux_arm64
+      exclude_archs: wasm_mvp;wasm_eh;wasm_threads;windows_amd64_mingw;linux_amd64_musl;linux_arm64;osx_amd64
 
   duckdb-v1_5_6-smoke-test:
     name: Smoke test (v1.5.6)
@@ -40,7 +40,7 @@ jobs:
     with:
       duckdb_version: v1.5.6
       extension_name: anofox_tabular
-      exclude_archs: 'wasm_mvp;wasm_eh;wasm_threads;windows_amd64_mingw;linux_amd64_musl;linux_arm64'
+      exclude_archs: 'wasm_mvp;wasm_eh;wasm_threads;windows_amd64_mingw;linux_amd64_musl;linux_arm64;osx_amd64'
 
   duckdb-v1_5_6-deploy:
     name: Deploy extension binaries (v1.5.6)
@@ -50,7 +50,7 @@ jobs:
     with:
       duckdb_version: v1.5.6
       extension_name: anofox_tabular
-      exclude_archs: wasm_mvp;wasm_eh;wasm_threads;windows_amd64_mingw;linux_amd64_musl;linux_arm64
+      exclude_archs: wasm_mvp;wasm_eh;wasm_threads;windows_amd64_mingw;linux_amd64_musl;linux_arm64;osx_amd64
       deploy_latest: ${{ startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/main' }}
       # Versioned paths only from tag runs: a main push deploy resolves the tag
       # at upload time, so a main run that finishes after a release would
@@ -70,7 +70,7 @@ jobs:
       ci_tools_version: v2.0-cyanoptera
       extension_name: anofox_tabular
       artifact_postfix: _v2.0
-      exclude_archs: wasm_mvp;wasm_eh;wasm_threads;windows_amd64_mingw;linux_amd64_musl;linux_arm64
+      exclude_archs: wasm_mvp;wasm_eh;wasm_threads;windows_amd64_mingw;linux_amd64_musl;linux_arm64;osx_amd64
 
   # The stock DuckDB 2.0.0 CLI (a tar.gz release asset) installs and loads
   # each 2.0 artifact before it is deployed, as for v1.5.6. On pull requests the
@@ -83,7 +83,7 @@ jobs:
       duckdb_version: v2.0.0
       extension_name: anofox_tabular
       artifact_postfix: _v2.0
-      exclude_archs: ${{ github.event_name == 'pull_request' && 'wasm_mvp;wasm_eh;wasm_threads;windows_amd64_mingw;linux_amd64_musl;linux_arm64;osx_arm64;osx_amd64' || 'wasm_mvp;wasm_eh;wasm_threads;windows_amd64_mingw;linux_amd64_musl;linux_arm64' }}
+      exclude_archs: ${{ github.event_name == 'pull_request' && 'wasm_mvp;wasm_eh;wasm_threads;windows_amd64_mingw;linux_amd64_musl;linux_arm64;osx_amd64;osx_arm64' || 'wasm_mvp;wasm_eh;wasm_threads;windows_amd64_mingw;linux_amd64_musl;linux_arm64;osx_amd64' }}
 
   # Publishes the 2.0 builds to get.erpl.io/v2.0.0/<platform>/ (and the
   # versioned path on tags) under the same rules as the v1.5.6 deploy. The
@@ -99,7 +99,7 @@ jobs:
       extension_name: anofox_tabular
       artifact_postfix: _v2.0
       # No macOS 2.0 artifact on pull requests (see duckdb-next-smoke-test)
-      exclude_archs: ${{ github.event_name == 'pull_request' && 'wasm_mvp;wasm_eh;wasm_threads;windows_amd64_mingw;linux_amd64_musl;linux_arm64;osx_arm64;osx_amd64' || 'wasm_mvp;wasm_eh;wasm_threads;windows_amd64_mingw;linux_amd64_musl;linux_arm64' }}
+      exclude_archs: ${{ github.event_name == 'pull_request' && 'wasm_mvp;wasm_eh;wasm_threads;windows_amd64_mingw;linux_amd64_musl;linux_arm64;osx_amd64;osx_arm64' || 'wasm_mvp;wasm_eh;wasm_threads;windows_amd64_mingw;linux_amd64_musl;linux_arm64;osx_amd64' }}
       deploy_latest: ${{ startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/main' }}
       # Versioned paths only from tag runs (see duckdb-v1_5_6-deploy).
       deploy_versioned: ${{ startsWith(github.ref, 'refs/tags/v') }}
