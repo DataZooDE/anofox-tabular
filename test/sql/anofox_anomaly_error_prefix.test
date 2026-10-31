@@ -1,0 +1,85 @@
+# name: test/sql/anofox_anomaly_error_prefix.test
+# description: Issue #125: every binder error of isolation_forest_mv, dbscan_mv and outlier_tree
+#              names the function that raised it, like those of isolation_forest and dbscan.
+# group: [anofox_tabular]
+
+require anofox_tabular
+
+statement ok
+LOAD anofox_tabular
+
+statement ok
+SET anofox_tab_trace_enabled = false
+
+statement ok
+CREATE TABLE sensor_readings AS
+SELECT i AS reading_id,
+       'sensor-' || (i % 12) AS sensor_id,
+       20.0 + (i % 17) * 0.4 + CASE WHEN i = 250 THEN 35.0 ELSE 0.0 END AS temperature_c,
+       45.0 + (i % 23) * 0.9 AS humidity_pct,
+       1013.0 + (i % 11) * 0.3 AS pressure_hpa
+FROM range(1, 501) t(i)
+
+# ===--------------------------------------------------------------------===
+# Every binder error carries the function name
+# ===--------------------------------------------------------------------===
+
+statement error
+SELECT * FROM isolation_forest_mv('sensor_readings', ' , ')
+----
+isolation_forest_mv: column_names must contain at least one column
+
+statement error
+SELECT * FROM isolation_forest_mv('sensor_readings', 'temperature_c, humidity_pct', 50, 256, 0.05, 'summary', 42, 0)
+----
+isolation_forest_mv: ndim must be >= 1
+
+statement error
+SELECT * FROM isolation_forest_mv('sensor_readings', 'temperature_c, humidity_pct', 50, 256, 0.05, 'summary', 42, 2, 'gaussian')
+----
+isolation_forest_mv: coef_type must be 'uniform' or 'normal'
+
+statement error
+SELECT * FROM isolation_forest_mv('sensor_readings', 'temperature_c, humidity_pct', 50, 256, 0.05, 'summary', 42, 1, NULL, 'mahalanobis')
+----
+isolation_forest_mv: scoring_metric must be 'depth', 'density', or 'adj_depth'
+
+statement error
+SELECT * FROM dbscan_mv('sensor_readings', '', 1.0, 5)
+----
+dbscan_mv: column_names must contain at least one column
+
+statement error
+SELECT * FROM outlier_tree('sensor_readings', ' ', 'summary')
+----
+outlier_tree: columns must contain at least one column
+
+statement error
+SELECT * FROM outlier_tree('sensor_readings', 'temperature_c', 'summary', 0, 0.01, 25, 75, 2.67, 8.0)
+----
+outlier_tree: max_depth must be >= 1 and <= 1024
+
+statement error
+SELECT * FROM outlier_tree('sensor_readings', 'temperature_c', 'summary', 4, 1.5, 25, 75, 2.67, 8.0)
+----
+outlier_tree: max_perc_outliers must be between 0 and 1
+
+statement error
+SELECT * FROM outlier_tree('sensor_readings', 'temperature_c', 'summary', 4, 0.01, 0, 75, 2.67, 8.0)
+----
+outlier_tree: min_size_numeric must be >= 1
+
+statement error
+SELECT * FROM outlier_tree('sensor_readings', 'temperature_c', 'summary', 4, 0.01, 25, 0, 2.67, 8.0)
+----
+outlier_tree: min_size_categ must be >= 1
+
+statement error
+SELECT * FROM outlier_tree('sensor_readings', 'temperature_c', 'summary', 4, 0.01, 25, 75, 0.0, 8.0)
+----
+outlier_tree: z_norm must be positive
+
+statement error
+SELECT * FROM outlier_tree('sensor_readings', 'temperature_c', 'summary', 4, 0.01, 25, 75, 2.67, -1.0)
+----
+outlier_tree: z_outlier must be positive
