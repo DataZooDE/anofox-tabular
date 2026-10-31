@@ -320,10 +320,62 @@ money_is_zero(money MONEY) -> BOOLEAN
 ### `money_in_range`
 
 Canonical name: `anofox_tab_money_in_range`. Scalar function. `true` when
-`min <= amount <= max`.
+`min <= amount <= max`. The bounds follow the same rules as the
+[check functions](07-data-quality.md):
 
 ```text
 money_in_range(money MONEY, min DOUBLE, max DOUBLE) -> BOOLEAN
+```
+
+- A `NULL` bound means no bound on that side: `money_in_range(m, 0, NULL)` is `amount >= 0`,
+  and with both bounds `NULL` the result is `true` for every non-`NULL` money value.
+- A `NULL` money value returns `NULL`.
+- `min > max` and a `NaN` bound raise an `Invalid Input Error`. The function is fallible, so
+  `TRY(money_in_range(...))` returns `NULL` for that row instead.
+
+Open invoices against optional limits per customer (a customer without a credit limit has
+`NULL` in `credit_limit`):
+
+```sql
+CREATE TABLE open_invoices AS
+SELECT invoice_no, money(amount, currency) AS amount, min_order, credit_limit
+FROM (VALUES ('RE-2026-0101', 1250.00, 'EUR', 50.00, 5000.00),
+             ('RE-2026-0102', 7800.50, 'EUR', 50.00, 5000.00),
+             ('RE-2026-0103',   19.90, 'EUR', 50.00, NULL),
+             ('RE-2026-0104', 9999.99, 'EUR', NULL,  NULL))
+     t(invoice_no, amount, currency, min_order, credit_limit);
+
+SELECT invoice_no, min_order, credit_limit,
+       money_in_range(amount, min_order, credit_limit) AS within_limits
+FROM open_invoices ORDER BY invoice_no;
+```
+
+```text
+┌──────────────┬──────────────┬──────────────┬───────────────┐
+│  invoice_no  │  min_order   │ credit_limit │ within_limits │
+│   varchar    │ decimal(4,2) │ decimal(6,2) │    boolean    │
+├──────────────┼──────────────┼──────────────┼───────────────┤
+│ RE-2026-0101 │        50.00 │      5000.00 │ true          │
+│ RE-2026-0102 │        50.00 │      5000.00 │ false         │
+│ RE-2026-0103 │        50.00 │         NULL │ false         │
+│ RE-2026-0104 │         NULL │         NULL │ true          │
+└──────────────┴──────────────┴──────────────┴───────────────┘
+```
+
+```sql
+SELECT money_in_range(money(100, 'EUR'), 5000, 50);
+```
+
+```text
+Invalid Input Error: money_in_range: min (5000.0) must not be greater than max (50.0)
+```
+
+```sql
+SELECT money_in_range(money(100, 'EUR'), 'nan'::DOUBLE, 500);
+```
+
+```text
+Invalid Input Error: money_in_range: min must not be NaN (NULL means no lower bound)
 ```
 
 ### `money_same_currency`

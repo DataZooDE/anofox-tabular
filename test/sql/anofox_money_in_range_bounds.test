@@ -1,0 +1,117 @@
+# name: test/sql/anofox_money_in_range_bounds.test
+# description: money_in_range follows the bound rules of the check functions (issue #125):
+#              a NULL bound means no bound on that side, min > max and a NaN bound raise an
+#              error (TRY() yields NULL), a NULL money value stays NULL.
+# group: [anofox_tabular]
+
+require anofox_tabular
+
+statement ok
+LOAD anofox_tabular;
+
+statement ok
+SET anofox_tab_trace_level = 'warn';
+
+# Open invoices checked against the customer's credit limit; not every customer has a
+# minimum order value or a credit limit (NULL = no limit on that side).
+statement ok
+CREATE TABLE open_invoices AS
+SELECT invoice_no, money(amount, currency) AS amount, min_order, credit_limit
+FROM (VALUES
+    ('RE-2026-0101', 1250.00, 'EUR', 50.00,  5000.00),
+    ('RE-2026-0102', 7800.50, 'EUR', 50.00,  5000.00),
+    ('RE-2026-0103',   19.90, 'EUR', 50.00,  NULL),
+    ('RE-2026-0104', 9999.99, 'EUR', NULL,   NULL),
+    ('RE-2026-0105', -120.00, 'EUR', NULL,   2500.00),
+    ('RE-2026-0106', 2600.00, 'CHF', NULL,   2500.00),
+    ('RE-2026-0107',   75.00, 'CHF', 50.00,  NULL),
+    ('RE-2026-0108',    NULL, 'EUR', 50.00,  5000.00)
+) t(invoice_no, amount, currency, min_order, credit_limit);
+
+query TT
+SELECT invoice_no, money_in_range(amount, min_order, credit_limit) AS within_limits
+FROM open_invoices ORDER BY invoice_no;
+----
+RE-2026-0101	true
+RE-2026-0102	false
+RE-2026-0103	false
+RE-2026-0104	true
+RE-2026-0105	true
+RE-2026-0106	false
+RE-2026-0107	true
+RE-2026-0108	NULL
+
+# Constant NULL bounds: one side open ...
+query TTT
+SELECT money_in_range(money(0.00, 'EUR'), 0, NULL),
+       money_in_range(money(-0.01, 'EUR'), 0, NULL),
+       money_in_range(money(1000000.00, 'EUR'), NULL, 1000000)
+----
+true	false	true
+
+# ... both sides open: true for every non-NULL money value
+query TT
+SELECT money_in_range(money(-987654.321, 'USD'), NULL, NULL),
+       anofox_tab_money_in_range(money(42, 'JPY'), NULL, NULL)
+----
+true	true
+
+# A NULL money value stays NULL, also with open bounds
+query TT
+SELECT money_in_range(NULL, 0, 100), money_in_range(NULL, NULL, NULL)
+----
+NULL	NULL
+
+# min > max is an error, worded like the check functions
+statement error
+SELECT money_in_range(money(100, 'EUR'), 5000, 50);
+----
+money_in_range: min (5000.0) must not be greater than max (50.0)
+
+statement error
+SELECT anofox_tab_money_in_range(money(100, 'EUR'), 0.02, 0.01);
+----
+money_in_range: min (0.02) must not be greater than max (0.01)
+
+# A NaN bound is an error (NULL is the way to leave a side open)
+statement error
+SELECT money_in_range(money(100, 'EUR'), 'nan'::DOUBLE, 500);
+----
+money_in_range: min must not be NaN (NULL means no lower bound)
+
+statement error
+SELECT money_in_range(money(100, 'EUR'), 0, 'nan'::DOUBLE);
+----
+money_in_range: max must not be NaN (NULL means no upper bound)
+
+# The error also comes from a bound column, per row
+statement error
+SELECT invoice_no, money_in_range(amount, credit_limit, min_order) FROM open_invoices;
+----
+money_in_range: min (5000.0) must not be greater than max (50.0)
+
+# The function is fallible: TRY() turns the error into NULL for that row only
+query TT
+SELECT invoice_no, TRY(money_in_range(amount, credit_limit, min_order)) AS swapped
+FROM open_invoices ORDER BY invoice_no;
+----
+RE-2026-0101	NULL
+RE-2026-0102	NULL
+RE-2026-0103	true
+RE-2026-0104	true
+RE-2026-0105	false
+RE-2026-0106	true
+RE-2026-0107	false
+RE-2026-0108	NULL
+
+query T
+SELECT TRY(money_in_range(money(100, 'EUR'), 'nan'::DOUBLE, 500));
+----
+NULL
+
+# Infinite bounds keep their arithmetic meaning
+query TT
+SELECT money_in_range(money(100, 'EUR'), '-inf'::DOUBLE, 'inf'::DOUBLE),
+       money_in_range(money(100, 'EUR'), 'inf'::DOUBLE, 'inf'::DOUBLE)
+----
+true	false

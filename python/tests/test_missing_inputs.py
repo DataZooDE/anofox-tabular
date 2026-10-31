@@ -83,7 +83,9 @@ class TestMoneyWithAMissingOperand:
     def test_missing_factor_or_bound(self, conn):
         from anofox import money
         assert money.money_multiply(conn, self.EUR, float("nan")) is None
-        assert money.money_in_range(conn, self.EUR, None, 20) is None
+        # A missing bound is no bound on that side (like SQL NULL)
+        assert money.money_in_range(conn, self.EUR, None, 20) is True
+        assert money.money_in_range(conn, None, 0, 20) is None
 
     def test_present_values_still_work(self, conn):
         from anofox import money
