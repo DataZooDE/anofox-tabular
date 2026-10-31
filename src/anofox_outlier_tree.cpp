@@ -952,6 +952,7 @@ static unique_ptr<FunctionData> OutlierTreeBind(ClientContext &context, TableFun
             }
             resolved_names.push_back(std::move(column.name));
         }
+        RejectDuplicateColumns("outlier_tree", resolved_names);
         column_names = std::move(resolved_names);
     }
 

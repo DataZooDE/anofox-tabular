@@ -1162,12 +1162,12 @@ SELECT COUNT(*) FROM isolation_forest_mv('eif_2d',
 ----
 6
 
-# Test 103: ndim > n_features (should use min(ndim, n_features))
-query I
+# Test 103: ndim > number of columns is a binder error (issue #125; it was clamped silently)
+statement error
 SELECT outlier_count FROM isolation_forest_mv('eif_2d',
     'x,y', 100, 256, 0.1, 'summary', 42, 5)
 ----
-1
+isolation_forest_mv: ndim (5) must not exceed the number of columns (2)
 
 # Test 104: coef_type='normal' works
 query I

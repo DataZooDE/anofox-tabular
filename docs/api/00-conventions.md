@@ -170,6 +170,9 @@ unknown column name is an error naming the column and the table; `run_checks` re
 `error` row of that check; `schema_check` reports a missing required column as `fail`. An
 unknown table is an error such as `null_rate: table 'ordrs' does not exist` in the data quality
 checks, the profiling, anomaly detection and PII table functions, and an empty name is `<function>: table_name must not be empty`.
+In the feature columns of `isolation_forest_mv`, `dbscan_mv` and `outlier_tree` a column listed
+twice, also in another spelling (`'amount, Amount'`), is a binder error such as
+`isolation_forest_mv: column 'amount' is listed more than once`: it would count as two dimensions.
 
 The table, column and key arguments of a table function are required: a `NULL` there is a
 binder error `<function>: <argument> must not be NULL`, also when it comes from a `NULL`

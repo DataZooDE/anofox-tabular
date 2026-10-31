@@ -686,6 +686,7 @@ static vector<string> ResolveFeatureColumns(ClientContext &context, const string
 		}
 		names.push_back(std::move(column.name));
 	}
+	RejectDuplicateColumns(function_name, names);
 	return names;
 }
 
@@ -825,6 +826,12 @@ static unique_ptr<FunctionData> IsolationForestMultivariateBind(ClientContext &c
 		int64_t ndim_val = input.inputs[7].GetValue<int64_t>();
 		if (ndim_val < 1) {
 			throw BinderException("isolation_forest_mv: ndim must be >= 1");
+		}
+		// A hyperplane cannot combine more columns than there are (duplicates are rejected
+		// when the columns are resolved below)
+		if (static_cast<uint64_t>(ndim_val) > column_names.size()) {
+			throw BinderException("isolation_forest_mv: ndim (%s) must not exceed the number of columns (%s)",
+			                      std::to_string(ndim_val), std::to_string(column_names.size()));
 		}
 		ndim = static_cast<size_t>(ndim_val);
 	}
