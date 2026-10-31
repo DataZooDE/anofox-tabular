@@ -1,0 +1,84 @@
+# name: test/sql/anofox_pii_phone_hash_region.test
+# description: The PHONE hash and deep validation read anofox_tab_phonenumber_default_region
+#              once per statement, like the other PII settings (issue #125): a SET between
+#              two statements takes effect with the next statement, for scalars and for
+#              pii_audit_table.
+# group: [sql]
+
+require anofox_tabular
+
+statement ok
+LOAD anofox_tabular;
+
+statement ok
+CREATE TABLE callbacks AS SELECT * FROM (VALUES
+    (1, '030 1234567'),
+    (2, '+49 30 1234567'),
+    (3, '212-555-0123')
+) t(id, phone);
+
+# Default region DE: the national Berlin number hashes like its +49 form
+statement ok
+SET anofox_tab_phonenumber_default_region = 'DE';
+
+query IT
+SELECT id, pii_mask_value(phone, 'PHONE', 'hash') = left(sha256('+49301234567'), 16)
+FROM callbacks ORDER BY id;
+----
+1	true
+2	true
+3	false
+
+# Default region US from the next statement on: the same national number is no valid
+# US number and is hashed by its digits, the +49 form keeps its hash
+statement ok
+SET anofox_tab_phonenumber_default_region = 'US';
+
+query ITT
+SELECT id,
+       pii_mask_value(phone, 'PHONE', 'hash') = left(sha256('+49301234567'), 16),
+       pii_mask_value(phone, 'PHONE', 'hash') = left(sha256('0301234567'), 16)
+FROM callbacks ORDER BY id;
+----
+1	false	true
+2	true	false
+3	false	false
+
+# pii_mask hashes detected numbers with the region of its statement, too
+query T
+SELECT pii_mask('Rückruf 030 1234567', 'hash') = 'Rückruf ' || left(sha256('0301234567'), 16);
+----
+true
+
+statement ok
+SET anofox_tab_phonenumber_default_region = 'DE';
+
+query T
+SELECT pii_mask('Rückruf 030 1234567', 'hash') = 'Rückruf ' || left(sha256('+49301234567'), 16);
+----
+true
+
+# Deep validation judges a national number with the region of its statement: the mobile
+# number with an extra digit group is too long for DE, but a DE-format number cannot be
+# judged with the region US and is kept
+statement ok
+SET anofox_pii_deep_validation = true;
+
+query I
+SELECT len(pii_detect_phones('Fax 0171 1234567 8901'));
+----
+0
+
+statement ok
+SET anofox_tab_phonenumber_default_region = 'US';
+
+query I
+SELECT len(pii_detect_phones('Fax 0171 1234567 8901'));
+----
+1
+
+statement ok
+RESET anofox_pii_deep_validation;
+
+statement ok
+RESET anofox_tab_phonenumber_default_region;

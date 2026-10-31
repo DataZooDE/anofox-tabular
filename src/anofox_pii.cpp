@@ -358,6 +358,10 @@ std::string MaskWordKeepingPrefix(const std::string &word, size_t keep) {
     return Utf8Prefix(word, keep) + std::string(length - keep, '*');
 }
 
+// anofox_tab_phonenumber_default_region of the running statement (defined
+// with the statement configuration below)
+std::string ActivePhoneDefaultRegion();
+
 // E.164 form of a phone number ("+49301234567") as the phone module parses it:
 // a number with +CC or the default region's international prefix (0049...) for
 // that country, a national number (030 ...) for
@@ -365,7 +369,7 @@ std::string MaskWordKeepingPrefix(const std::string &word, size_t keep) {
 // the number as valid.
 std::string PhoneToE164(const std::string &text) {
     try {
-        const auto parts = phonenumber::PhoneNumberManager::Instance().Parse(text, "");
+        const auto parts = phonenumber::PhoneNumberManager::Instance().Parse(text, "", ActivePhoneDefaultRegion());
         if (parts.valid && parts.matches_valid_pattern && parts.country_code > 0 &&
             !parts.national_number.empty()) {
             return "+" + std::to_string(parts.country_code) + parts.national_number;
@@ -752,6 +756,7 @@ PIIConfigSnapshot PIIConfig::Snapshot() const {
     snapshot.deep_validation = deep_validation_;
     snapshot.require_checksum = require_checksum_;
     snapshot.ner_required = NERModelManager::Instance().IsRequired();
+    snapshot.phone_default_region = phonenumber::PhoneNumberManager::Instance().GetDefaultRegion();
     return snapshot;
 }
 
@@ -788,6 +793,12 @@ private:
 
 bool DeepValidationEnabled() {
     return active_config ? active_config->deep_validation : PIIConfig::Get().IsDeepValidationEnabled();
+}
+
+// The statement's snapshot of anofox_tab_phonenumber_default_region; empty
+// (the phone module's current default) outside of a statement configuration
+std::string ActivePhoneDefaultRegion() {
+    return active_config ? active_config->phone_default_region : std::string();
 }
 
 } // namespace
@@ -2417,7 +2428,8 @@ bool PhoneRecognizer::PassesDeepValidation(const std::string &text) {
     // which has no trunk prefix 0) cannot be judged and is kept, so deep
     // validation never unmasks a number just because the region differs.
     auto &manager = phonenumber::PhoneNumberManager::Instance();
-    const auto parts = manager.Parse(text, "");
+    const auto default_region = ActivePhoneDefaultRegion();
+    const auto parts = manager.Parse(text, "", default_region);
     if (parts.valid) {
         return true;
     }
@@ -2434,7 +2446,7 @@ bool PhoneRecognizer::PassesDeepValidation(const std::string &text) {
     }
     const bool international = !text.empty() && text[0] == '+';
     if (!international) {
-        const auto region = manager.EffectiveDefaultRegion("");
+        const auto region = manager.EffectiveDefaultRegion(default_region);
         const auto *metadata = phonenumber::GetMetadataForRegion(region);
         const bool region_idd = metadata && !metadata->international_prefix.empty() &&
                                 digits.compare(0, metadata->international_prefix.size(), metadata->international_prefix) == 0;
@@ -3683,6 +3695,8 @@ std::string PIIEngine::Mask(
     const std::vector<PIIType> &types,
     const PIIConfigSnapshot &config
 ) const {
+    // The HASH strategy reads the phone default region of `config`
+    const ActiveConfigScope active_scope(config);
     // Detect() returns non-overlapping matches sorted by position, so each
     // region of the input is replaced exactly once.
     auto matches = Detect(text, types, config);
@@ -4197,6 +4211,9 @@ struct PIIMaskColumnFunction {
 struct PIIMaskValueFunction {
     static void Execute(DataChunk &args, ExpressionState &state, Vector &result) {
         auto &engine = PIIEngine::Instance();
+        // The phone default region of the HASH strategy, as of the statement start
+        const auto config = StatementPIIConfig(StatementContext(state));
+        const ActiveConfigScope active_scope(config);
 
         TernaryExecutor::Execute<string_t, string_t, string_t, string_t>(
             args.data[0], args.data[1], args.data[2], result, args.size(),

@@ -293,7 +293,7 @@ so hashed columns can still be joined and counted:
 
 | Type | Normalisation before hashing |
 |------|------------------------------|
-| `PHONE` | The E.164 form from the [phone module](03-phone.md) (`+49301234567`): a number with `+` or `00` and a country code for that country, a national number (`030 1234567`) for `anofox_tab_phonenumber_default_region`. A number the phone module does not accept as valid is hashed like a credit card number: separators removed, a leading `+` kept |
+| `PHONE` | The E.164 form from the [phone module](03-phone.md) (`+49301234567`): a number with `+` or `00` and a country code for that country, a national number (`030 1234567`) for `anofox_tab_phonenumber_default_region`, which a statement reads once at its start like the PII settings (a `SET` takes effect with the next statement). A number the phone module does not accept as valid is hashed like a credit card number: separators removed, a leading `+` kept |
 | `CREDIT_CARD`, `US_SSN`, `DE_TAX_ID` | Spaces, `-`, `.`, `/`, `(` and `)` removed (a leading `+` is kept) |
 | `IBAN`, `UK_NINO`, `DE_SVNR`, `DE_KVNR`, `DE_ID_CARD` | Same separators removed, upper-cased |
 | `EMAIL` | Lower-cased |
