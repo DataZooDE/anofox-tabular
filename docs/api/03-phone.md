@@ -368,6 +368,32 @@ FROM (VALUES ('E164'), ('INTERNATIONAL'), ('national'), ('RFC3966')) t(f);
 └───────────────┴─────────────────────┘
 ```
 
+Mexican numbers follow the 2019 numbering reform: every number has 10 digits and there is no
+national prefix, so `NATIONAL` is `55 1234 5678`. The abolished prefixes that older address
+books still contain are dropped when parsing: `01` and `02` (long distance), `044` and `045`
+(calls to mobiles) and the mobile token `1` after `+52` (`+52 1 55 1234 5678`). libphonenumber
+parsed them the same way from v8.10.17 (2019) to v8.13.37; since v8.13.38 (2024) it rejects them
+as too long. Mexican fixed-line and mobile ranges are the same, so the type is
+`fixed_line_or_mobile`.
+
+```sql
+SELECT phone, phonenumber_format(phone, 'MX', 'E164') AS e164,
+       phonenumber_format(phone, 'MX', 'NATIONAL') AS national, (phonenumber_parse(phone, 'MX')).type AS type
+FROM (VALUES ('55 5208 3000'), ('01 55 5208 3000'), ('044 55 1234 5678'), ('+52 1 33 3614 1500')) t(phone);
+```
+
+```text
+┌────────────────────┬───────────────┬──────────────┬──────────────────────┐
+│       phone        │     e164      │   national   │         type         │
+│      varchar       │    varchar    │   varchar    │       varchar        │
+├────────────────────┼───────────────┼──────────────┼──────────────────────┤
+│ 55 5208 3000       │ +525552083000 │ 55 5208 3000 │ fixed_line_or_mobile │
+│ 01 55 5208 3000    │ +525552083000 │ 55 5208 3000 │ fixed_line_or_mobile │
+│ 044 55 1234 5678   │ +525512345678 │ 55 1234 5678 │ fixed_line_or_mobile │
+│ +52 1 33 3614 1500 │ +523336141500 │ 33 3614 1500 │ fixed_line_or_mobile │
+└────────────────────┴───────────────┴──────────────┴──────────────────────┘
+```
+
 A number of a possible length that is not in an assigned range is not formatted either:
 
 ```sql
