@@ -294,16 +294,6 @@ Out of Range Error: Money multiplication result is out of range for DECIMAL(18,3
 and adding amounts of different currencies would not be meaningful anyway.
 
 ```sql
-SELECT sum(amount) FROM invoices;
-```
-
-```text
-Binder Error: No function matches the given name and argument types 'sum(STRUCT(amount DECIMAL(18,3), currency VARCHAR))'. You might need to add explicit type casts.
-```
-
-Group by the currency and sum the exact `DECIMAL` amounts instead:
-
-```sql
 CREATE TABLE invoices AS
 SELECT invoice_no, money(amount, currency) AS amount
 FROM (VALUES ('RE-2026-0101', 1250.00, 'EUR'), ('RE-2026-0102', 7800.50, 'EUR'),
@@ -311,6 +301,29 @@ FROM (VALUES ('RE-2026-0101', 1250.00, 'EUR'), ('RE-2026-0102', 7800.50, 'EUR'),
              ('RE-2026-0105', 75.00, 'CHF'), ('RE-2026-0106', 480.25, 'GBP'))
      t(invoice_no, amount, currency);
 
+SELECT sum(amount) FROM invoices;
+```
+
+```text
+Binder Error: No function matches the given name and argument types 'sum(STRUCT(amount DECIMAL(18,3), currency VARCHAR))'. You might need to add explicit type casts.
+	Candidate functions:
+	sum(arg DECIMAL) -> DECIMAL
+	sum(arg BOOLEAN, /) -> HUGEINT
+	sum(arg SMALLINT, /) -> HUGEINT
+	sum(arg INTEGER, /) -> HUGEINT
+	sum(arg BIGINT, /) -> HUGEINT
+	sum(arg HUGEINT, /) -> HUGEINT
+	sum(arg DOUBLE, /) -> DOUBLE
+	sum(arg BIGNUM, /) -> BIGNUM
+
+
+LINE 1: SELECT sum(amount) FROM invoices;
+               ^^^^^^^^^^^
+```
+
+Group by the currency and sum the exact `DECIMAL` amounts instead:
+
+```sql
 SELECT money_currency(amount) AS currency,
        count(*) AS invoices,
        sum(money_amount(amount)) AS total

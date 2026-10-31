@@ -241,7 +241,15 @@ SELECT * FROM isolation_forest_mv('readings', 'temperature, humidity', 100, 256,
 
 ```text
 Binder Error: isolation_forest_mv: column 'temperature' is listed more than once
+-> Unexpected? Please report it: https://github.com/DataZooDE/anofox-tabular/issues
+
+LINE 1: SELECT * FROM isolation_forest_mv('readings', 'temperature, humidity,...
+                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 Binder Error: isolation_forest_mv: ndim (3) must not exceed the number of columns (2)
+-> Unexpected? Please report it: https://github.com/DataZooDE/anofox-tabular/issues
+
+LINE 1: SELECT * FROM isolation_forest_mv('readings', 'temperature, humidity'...
+                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 ```
 
 **Output, `'summary'` mode** (one row): `status`, `outlier_count`, `total_count` as for
