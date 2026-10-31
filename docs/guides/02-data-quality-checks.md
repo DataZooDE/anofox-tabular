@@ -560,7 +560,9 @@ INSERT INTO nightly_results SELECT * FROM run_checks('nightly_checks.csv');
 
 Keep in mind what the checks do not cover:
 
-- `schema_check` compares column names only, not their types. A column whose type changed from
+- `schema_check` (the direct function, or a suite row with `check_type` `schema_check` and
+  `params` `{"columns": [...]}`, which fails when a listed column is missing) compares column
+  names only, not their types. A column whose type changed from
   `DOUBLE` to `VARCHAR` still passes; add a `compliance` or `agg` check on it if the type
   matters.
 - A check with nothing to evaluate passes trivially. For a check whose `filter_expr` matches

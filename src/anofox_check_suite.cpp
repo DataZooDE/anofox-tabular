@@ -62,6 +62,8 @@ struct CheckSpec {
 	string metric_column;
 	string window_days;
 	string k;
+	// schema_check: params.columns, the columns the table must have
+	vector<string> schema_columns;
 	// reference_date / reference_time as validated SQL (a DATE '...' / TIMESTAMP '...' literal in
 	// UTC, or the UTC date arithmetic of a ${today}-style token), empty when absent
 	string reference_date_sql;
@@ -99,15 +101,18 @@ static const vector<string> *ParamsKeysFor(const string &check_type) {
 	    {"rel_count_change", {"date_column", "count_column", "window_days", "reference_date", "fill_missing_days"}},
 	    {"metric_anomaly_iqr", {"date_column", "metric_column", "window_days", "k", "reference_date"}},
 	    {"rolling_values_in_set", {"date_column", "allowed_values", "window_days", "reference_date"}},
+	    {"schema_check", {"columns"}},
 	};
 	auto entry = KEYS.find(check_type);
 	return entry == KEYS.end() ? nullptr : &entry->second;
 }
 
-// The params keys every check type accepts
-static const vector<string> &CommonParamsKeys() {
+// The params keys every check type that evaluates rows accepts; schema_check looks at the
+// columns only, so fail_on_empty does not apply to it
+static const vector<string> &CommonParamsKeys(const string &check_type) {
 	static const vector<string> KEYS = {"fail_on_empty"};
-	return KEYS;
+	static const vector<string> NONE;
+	return check_type == "schema_check" ? NONE : KEYS;
 }
 
 // A keyword of the checks table (check_type, params.agg, params.mode) as it is compared:
@@ -123,7 +128,6 @@ static string NormalizeKeyword(string text) {
 static string DirectOnlyCheckTypeMessage(const string &check_type) {
 	static const vector<string> DIRECT_ONLY = {"zscore",
 	                                           "iqr",
-	                                           "schema_check",
 	                                           "rel_count_change_events",
 	                                           "metric_anomaly_iqr_events",
 	                                           "rolling_values_in_set_events"};
@@ -149,7 +153,7 @@ static void RequireSupportedCheckType(const CheckSpec &spec) {
 	throw BinderException("run_checks: unknown check_type '" + spec.check_type + "' in check '" + spec.check_name +
 	                      "' (supported: volume, null_rate, distinct_count, regex_match, values_in_set, agg, "
 	                      "duplicate_count, occurrence, match_rate, compliance, freshness, rel_count_change, "
-	                      "metric_anomaly_iqr, rolling_values_in_set)");
+	                      "metric_anomaly_iqr, rolling_values_in_set, schema_check)");
 }
 
 // A misspelled key (e.g. 'refernce_date') would otherwise be ignored silently and the check
@@ -160,7 +164,8 @@ static void ValidateParamsKeys(const CheckSpec &spec, const vector<string> &keys
 		return;
 	}
 	vector<string> all_valid = *valid;
-	all_valid.insert(all_valid.end(), CommonParamsKeys().begin(), CommonParamsKeys().end());
+	auto &common = CommonParamsKeys(spec.check_type);
+	all_valid.insert(all_valid.end(), common.begin(), common.end());
 	vector<string> unknown;
 	for (auto &key : keys) {
 		if (std::find(all_valid.begin(), all_valid.end(), key) == all_valid.end()) {
@@ -362,6 +367,27 @@ static void ParseCheckParams(CheckSpec &spec, const string &params_json) {
 	spec.metric_column = get_scalar("metric_column");
 	spec.window_days = get_scalar("window_days");
 	spec.k = get_scalar("k");
+	// schema_check: a JSON array of names or a comma-separated string (the names as they are,
+	// matched case-insensitively later)
+	auto *schema_columns = yyjson_obj_get(root, "columns");
+	if (schema_columns && !yyjson_is_null(schema_columns)) {
+		const string columns_error = "run_checks: check '" + spec.check_name +
+		                             "': params.columns must be a string or a JSON array of strings";
+		if (yyjson_is_str(schema_columns)) {
+			spec.schema_columns = ParseCommaSeparatedColumns(yyjson_get_str(schema_columns));
+		} else if (yyjson_is_arr(schema_columns)) {
+			size_t idx, max;
+			yyjson_val *element;
+			yyjson_arr_foreach(schema_columns, idx, max, element) {
+				if (!yyjson_is_str(element)) {
+					throw BinderException(columns_error);
+				}
+				spec.schema_columns.push_back(yyjson_get_str(element));
+			}
+		} else {
+			throw BinderException(columns_error);
+		}
+	}
 	// A date token (${yesterday}, ${today-N}, ...) is the UTC date of the run; reference_time
 	// then is midnight UTC of that date
 	auto reference_date = get_scalar("reference_date");
@@ -1450,6 +1476,38 @@ static CheckBranch BuildCheckBranch(ClientContext &context, const CheckSpec &spe
 		    ", v) THEN 1 ELSE 0 END) AS DOUBLE) / NULLIF(COUNT(*), 0) AS value FROM win";
 		AddSkippedDates(branch, spec, date);
 		return branch;
+	} else if (spec.check_type == "schema_check") {
+		// The missing columns are known at bind time: the schema of the table does not change
+		// while the suite query runs. Matched case-insensitively, like DuckDB identifiers and
+		// the direct schema_check(); each missing name is listed once, in the order given.
+		auto probe = BindProbe(context, "SELECT * FROM " + table_ref + " LIMIT 0");
+		auto available = duckdb_compat::Strs(probe.names);
+		std::vector<string> missing;
+		auto contains = [](const std::vector<string> &names, const string &name) {
+			return std::any_of(names.begin(), names.end(),
+			                   [&](const string &candidate) { return StringUtil::CIEquals(candidate, name); });
+		};
+		for (auto &column : spec.schema_columns) {
+			if (!contains(available, column) && !contains(missing, column)) {
+				missing.push_back(column);
+			}
+		}
+		string missing_list = "[]::VARCHAR[]";
+		if (!missing.empty()) {
+			vector<string> literals;
+			for (auto &column : missing) {
+				literals.push_back("'" + EscapeSqlStringLiteral(column) + "'");
+			}
+			missing_list = "[" + StringUtil::Join(literals, ", ") + "]::VARCHAR[]";
+		}
+		AnofoxTrace(AnofoxLogLevel::Debug, "check_suite: check '" + spec.check_name + "': " +
+		                                       std::to_string(missing.size()) + " of " +
+		                                       std::to_string(spec.schema_columns.size()) + " column(s) missing");
+		branch.inner_sql = "SELECT CAST(" + std::to_string(missing.size()) + " AS DOUBLE) AS value, " + missing_list +
+		                   " AS __missing";
+		branch.message_suffixes.push_back("CASE WHEN len(__c.__missing) > 0 THEN '; missing columns: ''' || "
+		                                  "array_to_string(__c.__missing, ''', ''') || '''' ELSE '' END");
+		return branch;
 	} else {
 		RequireSupportedCheckType(spec);
 		throw InternalException("run_checks: check_type '%s' has no branch", spec.check_type);
@@ -1673,7 +1731,7 @@ static vector<string> ReferencedColumns(const CheckSpec &spec) {
 		                                           : ParseCommaSeparatedColumns(spec.left_keys)) {
 			add(column);
 		}
-	} else if (type != "volume" && type != "compliance" && type != "rel_count_change") {
+	} else if (type != "volume" && type != "compliance" && type != "rel_count_change" && type != "schema_check") {
 		add(spec.column_name);
 	}
 	add(spec.identifier_column);
@@ -1713,6 +1771,30 @@ static void ValidateCheckColumns(ClientContext &context, const CheckSpec &spec) 
 	}
 }
 
+// schema_check asserts columns, not rows: it takes its columns from params.columns, has no
+// column_name, filter_expr or identifier_column (rejected through SupportsIdentifier), and
+// without thresholds fails when any column is missing (upper_threshold 0)
+static void ValidateSchemaCheck(CheckSpec &spec) {
+	if (spec.check_type != "schema_check") {
+		return;
+	}
+	if (!spec.column_name.empty()) {
+		throw BinderException("run_checks: check '" + spec.check_name +
+		                      "' (schema_check): column_name is not used by schema_check (list the required "
+		                      "columns in params.columns)");
+	}
+	if (!spec.filter_expr.empty()) {
+		throw BinderException(
+		    "filter_expr is not supported for check_type 'schema_check' (it checks the columns, not the rows)");
+	}
+	if (spec.schema_columns.empty()) {
+		throw BinderException("run_checks: check '" + spec.check_name + "' (schema_check) requires params.columns");
+	}
+	if (spec.lower_threshold.IsNull() && spec.upper_threshold.IsNull()) {
+		spec.upper_threshold = Value::DOUBLE(0);
+	}
+}
+
 static bool IsRateCheck(const string &check_type) {
 	return check_type == "null_rate" || check_type == "regex_match" || check_type == "values_in_set" ||
 	       check_type == "compliance" || check_type == "match_rate" || check_type == "rolling_values_in_set";
@@ -1749,6 +1831,7 @@ static string BuildValidatedCheckSQL(ClientContext &context, CheckSpec spec) {
 	if (!spec.config_error.empty()) {
 		throw BinderException(spec.config_error);
 	}
+	ValidateSchemaCheck(spec);
 	if (!TargetTableExists(context, spec.table_name)) {
 		throw BinderException("target table '%s' does not exist%s", spec.table_name,
 		                      QuotedTableNameHint(spec.table_name));

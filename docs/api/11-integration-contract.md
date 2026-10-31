@@ -130,10 +130,10 @@ One row per date on which a time-aware check fails or warns. Passing dates are n
 
 The one-row checks (`volume`, `null_rate`, `regex_match`, `agg_check`, ...) keep their own result
 columns and are not tagged. To get them in the `check` schema, put them in a checks table and run
-it with [`run_checks`](07-data-quality.md#run_checks). It supports 14 check types: `volume`,
+it with [`run_checks`](07-data-quality.md#run_checks). It supports 15 check types: `volume`,
 `null_rate`, `distinct_count`, `regex_match`, `values_in_set`, `agg`, `duplicate_count`,
 `occurrence`, `match_rate`, `compliance`, `freshness`, `rel_count_change`,
-`metric_anomaly_iqr` and `rolling_values_in_set`. `zscore`, `iqr` and `schema_check` are not
+`metric_anomaly_iqr`, `rolling_values_in_set` and `schema_check`. `zscore` and `iqr` are not
 available in a suite.
 
 A checks table (TEMP tables work too):

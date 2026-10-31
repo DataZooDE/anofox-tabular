@@ -1,5 +1,5 @@
 # name: test/sql/anofox_check_temporal.test
-# description: Time-aware checks (rel_count_change, metric_anomaly_iqr, rolling_values_in_set)
+# description: Time-aware checks (rel_count_change, metric_anomaly_iqr, rolling_values_in_set, schema_check)
 #              against a realistic daily order feed. Reference dates are always explicit so the
 #              tests are deterministic.
 # group: [anofox_tabular]

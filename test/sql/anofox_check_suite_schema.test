@@ -3,7 +3,8 @@
 #              column is named (no binder error leaking the internal query), the optional
 #              columns may be left out (they default to NULL / false), a TEMP checks table works,
 #              and a check type that exists only as a direct
-#              function (zscore, iqr, schema_check, ...) is reported as such, not as a typo.
+#              function (zscore, iqr, ...) is reported as such, not as a typo; schema_check is a
+#              suite type (anofox_check_suite_schema_check.test) and needs params.columns.
 # group: [anofox_tabular]
 
 require anofox_tabular
@@ -122,9 +123,9 @@ SELECT check_name, status, message FROM run_checks('direct_only_checks')
 ----
 a_amount_zscore	error	check 'a_amount_zscore' (zscore) cannot run: check type 'zscore' is not supported in run_checks (use the zscore() function)
 b_amount_iqr	error	check 'b_amount_iqr' (iqr) cannot run: check type 'iqr' is not supported in run_checks (use the iqr() function)
-c_schema	error	check 'c_schema' (schema_check) cannot run: check type 'schema_check' is not supported in run_checks (use the schema_check() function)
+c_schema	error	check 'c_schema' (schema_check) cannot run: requires params.columns
 d_avg_amount	error	check 'd_avg_amount' (agg_check) cannot run: check type 'agg_check' is called 'agg' in run_checks (set params to {"agg": "avg"} etc.)
-e_typo	error	check 'e_typo' (null_rat) cannot run: unknown check_type 'null_rat' in check 'e_typo' (supported: volume, null_rate, distinct_count, regex_match, values_in_set, agg, duplicate_count, occurrence, match_rate, compliance, freshness, rel_count_change, metric_anomaly_iqr, rolling_values_in_set)
+e_typo	error	check 'e_typo' (null_rat) cannot run: unknown check_type 'null_rat' in check 'e_typo' (supported: volume, null_rate, distinct_count, regex_match, values_in_set, agg, duplicate_count, occurrence, match_rate, compliance, freshness, rel_count_change, metric_anomaly_iqr, rolling_values_in_set, schema_check)
 
 statement ok
 DROP TABLE minimal_checks; DROP TABLE partial_checks; DROP TABLE checks_without_type; DROP TABLE checks_bare;

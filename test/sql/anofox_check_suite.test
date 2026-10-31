@@ -198,7 +198,7 @@ INSERT INTO dq_checks_bad VALUES ('bad', 'teleport', 'orders', NULL, NULL, NULL,
 query TT
 SELECT status, message FROM run_checks('dq_checks_bad')
 ----
-error	check 'bad' (teleport) cannot run: unknown check_type 'teleport' in check 'bad' (supported: volume, null_rate, distinct_count, regex_match, values_in_set, agg, duplicate_count, occurrence, match_rate, compliance, freshness, rel_count_change, metric_anomaly_iqr, rolling_values_in_set)
+error	check 'bad' (teleport) cannot run: unknown check_type 'teleport' in check 'bad' (supported: volume, null_rate, distinct_count, regex_match, values_in_set, agg, duplicate_count, occurrence, match_rate, compliance, freshness, rel_count_change, metric_anomaly_iqr, rolling_values_in_set, schema_check)
 
 # malicious filter_expr is rejected at bind time (an error row; nothing is executed)
 statement ok

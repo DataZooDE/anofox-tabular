@@ -1,0 +1,121 @@
+# name: test/sql/anofox_check_suite_schema_check.test
+# description: schema_check runs as a run_checks check type (issue #125): a nightly suite gates
+#              on the required columns of a table. value = number of missing columns, a missing
+#              column fails (default upper_threshold 0), the message lists the missing columns,
+#              names match case-insensitively, params.columns is a JSON array or a
+#              comma-separated string, and column_name / identifier_column / filter_expr are
+#              rejected as not applicable.
+# group: [anofox_tabular]
+
+require anofox_tabular
+
+statement ok
+LOAD anofox_tabular
+
+statement ok
+SET anofox_tab_trace_enabled = false
+
+# The CRM export of last night: the loader renamed country_code to Country and dropped phone
+statement ok
+CREATE TABLE crm_customers (customer_id BIGINT, "Email" VARCHAR, full_name VARCHAR, "Country" VARCHAR,
+                            signup_date DATE)
+
+statement ok
+INSERT INTO crm_customers VALUES
+    (10001, 'ana.lopez@example.com',   'Ana Lopez',    'ES', DATE '2026-09-14'),
+    (10002, 'jan.kowalski@example.pl', 'Jan Kowalski', 'PL', DATE '2026-10-02'),
+    (10003, NULL,                      'Mia Becker',   'DE', DATE '2026-10-30')
+
+statement ok
+CREATE VIEW crm_customers_v AS SELECT customer_id, "Email" AS email_address FROM crm_customers
+
+statement ok
+CREATE TABLE nightly_checks (check_name VARCHAR, check_type VARCHAR, table_name VARCHAR, column_name VARCHAR,
+                             params VARCHAR, lower_threshold DOUBLE, upper_threshold DOUBLE,
+                             monitor_only BOOLEAN, identifier_column VARCHAR, filter_expr VARCHAR)
+
+statement ok
+INSERT INTO nightly_checks VALUES
+    -- every required column present ('email' finds "Email")
+    ('a_customers_contact_cols', 'schema_check', 'crm_customers', NULL,
+     '{"columns": ["customer_id", "email", "full_name"]}', NULL, NULL, false, NULL, NULL),
+    -- two required columns are gone
+    ('b_customers_required_cols', 'Schema_Check ', 'crm_customers', NULL,
+     '{"columns": ["customer_id", "email", "country_code", "phone"]}', NULL, NULL, false, NULL, NULL),
+    -- the columns as a comma-separated string
+    ('c_customers_core_cols', 'schema_check', 'crm_customers', NULL,
+     '{"columns": "customer_id, signup_date, COUNTRY"}', NULL, NULL, false, NULL, NULL),
+    -- monitor_only: a missing column is a warning
+    ('d_customers_optional_cols', 'schema_check', 'crm_customers', NULL,
+     '{"columns": ["phone"]}', NULL, NULL, true, NULL, NULL),
+    -- an explicit threshold: up to one missing column is tolerated
+    ('e_customers_tolerant', 'schema_check', 'crm_customers', NULL,
+     '{"columns": ["customer_id", "phone"]}', NULL, 1, false, NULL, NULL),
+    -- a view as target
+    ('f_customers_view_cols', 'schema_check', 'crm_customers_v', NULL,
+     '{"columns": ["customer_id", "email"]}', NULL, NULL, false, NULL, NULL)
+
+query TTRRRT
+SELECT check_name, column_name, value, lower_threshold, upper_threshold, status
+FROM run_checks('nightly_checks')
+----
+a_customers_contact_cols	NULL	0.0	NULL	0.0	pass
+b_customers_required_cols	NULL	2.0	NULL	0.0	fail
+c_customers_core_cols	NULL	0.0	NULL	0.0	pass
+d_customers_optional_cols	NULL	1.0	NULL	0.0	warn
+e_customers_tolerant	NULL	1.0	NULL	1.0	pass
+f_customers_view_cols	NULL	1.0	NULL	0.0	fail
+
+query TT
+SELECT check_name, message FROM run_checks('nightly_checks')
+----
+a_customers_contact_cols	schema_check value 0.0 is within thresholds
+b_customers_required_cols	schema_check value 2.0 violates thresholds (2.0 > upper 0.0); missing columns: 'country_code', 'phone'
+c_customers_core_cols	schema_check value 0.0 is within thresholds
+d_customers_optional_cols	schema_check value 1.0 violates thresholds (1.0 > upper 0.0); missing columns: 'phone'
+e_customers_tolerant	schema_check value 1.0 is within thresholds; missing columns: 'phone'
+f_customers_view_cols	schema_check value 1.0 violates thresholds (1.0 > upper 0.0); missing columns: 'email'
+
+# ===--------------------------------------------------------------------===
+# Configurations that cannot run are error rows; the other checks still run
+# ===--------------------------------------------------------------------===
+
+statement ok
+CREATE TABLE bad_schema_checks AS SELECT * FROM nightly_checks LIMIT 0
+
+statement ok
+INSERT INTO bad_schema_checks VALUES
+    ('a_no_columns', 'schema_check', 'crm_customers', NULL, NULL, NULL, NULL, false, NULL, NULL),
+    ('b_empty_columns', 'schema_check', 'crm_customers', NULL, '{"columns": []}', NULL, NULL, false, NULL, NULL),
+    ('c_with_column_name', 'schema_check', 'crm_customers', 'customer_id', '{"columns": ["customer_id"]}',
+     NULL, NULL, false, NULL, NULL),
+    ('d_with_identifier', 'schema_check', 'crm_customers', NULL, '{"columns": ["customer_id"]}',
+     NULL, NULL, false, 'Country', NULL),
+    ('e_with_filter', 'schema_check', 'crm_customers', NULL, '{"columns": ["customer_id"]}',
+     NULL, NULL, false, NULL, 'signup_date >= DATE ''2026-10-01'''),
+    ('f_unknown_key', 'schema_check', 'crm_customers', NULL, '{"column": ["customer_id"]}',
+     NULL, NULL, false, NULL, NULL),
+    ('g_fail_on_empty', 'schema_check', 'crm_customers', NULL, '{"columns": ["customer_id"], "fail_on_empty": true}',
+     NULL, NULL, false, NULL, NULL),
+    ('h_missing_table', 'schema_check', 'crm_customers_stage', NULL, '{"columns": ["customer_id"]}',
+     NULL, NULL, false, NULL, NULL),
+    ('i_number_column', 'schema_check', 'crm_customers', NULL, '{"columns": ["customer_id", 7]}',
+     NULL, NULL, false, NULL, NULL),
+    ('k_ok', 'schema_check', 'crm_customers', NULL, '{"columns": ["customer_id"]}', NULL, NULL, false, NULL, NULL)
+
+query TTT
+SELECT check_name, status, message FROM run_checks('bad_schema_checks')
+----
+a_no_columns	error	check 'a_no_columns' (schema_check) cannot run: requires params.columns
+b_empty_columns	error	check 'b_empty_columns' (schema_check) cannot run: requires params.columns
+c_with_column_name	error	check 'c_with_column_name' (schema_check) cannot run: column_name is not used by schema_check (list the required columns in params.columns)
+d_with_identifier	error	check 'd_with_identifier' (schema_check) cannot run: identifier_column is not supported for check_type 'schema_check'
+e_with_filter	error	check 'e_with_filter' (schema_check) cannot run: filter_expr is not supported for check_type 'schema_check' (it checks the columns, not the rows)
+f_unknown_key	error	check 'f_unknown_key' (schema_check) cannot run: unknown params key 'column' (valid keys for schema_check: columns)
+g_fail_on_empty	error	check 'g_fail_on_empty' (schema_check) cannot run: unknown params key 'fail_on_empty' (valid keys for schema_check: columns)
+h_missing_table	error	check 'h_missing_table' (schema_check) cannot run: target table 'crm_customers_stage' does not exist
+i_number_column	error	check 'i_number_column' (schema_check) cannot run: params.columns must be a string or a JSON array of strings
+k_ok	pass	schema_check value 0.0 is within thresholds
+
+statement ok
+DROP TABLE bad_schema_checks; DROP TABLE nightly_checks; DROP VIEW crm_customers_v; DROP TABLE crm_customers
