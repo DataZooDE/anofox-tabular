@@ -815,7 +815,7 @@ void PIIConfig::SetMinConfidence(double value) {
 
 std::string PIIConfig::GetDefaultMaskStrategyString() const {
     std::lock_guard<std::mutex> guard(mutex_);
-    return MaskStrategyToString(default_mask_strategy_);
+    return StringUtil::Lower(MaskStrategyToString(default_mask_strategy_));
 }
 
 void PIIConfig::SetDefaultMaskStrategy(const std::string &strategy) {
@@ -5462,6 +5462,7 @@ void SetPIIDefaultMaskStrategyOption(ClientContext &, SetScope, Value &parameter
                                     "asterisk (pass 'none' explicitly to pii_mask and friends instead)");
     }
     PIIConfig::Get().SetDefaultMaskStrategy(strategy);
+    // Stored by its canonical lower-case name, like the default 'redact'
     parameter = Value(PIIConfig::Get().GetDefaultMaskStrategyString());
 }
 
@@ -5529,19 +5530,21 @@ void PIIConfigFunction(ClientContext &context, TableFunctionInput &input, DataCh
         const char* description;
     };
 
-    // Single consistent snapshot of the configuration
+    // Single consistent snapshot of the configuration. Each value is shown as
+    // current_setting() and duckdb_settings() show it: the strategy in lower
+    // case, the confidence as a DOUBLE prints, the default type set empty
     const auto config = StatementPIIConfig(&context);
     const auto enabled_types_str = EnabledTypesToString(config.enabled_types);
 
     std::vector<ConfigOption> options = {
         {"anofox_pii_min_confidence",
-         std::to_string(config.min_confidence),
+         Value::DOUBLE(config.min_confidence).ToString(),
          "Minimum confidence of a PII match (0.0 - 1.0); applies to every match: pattern matches have 1.0, " "checksum failures 0.6, dictionary names 0.5, NER matches the model score"},
         {"anofox_pii_default_mask_strategy",
-         MaskStrategyToString(config.default_mask_strategy),
-         "Default masking strategy (REDACT, HASH, PARTIAL, ASTERISK; NONE is rejected)"},
+         StringUtil::Lower(MaskStrategyToString(config.default_mask_strategy)),
+         "Default masking strategy (redact, hash, partial, asterisk; none is rejected)"},
         {"anofox_pii_enabled_types",
-         enabled_types_str.empty() ? "(all types except POSTAL_CODE)" : enabled_types_str,
+         enabled_types_str,
          "Comma-separated list of PII types to detect (empty = all types except POSTAL_CODE; DEFAULT stands " "for that set)"},
         {"anofox_pii_deep_validation",
          config.deep_validation ? "true" : "false",
@@ -5590,7 +5593,7 @@ void RegisterPIIOptions(ExtensionLoader &loader) {
                               SetPIIMinConfidenceOption);
 
     config.AddExtensionOption("anofox_pii_default_mask_strategy",
-                              "Default masking strategy (REDACT, HASH, PARTIAL, ASTERISK; NONE is rejected)",
+                              "Default masking strategy (redact, hash, partial, asterisk; none is rejected)",
                               LogicalTypeId::VARCHAR,
                               Value(PIIConfig::DEFAULT_MASK_STRATEGY),
                               SetPIIDefaultMaskStrategyOption);

@@ -1072,7 +1072,11 @@ SELECT pii_type, recognizer_name, pattern_info FROM pii_status() ORDER BY pii_ty
 
 Canonical name: `anofox_tab_pii_config`. Table function.
 
-Shows the current values of the PII settings.
+Shows the current values of the PII settings. `option_value` is the value exactly as
+`current_setting()` and `duckdb_settings()` show it: the mask strategy by its lower-case name
+(`SET anofox_pii_default_mask_strategy = 'HASH'` shows `hash`), the confidence as a `DOUBLE`
+prints. An empty `anofox_pii_enabled_types` is the default set, all types except `POSTAL_CODE`;
+the `description` column says so.
 
 ```text
 pii_config() -> TABLE(option_name VARCHAR, option_value VARCHAR, description VARCHAR)
@@ -1083,16 +1087,16 @@ SELECT option_name, option_value FROM pii_config();
 ```
 
 ```text
-┌──────────────────────────────────┬────────────────────────────────┐
-│           option_name            │          option_value          │
-│             varchar              │            varchar             │
-├──────────────────────────────────┼────────────────────────────────┤
-│ anofox_pii_min_confidence        │ 0.500000                       │
-│ anofox_pii_default_mask_strategy │ REDACT                         │
-│ anofox_pii_enabled_types         │ (all types except POSTAL_CODE) │
-│ anofox_pii_deep_validation       │ false                          │
-│ anofox_pii_require_checksum      │ true                           │
-└──────────────────────────────────┴────────────────────────────────┘
+┌──────────────────────────────────┬──────────────┐
+│           option_name            │ option_value │
+│             varchar              │   varchar    │
+├──────────────────────────────────┼──────────────┤
+│ anofox_pii_min_confidence        │ 0.5          │
+│ anofox_pii_default_mask_strategy │ redact       │
+│ anofox_pii_enabled_types         │              │
+│ anofox_pii_deep_validation       │ false        │
+│ anofox_pii_require_checksum      │ true         │
+└──────────────────────────────────┴──────────────┘
 ```
 
 ---

@@ -938,19 +938,19 @@ SELECT COUNT(*) FROM pii_config();
 query II
 SELECT option_name, option_value FROM pii_config() WHERE option_name = 'anofox_pii_min_confidence';
 ----
-anofox_pii_min_confidence	0.500000
+anofox_pii_min_confidence	0.5
 
-# Verify default mask strategy is REDACT
+# Verify default mask strategy is redact (as current_setting() shows it)
 query II
 SELECT option_name, option_value FROM pii_config() WHERE option_name = 'anofox_pii_default_mask_strategy';
 ----
-anofox_pii_default_mask_strategy	REDACT
+anofox_pii_default_mask_strategy	redact
 
-# Verify default enabled_types is all types
+# Verify default enabled_types is empty (all types except POSTAL_CODE)
 query II
 SELECT option_name, option_value FROM pii_config() WHERE option_name = 'anofox_pii_enabled_types';
 ----
-anofox_pii_enabled_types	(all types except POSTAL_CODE)
+anofox_pii_enabled_types	(empty)
 
 # Test setting min_confidence
 statement ok
@@ -959,7 +959,7 @@ SET anofox_pii_min_confidence = 0.8;
 query II
 SELECT option_name, option_value FROM pii_config() WHERE option_name = 'anofox_pii_min_confidence';
 ----
-anofox_pii_min_confidence	0.800000
+anofox_pii_min_confidence	0.8
 
 # Test setting mask strategy
 statement ok
@@ -968,7 +968,7 @@ SET anofox_pii_default_mask_strategy = 'partial';
 query II
 SELECT option_name, option_value FROM pii_config() WHERE option_name = 'anofox_pii_default_mask_strategy';
 ----
-anofox_pii_default_mask_strategy	PARTIAL
+anofox_pii_default_mask_strategy	partial
 
 # Test setting enabled_types (filter to specific types)
 statement ok
@@ -993,7 +993,7 @@ SET anofox_pii_enabled_types = '';
 query II
 SELECT option_name, option_value FROM pii_config() WHERE option_name = 'anofox_pii_enabled_types';
 ----
-anofox_pii_enabled_types	(all types except POSTAL_CODE)
+anofox_pii_enabled_types	(empty)
 
 # Test invalid min_confidence (too low) - should error
 statement error
@@ -1020,7 +1020,7 @@ SET anofox_pii_default_mask_strategy = 'HASH';
 query II
 SELECT option_name, option_value FROM pii_config() WHERE option_name = 'anofox_pii_default_mask_strategy';
 ----
-anofox_pii_default_mask_strategy	HASH
+anofox_pii_default_mask_strategy	hash
 
 # Test lowercase mask strategy
 statement ok
@@ -1029,7 +1029,7 @@ SET anofox_pii_default_mask_strategy = 'asterisk';
 query II
 SELECT option_name, option_value FROM pii_config() WHERE option_name = 'anofox_pii_default_mask_strategy';
 ----
-anofox_pii_default_mask_strategy	ASTERISK
+anofox_pii_default_mask_strategy	asterisk
 
 # Reset to default for remaining tests
 statement ok
