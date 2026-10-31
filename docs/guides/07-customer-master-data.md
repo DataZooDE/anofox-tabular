@@ -7,6 +7,7 @@
 - Parse phone numbers with each customer's country as the region, split off extensions, and format them
 - Check EU VAT numbers that are stored without or with their country prefix
 - Turn amounts and currency codes into money values without failing on a bad code
+- Find duplicate customers whose addresses are spelled differently
 - Score each column so you know how clean the table is
 - Check a text CRM import field by field in one query (section 8)
 
@@ -313,6 +314,71 @@ The parts are lower-cased, and `country` is the country name as written in the a
 (`deutschland`), not an ISO code; it is `NULL` when the address has no country. Keep the
 `country` column of the table as the ISO code, and store the parsed parts next to the original
 address rather than replacing it.
+
+### Find duplicate customers by address
+
+The same customer is often entered twice with the address spelled differently: an abbreviation
+(`Hauptstr.`), `ß` or `ü` written as `ss` and `ue`, a missing comma. `postal_expand_address`
+returns the normalized variants of an address, lower-cased with abbreviations expanded and
+umlauts transliterated:
+
+```sql no-run
+SELECT address, postal_expand_address(address) AS variants
+FROM (VALUES ('Hauptstr. 5, 80331 München'), ('Hauptstraße 5 80331 Muenchen')) t(address);
+```
+
+```text
+┌──────────────────────────────┬──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│           address            │                                                           variants                                                           │
+│           varchar            │                                                          varchar[]                                                           │
+├──────────────────────────────┼──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+│ Hauptstr. 5, 80331 München   │ [hauptstrasse 5 80331 muenchen, haupt strasse 5 80331 muenchen, hauptstrasse 5 80331 munchen, haupt strasse 5 80331 munchen] │
+│ Hauptstraße 5 80331 Muenchen │ [hauptstrasse 5 80331 muenchen, haupt strasse 5 80331 muenchen]                                                              │
+└──────────────────────────────┴──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+```
+
+Two addresses that share a variant are likely the same place. Unnest the variants and join the
+table with itself on them; `a.customer_id < b.customer_id` reports each pair once:
+
+```sql no-run
+CREATE TABLE crm_customers AS SELECT * FROM (VALUES
+    (1001, 'Bäckerei Huber GmbH', 'Hauptstr. 5, 80331 München'),
+    (1002, 'Baeckerei Huber',     'Hauptstraße 5 80331 Muenchen'),
+    (1003, 'Huber Immobilien KG', 'Hauptstraße 7, 80331 München'),
+    (1004, 'Schreinerei Wagner',  'Lindenallee 12, 50968 Köln'),
+    (1005, 'Wagner Schreinerei',  'Lindenallee 12, 50968 Koeln')
+) t(customer_id, name, address);
+
+WITH variants AS (
+    SELECT customer_id, unnest(postal_expand_address(address)) AS variant
+    FROM crm_customers
+),
+pairs AS (
+    SELECT DISTINCT a.customer_id AS customer_id, b.customer_id AS possible_duplicate
+    FROM variants a
+    JOIN variants b ON a.variant = b.variant AND a.customer_id < b.customer_id
+)
+SELECT p.customer_id, c1.address, p.possible_duplicate, c2.address AS duplicate_address
+FROM pairs p
+JOIN crm_customers c1 ON c1.customer_id = p.customer_id
+JOIN crm_customers c2 ON c2.customer_id = p.possible_duplicate
+ORDER BY p.customer_id;
+```
+
+```text
+┌─────────────┬────────────────────────────┬────────────────────┬──────────────────────────────┐
+│ customer_id │          address           │ possible_duplicate │      duplicate_address       │
+│    int32    │          varchar           │       int32        │           varchar            │
+├─────────────┼────────────────────────────┼────────────────────┼──────────────────────────────┤
+│        1001 │ Hauptstr. 5, 80331 München │               1002 │ Hauptstraße 5 80331 Muenchen │
+│        1004 │ Lindenallee 12, 50968 Köln │               1005 │ Lindenallee 12, 50968 Koeln  │
+└─────────────┴────────────────────────────┴────────────────────┴──────────────────────────────┘
+```
+
+Customer 1003 at house number 7 is not matched. A shared address is a candidate for review,
+not proof: two companies can share a building, so compare the names as well before merging.
+The examples need the libpostal data, so they are marked `no-run`; the output above is from a
+run with the data in the default directory.
 
 See [Postal addresses](../api/02-postal.md).
 

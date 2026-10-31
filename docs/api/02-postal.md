@@ -235,6 +235,10 @@ postal_expand_address(address VARCHAR) -> VARCHAR[]
 SELECT postal_expand_address('221B Baker St, London');
 ```
 
+To find duplicate customers, unnest the variants and join the table with itself on them; the
+guide [Clean a customer master](../guides/07-customer-master-data.md#find-duplicate-customers-by-address)
+has a worked example with German addresses in two spellings.
+
 ## See also
 
 - [Configuration: postal settings](../reference/configuration.md#postal)
