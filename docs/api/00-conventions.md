@@ -195,8 +195,9 @@ LINE 1: SELECT * FROM null_rate(NULL, 'v', 0.1);
 
 Some functions read the table through a second connection. That connection takes over the
 search path of your session (`SET schema`, `SET search_path`, `USE`) and its `TimeZone` and
-`Calendar` settings, so names resolve and a `TIMESTAMP WITH TIME ZONE` value shown as text
-(`profile_table`'s `min_val`, for example) reads as in your own queries. It cannot see TEMP
+`Calendar` settings, so names resolve and dates are computed as in your own queries
+(`profile_table` shows `TIMESTAMP WITH TIME ZONE` values in UTC, see
+[Values shown as text](10-profiling.md#values-shown-as-text)). It cannot see TEMP
 tables of your session, so these functions reject a TEMP table when the query is bound, with
 `TEMP tables are not supported by <function>; use a regular table`:
 

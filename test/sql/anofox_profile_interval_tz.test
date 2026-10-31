@@ -1,0 +1,98 @@
+# name: test/sql/anofox_profile_interval_tz.test
+# description: Issue #125: profile_table on a support-ticket table shows an INTERVAL with whole
+#              days carried out of the hours ('5 days', not '120:00:00', as a pandas timedelta
+#              arrives) and a TIMESTAMP WITH TIME ZONE in UTC ('+00'), like run_checks and the
+#              diff functions report it (see anofox_profile_session_tz_icu.test for other zones).
+# group: [anofox_tabular]
+
+require anofox_tabular
+
+statement ok
+LOAD anofox_tabular
+
+statement ok
+SET anofox_tab_trace_enabled = false
+
+statement ok
+CREATE TABLE support_tickets AS SELECT * FROM (VALUES
+    (1, 'Printer offline', '\xAA'::BLOB,
+        TIMESTAMPTZ '2026-03-02 08:15:00+00', INTERVAL '120 hours'),
+    (2, 'VPN drops every hour', '%PDF-1.7'::BLOB,
+        TIMESTAMPTZ '2026-03-02 23:40:00+00', INTERVAL '36 hours'),
+    (3, 'Password reset', NULL,
+        TIMESTAMPTZ '2026-03-05 17:00:00+00', INTERVAL '45 minutes'),
+    (4, 'Password reset', '\x89PNG\x0D\x0A\x1A\x0A'::BLOB,
+        TIMESTAMPTZ '2026-03-05 17:00:00+00', INTERVAL '120 hours'),
+    (5, 'Disk full on build server', '\x00\x01\x02'::BLOB,
+        TIMESTAMPTZ '2026-03-06 09:30:00.25+00', INTERVAL '50 hours 30 minutes')
+) t(ticket_id, subject, attachment, opened_at, resolution_time)
+
+# ===--------------------------------------------------------------------===
+# INTERVAL: whole days carried out of the hours
+# ===--------------------------------------------------------------------===
+
+query TT
+SELECT min_val, max_val FROM profile_table('support_tickets') WHERE column_name = 'resolution_time'
+----
+00:45:00	5 days
+
+query TI
+SELECT tv.value, tv.count FROM (
+    SELECT unnest(top_values) AS tv FROM profile_table('support_tickets')
+    WHERE column_name = 'resolution_time')
+----
+5 days	2
+00:45:00	1
+1 day 12:00:00	1
+2 days 02:30:00	1
+
+# Negative durations and month parts keep their sign and months
+statement ok
+CREATE TABLE sla_deviations AS SELECT * FROM (VALUES
+    (INTERVAL '-50 hours'), (INTERVAL '1 month 26 hours'), (INTERVAL '23:59:59.5')
+) t(deviation)
+
+query TI
+SELECT tv.value, tv.count FROM (
+    SELECT unnest(top_values) AS tv FROM profile_table('sla_deviations'))
+----
+-2 days -02:00:00	1
+23:59:59.5	1
+1 month 1 day 02:00:00	1
+
+# ===--------------------------------------------------------------------===
+# TIMESTAMP WITH TIME ZONE: shown in UTC
+# ===--------------------------------------------------------------------===
+
+query TT
+SELECT min_val, max_val FROM profile_table('support_tickets') WHERE column_name = 'opened_at'
+----
+2026-03-02 08:15:00+00	2026-03-06 09:30:00.25+00
+
+query TI
+SELECT tv.value, tv.count FROM (
+    SELECT unnest(top_values) AS tv FROM profile_table('support_tickets')
+    WHERE column_name = 'opened_at')
+----
+2026-03-05 17:00:00+00	2
+2026-03-02 08:15:00+00	1
+2026-03-02 23:40:00+00	1
+2026-03-06 09:30:00.25+00	1
+
+# infinity stays infinity
+statement ok
+CREATE TABLE ticket_deadlines AS SELECT * FROM (VALUES
+    (TIMESTAMPTZ 'infinity'), (TIMESTAMPTZ '-infinity'), (TIMESTAMPTZ '2026-04-01 12:00:00+00')
+) t(due_at)
+
+query TT
+SELECT min_val, max_val FROM profile_table('ticket_deadlines')
+----
+-infinity	infinity
+
+query TI
+SELECT tv.value, tv.count FROM (SELECT unnest(top_values) AS tv FROM profile_table('ticket_deadlines'))
+----
+-infinity	1
+2026-04-01 12:00:00+00	1
+infinity	1

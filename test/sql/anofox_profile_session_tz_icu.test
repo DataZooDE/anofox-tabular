@@ -1,0 +1,45 @@
+# name: test/sql/anofox_profile_session_tz_icu.test
+# description: Issue #125: profile_table shows TIMESTAMP WITH TIME ZONE values (min_val, max_val,
+#              top_values) in UTC whatever the session TimeZone, like run_checks and the diff
+#              functions, so one table gives the same profile in every session.
+# group: [anofox_tabular]
+
+require anofox_tabular
+
+require icu
+
+statement ok
+LOAD anofox_tabular
+
+statement ok
+SET anofox_tab_trace_enabled = false
+
+# Tickets opened by agents in Berlin, New York and Mumbai, stored with their local offsets
+statement ok
+CREATE TABLE support_tickets AS SELECT * FROM (VALUES
+    (101, TIMESTAMPTZ '2026-03-02 09:15:00+01'),
+    (102, TIMESTAMPTZ '2026-03-02 18:40:00-05'),
+    (103, TIMESTAMPTZ '2026-03-05 22:30:00+05:30'),
+    (104, TIMESTAMPTZ '2026-03-05 17:00:00+00')
+) t(ticket_id, opened_at)
+
+foreach tz UTC America/New_York Asia/Kolkata Europe/Berlin
+
+statement ok
+SET TimeZone = '{tz}'
+
+query TT
+SELECT min_val, max_val FROM profile_table('support_tickets') WHERE column_name = 'opened_at'
+----
+2026-03-02 08:15:00+00	2026-03-05 17:00:00+00
+
+query TI
+SELECT tv.value, tv.count FROM (
+    SELECT unnest(top_values) AS tv FROM profile_table('support_tickets')
+    WHERE column_name = 'opened_at')
+----
+2026-03-05 17:00:00+00	2
+2026-03-02 08:15:00+00	1
+2026-03-02 23:40:00+00	1
+
+endloop
