@@ -458,6 +458,10 @@ static string BuildColumnProfileSQL(const string &col_name, const string &col_ty
 	string col_type_lit = "'" + EscapeStringLiteral(col_type) + "'";
 
 	bool is_complex = IsComplexCategory(cat);
+	string upper_type = StringUtil::Upper(col_type);
+	// A BLOB is profiled as bytes: its length is the byte count, and it has no text pattern
+	// (its VARCHAR cast is the escaped text '\xAA', four characters for one byte)
+	bool is_blob = upper_type == "BLOB";
 
 	// Numeric stats — only for numeric columns
 	auto num_dbl = [&](const string &expr) -> string {
@@ -527,7 +531,11 @@ static string BuildColumnProfileSQL(const string &col_name, const string &col_ty
 
 	// Length stats — string, list (element count), map (cardinality), others NULL
 	string avg_len_sql, min_len_sql, max_len_sql;
-	if (cat == ColumnCategory::STRING) {
+	if (is_blob) {
+		avg_len_sql = "AVG(octet_length(" + ec + "))";
+		min_len_sql = "CAST(MIN(octet_length(" + ec + ")) AS BIGINT)";
+		max_len_sql = "CAST(MAX(octet_length(" + ec + ")) AS BIGINT)";
+	} else if (cat == ColumnCategory::STRING) {
 		avg_len_sql = "AVG(LENGTH(CAST(" + ec + " AS VARCHAR)))";
 		min_len_sql = "CAST(MIN(LENGTH(CAST(" + ec + " AS VARCHAR))) AS BIGINT)";
 		max_len_sql = "CAST(MAX(LENGTH(CAST(" + ec + " AS VARCHAR))) AS BIGINT)";
@@ -547,7 +555,7 @@ static string BuildColumnProfileSQL(const string &col_name, const string &col_ty
 
 	// Pattern summary — string columns use regex detection; complex types get fixed literals
 	string pattern_sql = "NULL::VARCHAR";
-	if (cat == ColumnCategory::STRING) {
+	if (cat == ColumnCategory::STRING && !is_blob) {
 		auto regex_frac = [&](const string &regex) -> string {
 			return "SUM(CASE WHEN REGEXP_MATCHES(CAST(" + ec + " AS VARCHAR), '" + regex +
 			       "') THEN 1 ELSE 0 END) * 1.0 / NULLIF(COUNT(" + ec + "), 0) >= 0.8";

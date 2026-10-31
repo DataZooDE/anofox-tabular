@@ -1,0 +1,54 @@
+# name: test/sql/anofox_profile_blob.test
+# description: Issue #125: profile_table measures a BLOB column in bytes (octet_length), not by the
+#              length of its escaped text ('\xAA' is 1 byte, not 4 characters), and gives it no
+#              text pattern (pattern_summary NULL instead of 'mixed' or 'numeric_string').
+# group: [anofox_tabular]
+
+require anofox_tabular
+
+statement ok
+LOAD anofox_tabular
+
+statement ok
+SET anofox_tab_trace_enabled = false
+
+statement ok
+CREATE TABLE support_tickets AS SELECT * FROM (VALUES
+    (1, 'Printer offline', '\xAA'::BLOB,
+        TIMESTAMPTZ '2026-03-02 08:15:00+00', INTERVAL '120 hours'),
+    (2, 'VPN drops every hour', '%PDF-1.7'::BLOB,
+        TIMESTAMPTZ '2026-03-02 23:40:00+00', INTERVAL '36 hours'),
+    (3, 'Password reset', NULL,
+        TIMESTAMPTZ '2026-03-05 17:00:00+00', INTERVAL '45 minutes'),
+    (4, 'Password reset', '\x89PNG\x0D\x0A\x1A\x0A'::BLOB,
+        TIMESTAMPTZ '2026-03-05 17:00:00+00', INTERVAL '120 hours'),
+    (5, 'Disk full on build server', '\x00\x01\x02'::BLOB,
+        TIMESTAMPTZ '2026-03-06 09:30:00.25+00', INTERVAL '50 hours 30 minutes')
+) t(ticket_id, subject, attachment, opened_at, resolution_time)
+
+# ===--------------------------------------------------------------------===
+# BLOB: byte length, no text pattern
+# ===--------------------------------------------------------------------===
+
+# 1, 8, 8 and 3 bytes (the escaped text would be 4, 8, 23 and 12 characters long)
+query RIIT
+SELECT avg_length, min_length, max_length, pattern_summary
+FROM profile_table('support_tickets') WHERE column_name = 'attachment'
+----
+5.0	1	8	NULL
+
+# A BLOB of digits is no 'numeric_string'
+statement ok
+CREATE TABLE ticket_scans AS SELECT ('0' || (i % 10) || '42')::BLOB AS scan FROM range(20) t(i)
+
+query IIT
+SELECT min_length, max_length, pattern_summary FROM profile_table('ticket_scans')
+----
+4	4	NULL
+
+# VARCHAR columns keep their character length and pattern detection
+query IIT
+SELECT min_length, max_length, pattern_summary
+FROM profile_table('support_tickets') WHERE column_name = 'subject'
+----
+14	25	mixed

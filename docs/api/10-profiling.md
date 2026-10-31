@@ -82,10 +82,10 @@ Output columns:
 | `skewness` | `DOUBLE` | Numeric columns only; finite values only |
 | `kurtosis` | `DOUBLE` | Numeric columns only; finite values only |
 | `top_values` | `STRUCT(value VARCHAR, count BIGINT)[]` | The 5 most frequent values, most frequent first; values with equal counts in ascending order of the column's own type (`9` before `10`, `9.50` before `100.00`), shown as text; finite values only for numeric columns |
-| `avg_length` | `DOUBLE` | String length; element count for lists; cardinality for maps |
+| `avg_length` | `DOUBLE` | String length in characters; byte length (`octet_length`) for `BLOB`; element count for lists; cardinality for maps |
 | `min_length` | `BIGINT` | As `avg_length` |
 | `max_length` | `BIGINT` | As `avg_length` |
-| `pattern_summary` | `VARCHAR` | Detected pattern, see below; `NULL` for numeric, boolean and temporal columns |
+| `pattern_summary` | `VARCHAR` | Detected pattern, see below; `NULL` for numeric, boolean, temporal and `BLOB` columns |
 | `is_unique` | `BOOLEAN` | All non-`NULL` values are distinct |
 | `is_constant` | `BOOLEAN` | All non-`NULL` values are equal |
 | `zero_count` | `BIGINT` | Zero values, numeric columns only |
@@ -133,7 +133,9 @@ FROM profile_table('sensor_readings');
 `pattern_summary` for string columns is the first of `email`, `phone`, `uuid`, `url`,
 `ip_address`, `iso_date` and `numeric_string` that at least 80% of the non-`NULL` values match,
 else `mixed`. Phone detection uses `phonenumber_is_valid` with region `US`. Complex columns get
-`list`, `map`, `struct` or `union`.
+`list`, `map`, `struct` or `union`. A `BLOB` column holds bytes, not text, so it gets no pattern
+(`NULL`), and its `avg_length`, `min_length` and `max_length` count bytes: `'\xAA'::BLOB` has
+length 1, not the 4 characters of its escaped text.
 
 ```sql
 SELECT column_name, column_type, null_count, distinct_count,
