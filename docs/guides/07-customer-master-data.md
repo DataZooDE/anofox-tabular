@@ -236,7 +236,9 @@ SELECT TRY(money(CAST('1250.00' AS DECIMAL(18,3)), 'EUR')) AS amount_money;
 └────────────────────────────────────────────────┘
 ```
 
-See [Money](../api/04-money.md) for the supported currencies.
+See [Money](../api/04-money.md) for the supported currencies. `sum()` does not take money
+values; to total the amounts per currency, group by `money_currency(amount)` and sum
+`money_amount(amount)`, see [Totals per currency](../api/04-money.md#totals-per-currency).
 
 ## 6. Score the table
 

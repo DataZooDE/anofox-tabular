@@ -5,6 +5,7 @@
 **Use this page to:**
 - Build money values from amounts or from integer cents
 - Add, subtract and multiply without mixing currencies
+- Total amounts per currency
 - Format amounts for display
 - Look up currency symbols and names
 
@@ -286,6 +287,70 @@ SELECT money_multiply(money(1e14, 'USD'), 1000);
 ```text
 Out of Range Error: Money multiplication result is out of range for DECIMAL(18,3)
 ```
+
+### Totals per currency
+
+`sum(amount)` over a money column is a binder error: `sum` has no variant for the money struct,
+and adding amounts of different currencies would not be meaningful anyway.
+
+```sql
+SELECT sum(amount) FROM invoices;
+```
+
+```text
+Binder Error: No function matches the given name and argument types 'sum(STRUCT(amount DECIMAL(18,3), currency VARCHAR))'. You might need to add explicit type casts.
+```
+
+Group by the currency and sum the exact `DECIMAL` amounts instead:
+
+```sql
+CREATE TABLE invoices AS
+SELECT invoice_no, money(amount, currency) AS amount
+FROM (VALUES ('RE-2026-0101', 1250.00, 'EUR'), ('RE-2026-0102', 7800.50, 'EUR'),
+             ('RE-2026-0103', 19.90, 'EUR'), ('RE-2026-0104', 2600.00, 'CHF'),
+             ('RE-2026-0105', 75.00, 'CHF'), ('RE-2026-0106', 480.25, 'GBP'))
+     t(invoice_no, amount, currency);
+
+SELECT money_currency(amount) AS currency,
+       count(*) AS invoices,
+       sum(money_amount(amount)) AS total
+FROM invoices
+GROUP BY ALL
+ORDER BY currency;
+```
+
+```text
+┌──────────┬──────────┬───────────────┐
+│ currency │ invoices │     total     │
+│ varchar  │  int64   │ decimal(38,3) │
+├──────────┼──────────┼───────────────┤
+│ CHF      │        2 │      2675.000 │
+│ EUR      │        3 │      9070.400 │
+│ GBP      │        1 │       480.250 │
+└──────────┴──────────┴───────────────┘
+```
+
+To get money values back, for example to format them, wrap each total in `money`:
+
+```sql
+SELECT currency, money_format(money(total, currency), 'symbol') AS total
+FROM (SELECT money_currency(amount) AS currency, sum(money_amount(amount)) AS total
+      FROM invoices GROUP BY ALL)
+ORDER BY currency;
+```
+
+```text
+┌──────────┬──────────────┐
+│ currency │    total     │
+│ varchar  │   varchar    │
+├──────────┼──────────────┤
+│ CHF      │ 2'675.00 CHF │
+│ EUR      │ 9.070,40 €   │
+│ GBP      │ £480.25      │
+└──────────┴──────────────┘
+```
+
+A total outside the `DECIMAL(18,3)` range cannot become a money value: the cast of the `DECIMAL(38,3)` sum to `DECIMAL(18,3)` raises a `Conversion Error`.
 
 ---
 
