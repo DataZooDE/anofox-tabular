@@ -45,6 +45,9 @@ public:
 
 	void SetDataDirectory(const std::string &path);
 	std::string GetDataDirectory() const;
+	//! anofox_tab_postal_auto_download: whether the first parse/expand call may
+	//! download the data bundle when it is missing (postal_load_data() always may).
+	void SetAutoDownload(bool enabled);
 
 private:
 	PostalManager();
@@ -67,6 +70,7 @@ private:
 	//! Mutable so const accessors can lock it.
 	mutable std::mutex init_lock;
 	std::string data_directory;
+	std::atomic<bool> auto_download {true};
 	//! The legacy-directory and missing-home notices are logged once per process.
 	mutable std::atomic<bool> legacy_notice_logged {false};
 	mutable std::atomic<bool> no_home_notice_logged {false};

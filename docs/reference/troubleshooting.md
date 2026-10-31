@@ -108,6 +108,10 @@ Most parameters are positional. Only a few accept `name := value`; the list is i
 SELECT postal_load_data();
 ```
 
+An error `libpostal data not downloaded: anofox_tab_postal_auto_download is false` means the
+automatic download on first use is switched off; `postal_load_data()` still downloads, or
+`SET anofox_tab_postal_auto_download = true`.
+
 The data goes to `anofox_tab_postal_data_path`, by default `~/.duckdb/extensions/libpostal` in
 your home directory. `postal_status()` shows the directory in use and whether the data is there:
 

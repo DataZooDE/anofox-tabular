@@ -41,11 +41,12 @@ ORDER BY name;
 │ anofox_tab_email_smtp_port               │ INTEGER    │
 │ anofox_tab_email_smtp_read_timeout_ms    │ BIGINT     │
 │ anofox_tab_phonenumber_default_region    │ VARCHAR    │
+│ anofox_tab_postal_auto_download          │ BOOLEAN    │
 │ anofox_tab_postal_data_path              │ VARCHAR    │
 │ anofox_tab_trace_enabled                 │ BOOLEAN    │
 │ anofox_tab_trace_level                   │ VARCHAR    │
 └──────────────────────────────────────────┴────────────┘
-  13 rows                                     2 columns
+  14 rows                                     2 columns
 ```
 
 ## All settings
@@ -63,6 +64,7 @@ ORDER BY name;
 | `anofox_tab_email_smtp_mail_from` | `VARCHAR` | `validator@duckdb.local` | [Email](#email) |
 | `anofox_tab_phonenumber_default_region` | `VARCHAR` | `US` | [Phone](#phone) |
 | `anofox_tab_postal_data_path` | `VARCHAR` | `~/.duckdb/extensions/libpostal` | [Postal](#postal) |
+| `anofox_tab_postal_auto_download` | `BOOLEAN` | `true` | [Postal](#postal) |
 | `anofox_tab_trace_enabled` | `BOOLEAN` | `true` | [Tracing](#tracing) |
 | `anofox_tab_trace_level` | `VARCHAR` | `info` | [Tracing](#tracing) |
 | `anofox_pii_enabled_types` | `VARCHAR` | empty (all types except `POSTAL_CODE`) | [PII](#pii) |
@@ -79,7 +81,7 @@ ORDER BY name;
 | `anofox_telemetry_key` | `VARCHAR` | the project's PostHog key | [Telemetry](#telemetry) |
 | `datazoo_banner` | `BOOLEAN` | `true` | [Banner](#banner) |
 
-The postal setting exists only in builds with the postal module (not on Windows). The defaults above are
+The postal settings exist only in builds with the postal module (not on Windows). The defaults above are
 the values `duckdb_settings()` reports in a new session.
 
 ## Email
@@ -128,6 +130,7 @@ SELECT key, value FROM email_config() WHERE key LIKE 'dns%';
 | Setting | Effect |
 |---------|--------|
 | `anofox_tab_postal_data_path` | Directory of the libpostal data. The default is in the home directory (`~` is expanded with DuckDB's `home_directory` setting, else `HOME`, or `USERPROFILE` on Windows). At the default, a complete copy in `.duckdb/extensions/libpostal` under the working directory, the default of v2026.10.25 and older, is still used when the home directory has none. `RESET` returns to the default. See [Postal addresses](../api/02-postal.md#where-the-data-goes). |
+| `anofox_tab_postal_auto_download` | `true` (default): the first `postal_parse_address` or `postal_expand_address` call downloads the libpostal data (about 500 MB) when it is not in `anofox_tab_postal_data_path`. `false` never downloads on first use: such a call raises an `IO Error` that names the directory and how to get the data. An explicit `postal_load_data()` still downloads, as the call itself is the consent. `NULL` is rejected. See [Postal addresses](../api/02-postal.md#turning-the-automatic-download-off). |
 
 ## Tracing
 

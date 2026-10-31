@@ -10,12 +10,15 @@
 > **Data download first.** Address parsing needs the libpostal data files, about 500 MB.
 > Download them once with `SELECT postal_load_data();` before you call `postal_parse_address`
 > or `postal_expand_address`. If the data is missing, the first parse or expand call starts the
-> same download itself. See [Network and privacy](../reference/network-and-privacy.md).
+> same download itself, unless `anofox_tab_postal_auto_download` is `false` (see
+> [Turning the automatic download off](#turning-the-automatic-download-off)). See
+> [Network and privacy](../reference/network-and-privacy.md).
 
 The module wraps [libpostal](https://github.com/openvenues/libpostal). It is compiled in only
 when libpostal is found at build time. It is not available on Windows. On macOS the CI script
 tries to build libpostal from source, so check your build: when the module is missing, the four
-postal functions and the setting `anofox_tab_postal_data_path` are not registered.
+postal functions and the settings `anofox_tab_postal_data_path` and
+`anofox_tab_postal_auto_download` are not registered.
 
 ```sql
 SELECT count(*) > 0 AS postal_available
@@ -75,6 +78,27 @@ as complete when it holds `language_classifier/language_classifier.dat` and
 The files come from `https://public-read-libpostal-data.s3.amazonaws.com/v1.1.0/`:
 `language_classifier.tar.gz`, `libpostal_data.tar.gz` and `parser.tar.gz`.
 
+### Turning the automatic download off
+
+The setting `anofox_tab_postal_auto_download` (`BOOLEAN`, default `true`) controls whether the
+first `postal_parse_address` or `postal_expand_address` call downloads the data when it is
+missing. With `false`, such a call raises an error instead, so no query starts a 500 MB download
+by surprise, for example on an offline ETL runner. `postal_load_data()` still downloads when you
+call it: the explicit call is the consent. `NULL` input rows need no data and still return
+`NULL`. `SET anofox_tab_postal_auto_download = NULL` is rejected.
+
+```sql no-run
+SET anofox_tab_postal_data_path = '/srv/etl/libpostal';  -- holds no data
+SET anofox_tab_postal_auto_download = false;
+SELECT postal_parse_address('Hauptstr. 5, 80331 München');
+```
+
+```text
+IO Error: libpostal data not downloaded: anofox_tab_postal_auto_download is false and '/srv/etl/libpostal' holds no libpostal data. SET anofox_tab_postal_auto_download = true to download it on first use, or call postal_load_data() to download it now (about 500 MB), or SET anofox_tab_postal_data_path to a directory that holds the data
+```
+
+The setting applies to the whole process, like `anofox_tab_postal_data_path`.
+
 ---
 
 ## `postal_load_data`
@@ -83,6 +107,8 @@ Canonical name: `anofox_tab_postal_load_data`. Scalar function.
 
 Downloads and unpacks the libpostal data into `anofox_tab_postal_data_path`. Returns `true`
 when the data is present afterwards. If the data is already there, it does not download again.
+It downloads also when `anofox_tab_postal_auto_download` is `false`; that setting only stops the
+automatic download of the parse and expand functions.
 
 ```text
 postal_load_data() -> BOOLEAN

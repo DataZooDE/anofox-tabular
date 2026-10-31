@@ -207,7 +207,7 @@ The core functions run locally and send nothing. These parts use the network:
 | Feature | Network use | Opt out |
 |---------|-------------|---------|
 | PII names, organizations, locations (NER) | Downloads a ~178 MB model (`bert-multi`; 66 MB for `distilbert-en`) from Hugging Face on first use | `SET anofox_ner_auto_download = false` |
-| Postal addresses | Downloads ~500 MB of libpostal data on first use or with `postal_load_data()` | Do not call the postal functions |
+| Postal addresses | Downloads ~500 MB of libpostal data on first use or with `postal_load_data()` | `SET anofox_tab_postal_auto_download = false` (then only `postal_load_data()` downloads) |
 | Email modes `dns` and `smtp` | DNS query; SMTP connection to the mail host | Use mode `regex` (the default) |
 | Telemetry | Anonymous usage events to PostHog EU; on by default | `SET anofox_telemetry_enabled = false` or `DATAZOO_DISABLE_TELEMETRY=1` |
 

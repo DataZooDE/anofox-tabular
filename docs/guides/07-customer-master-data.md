@@ -299,6 +299,9 @@ not available on Windows.
 > SELECT postal_load_data();
 > SELECT data_present, data_dir FROM postal_status();
 > ```
+>
+> `SET anofox_tab_postal_auto_download = false` makes a postal call without the data raise an
+> error instead of downloading; `postal_load_data()` still downloads.
 
 ```sql no-run
 SELECT postal_parse_address('Hauptstraße 5, 80331 München, Deutschland');
