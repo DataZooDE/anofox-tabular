@@ -60,8 +60,8 @@ def joindiff(
         if compare_columns is not None:
             query += ", ?::VARCHAR[]"
             params.append(column_list(compare_columns))
-            if include_unchanged:
-                query += ", true"
+        if include_unchanged:
+            query += ", include_all := true"
         if float_tolerance is not None:
             query += ", float_tolerance := ?::DOUBLE"
             params.append(float_tolerance)

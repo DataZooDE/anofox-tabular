@@ -76,8 +76,10 @@ class TestJoindiff:
         src, tgt = diff_tables
         result_excl = diff.joindiff(conn, src, tgt, primary_keys="id", include_unchanged=False)
         result_incl = diff.joindiff(conn, src, tgt, primary_keys="id", include_unchanged=True)
-        # Including unchanged should have >= rows than excluding
-        assert len(result_incl) >= len(result_excl)
+        # Without compare_columns the flag must still reach the SQL function
+        assert "unchanged" not in set(result_excl["diff_type"])
+        assert "unchanged" in set(result_incl["diff_type"])
+        assert len(result_incl) > len(result_excl)
 
 
 class TestHashdiff:
