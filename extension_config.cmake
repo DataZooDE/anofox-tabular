@@ -16,8 +16,35 @@ if(UNIX AND NOT APPLE)
     set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -Wl,--allow-multiple-definition")
 endif()
 
-duckdb_extension_load(anofox_tabular
-    SOURCE_DIR ${CMAKE_CURRENT_LIST_DIR}
-    LOAD_TESTS)
+# Extension version: the release tag (vYYYY.MM.DD) when the commit has one, else the commit hash.
+# DuckDB derives it the same way, but v1.5.6 quotes the tag pattern literally
+# (--match "'v*.*.*'"), finds no tag and always stamps the hash; DuckDB 2.0 is not affected.
+set(ANOFOX_TABULAR_EXT_VERSION "")
+find_package(Git QUIET)
+if(Git_FOUND)
+    execute_process(
+        COMMAND ${GIT_EXECUTABLE} describe --tags --always --match "v*.*.*"
+        WORKING_DIRECTORY ${CMAKE_CURRENT_LIST_DIR}
+        RESULT_VARIABLE ANOFOX_GIT_RESULT
+        OUTPUT_VARIABLE ANOFOX_GIT_DESCRIBE
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+        ERROR_QUIET)
+    if(ANOFOX_GIT_RESULT EQUAL 0 AND ANOFOX_GIT_DESCRIBE MATCHES "^v[0-9]+\\.[0-9]+\\.[0-9]+(-[a-zA-Z0-9\\.]+)?$")
+        set(ANOFOX_TABULAR_EXT_VERSION "${ANOFOX_GIT_DESCRIBE}")
+    endif()
+endif()
+
+if(ANOFOX_TABULAR_EXT_VERSION STREQUAL "")
+    # No release tag on this commit: DuckDB stamps the commit hash
+    duckdb_extension_load(anofox_tabular
+        SOURCE_DIR ${CMAKE_CURRENT_LIST_DIR}
+        LOAD_TESTS)
+else()
+    message(STATUS "anofox_tabular extension version ${ANOFOX_TABULAR_EXT_VERSION}")
+    duckdb_extension_load(anofox_tabular
+        SOURCE_DIR ${CMAKE_CURRENT_LIST_DIR}
+        EXTENSION_VERSION ${ANOFOX_TABULAR_EXT_VERSION}
+        LOAD_TESTS)
+endif()
 
 duckdb_extension_load(json)

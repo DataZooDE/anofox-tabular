@@ -26,8 +26,9 @@ To upgrade to the newest release, install again with `FORCE`:
 FORCE INSTALL anofox_tabular FROM community;
 ```
 
-The extension is built for DuckDB v1.5.6 and DuckDB 2.0, on `linux_amd64`, `osx_arm64`,
-`osx_amd64` and `windows_amd64`. Other DuckDB versions or platforms cannot load it. Check your
+The extension is built for DuckDB v1.5.6 and DuckDB 2.0, on `linux_amd64`, `osx_arm64` (Apple
+silicon) and `windows_amd64`. Intel Macs (`osx_amd64`) are no longer supported since v2026.10.31.
+Other DuckDB versions or platforms cannot load it. Check your
 version with `SELECT version();`.
 
 ## `[anofox] [info]` lines in the output
