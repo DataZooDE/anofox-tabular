@@ -612,7 +612,9 @@ SET anofox_tab_phonenumber_default_region = 'XX';
 Invalid Input Error: Unknown region code 'XX' for anofox_tab_phonenumber_default_region; expected a supported 2-letter ISO region code (e.g. 'US', 'GB', 'DE')
 ```
 
-The value is read when a query is bound, so a change does not affect a query that is already
+The value is read once per statement, when the statement is bound (a prepared statement is
+bound again when it is executed), so every row of a statement is read in the same region, a
+change takes effect with the next statement, and it does not affect a query that is already
 running.
 
 ## See also
