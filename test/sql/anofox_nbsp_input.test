@@ -1,0 +1,82 @@
+# name: test/sql/anofox_nbsp_input.test
+# description: Values copied out of Excel, Word or a web page often carry a non-breaking space
+#              (U+00A0), a narrow no-break space (U+202F, French thousands separator) or a figure
+#              space (U+2007) instead of a plain space. Email, phone and VAT input treat them like
+#              an ASCII space: they are trimmed around an email address, a phone number and a VAT
+#              number, and inside a phone or VAT number they separate digit groups like a space.
+#              Inside an email address they still make it invalid, like a space.
+# group: [anofox_tabular]
+
+require anofox_tabular
+
+statement ok
+LOAD anofox_tabular;
+
+statement ok
+SET anofox_tab_trace_level='warn';
+
+# A contact sheet pasted from Excel: chr(160) = U+00A0, chr(8239) = U+202F, chr(8199) = U+2007
+statement ok
+CREATE TABLE kontakte AS SELECT * FROM (VALUES
+    (1, chr(160) || 'max.mustermann@example.de' || chr(160),
+        '+49' || chr(160) || '30' || chr(160) || '12345678',
+        'DE' || chr(160) || '811128135'),
+    (2, chr(8239) || 'claire.dubois@exemple.fr',
+        '+33' || chr(8239) || '1' || chr(8239) || '42' || chr(8239) || '68' || chr(8239) || '53' || chr(8239) || '00',
+        'FR' || chr(8239) || '40' || chr(8239) || '303' || chr(8239) || '265' || chr(8239) || '045'),
+    (3, 'anna.schmidt@example.com' || chr(8199) || chr(160),
+        chr(160) || '030' || chr(8199) || '1234' || chr(8199) || '5678' || chr(160),
+        chr(160) || 'ATU13585627' || chr(160)),
+    (4, 'max' || chr(160) || 'mustermann@example.de',
+        '+1' || chr(160) || '650' || chr(160) || '253' || chr(160) || '0000' || chr(160) || 'ext.' || chr(160) || '123',
+        chr(160) || 'DE' || chr(160) || '811' || chr(160) || '128' || chr(160) || '135' || chr(160)),
+    (5, chr(160) || chr(160),
+        chr(160) || chr(8239) || chr(8199),
+        chr(160))
+) t(id, email, telefon, ust_id);
+
+query ITTT
+SELECT id, email_is_valid(email), (email_validate(email)).valid, (email_validate(email)).reason
+FROM kontakte ORDER BY id;
+----
+1	true	true	NULL
+2	true	true	NULL
+3	true	true	NULL
+4	false	false	invalid_format
+5	false	false	empty
+
+query ITTTT
+SELECT id, phonenumber_is_valid(telefon, 'DE'), phonenumber_format(telefon, 'DE', 'E164'),
+       (phonenumber_parse(telefon, 'DE')).extension, (phonenumber_parse(telefon, 'DE')).reason
+FROM kontakte ORDER BY id;
+----
+1	true	+493012345678	NULL	NULL
+2	true	+33142685300	NULL	NULL
+3	true	+493012345678	NULL	NULL
+4	true	+16502530000	123	NULL
+5	false	NULL	NULL	empty
+
+query ITTTTT
+SELECT id, vat_normalize(ust_id), vat_is_valid(ust_id), vat_is_valid_syntax(ust_id), (vat_validate(ust_id)).reason,
+       vat_format(ust_id, 'iso')
+FROM kontakte ORDER BY id;
+----
+1	DE811128135	true	true	NULL	DE811128135
+2	FR40303265045	true	true	NULL	FR40303265045
+3	ATU13585627	true	true	NULL	ATU13585627
+4	DE811128135	true	true	NULL	DE811128135
+5	(empty)	false	false	empty	NULL
+
+# Country-code arguments are trimmed the same way
+query TTT
+SELECT is_valid_vat_country(chr(160) || 'DE' || chr(160)), vat_is_eu_member('AT' || chr(8239)),
+       vat_country_name(chr(8199) || 'FR');
+----
+true	true	France
+
+# The phone region argument and the format name are trimmed the same way
+query TT
+SELECT phonenumber_format('030 12345678', chr(160) || 'DE' || chr(160), 'E164'),
+       phonenumber_format('030 12345678', 'DE', chr(160) || 'INTERNATIONAL' || chr(160));
+----
++493012345678	+49 30 12345678

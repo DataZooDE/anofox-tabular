@@ -35,7 +35,8 @@ unsupported region.
 It tells the parser how to read a number without a leading `+` and country code. A number that
 starts with `+` carries its own country code. When `region` is `NULL`, the setting
 `anofox_tab_phonenumber_default_region` applies (default `US`). The code is case-insensitive and
-surrounding spaces are ignored (`' gb '` is `GB`); a `region` of only spaces counts as `NULL`.
+surrounding spaces, including the no-break spaces U+00A0, U+2007 and U+202F of spreadsheet
+exports, are ignored (`' gb '` is `GB`); a `region` of only spaces counts as `NULL`.
 `'UK'` is accepted as an alias of `'GB'`, both as `region` and in the default-region setting. A
 `region` that is not one of the 21 supported codes (for example `'AT'`) makes a number without
 `+` invalid; `phonenumber_parse` reports it as `unsupported_region`. This is deliberate: a
@@ -122,6 +123,10 @@ parentheses as separators and handles four more cases:
   forms (Unicode NFKC): `０３０ １２３４５６７８` is `030 12345678` and `＋４９` is `+49`. Digits of
   other scripts, such as Arabic-Indic digits, are not converted and are ignored like any other
   separator.
+- **No-break spaces** that values copied from Excel, Word or a web page carry (U+00A0 no-break
+  space, U+202F narrow no-break space, U+2007 figure space) are read as spaces: they are
+  trimmed around the number and separate digit groups inside it, so
+  `'+49' || chr(160) || '30' || chr(160) || '12345678'` is `+493012345678`.
 - **A leading label** is dropped: `Tel`, `Telefon`, `Telephone`, `Phone`, `Mobil`, `Mobile`,
   `Cell` or `Fax` (any case), followed by `.`, `:` or a space. `Tel: 030 12345678`,
   `Mobil 0171 1234567` and the RFC 3966 form `tel:+49-30-12345678` are all valid.

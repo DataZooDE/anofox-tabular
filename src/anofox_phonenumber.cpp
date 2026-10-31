@@ -359,17 +359,20 @@ PhoneNumberParts PhoneNumberManager::Parse(const std::string& raw_number, const 
 
 	PhoneNumberParts parts;
 
+	// Fold full-width digits/signs to ASCII and no-break spaces (U+00A0, U+2007,
+	// U+202F) to blanks
+	const std::string folded = FoldFullWidthForms(raw_number);
+
 	// A blank field (empty or whitespace only) is a missing value, not a broken number
-	if (std::all_of(raw_number.begin(), raw_number.end(),
+	if (std::all_of(folded.begin(), folded.end(),
 	                [](char c) { return IsBlank(c) || c == '\v' || c == '\f'; })) {
 		AnofoxTrace(AnofoxLogLevel::Debug, "PhoneNumber parse failed: blank input");
 		parts.reason = PhoneNumberInvalidReason::EMPTY;
 		return parts;
 	}
 
-	// Fold full-width digits/signs to ASCII, drop a leading label, split off a
-	// trailing extension, then normalize
-	auto input = SplitPhoneInput(FoldFullWidthForms(raw_number));
+	// Drop a leading label, split off a trailing extension, then normalize
+	auto input = SplitPhoneInput(folded);
 	std::string normalized = NormalizePhoneNumber(input.number);
 	if (normalized.empty() || normalized == "+") {
 		AnofoxTrace(AnofoxLogLevel::Debug, "PhoneNumber parse failed: empty number");
@@ -759,8 +762,8 @@ void PhoneNumberManager::Initialize() {
 }
 
 std::string NormalizeRegionCode(const std::string& region) {
-	auto normalized = region;
-	StringUtil::Trim(normalized);
+	// Also trims the no-break spaces of spreadsheet exports
+	auto normalized = std::string(TrimUnicodeSpaces(region));
 	normalized = StringUtil::Upper(normalized);
 	// 'UK' is not an ISO 3166 code but is what most people type for the
 	// United Kingdom; libphonenumber metadata only knows 'GB'.
@@ -779,8 +782,7 @@ std::string PhoneNumberParts::ReportedReason() const {
 }
 
 PhoneNumberFormatOption ParseFormatOption(const std::string& format_str) {
-	auto trimmed = format_str;
-	StringUtil::Trim(trimmed);
+	auto trimmed = std::string(TrimUnicodeSpaces(format_str));
 	auto upper = StringUtil::Upper(trimmed);
 	if (upper == "E164") {
 		return PhoneNumberFormatOption::E164;

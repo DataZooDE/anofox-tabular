@@ -4,6 +4,7 @@
 #include "anofox_email_logging.hpp"
 #include "anofox_function_alias.hpp"
 #include "anofox_statement_settings.hpp"
+#include "anofox_text_fold.hpp"
 #include "telemetry.hpp"
 
 #include "duckdb/common/string_util.hpp"
@@ -365,17 +366,12 @@ EmailValidationResult ValidateRegex(std::string_view email, const CompiledEmailP
 	return result;
 }
 
-//! Removes the whitespace (spaces, tabs, line breaks) that pasted or exported
-//! addresses often carry around them; whitespace inside the address is kept, so
-//! it still fails the syntax check.
+//! Removes the whitespace (spaces, tabs, line breaks and the no-break spaces
+//! U+00A0, U+2007, U+202F of Excel/Word exports) that pasted or exported addresses
+//! often carry around them; whitespace inside the address is kept, so it still
+//! fails the syntax check.
 std::string_view TrimEmailWhitespace(std::string_view email) {
-	constexpr std::string_view WHITESPACE = " \t\r\n\v\f";
-	const auto first = email.find_first_not_of(WHITESPACE);
-	if (first == std::string_view::npos) {
-		return std::string_view();
-	}
-	const auto last = email.find_last_not_of(WHITESPACE);
-	return email.substr(first, last - first + 1);
+	return TrimUnicodeSpaces(email);
 }
 
 //! Validates one email address. `normalized_mode` must already be normalized via
