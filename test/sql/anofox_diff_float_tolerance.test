@@ -1,0 +1,225 @@
+# name: test/sql/anofox_diff_float_tolerance.test
+# description: diff_joindiff(float_tolerance := ...) treats numeric compare columns within an
+#              absolute tolerance as equal, diff_hashdiff(float_precision := ...) rounds FLOAT /
+#              DOUBLE columns before comparing (issue #125). Defaults keep the exact comparison.
+# group: [anofox_tabular]
+
+require anofox_tabular
+
+statement ok
+LOAD anofox_tabular
+
+statement ok
+SET anofox_tab_trace_enabled = false
+
+# The legacy ERP stored the amounts; the new platform recomputed them in floating point
+# (quantity * unit price), so some differ in the last bits only
+statement ok
+CREATE TABLE erp_orders (order_id INTEGER, customer VARCHAR, net_amount DOUBLE, vat_amount DOUBLE, qty INTEGER,
+                         discount DECIMAL(10, 3))
+
+statement ok
+INSERT INTO erp_orders VALUES
+    (5001, 'Nordwind GmbH',   19.99,  3.80, 1, 0.000),
+    (5002, 'Alpenblick AG',  250.00, 47.50, 5, 5.000),
+    (5003, 'Seeblick KG',     99.95, 18.99, 1, 0.000),
+    (5004, 'Hafenkontor',      NULL,  NULL, 2, 0.000),
+    (5005, 'Elbtal OHG',       NULL,  0.00, 1, 0.000),
+    (5006, 'Bergwerk eG',     20.00,  3.80, 3, 1.500)
+
+statement ok
+CREATE TABLE platform_orders AS SELECT * FROM erp_orders LIMIT 0
+
+statement ok
+INSERT INTO platform_orders VALUES
+    (5001, 'Nordwind GmbH',   19.990000000000002, 3.80,               1, 0.000),
+    (5002, 'Alpenblick AG',  250.00,              47.50,              5, 5.001),
+    (5003, 'Seeblick KG',     99.50,              18.99,              1, 0.000),
+    (5004, 'Hafenkontor',      NULL,               NULL,              2, 0.000),
+    (5005, 'Elbtal OHG',      12.00,               0.00,              1, 0.000),
+    (5006, 'Bergwerk e.G.',   20.00,               3.8000000000000003, 4, 1.500)
+
+# Default: exact comparison, the recomputed amounts count as changes
+query TIT
+SELECT diff_type, order_id, changed_columns FROM diff_joindiff('erp_orders', 'platform_orders', 'order_id')
+ORDER BY order_id
+----
+changed	5001	[net_amount]
+changed	5002	[discount]
+changed	5003	[net_amount]
+changed	5005	[net_amount]
+changed	5006	[customer, vat_amount, qty]
+
+# float_tolerance: |a - b| <= tolerance is equal; NULL vs a value still differs, a real change too
+query TIT
+SELECT diff_type, order_id, changed_columns
+FROM diff_joindiff('erp_orders', 'platform_orders', 'order_id', float_tolerance := 1e-9)
+ORDER BY order_id
+----
+changed	5002	[discount]
+changed	5003	[net_amount]
+changed	5005	[net_amount]
+changed	5006	[customer, qty]
+
+# The tolerance is inclusive and applies to every numeric column, DECIMAL and integers too
+query TIT
+SELECT diff_type, order_id, changed_columns
+FROM diff_joindiff('erp_orders', 'platform_orders', 'order_id', float_tolerance := 1)
+ORDER BY order_id
+----
+changed	5005	[net_amount]
+changed	5006	[customer]
+
+# Explicit 0 and NULL are the exact default
+query I
+SELECT count(*) FROM diff_joindiff('erp_orders', 'platform_orders', 'order_id', float_tolerance := 0)
+----
+5
+
+query I
+SELECT count(*) FROM diff_joindiff('erp_orders', 'platform_orders', 'order_id', float_tolerance := NULL)
+----
+5
+
+# With include_all and compare_columns
+query TIT
+SELECT diff_type, order_id, changed_columns
+FROM diff_joindiff('erp_orders', 'platform_orders', 'order_id', ['net_amount', 'vat_amount'], true,
+                   float_tolerance := 1e-9)
+ORDER BY order_id
+----
+unchanged	5001	[]
+unchanged	5002	[]
+changed	5003	[net_amount]
+unchanged	5004	[]
+changed	5005	[net_amount]
+unchanged	5006	[]
+
+statement error
+SELECT * FROM diff_joindiff('erp_orders', 'platform_orders', 'order_id', float_tolerance := -0.01)
+----
+diff_joindiff: float_tolerance must be a finite number >= 0 (got -0.01)
+
+statement error
+SELECT * FROM diff_joindiff('erp_orders', 'platform_orders', 'order_id', float_tolerance := 'nan'::DOUBLE)
+----
+diff_joindiff: float_tolerance must be a finite number >= 0 (got nan)
+
+statement error
+SELECT * FROM diff_joindiff('erp_orders', 'platform_orders', 'order_id', float_tolerance := 'inf'::DOUBLE)
+----
+diff_joindiff: float_tolerance must be a finite number >= 0 (got inf)
+
+# ===--------------------------------------------------------------------===
+# diff_hashdiff(float_precision := N): FLOAT/DOUBLE rounded to N digits, DECIMAL unchanged
+# ===--------------------------------------------------------------------===
+
+query TIT
+SELECT diff_type, order_id, changed_columns FROM diff_hashdiff('erp_orders', 'platform_orders', 'order_id')
+ORDER BY order_id
+----
+changed	5001	[net_amount]
+changed	5002	[discount]
+changed	5003	[net_amount]
+changed	5005	[net_amount]
+changed	5006	[customer, vat_amount, qty]
+
+query TIT
+SELECT diff_type, order_id, changed_columns
+FROM diff_hashdiff('erp_orders', 'platform_orders', 'order_id', float_precision := 6)
+ORDER BY order_id
+----
+changed	5002	[discount]
+changed	5003	[net_amount]
+changed	5005	[net_amount]
+changed	5006	[customer, qty]
+
+# 0 digits: 99.95 and 99.50 both round to 100; the DECIMAL discount is not rounded
+query TIT
+SELECT diff_type, order_id, changed_columns
+FROM diff_hashdiff('erp_orders', 'platform_orders', ['order_id'], float_precision := 0)
+ORDER BY order_id
+----
+changed	5002	[discount]
+changed	5005	[net_amount]
+changed	5006	[customer, qty]
+
+query I
+SELECT count(*) FROM diff_hashdiff('erp_orders', 'platform_orders', 'order_id', float_precision := NULL)
+----
+5
+
+statement error
+SELECT * FROM diff_hashdiff('erp_orders', 'platform_orders', 'order_id', float_precision := -2)
+----
+diff_hashdiff: float_precision must be >= 0 (got -2)
+
+# float_tolerance belongs to diff_joindiff, float_precision to diff_hashdiff
+statement error
+SELECT * FROM diff_hashdiff('erp_orders', 'platform_orders', 'order_id', float_tolerance := 0.01)
+----
+Invalid named parameter "float_tolerance"
+
+statement error
+SELECT * FROM diff_joindiff('erp_orders', 'platform_orders', 'order_id', float_precision := 2)
+----
+Invalid named parameter "float_precision"
+
+# ===--------------------------------------------------------------------===
+# Rounding boundary: values that straddle it differ after rounding; the tolerance does not
+# ===--------------------------------------------------------------------===
+
+statement ok
+CREATE TABLE fx_rates_legacy (currency_pair VARCHAR, rate DOUBLE)
+
+statement ok
+INSERT INTO fx_rates_legacy VALUES ('EURUSD', 1.08344999), ('EURCHF', 0.94120000)
+
+statement ok
+CREATE TABLE fx_rates_new (currency_pair VARCHAR, rate DOUBLE)
+
+statement ok
+INSERT INTO fx_rates_new VALUES ('EURUSD', 1.08345001), ('EURCHF', 0.94120001)
+
+query TT
+SELECT currency_pair, changed_columns
+FROM diff_hashdiff('fx_rates_legacy', 'fx_rates_new', 'currency_pair', float_precision := 4)
+----
+EURUSD	[rate]
+
+query I
+SELECT count(*) FROM diff_joindiff('fx_rates_legacy', 'fx_rates_new', 'currency_pair', float_tolerance := 0.0001)
+----
+0
+
+# ===--------------------------------------------------------------------===
+# A column retyped DECIMAL -> DOUBLE: the DOUBLE side is rounded, the tolerance applies
+# ===--------------------------------------------------------------------===
+
+statement ok
+CREATE TABLE invoices_erp (invoice_id INTEGER, total DECIMAL(12, 2))
+
+statement ok
+INSERT INTO invoices_erp VALUES (900001, 1499.90), (900002, 89.10)
+
+statement ok
+CREATE TABLE invoices_cloud (invoice_id INTEGER, total DOUBLE)
+
+statement ok
+INSERT INTO invoices_cloud VALUES (900001, 1499.8999999999999), (900002, 89.15)
+
+query IT
+SELECT invoice_id, changed_columns
+FROM diff_hashdiff('invoices_erp', 'invoices_cloud', 'invoice_id', float_precision := 2)
+----
+900002	[total]
+
+query IT
+SELECT invoice_id, changed_columns
+FROM diff_joindiff('invoices_erp', 'invoices_cloud', 'invoice_id', float_tolerance := 0.001)
+----
+900002	[total]
+
+statement ok
+DROP TABLE invoices_erp; DROP TABLE invoices_cloud; DROP TABLE fx_rates_legacy; DROP TABLE fx_rates_new;
+DROP TABLE erp_orders; DROP TABLE platform_orders

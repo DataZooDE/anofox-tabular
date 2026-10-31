@@ -228,3 +228,57 @@ class TestTypeChangeWarningOnce:
         err = capfd.readouterr().err
         assert err.count("changed type DOUBLE -> VARCHAR") == 1
         assert result["sku"].tolist() == ["B-200"]
+
+
+@pytest.fixture
+def recomputed_orders(conn):
+    """A migration that recomputed the amounts in floating point (issue #125)."""
+    conn.execute("CREATE OR REPLACE TABLE _orders_erp (order_id INTEGER, net_amount DOUBLE)")
+    conn.execute("INSERT INTO _orders_erp VALUES (5001, 19.99), (5002, 250.0), (5003, 99.95)")
+    conn.execute("CREATE OR REPLACE TABLE _orders_platform (order_id INTEGER, net_amount DOUBLE)")
+    conn.execute(
+        "INSERT INTO _orders_platform VALUES (5001, 19.990000000000002), (5002, 250.0), (5003, 99.5)"
+    )
+    yield "_orders_erp", "_orders_platform"
+    conn.execute("DROP TABLE IF EXISTS _orders_erp")
+    conn.execute("DROP TABLE IF EXISTS _orders_platform")
+
+
+class TestFloatTolerance:
+    def test_joindiff_exact_by_default(self, conn, recomputed_orders):
+        from anofox import diff
+        result = diff.joindiff(conn, *recomputed_orders, primary_keys="order_id")
+        assert sorted(result["order_id"].tolist()) == [5001, 5003]
+
+    def test_joindiff_float_tolerance(self, conn, recomputed_orders):
+        from anofox import diff
+        result = diff.joindiff(conn, *recomputed_orders, primary_keys="order_id", float_tolerance=1e-9)
+        assert result["order_id"].tolist() == [5003]
+        assert list(result["changed_columns"].iloc[0]) == ["net_amount"]
+
+    def test_joindiff_float_tolerance_with_compare_columns(self, conn, recomputed_orders):
+        from anofox import diff
+        result = diff.joindiff(
+            conn, *recomputed_orders, primary_keys="order_id",
+            compare_columns=["net_amount"], include_unchanged=True, float_tolerance=1e-9,
+        )
+        by_id = dict(zip(result["order_id"].tolist(), result["diff_type"].tolist()))
+        assert by_id == {5001: "unchanged", 5002: "unchanged", 5003: "changed"}
+
+    def test_joindiff_negative_tolerance_rejected(self, conn, recomputed_orders):
+        from anofox import diff
+        with pytest.raises(Exception, match="float_tolerance must be a finite number >= 0"):
+            diff.joindiff(conn, *recomputed_orders, primary_keys="order_id", float_tolerance=-0.5)
+
+    def test_hashdiff_float_precision(self, conn, recomputed_orders):
+        from anofox import diff
+        assert sorted(diff.hashdiff(conn, *recomputed_orders, primary_keys="order_id")["order_id"].tolist()) == [
+            5001, 5003,
+        ]
+        result = diff.hashdiff(conn, *recomputed_orders, primary_keys="order_id", float_precision=6)
+        assert result["order_id"].tolist() == [5003]
+
+    def test_hashdiff_negative_precision_rejected(self, conn, recomputed_orders):
+        from anofox import diff
+        with pytest.raises(Exception, match="float_precision must be >= 0"):
+            diff.hashdiff(conn, *recomputed_orders, primary_keys="order_id", float_precision=-1)

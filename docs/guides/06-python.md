@@ -628,6 +628,24 @@ diff_type  id  price changed_columns
 `changed_columns` lists the columns that differ in a `changed` row; it is missing for `added`
 and `removed` rows.
 
+Floating-point noise from a recomputation (`10.000000000000002`, printed as `10.0` by pandas)
+counts as a change. `float_tolerance` treats numeric columns within that absolute difference as
+equal (`diff.hashdiff` has `float_precision`, which rounds to that many decimal digits instead):
+
+```python
+recomputed = pd.DataFrame({"id": [1, 2, 3], "price": [10.000000000000002, 20.0, 35.0]})
+print(diff.joindiff(conn, before, recomputed, primary_keys="id").sort_values("id").to_string(index=False))
+print(diff.joindiff(conn, before, recomputed, primary_keys="id", float_tolerance=1e-9).to_string(index=False))
+```
+
+```text
+diff_type  id  price changed_columns
+  changed   1   10.0         [price]
+  changed   3   35.0         [price]
+diff_type  id  price changed_columns
+  changed   3   35.0         [price]
+```
+
 `diff.diff_schema` compares the columns instead of the rows: one row per column of either
 DataFrame (or table), with its type on each side and the drift (`same`, `added`, `removed` or
 `retyped`). A row diff compares only the columns both sides have.
