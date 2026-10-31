@@ -23,7 +23,7 @@ FORCE INSTALL anofox_tabular FROM community;
 
 The community build can be older than these docs, so a function or option described here may
 be missing or behave differently in your copy. Check the installed release (a date version
-such as `v2026.10.29`) and upgrade if it is older than you expect:
+such as `v2026.10.31`) and upgrade if it is older than you expect:
 
 ```sql no-run
 SELECT extension_version FROM duckdb_extensions() WHERE extension_name = 'anofox_tabular';
