@@ -79,8 +79,9 @@ bool HasWordAt(const std::string& text, size_t pos, const char* word) {
 //! - A leading label (PHONE_LABELS, case-insensitive) followed by '.', ':' or a blank is dropped;
 //!   this also accepts the RFC 3966 form "tel:+1-650-253-0000".
 //! - A trailing extension marker (EXTENSION_MARKERS, case-insensitive, not glued to a preceding
-//!   letter) followed by optional '.', ':', blanks and then only digits is split off. Separators
-//!   such as '-' never start an extension: "030 12345-67" stays one number.
+//!   letter) followed by optional '.', ':', '=', blanks and then only digits is split off; this
+//!   also reads the RFC 3966 parameter "tel:+49-30-1234567;ext=123". Separators such as '-'
+//!   never start an extension: "030 12345-67" stays one number.
 //! - Any other ASCII letter in the remaining number sets has_letters.
 PhoneInput SplitPhoneInput(const std::string& raw) {
 	PhoneInput input;
@@ -107,8 +108,8 @@ PhoneInput SplitPhoneInput(const std::string& raw) {
 	}
 	if (digits_start < text.size()) {
 		size_t marker_end = digits_start;
-		while (marker_end > 0 &&
-		       (IsBlank(text[marker_end - 1]) || text[marker_end - 1] == '.' || text[marker_end - 1] == ':')) {
+		while (marker_end > 0 && (IsBlank(text[marker_end - 1]) || text[marker_end - 1] == '.' ||
+		                          text[marker_end - 1] == ':' || text[marker_end - 1] == '=')) {
 			marker_end--;
 		}
 		for (const char* marker : EXTENSION_MARKERS) {
@@ -549,6 +550,10 @@ std::string PhoneNumberManager::Format(const std::string& raw_number, const std:
 			} else {
 				pending_separator = true;
 			}
+		}
+		// The extension is the RFC 3966 'ext' parameter; it reads back via SplitPhoneInput
+		if (!parts.extension.empty()) {
+			formatted += ";ext=" + parts.extension;
 		}
 		format_label = "RFC3966";
 		break;

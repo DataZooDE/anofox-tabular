@@ -125,11 +125,13 @@ parentheses as separators and handles four more cases:
 - **A leading label** is dropped: `Tel`, `Telefon`, `Telephone`, `Phone`, `Mobil`, `Mobile`,
   `Cell` or `Fax` (any case), followed by `.`, `:` or a space. `Tel: 030 12345678`,
   `Mobil 0171 1234567` and the RFC 3966 form `tel:+49-30-12345678` are all valid.
-- **A trailing extension** is split off and ignored for validation and formatting: the marker
-  `ext`, `extension`, `x`, `Durchwahl` or `DW` (any case, optionally followed by `.` or `:`),
-  then only digits up to the end. `phonenumber_parse` returns the digits in the field
-  `extension`. A `-` is a separator and never starts an extension, so `030 12345-67` is read as
-  one number.
+- **A trailing extension** is split off and ignored for validation: the marker `ext`,
+  `extension`, `x`, `Durchwahl` or `DW` (any case, optionally followed by `.`, `:` or `=`), then
+  only digits up to the end. This includes the RFC 3966 parameter `;ext=`, so
+  `tel:+49-30-1234567;ext=123` and `+49 30 1234567;ext=123` have the extension `123`.
+  `phonenumber_parse` returns the digits in the field `extension`; only the `RFC3966` format
+  writes it back. A `-` is a separator and never starts an extension, so `030 12345-67` is read
+  as one number. Other `tel:` URI parameters (`;isub=`, `;phone-context=`) are not supported.
 - **Any other letter makes the number invalid** with reason `invalid_characters`:
   `650foo2530000`, `030 12A34567` and `+49 30 1234 FAX 5678` are rejected instead of being read
   as the digits that are left. Vanity numbers such as `1-800-FLOWERS` are not converted. Input
@@ -342,7 +344,7 @@ error.
 | `E164` | `+` country code and national number, no separators: `+493012345678` |
 | `INTERNATIONAL` | `+` country code, a space, then the region's international grouping: `+49 30 12345678` |
 | `NATIONAL` | The region's national grouping, with the national prefix where the region dials one: `030 12345678` |
-| `RFC3966` | `tel:` URI: the international grouping with `-` between all blocks: `tel:+49-30-12345678` |
+| `RFC3966` | `tel:` URI: the international grouping with `-` between all blocks: `tel:+49-30-12345678`. An extension of the input is appended as `;ext=`: `tel:+49-30-1234567;ext=123`, which parses back to the same number and extension |
 
 The grouping follows per-region layout rules modelled on libphonenumber's number formats. Each
 rule names the leading digits it applies to and how the digits are split into blocks, so a
@@ -366,6 +368,24 @@ FROM (VALUES ('E164'), ('INTERNATIONAL'), ('national'), ('RFC3966')) t(f);
 │ national      │ (650) 253-0000      │
 │ RFC3966       │ tel:+1-650-253-0000 │
 └───────────────┴─────────────────────┘
+```
+
+An extension of the input appears only in the `RFC3966` output, and reads back from it:
+
+```sql
+SELECT phone, phonenumber_format(phone, NULL, 'RFC3966') AS rfc3966,
+       (phonenumber_parse(phonenumber_format(phone, NULL, 'RFC3966'), NULL)).extension AS extension
+FROM (VALUES ('+49 30 1234567 ext. 123'), ('+49 30 1234567;ext=123')) t(phone);
+```
+
+```text
+┌─────────────────────────┬────────────────────────────┬───────────┐
+│          phone          │          rfc3966           │ extension │
+│         varchar         │          varchar           │  varchar  │
+├─────────────────────────┼────────────────────────────┼───────────┤
+│ +49 30 1234567 ext. 123 │ tel:+49-30-1234567;ext=123 │ 123       │
+│ +49 30 1234567;ext=123  │ tel:+49-30-1234567;ext=123 │ 123       │
+└─────────────────────────┴────────────────────────────┴───────────┘
 ```
 
 Mexican numbers follow the 2019 numbering reform: every number has 10 digits and there is no
