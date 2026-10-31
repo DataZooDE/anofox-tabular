@@ -1,0 +1,131 @@
+# name: test/sql/anofox_pii_us_phone.test
+# description: US/NANP phone numbers written with dashes only (212-555-0123,
+#              1-212-555-0123) and with a country code 1 before a parenthesised area code
+#              (1 (212) 555-0123) are one PHONE match including the leading 1 (issue #125).
+#              Dates, ISO timestamps, invoice numbers, ZIP+4 codes, SSNs, IBAN and card
+#              fragments and product codes stay no PHONE match.
+# group: [sql]
+
+require anofox_tabular
+
+statement ok
+LOAD anofox_tabular;
+
+statement ok
+SET anofox_pii_enabled_types = 'PHONE';
+
+# Customer support notes as they arrive from a US call center
+query TT
+SELECT note, list_transform(pii_detect(note), lambda m: m.text)
+FROM (VALUES
+    ('Call back John at 1-212-555-0123 re: invoice INV-2026-0042 from 2026-10-31'),
+    ('Customer prefers 212-555-0123 after 5pm'),
+    ('New number: 1 (212) 555-0123, old one disconnected'),
+    ('Cell 1-415-555-0199; office (415) 555-0100'),
+    ('Reach her on +1 (646) 555-0147 or +1-646-555-0148'),
+    ('callback=1-800-555-0175&ticket=4711'),
+    ('"phone": "917-555-0111"'),
+    ('Left voicemail (1-212-555-0123).')
+) t(note);
+----
+Call back John at 1-212-555-0123 re: invoice INV-2026-0042 from 2026-10-31	[1-212-555-0123]
+Customer prefers 212-555-0123 after 5pm	[212-555-0123]
+New number: 1 (212) 555-0123, old one disconnected	['1 (212) 555-0123']
+Cell 1-415-555-0199; office (415) 555-0100	[1-415-555-0199, '(415) 555-0100']
+Reach her on +1 (646) 555-0147 or +1-646-555-0148	['+1 (646) 555-0147', +1-646-555-0148]
+callback=1-800-555-0175&ticket=4711	[1-800-555-0175]
+"phone": "917-555-0111"	[917-555-0111]
+Left voicemail (1-212-555-0123).	[1-212-555-0123]
+
+# The match covers the leading 1, so masking leaves no stray digit
+query T
+SELECT pii_mask(note)
+FROM (VALUES
+    ('Call back John at 1-212-555-0123 re: invoice INV-2026-0042 from 2026-10-31'),
+    ('New number: 1 (212) 555-0123, old one disconnected')
+) t(note);
+----
+Call back John at [PHONE] re: invoice INV-2026-0042 from 2026-10-31
+New number: [PHONE], old one disconnected
+
+query T
+SELECT pii_mask_column('Call 1 (212) 555-0123 or 212-555-0124', 'PHONE', 'partial');
+----
+Call ***-***-0123 or ***-***-0124
+
+# Not phone numbers: dates, ISO timestamps, invoice and order numbers, ZIP+4 codes, SSNs,
+# card and IBAN fragments, product codes and part numbers with a dashed 3-3-4 tail
+query TI
+SELECT note, len(pii_detect(note))
+FROM (VALUES
+    ('Invoice INV-2026-0042 dated 2026-10-31'),
+    ('Created 2026-10-31T14:30:00Z, updated 2026-10-31 14:35:12'),
+    ('Ship to New York, NY 10001-1234'),
+    ('SSN on file: 123-45-6789'),
+    ('Card ending 4111-1111-1111-1111'),
+    ('IBAN DE89-3704-0044-0532-0130-00'),
+    ('Order ORD-212-555-0123 shipped'),
+    ('Part SKU-A12-555-0123-B in stock'),
+    ('Serial 1234-212-555-0123'),
+    ('Ref 212-555-0123-77 closed'),
+    ('Build 2026.10.31-212-555'),
+    ('Tracking 1Z-212-555-01234')
+) t(note);
+----
+Invoice INV-2026-0042 dated 2026-10-31	0
+Created 2026-10-31T14:30:00Z, updated 2026-10-31 14:35:12	0
+Ship to New York, NY 10001-1234	0
+SSN on file: 123-45-6789	0
+Card ending 4111-1111-1111-1111	0
+IBAN DE89-3704-0044-0532-0130-00	0
+Order ORD-212-555-0123 shipped	0
+Part SKU-A12-555-0123-B in stock	0
+Serial 1234-212-555-0123	0
+Ref 212-555-0123-77 closed	0
+Build 2026.10.31-212-555	0
+Tracking 1Z-212-555-01234	0
+
+# With all default types the SSN stays a separate US_SSN match next to the phone number
+statement ok
+RESET anofox_pii_enabled_types;
+
+query T
+SELECT list_transform(pii_detect('Caller SSN 123-45-6789, callback 1-212-555-0123, invoice INV-2026-0042'),
+                      lambda m: m.type || ':' || m.text);
+----
+['US_SSN:123-45-6789', 'PHONE:1-212-555-0123']
+
+query T
+SELECT pii_mask('Caller SSN 123-45-6789, callback 212-555-0123 on 2026-10-31');
+----
+Caller SSN [US_SSN], callback [PHONE] on 2026-10-31
+
+# Hashing: the dashed, the parenthesised and the +1 forms of one number share one hash,
+# the E.164 hash left(sha256('+12125550123'), 16), with the default region US
+query TI
+SELECT f, pii_mask_value(f, 'PHONE', 'hash') = left(sha256('+12125550123'), 16)
+FROM (VALUES ('212-555-0123'), ('1-212-555-0123'), ('1 (212) 555-0123'), ('+1 (212) 555-0123')) t(f);
+----
+212-555-0123	true
+1-212-555-0123	true
+1 (212) 555-0123	true
++1 (212) 555-0123	true
+
+# Deep validation judges a US number without "+" as the +1 number it is, also with the
+# default region DE
+statement ok
+SET anofox_tab_phonenumber_default_region = 'DE';
+
+statement ok
+SET anofox_pii_deep_validation = true;
+
+query T
+SELECT pii_mask('Call 212-555-0123 or 1 (212) 555-0123');
+----
+Call [PHONE] or [PHONE]
+
+statement ok
+SET anofox_pii_deep_validation = false;
+
+statement ok
+RESET anofox_tab_phonenumber_default_region;

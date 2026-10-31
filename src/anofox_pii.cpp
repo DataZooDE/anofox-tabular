@@ -2252,14 +2252,21 @@ PhoneRecognizer::PhoneRecognizer()
         //   "089 / 12345678", "089-123456-78"
         // The number must end at the end of text or at a character that is no
         // letter, digit or '+' ("</td>", '"', '&', ...).
-        // Group 2: US style (555) 123-4567.
+        // Group 2: a US/NANP number without "+", at the same boundaries:
+        // dashes only with an optional country code 1 ("212-555-0123",
+        // "1-212-555-0123") or a parenthesised area code after the country
+        // code 1 ("1 (212) 555-0123"). Area code and exchange start with 2-9,
+        // as in every NANP number, so dates (2026-10-31), ZIP+4 (10001-1234),
+        // SSNs (123-45-6789) and invoice numbers keep their shape apart.
+        // Group 3: US style (555) 123-4567 anywhere.
         // Dots are no separator in national numbers so dates (25.10.2026),
         // amounts and version strings stay unmatched; Validate() checks the
         // digit count.
         R"((?:^|[^A-Za-z0-9+]))"
-        R"(((?:\+\d{1,3}|00[1-9]\d{0,2}(?=[ \-./(]))(?:[ \-./]?\(\d{1,4}\)|[ \-./]?\d{1,5}){1,6})"
+        R"((?:((?:\+\d{1,3}|00[1-9]\d{0,2}(?=[ \-./(]))(?:[ \-./]?\(\d{1,4}\)|[ \-./]?\d{1,5}){1,6})"
         R"(|00[1-9]\d{6,13})"
         R"(|(?:\(0[1-9]\d{1,4}\) ?|0[1-9]\d{1,4}(?: ?/ ?|[ \-]))\d{2,8}(?:[ \-/]\d{1,8}){0,3}))"
+        R"(|(1[ \-]?\([2-9]\d{2}\)[ \-.]?[2-9]\d{2}[ \-.]?\d{4}|(?:1-)?[2-9]\d{2}-[2-9]\d{2}-\d{4})))"
         R"((?=$|[^A-Za-z0-9+]))"
         R"(|(\(\d{3}\)[\s\-\.]?\d{3}[\s\-\.]?\d{4}))"
     ) {}
@@ -2273,10 +2280,12 @@ std::vector<PIIMatch> PhoneRecognizer::FindMatches(const std::string &text) cons
     std::sregex_iterator end;
     for (std::sregex_iterator iter(text.begin(), text.end(), pattern_); iter != end; ++iter) {
         const auto &match = *iter;
-        const size_t group = match[1].matched ? 1 : (match[2].matched ? 2 : 0);
+        const size_t group = match[1].matched ? 1 : (match[2].matched ? 2 : (match[3].matched ? 3 : 0));
         if (group == 0) {
             continue;
         }
+        // Groups 1 and 2 stand at a token boundary; group 3 (555) 123-4567 anywhere
+        const bool bounded = group == 1 || group == 2;
         auto start = static_cast<size_t>(match.position(group));
         std::string number = match[group].str();
 
@@ -2284,7 +2293,7 @@ std::vector<PIIMatch> PhoneRecognizer::FindMatches(const std::string &text) cons
         // '/', '.') continues a longer digit sequence, e.g. the
         // "0044 0532 0130 00" groups of an IBAN. A dash joins it to any
         // letter or digit before ("20261027-0001", the groups of a UUID).
-        if (group == 1 && number[0] != '+' && start >= 2) {
+        if (bounded && number[0] != '+' && start >= 2) {
             const auto before = static_cast<unsigned char>(text[start - 1]);
             const auto previous = static_cast<unsigned char>(text[start - 2]);
             const bool continues = (before == '-' && std::isalnum(previous)) ||
@@ -2297,12 +2306,25 @@ std::vector<PIIMatch> PhoneRecognizer::FindMatches(const std::string &text) cons
         // Likewise a dash right after the number that leads on to letters or
         // digits ("0123-4567-8901-abcdef...") makes it part of a longer token
         const size_t stop = start + number.size();
-        if (group == 1 && stop + 1 < text.size() && text[stop] == '-' &&
+        if (bounded && stop + 1 < text.size() && text[stop] == '-' &&
             std::isalnum(static_cast<unsigned char>(text[stop + 1]))) {
             AnofoxTrace(AnofoxLogLevel::Trace, "pii: phone candidate continues into a longer token: " + number);
             continue;
         }
-        if (Validate(number)) {
+        // A NANP number without "+" is validated as the +1 number it is, so
+        // deep validation judges it for the US whatever the default region
+        std::string validated = number;
+        if (group == 2) {
+            std::string digits;
+            for (char c : number) {
+                if (std::isdigit(static_cast<unsigned char>(c))) {
+                    digits += c;
+                }
+            }
+            validated = "+1 " + digits.substr(digits.size() - 10);
+            AnofoxTrace(AnofoxLogLevel::Trace, "pii: NANP phone candidate " + number + " validated as " + validated);
+        }
+        if (Validate(validated)) {
             matches.emplace_back(type_, number, start, start + number.size(), 1.0);
         }
     }
