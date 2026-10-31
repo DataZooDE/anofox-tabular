@@ -110,6 +110,13 @@ static const vector<string> &CommonParamsKeys() {
 	return KEYS;
 }
 
+// A keyword of the checks table (check_type, params.agg, params.mode) as it is compared:
+// surrounding white space and case do not matter (' Volume ' is volume, 'SUM ' is sum)
+static string NormalizeKeyword(string text) {
+	StringUtil::Trim(text);
+	return StringUtil::Lower(text);
+}
+
 // The check types that exist only as direct functions (they return per-row statistics or a
 // column list, not one value against thresholds); a suite row of such a type is told so
 // instead of being reported like a misspelled type
@@ -325,8 +332,8 @@ static void ParseCheckParams(CheckSpec &spec, const string &params_json) {
 	};
 
 	spec.pattern = get_scalar("pattern");
-	spec.agg = get_scalar("agg");
-	spec.mode = get_scalar("mode");
+	spec.agg = NormalizeKeyword(get_scalar("agg"));
+	spec.mode = NormalizeKeyword(get_scalar("mode"));
 	spec.expression = get_scalar("expression");
 	// Key column lists: a comma-separated string or a JSON array of column names
 	auto get_columns = [&](const char *key) -> string {
@@ -629,9 +636,7 @@ static vector<CheckSpec> ReadCheckSpecs(ClientContext &context, const string &ch
 		spec.check_name = str_at(row, 0);
 		spec.check_name_is_null = value_at(row, 0).IsNull();
 		// ' volume ' is the volume check type
-		spec.check_type = str_at(row, 1);
-		StringUtil::Trim(spec.check_type);
-		std::transform(spec.check_type.begin(), spec.check_type.end(), spec.check_type.begin(), ::tolower);
+		spec.check_type = NormalizeKeyword(str_at(row, 1));
 		spec.table_name = str_at(row, 2);
 		spec.column_name = str_at(row, 3);
 		spec.lower_threshold = value_at(row, 5);
@@ -1176,8 +1181,7 @@ static CheckBranch BuildCheckBranch(ClientContext &context, const CheckSpec &spe
 	} else if (spec.check_type == "agg") {
 		RequireColumn(spec);
 		RequireParam(spec, spec.agg, "agg");
-		string agg = spec.agg;
-		std::transform(agg.begin(), agg.end(), agg.begin(), ::tolower);
+		const string &agg = spec.agg;
 		static const vector<string> ALLOWED_AGGS = {"avg", "min", "max", "sum", "median", "stddev"};
 		if (std::find(ALLOWED_AGGS.begin(), ALLOWED_AGGS.end(), agg) == ALLOWED_AGGS.end()) {
 			throw BinderException("run_checks: check '" + spec.check_name +
@@ -1298,7 +1302,6 @@ static CheckBranch BuildCheckBranch(ClientContext &context, const CheckSpec &spe
 	} else if (spec.check_type == "occurrence") {
 		RequireColumn(spec);
 		string mode = spec.mode.empty() ? "max" : spec.mode;
-		std::transform(mode.begin(), mode.end(), mode.begin(), ::tolower);
 		if (mode != "max" && mode != "min") {
 			throw BinderException("run_checks: check '" + spec.check_name + "': params.mode must be 'max' or 'min'");
 		}

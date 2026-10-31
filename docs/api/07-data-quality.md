@@ -1166,11 +1166,11 @@ The `value` column holds the measure of each type:
 | `distinct_count` | distinct values | none | yes |
 | `regex_match` | match rate | `pattern` (required) | yes |
 | `values_in_set` | share in set | `allowed_values` (JSON array of strings) | yes |
-| `agg` | the aggregate (`min`, `max`, `sum` of an integer or `DECIMAL` column and `median` of a `DECIMAL` column are compared exactly, as in [`agg_check`](#agg_check); a `sum` or `avg` whose exact sum leaves its range is an `error` row) | `agg` (required): `avg`, `min`, `max`, `sum`, `median`, `stddev` | yes |
+| `agg` | the aggregate (`min`, `max`, `sum` of an integer or `DECIMAL` column and `median` of a `DECIMAL` column are compared exactly, as in [`agg_check`](#agg_check); a `sum` or `avg` whose exact sum leaves its range is an `error` row) | `agg` (required): `avg`, `min`, `max`, `sum`, `median`, `stddev`; case and surrounding spaces do not matter (`"SUM "` is `sum`) | yes |
 | `duplicate_count` | duplicates | none (the key is `column_name`: a comma-separated list or a JSON array) | yes |
 | `compliance` | compliance rate | `expression` (required) | yes |
 | `freshness` | age in seconds (the thresholds are seconds too); `column_name` must be a date, timestamp or text column | `reference_time` (default: the current UTC time, no ICU needed) | yes |
-| `occurrence` | frequency of the extreme value | `mode`: `max` (default) or `min` | no |
+| `occurrence` | frequency of the extreme value | `mode`: `max` (default) or `min`; case and surrounding spaces do not matter | no |
 | `match_rate` | match rate over the rows with a non-NULL key | `right_table`, `right_keys` (required), `left_keys` (default `column_name`); the keys as a comma-separated string or a JSON array (`["customer_id", "region"]`) | no |
 | `rel_count_change` | relative change; without `lower_threshold` and `upper_threshold` a monitor row that only records it (the direct function defaults to -0.5 and 0.5) | `date_column` (required), `count_column` (counted with `COUNT(DISTINCT ...)` per day; default: rows), `window_days` (7), `reference_date`, `fill_missing_days` (`false`) | no |
 | `metric_anomaly_iqr` | daily metric: `AVG` of `metric_column`, else of `column_name`, else the row count (0 on a reference date without rows) | `date_column` (required), `metric_column`, `window_days` (30), `k` (1.5), `reference_date` | no |

@@ -1,0 +1,59 @@
+# name: test/sql/anofox_check_suite_params_case.test
+# description: params.agg and params.mode of a run_checks row are read like check_type:
+#              surrounding spaces and case do not matter ({"agg": "SUM "} is sum, {"mode": " Min"}
+#              is min) (issue #125)
+# group: [anofox_tabular]
+
+require anofox_tabular
+
+statement ok
+LOAD anofox_tabular
+
+statement ok
+SET anofox_tab_trace_enabled = false
+
+statement ok
+CREATE TABLE webshop_order_lines (line_id INTEGER, sku VARCHAR, qty INTEGER, unit_price DECIMAL(10, 2))
+
+statement ok
+INSERT INTO webshop_order_lines VALUES
+    (1, 'SKU-100', 2,  19.99),
+    (2, 'SKU-200', 5,   4.50),
+    (3, 'SKU-100', 1, 120.00),
+    (4, 'SKU-300', 3,  19.99),
+    (5, 'SKU-100', 4,   7.25)
+
+# The checks were typed by hand in a spreadsheet and imported as they are
+statement ok
+CREATE TABLE line_checks (check_name VARCHAR, check_type VARCHAR, table_name VARCHAR, column_name VARCHAR,
+                          params VARCHAR, lower_threshold DOUBLE, upper_threshold DOUBLE)
+
+statement ok
+INSERT INTO line_checks VALUES
+    ('a_qty_total',        'agg',        'webshop_order_lines', 'qty',        '{"agg": "SUM "}',   1,    100),
+    ('b_avg_unit_price',   'agg',        'webshop_order_lines', 'unit_price', '{"agg": " Avg"}',   1,    1000),
+    ('c_max_price',        'agg',        'webshop_order_lines', 'unit_price', '{"agg": "\tMAX\n"}', NULL, 100),
+    ('d_top_sku_lines',    'occurrence', 'webshop_order_lines', 'sku',        '{"mode": " MAX "}', NULL, 3),
+    ('e_rare_sku_lines',   'occurrence', 'webshop_order_lines', 'sku',        '{"mode": "Min"}',   1,    NULL),
+    ('f_unknown_agg',      'agg',        'webshop_order_lines', 'qty',        '{"agg": " mean "}', NULL, NULL),
+    ('g_unknown_mode',     'occurrence', 'webshop_order_lines', 'sku',        '{"mode": "most"}',  NULL, NULL)
+
+query TRT
+SELECT check_name, value, status FROM run_checks('line_checks')
+----
+a_qty_total	15.0	pass
+b_avg_unit_price	34.346	pass
+c_max_price	120.0	fail
+d_top_sku_lines	3.0	pass
+e_rare_sku_lines	1.0	pass
+f_unknown_agg	NULL	error
+g_unknown_mode	NULL	error
+
+query TT
+SELECT check_name, message FROM run_checks('line_checks') WHERE status = 'error'
+----
+f_unknown_agg	check 'f_unknown_agg' (agg) cannot run: params.agg must be one of 'avg', 'min', 'max', 'sum', 'median', 'stddev'
+g_unknown_mode	check 'g_unknown_mode' (occurrence) cannot run: params.mode must be 'max' or 'min'
+
+statement ok
+DROP TABLE line_checks; DROP TABLE webshop_order_lines
