@@ -1,0 +1,76 @@
+# name: test/sql/anofox_phonenumber_rfc3966_ext.test
+# description: RFC 3966 carries an extension as the ';ext=' parameter. phonenumber_format(...,
+#              'RFC3966') appends it when the input has an extension, and the parser reads it back
+#              ('tel:+49-30-1234567;ext=123' and '+49 30 1234567;ext=123'), so
+#              parse(format(x, 'RFC3966')) = parse(x). The other formats leave the extension out.
+# group: [anofox_tabular]
+
+require anofox_tabular
+
+statement ok
+LOAD anofox_tabular;
+
+statement ok
+SET anofox_tab_trace_level='warn';
+
+# Switchboard numbers with extensions from a German CRM export
+statement ok
+CREATE TABLE ansprechpartner AS SELECT * FROM (VALUES
+    (1, 'Zentrale Berlin',        '+49 30 1234567 ext. 123',      NULL),
+    (2, 'Vertrieb Hamburg',       '040 3570 4410 Durchwahl 215',  'DE'),
+    (3, 'Support Mountain View',  '(650) 253-0000 x42',           'US'),
+    (4, 'Einkauf Muenchen',       '089 2180 2414 DW 7',           'DE'),
+    (5, 'Buchhaltung Koeln',      '0221 470 0',                   'DE'),
+    (6, 'Aus tel-URI',            'tel:+49-30-1234567;ext=123',   NULL),
+    (7, 'Aus tel-URI ohne tel:',  '+49 30 1234567;ext=123',       NULL),
+    (8, 'tel-URI gross',          'TEL:+1-650-253-0000;EXT=42',   NULL)
+) t(id, name, telefon, land);
+
+query IITT
+SELECT id, (p).valid, (p).national_number, (p).extension
+FROM (SELECT id, phonenumber_parse(telefon, land) AS p FROM ansprechpartner)
+ORDER BY id;
+----
+1	true	301234567	123
+2	true	4035704410	215
+3	true	6502530000	42
+4	true	8921802414	7
+5	true	2214700	NULL
+6	true	301234567	123
+7	true	301234567	123
+8	true	6502530000	42
+
+query IT
+SELECT id, phonenumber_format(telefon, land, 'RFC3966') FROM ansprechpartner ORDER BY id;
+----
+1	tel:+49-30-1234567;ext=123
+2	tel:+49-40-35704410;ext=215
+3	tel:+1-650-253-0000;ext=42
+4	tel:+49-89-21802414;ext=7
+5	tel:+49-221-4700
+6	tel:+49-30-1234567;ext=123
+7	tel:+49-30-1234567;ext=123
+8	tel:+1-650-253-0000;ext=42
+
+# Round trip: the RFC 3966 form parses to the same struct as the original input
+query I
+SELECT count(*) FROM ansprechpartner
+WHERE phonenumber_parse(phonenumber_format(telefon, land, 'RFC3966'), NULL) IS DISTINCT FROM phonenumber_parse(telefon, land);
+----
+0
+
+# The other formats carry no extension
+query TTT
+SELECT phonenumber_format('tel:+49-30-1234567;ext=123', NULL, 'E164'),
+       phonenumber_format('tel:+49-30-1234567;ext=123', NULL, 'INTERNATIONAL'),
+       phonenumber_format('tel:+49-30-1234567;ext=123', NULL, 'NATIONAL');
+----
++49301234567	+49 30 1234567	030 1234567
+
+# ";ext=" without digits leaves letters in the number; other tel-URI parameters are not supported
+query TTT
+SELECT (phonenumber_parse('tel:+49-30-1234567;ext=', NULL)).valid,
+       (phonenumber_parse('tel:+49-30-1234567;isub=1411', NULL)).reason,
+       phonenumber_match('tel:+49-30-1234567;ext=123', '+49 30 1234567', NULL);
+----
+false	invalid_characters	EXACT_MATCH

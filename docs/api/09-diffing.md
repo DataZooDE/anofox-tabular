@@ -6,6 +6,7 @@
 - Find the rows that differ between two versions of a table
 - Use a single or a compound primary key
 - Compare only some columns, or also list the unchanged rows
+- Ignore floating-point noise in numeric columns
 - List the schema drift (added, removed and retyped columns) between two tables
 - Pass the diff parameters by position or by name
 
@@ -17,7 +18,7 @@ The row diffs are rewritten into one `FULL OUTER JOIN` query that DuckDB runs na
 | Function | Canonical name | Kind | Returns |
 |----------|----------------|------|---------|
 | [`diff_joindiff`](#diff_joindiff) | `anofox_tab_diff_joindiff` | table | one row per added, removed or changed row |
-| [`diff_hashdiff`](#diff_hashdiff) | `anofox_tab_diff_hashdiff` | table | the same result as `diff_joindiff` without its options |
+| [`diff_hashdiff`](#diff_hashdiff) | `anofox_tab_diff_hashdiff` | table | the same result as `diff_joindiff` with its defaults; can round floating-point columns first |
 | [`diff_schema`](#diff_schema) | `anofox_tab_diff_schema` | table | one row per column of either table, with its drift |
 
 Setup for the examples on this page:
@@ -53,6 +54,7 @@ diff_joindiff(
     primary_key     VARCHAR | VARCHAR[]
     [, compare_columns VARCHAR[]
     [, include_all     BOOLEAN ]]
+    [, float_tolerance := DOUBLE ]
 ) -> TABLE(diff_type VARCHAR, <primary key columns>, <other target columns>, changed_columns VARCHAR[])
 ```
 
@@ -63,6 +65,7 @@ diff_joindiff(
 | `primary_key` | `VARCHAR` or `VARCHAR[]` | required | One key column, or a list for a compound key. By name: `primary_key := 'id'` or `primary_keys := ['id', 'day']` |
 | `compare_columns` | `VARCHAR[]` | all non-key columns present in both tables | The columns that decide `changed`. `NULL` keeps the default |
 | `include_all` | `BOOLEAN` | `false` | Also return the `unchanged` rows |
+| `float_tolerance` | `DOUBLE` (by name only) | `0` (exact) | Numeric compare columns whose values differ by at most this much (absolute, inclusive) count as equal. `NULL` keeps the default; a negative, `NaN` or infinite value is an error. See [Floating-point noise](#floating-point-noise) |
 
 Output columns:
 
@@ -78,7 +81,8 @@ Behavior:
 - Keys are matched NULL-safely (`IS NOT DISTINCT FROM`). A row whose key is `NULL` on both sides
   is compared, not reported as removed and added.
 - A row is `changed` when any compare column `IS DISTINCT FROM` its counterpart, so a change from
-  or to `NULL` counts.
+  or to `NULL` counts. With `float_tolerance` a numeric compare column is equal when
+  `|source - target| <= float_tolerance`; `NULL` still equals only `NULL`.
 - Columns that exist in only one of the two tables (added, dropped or renamed columns) are not
   compared by default; the trace log names them as a warning. [`diff_schema`](#diff_schema)
   lists them.
@@ -310,6 +314,66 @@ ORDER BY id;
 └───────────┴───────┘
 ```
 
+### Floating-point noise
+
+A migration that recomputes amounts in floating point (`quantity * unit_price`) produces values
+such as `19.990000000000002` where the legacy system stored `19.99`. Compared exactly, each of
+them is a change. `float_tolerance` treats numeric compare columns within an absolute
+difference as equal:
+
+```sql
+CREATE TABLE erp_orders (order_id INTEGER, customer VARCHAR, net_amount DOUBLE, qty INTEGER);
+INSERT INTO erp_orders VALUES
+    (5001, 'Nordwind GmbH', 19.99, 1), (5002, 'Alpenblick AG', 250.00, 5),
+    (5003, 'Seeblick KG', 99.95, 1), (5004, 'Elbtal OHG', NULL, 1);
+
+CREATE TABLE platform_orders (order_id INTEGER, customer VARCHAR, net_amount DOUBLE, qty INTEGER);
+INSERT INTO platform_orders VALUES
+    (5001, 'Nordwind GmbH', 19.990000000000002, 1), (5002, 'Alpenblick AG', 250.00, 5),
+    (5003, 'Seeblick KG', 99.50, 1), (5004, 'Elbtal OHG', 12.00, 1);
+
+SELECT diff_type, order_id, net_amount, changed_columns
+FROM diff_joindiff('erp_orders', 'platform_orders', 'order_id')
+ORDER BY order_id;
+```
+
+```text
+┌───────────┬──────────┬────────────────────┬─────────────────┐
+│ diff_type │ order_id │     net_amount     │ changed_columns │
+│  varchar  │  int32   │       double       │    varchar[]    │
+├───────────┼──────────┼────────────────────┼─────────────────┤
+│ changed   │     5001 │ 19.990000000000002 │ [net_amount]    │
+│ changed   │     5003 │               99.5 │ [net_amount]    │
+│ changed   │     5004 │               12.0 │ [net_amount]    │
+└───────────┴──────────┴────────────────────┴─────────────────┘
+```
+
+```sql
+SELECT diff_type, order_id, net_amount, changed_columns
+FROM diff_joindiff('erp_orders', 'platform_orders', 'order_id', float_tolerance := 1e-9)
+ORDER BY order_id;
+```
+
+```text
+┌───────────┬──────────┬────────────┬─────────────────┐
+│ diff_type │ order_id │ net_amount │ changed_columns │
+│  varchar  │  int32   │   double   │    varchar[]    │
+├───────────┼──────────┼────────────┼─────────────────┤
+│ changed   │     5003 │       99.5 │ [net_amount]    │
+│ changed   │     5004 │       12.0 │ [net_amount]    │
+└───────────┴──────────┴────────────┴─────────────────┘
+```
+
+- The tolerance applies to every compare column that is numeric on both sides: `FLOAT`,
+  `DOUBLE`, `DECIMAL` and the integer types, also when the type changed (`DECIMAL` to `DOUBLE`).
+  The difference is computed in `DOUBLE`. Key columns are always matched exactly.
+- The comparison is inclusive: with `float_tolerance := 1` the quantities `3` and `4` are equal.
+- `NULL` against a value is still a change (`5004` above); `NULL` against `NULL` is not.
+- `changed_columns` follows the tolerance, and the output shows the target values unchanged.
+
+`diff_hashdiff` has `float_precision` instead, which rounds before comparing; see
+[`diff_hashdiff`](#diff_hashdiff).
+
 ### Include unchanged rows
 
 ```sql
@@ -444,6 +508,7 @@ diff_hashdiff(
     source_table VARCHAR,
     target_table VARCHAR,
     primary_key  VARCHAR | VARCHAR[]
+    [, float_precision := INTEGER ]
 ) -> TABLE(diff_type VARCHAR, <primary key columns>, <other target columns>, changed_columns VARCHAR[])
 ```
 
@@ -452,6 +517,7 @@ diff_hashdiff(
 | `source_table` | `VARCHAR` | required | The old table or view |
 | `target_table` | `VARCHAR` | required | The new table or view |
 | `primary_key` | `VARCHAR` or `VARCHAR[]` | required | One key column, or a list. By name: `primary_key :=` or `primary_keys :=` |
+| `float_precision` | `INTEGER` (by name only) | no rounding | Round `FLOAT` and `DOUBLE` compare columns to this many decimal digits before comparing. `DECIMAL` and integer columns are compared as they are. `NULL` keeps the default; a negative value is an error |
 
 The output columns are the same as for [`diff_joindiff`](#diff_joindiff). The primary key must be
 unique in both tables, as for `diff_joindiff`. Columns on one side only are not compared; list
@@ -473,6 +539,63 @@ SELECT * FROM diff_hashdiff('customers_v1', 'customers_v2', 'id') ORDER BY id;
 └───────────┴───────┴─────────┴─────────┴───────┴─────────────────┘
 ```
 
+With `float_precision`, values that agree to that many decimal digits are equal (the
+`erp_orders` tables of [Floating-point noise](#floating-point-noise)):
+
+```sql
+SELECT diff_type, order_id, net_amount, changed_columns
+FROM diff_hashdiff('erp_orders', 'platform_orders', 'order_id', float_precision := 6)
+ORDER BY order_id;
+```
+
+```text
+┌───────────┬──────────┬────────────┬─────────────────┐
+│ diff_type │ order_id │ net_amount │ changed_columns │
+│  varchar  │  int32   │   double   │    varchar[]    │
+├───────────┼──────────┼────────────┼─────────────────┤
+│ changed   │     5003 │       99.5 │ [net_amount]    │
+│ changed   │     5004 │       12.0 │ [net_amount]    │
+└───────────┴──────────┴────────────┴─────────────────┘
+```
+
+Rounding has a boundary: two values close to each other on either side of it round apart. At
+4 digits `1.08344999` rounds to `1.0834` and `1.08345001` to `1.0835`, so they still differ,
+while `diff_joindiff` with `float_tolerance := 0.0001` counts them as equal. Use
+`float_tolerance` when a fixed maximum difference is what matters:
+
+```sql
+CREATE TABLE fx_rates_legacy (currency_pair VARCHAR, rate DOUBLE);
+INSERT INTO fx_rates_legacy VALUES ('EURUSD', 1.08344999), ('EURCHF', 0.94120000);
+CREATE TABLE fx_rates_new (currency_pair VARCHAR, rate DOUBLE);
+INSERT INTO fx_rates_new VALUES ('EURUSD', 1.08345001), ('EURCHF', 0.94120001);
+
+SELECT diff_type, currency_pair, rate, changed_columns
+FROM diff_hashdiff('fx_rates_legacy', 'fx_rates_new', 'currency_pair', float_precision := 4);
+```
+
+```text
+┌───────────┬───────────────┬────────────┬─────────────────┐
+│ diff_type │ currency_pair │    rate    │ changed_columns │
+│  varchar  │    varchar    │   double   │    varchar[]    │
+├───────────┼───────────────┼────────────┼─────────────────┤
+│ changed   │ EURUSD        │ 1.08345001 │ [rate]          │
+└───────────┴───────────────┴────────────┴─────────────────┘
+```
+
+```sql
+SELECT count(*) AS changed
+FROM diff_joindiff('fx_rates_legacy', 'fx_rates_new', 'currency_pair', float_tolerance := 0.0001);
+```
+
+```text
+┌─────────┐
+│ changed │
+│  int64  │
+├─────────┤
+│       0 │
+└─────────┘
+```
+
 The parameters `bisection_threshold` and `bisection_factor` are declared but not implemented.
 Passing them, by position or by name, is a binder error:
 
@@ -488,7 +611,8 @@ LINE 1: SELECT * FROM diff_hashdiff('customers_v1', 'customers_v2', 'id', bisect
                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 ```
 
-`compare_columns` and `include_all` do not exist on `diff_hashdiff`:
+`compare_columns`, `include_all` and `float_tolerance` do not exist on `diff_hashdiff`, and
+`float_precision` does not exist on `diff_joindiff`:
 
 ```sql
 SELECT * FROM diff_hashdiff('customers_v1', 'customers_v2', 'id', include_all := true);

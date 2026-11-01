@@ -9,8 +9,9 @@
 - Find correlated numeric columns
 
 The profiling functions read the table through a second connection. It resolves the table name
-like your session does (`SET schema`, `USE`) and shows `TIMESTAMP WITH TIME ZONE` values in your
-session's `TimeZone`. Pass a regular table or a view; a TEMP table is rejected with
+like your session does (`SET schema`, `USE`). `TIMESTAMP WITH TIME ZONE` values are shown in UTC
+whatever the session `TimeZone` (see [Values shown as text](#values-shown-as-text)). Pass a
+regular table or a view; a TEMP table is rejected with
 `TEMP tables are not supported by profile_table; use a regular table`. They see only committed
 data, so inside a transaction with uncommitted changes they refuse to run; call them after
 `COMMIT`. An unknown table is `profile_table: table 'ordrs' does not exist`. See
@@ -72,7 +73,7 @@ Output columns:
 | `null_rate` | `DOUBLE` | `null_count / row_count` |
 | `distinct_count` | `BIGINT` | Distinct non-`NULL` values |
 | `distinct_rate` | `DOUBLE` | `distinct_count / row_count` |
-| `min_val` | `VARCHAR` | Minimum as text (a `TIMESTAMP WITH TIME ZONE` in the session `TimeZone`); finite values only for numeric columns; `NULL` for `LIST`, `STRUCT`, `MAP` and `UNION` |
+| `min_val` | `VARCHAR` | Minimum as text (see [Values shown as text](#values-shown-as-text)); finite values only for numeric columns; `NULL` for `LIST`, `STRUCT`, `MAP` and `UNION` |
 | `max_val` | `VARCHAR` | Maximum as text; finite values only for numeric columns; `NULL` for `LIST`, `STRUCT`, `MAP` and `UNION` |
 | `mean` | `DOUBLE` | Numeric columns only; finite values only |
 | `median` | `DOUBLE` | Numeric columns only; finite values only |
@@ -82,10 +83,10 @@ Output columns:
 | `skewness` | `DOUBLE` | Numeric columns only; finite values only |
 | `kurtosis` | `DOUBLE` | Numeric columns only; finite values only |
 | `top_values` | `STRUCT(value VARCHAR, count BIGINT)[]` | The 5 most frequent values, most frequent first; values with equal counts in ascending order of the column's own type (`9` before `10`, `9.50` before `100.00`), shown as text; finite values only for numeric columns |
-| `avg_length` | `DOUBLE` | String length; element count for lists; cardinality for maps |
+| `avg_length` | `DOUBLE` | String length in characters; byte length (`octet_length`) for `BLOB`; element count for lists; cardinality for maps |
 | `min_length` | `BIGINT` | As `avg_length` |
 | `max_length` | `BIGINT` | As `avg_length` |
-| `pattern_summary` | `VARCHAR` | Detected pattern, see below; `NULL` for numeric, boolean and temporal columns |
+| `pattern_summary` | `VARCHAR` | Detected pattern, see below; `NULL` for numeric, boolean, temporal and `BLOB` columns |
 | `is_unique` | `BOOLEAN` | All non-`NULL` values are distinct |
 | `is_constant` | `BOOLEAN` | All non-`NULL` values are equal |
 | `zero_count` | `BIGINT` | Zero values, numeric columns only |
@@ -133,7 +134,9 @@ FROM profile_table('sensor_readings');
 `pattern_summary` for string columns is the first of `email`, `phone`, `uuid`, `url`,
 `ip_address`, `iso_date` and `numeric_string` that at least 80% of the non-`NULL` values match,
 else `mixed`. Phone detection uses `phonenumber_is_valid` with region `US`. Complex columns get
-`list`, `map`, `struct` or `union`.
+`list`, `map`, `struct` or `union`. A `BLOB` column holds bytes, not text, so it gets no pattern
+(`NULL`), and its `avg_length`, `min_length` and `max_length` count bytes: `'\xAA'::BLOB` has
+length 1, not the 4 characters of its escaped text.
 
 ```sql
 SELECT column_name, column_type, null_count, distinct_count,
@@ -203,6 +206,46 @@ FROM profile_table('orders', ['amount'], 50);
 ├─────────────┼───────────┼────────────┼────────────────────┤
 │ amount      │        50 │ true       │                 50 │
 └─────────────┴───────────┴────────────┴────────────────────┘
+```
+
+### Values shown as text
+
+`min_val`, `max_val` and the values in `top_values` are text, rendered the way DuckDB prints the
+column's type, with two exceptions so that one table gives the same profile in every session:
+
+- `TIMESTAMP WITH TIME ZONE` values are shown in UTC (`2026-03-02 08:15:00+00`) whatever the
+  session `TimeZone`, as `run_checks` and the diff functions report them; `infinity` and
+  `-infinity` stay as they are.
+- `INTERVAL` values have whole days carried out of the time part: `5 days` instead of
+  `120:00:00`, the form a pandas `timedelta` or a difference of epochs arrives in. DuckDB
+  compares 24 hours equal to 1 day, so it is the same value. Months are kept, and a negative
+  duration stays negative (`-2 days -02:00:00`).
+
+Ordering (`min_val`, `max_val`, ties in `top_values`) always uses the column's own type, not the
+text.
+
+```sql
+CREATE TABLE support_tickets AS SELECT * FROM (VALUES
+    (1, TIMESTAMPTZ '2026-03-02 09:15:00+01', INTERVAL '120 hours', '\xAA'::BLOB),
+    (2, TIMESTAMPTZ '2026-03-02 18:40:00-05', INTERVAL '36 hours', '%PDF-1.7'::BLOB),
+    (3, TIMESTAMPTZ '2026-03-05 22:30:00+05:30', INTERVAL '45 minutes', NULL)
+) t(ticket_id, opened_at, resolution_time, attachment);
+
+SET TimeZone = 'America/New_York';
+
+SELECT column_name, min_val, max_val, max_length, pattern_summary
+FROM profile_table('support_tickets', ['opened_at', 'resolution_time', 'attachment']);
+```
+
+```text
+┌─────────────────┬────────────────────────┬────────────────────────┬────────────┬─────────────────┐
+│   column_name   │        min_val         │        max_val         │ max_length │ pattern_summary │
+│     varchar     │        varchar         │        varchar         │   int64    │     varchar     │
+├─────────────────┼────────────────────────┼────────────────────────┼────────────┼─────────────────┤
+│ opened_at       │ 2026-03-02 08:15:00+00 │ 2026-03-05 17:00:00+00 │       NULL │ NULL            │
+│ resolution_time │ 00:45:00               │ 5 days                 │       NULL │ NULL            │
+│ attachment      │ %PDF-1.7               │ \xAA                   │          8 │ NULL            │
+└─────────────────┴────────────────────────┴────────────────────────┴────────────┴─────────────────┘
 ```
 
 ---

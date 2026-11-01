@@ -927,27 +927,10 @@ static unique_ptr<FunctionData> OutlierTreeBind(ClientContext &context, TableFun
     RejectUncommittedChanges(context, "outlier_tree");
     std::string columns_str = RequireNonNullArgument(input, 1, "outlier_tree", "columns");
 
-    // Parse column names
-    std::vector<std::string> column_names;
-    std::istringstream iss(columns_str);
-    std::string col;
-    while (std::getline(iss, col, ',')) {
-        // Trim whitespace
-        size_t start = col.find_first_not_of(" \t");
-        size_t end = col.find_last_not_of(" \t");
-        if (start != std::string::npos) {
-            col = col.substr(start, end - start + 1);
-            // Remove quotes if present
-            if ((col.front() == '"' && col.back() == '"') ||
-                (col.front() == '\'' && col.back() == '\'')) {
-                col = col.substr(1, col.length() - 2);
-            }
-            column_names.push_back(col);
-        }
-    }
-
+    // Parse column names (trimmed, surrounding quotes removed), as the other anomaly functions do
+    std::vector<std::string> column_names = ParseCommaSeparatedColumns(columns_str);
     if (column_names.empty()) {
-        throw BinderException("columns parameter must contain at least one column name");
+        throw BinderException("outlier_tree: columns must contain at least one column");
     }
 
     // Resolve the feature columns now (case-insensitive, the table's spelling from here on) and
@@ -969,6 +952,7 @@ static unique_ptr<FunctionData> OutlierTreeBind(ClientContext &context, TableFun
             }
             resolved_names.push_back(std::move(column.name));
         }
+        RejectDuplicateColumns("outlier_tree", resolved_names);
         column_names = std::move(resolved_names);
     }
 
@@ -993,22 +977,22 @@ static unique_ptr<FunctionData> OutlierTreeBind(ClientContext &context, TableFun
     // Validate parameters while still signed
     static constexpr int64_t MAX_TREE_DEPTH = 1024;
     if (max_depth_raw < 1 || max_depth_raw > MAX_TREE_DEPTH) {
-        throw BinderException("max_depth must be >= 1 and <= %lld", MAX_TREE_DEPTH);
+        throw BinderException("outlier_tree: max_depth must be >= 1 and <= %s", std::to_string(MAX_TREE_DEPTH));
     }
     if (min_size_numeric_raw < 1) {
-        throw BinderException("min_size_numeric must be >= 1");
+        throw BinderException("outlier_tree: min_size_numeric must be >= 1");
     }
     if (min_size_categ_raw < 1) {
-        throw BinderException("min_size_categ must be >= 1");
+        throw BinderException("outlier_tree: min_size_categ must be >= 1");
     }
     if (max_perc_outliers <= 0 || max_perc_outliers > 1) {
-        throw BinderException("max_perc_outliers must be between 0 and 1");
+        throw BinderException("outlier_tree: max_perc_outliers must be between 0 and 1");
     }
     if (z_outlier <= 0) {
-        throw BinderException("z_outlier must be positive");
+        throw BinderException("outlier_tree: z_outlier must be positive");
     }
     if (z_norm <= 0) {
-        throw BinderException("z_norm must be positive");
+        throw BinderException("outlier_tree: z_norm must be positive");
     }
 
     OutlierTreeParams params(static_cast<size_t>(max_depth_raw), max_perc_outliers,

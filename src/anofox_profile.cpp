@@ -458,6 +458,31 @@ static string BuildColumnProfileSQL(const string &col_name, const string &col_ty
 	string col_type_lit = "'" + EscapeStringLiteral(col_type) + "'";
 
 	bool is_complex = IsComplexCategory(cat);
+	string upper_type = StringUtil::Upper(col_type);
+	// A BLOB is profiled as bytes: its length is the byte count, and it has no text pattern
+	// (its VARCHAR cast is the escaped text '\xAA', four characters for one byte)
+	bool is_blob = upper_type == "BLOB";
+
+	// Values shown as text (min_val, max_val, top_values) in the column's DuckDB rendering, with
+	// two exceptions so the same table gives the same profile in every session:
+	// - TIMESTAMP WITH TIME ZONE in UTC ('2026-03-02 08:15:00+00'), whatever the session
+	//   TimeZone, as run_checks and the diff functions report it; +-infinity stays as it is.
+	// - INTERVAL with whole days carried out of the time part ('5 days' instead of '120:00:00',
+	//   which a pandas timedelta or an epoch difference produce). DuckDB compares 24 hours equal
+	//   to 1 day, so this is the same value; months and the remaining time keep their sign.
+	auto display_sql = [&](const string &expr) -> string {
+		if (upper_type == "TIMESTAMP WITH TIME ZONE") {
+			return "CASE WHEN isfinite(" + expr + ") THEN " +
+			       UtcTextSQL(expr, LogicalType(LogicalTypeId::TIMESTAMP_TZ)) + " ELSE CAST(" + expr +
+			       " AS VARCHAR) END";
+		}
+		if (upper_type == "INTERVAL") {
+			string whole_days = "(datepart('hour', " + expr + ") // 24)";
+			return "CAST(" + expr + " - to_hours(" + whole_days + " * 24) + to_days(CAST(" + whole_days +
+			       " AS INTEGER)) AS VARCHAR)";
+		}
+		return "CAST(" + expr + " AS VARCHAR)";
+	};
 
 	// Numeric stats — only for numeric columns
 	auto num_dbl = [&](const string &expr) -> string {
@@ -519,15 +544,19 @@ static string BuildColumnProfileSQL(const string &col_name, const string &col_ty
 	// columns take the finite values only: DuckDB orders NaN above +Inf, so MAX would be 'nan'.
 	// The value keeps its own type (DECIMAL scale, integer) in the VARCHAR rendering.
 	string min_max_input = (cat == ColumnCategory::NUMERIC) ? "(CASE WHEN isfinite(" + dbl + ") THEN " + ec + " END)" : ec;
-	string min_val_sql = is_complex ? "NULL::VARCHAR" : "CAST(MIN(" + min_max_input + ") AS VARCHAR)";
-	string max_val_sql = is_complex ? "NULL::VARCHAR" : "CAST(MAX(" + min_max_input + ") AS VARCHAR)";
+	string min_val_sql = is_complex ? "NULL::VARCHAR" : display_sql("MIN(" + min_max_input + ")");
+	string max_val_sql = is_complex ? "NULL::VARCHAR" : display_sql("MAX(" + min_max_input + ")");
 
 	// distinct_count — cast complex types to VARCHAR for GROUP BY consistency
 	string dc = is_complex ? "CAST(" + ec + " AS VARCHAR)" : ec;
 
 	// Length stats — string, list (element count), map (cardinality), others NULL
 	string avg_len_sql, min_len_sql, max_len_sql;
-	if (cat == ColumnCategory::STRING) {
+	if (is_blob) {
+		avg_len_sql = "AVG(octet_length(" + ec + "))";
+		min_len_sql = "CAST(MIN(octet_length(" + ec + ")) AS BIGINT)";
+		max_len_sql = "CAST(MAX(octet_length(" + ec + ")) AS BIGINT)";
+	} else if (cat == ColumnCategory::STRING) {
 		avg_len_sql = "AVG(LENGTH(CAST(" + ec + " AS VARCHAR)))";
 		min_len_sql = "CAST(MIN(LENGTH(CAST(" + ec + " AS VARCHAR))) AS BIGINT)";
 		max_len_sql = "CAST(MAX(LENGTH(CAST(" + ec + " AS VARCHAR))) AS BIGINT)";
@@ -547,7 +576,7 @@ static string BuildColumnProfileSQL(const string &col_name, const string &col_ty
 
 	// Pattern summary — string columns use regex detection; complex types get fixed literals
 	string pattern_sql = "NULL::VARCHAR";
-	if (cat == ColumnCategory::STRING) {
+	if (cat == ColumnCategory::STRING && !is_blob) {
 		auto regex_frac = [&](const string &regex) -> string {
 			return "SUM(CASE WHEN REGEXP_MATCHES(CAST(" + ec + " AS VARCHAR), '" + regex +
 			       "') THEN 1 ELSE 0 END) * 1.0 / NULLIF(COUNT(" + ec + "), 0) >= 0.8";
@@ -599,7 +628,7 @@ static string BuildColumnProfileSQL(const string &col_name, const string &col_ty
 	// nan_count / inf_count)
 	string top_val_filter = (cat == ColumnCategory::NUMERIC) ? "isfinite(" + dbl + ")" : ec + " IS NOT NULL";
 	string top_val_sql =
-	    "(SELECT LIST({'value': CAST(v AS VARCHAR), 'count': cnt} ORDER BY cnt DESC, v)"
+	    "(SELECT LIST({'value': " + display_sql("v") + ", 'count': cnt} ORDER BY cnt DESC, v)"
 	    " FROM (SELECT " + ec + " AS v, COUNT(*) AS cnt FROM src"
 	    "       WHERE " + top_val_filter +
 	    "       GROUP BY " + ec +

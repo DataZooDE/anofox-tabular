@@ -79,8 +79,9 @@ bool HasWordAt(const std::string& text, size_t pos, const char* word) {
 //! - A leading label (PHONE_LABELS, case-insensitive) followed by '.', ':' or a blank is dropped;
 //!   this also accepts the RFC 3966 form "tel:+1-650-253-0000".
 //! - A trailing extension marker (EXTENSION_MARKERS, case-insensitive, not glued to a preceding
-//!   letter) followed by optional '.', ':', blanks and then only digits is split off. Separators
-//!   such as '-' never start an extension: "030 12345-67" stays one number.
+//!   letter) followed by optional '.', ':', '=', blanks and then only digits is split off; this
+//!   also reads the RFC 3966 parameter "tel:+49-30-1234567;ext=123". Separators such as '-'
+//!   never start an extension: "030 12345-67" stays one number.
 //! - Any other ASCII letter in the remaining number sets has_letters.
 PhoneInput SplitPhoneInput(const std::string& raw) {
 	PhoneInput input;
@@ -107,8 +108,8 @@ PhoneInput SplitPhoneInput(const std::string& raw) {
 	}
 	if (digits_start < text.size()) {
 		size_t marker_end = digits_start;
-		while (marker_end > 0 &&
-		       (IsBlank(text[marker_end - 1]) || text[marker_end - 1] == '.' || text[marker_end - 1] == ':')) {
+		while (marker_end > 0 && (IsBlank(text[marker_end - 1]) || text[marker_end - 1] == '.' ||
+		                          text[marker_end - 1] == ':' || text[marker_end - 1] == '=')) {
 			marker_end--;
 		}
 		for (const char* marker : EXTENSION_MARKERS) {
@@ -278,23 +279,48 @@ std::string ResolveRegionForCountryCode(int country_code, const std::string& reg
 	return candidates[0];
 }
 
+// Length of the prefix at the start of `national_number` that parsing may drop:
+// the region's national_prefix_for_parsing (e.g. MX 01/044/045/1) when it has
+// one, otherwise its national (trunk) prefix. 0 when there is none.
+size_t NationalPrefixForParsingLength(const std::string& national_number, const std::string& region_code,
+                                      const CountryMetadata& metadata) {
+	const CompiledRegionPatterns* patterns = GetCompiledPatternsForRegion(region_code);
+	if (patterns && patterns->national_prefix_for_parsing) {
+		std::smatch match;
+		if (std::regex_search(national_number, match, *patterns->national_prefix_for_parsing,
+		                      std::regex_constants::match_continuous)) {
+			return static_cast<size_t>(match.length(0));
+		}
+		return 0;
+	}
+	if (!metadata.national_prefix.empty() &&
+	    national_number.compare(0, metadata.national_prefix.size(), metadata.national_prefix) == 0) {
+		return metadata.national_prefix.size();
+	}
+	return 0;
+}
+
 // Numbers written as "+49 (0)30 1234567" or "+44 020 7946 0018" carry the
-// national (trunk) prefix after the country code. Drop it when the number is
-// only valid without it, as libphonenumber does.
-std::string StripTrunkPrefixAfterCountryCode(const std::string& national_number, const std::string& region_code) {
+// national (trunk) prefix after the country code, Mexican numbers the abolished
+// mobile token ("+52 1 55 ...") or dialling prefix ("044 55 ..."). Drop it when
+// the number is only valid without it, as libphonenumber does.
+std::string StripNationalPrefixIfInvalid(const std::string& national_number, const std::string& region_code) {
 	const CountryMetadata* metadata = GetMetadataForRegion(region_code);
-	if (!metadata || metadata->national_prefix.empty() ||
-	    national_number.compare(0, metadata->national_prefix.size(), metadata->national_prefix) != 0) {
+	if (!metadata) {
+		return national_number;
+	}
+	const size_t prefix_length = NationalPrefixForParsingLength(national_number, region_code, *metadata);
+	if (prefix_length == 0) {
 		return national_number;
 	}
 	auto is_valid = [&](const std::string& candidate) {
 		return metadata->IsValidLength(candidate.size()) &&
 		       ClassifyNationalNumber(candidate, region_code).MatchesValidPattern();
 	};
-	std::string stripped = national_number.substr(metadata->national_prefix.size());
+	std::string stripped = national_number.substr(prefix_length);
 	if (!is_valid(national_number) && is_valid(stripped)) {
-		AnofoxTrace(AnofoxLogLevel::Debug,
-		           "PhoneNumber parse: dropped trunk prefix after country code, region=" + region_code);
+		AnofoxTrace(AnofoxLogLevel::Debug, "PhoneNumber parse: dropped prefix " + national_number.substr(0, prefix_length) +
+		                                       " of " + national_number + ", region=" + region_code);
 		return stripped;
 	}
 	return national_number;
@@ -333,17 +359,20 @@ PhoneNumberParts PhoneNumberManager::Parse(const std::string& raw_number, const 
 
 	PhoneNumberParts parts;
 
+	// Fold full-width digits/signs to ASCII and no-break spaces (U+00A0, U+2007,
+	// U+202F) to blanks
+	const std::string folded = FoldFullWidthForms(raw_number);
+
 	// A blank field (empty or whitespace only) is a missing value, not a broken number
-	if (std::all_of(raw_number.begin(), raw_number.end(),
+	if (std::all_of(folded.begin(), folded.end(),
 	                [](char c) { return IsBlank(c) || c == '\v' || c == '\f'; })) {
 		AnofoxTrace(AnofoxLogLevel::Debug, "PhoneNumber parse failed: blank input");
 		parts.reason = PhoneNumberInvalidReason::EMPTY;
 		return parts;
 	}
 
-	// Fold full-width digits/signs to ASCII, drop a leading label, split off a
-	// trailing extension, then normalize
-	auto input = SplitPhoneInput(FoldFullWidthForms(raw_number));
+	// Drop a leading label, split off a trailing extension, then normalize
+	auto input = SplitPhoneInput(folded);
 	std::string normalized = NormalizePhoneNumber(input.number);
 	if (normalized.empty() || normalized == "+") {
 		AnofoxTrace(AnofoxLogLevel::Debug, "PhoneNumber parse failed: empty number");
@@ -394,6 +423,10 @@ PhoneNumberParts PhoneNumberManager::Parse(const std::string& raw_number, const 
 			if (!hint_metadata->national_prefix.empty() &&
 			    national_number.find(hint_metadata->national_prefix) == 0) {
 				national_number = national_number.substr(hint_metadata->national_prefix.size());
+			} else if (!hint_metadata->national_prefix_for_parsing.empty()) {
+				// Prefixes that are no longer dialled (MX 01/044/045) are dropped
+				// only when the number is valid without them
+				national_number = StripNationalPrefixIfInvalid(national_number, region_code);
 			}
 		}
 	}
@@ -414,7 +447,7 @@ PhoneNumberParts PhoneNumberManager::Parse(const std::string& raw_number, const 
 			parts.reason = PhoneNumberInvalidReason::INVALID_COUNTRY_CODE;
 			return parts;
 		}
-		national_number = StripTrunkPrefixAfterCountryCode(national_number, region_code);
+		national_number = StripNationalPrefixIfInvalid(national_number, region_code);
 	}
 
 	const CountryMetadata* metadata = GetMetadataForRegion(region_code);
@@ -520,6 +553,10 @@ std::string PhoneNumberManager::Format(const std::string& raw_number, const std:
 			} else {
 				pending_separator = true;
 			}
+		}
+		// The extension is the RFC 3966 'ext' parameter; it reads back via SplitPhoneInput
+		if (!parts.extension.empty()) {
+			formatted += ";ext=" + parts.extension;
 		}
 		format_label = "RFC3966";
 		break;
@@ -725,8 +762,8 @@ void PhoneNumberManager::Initialize() {
 }
 
 std::string NormalizeRegionCode(const std::string& region) {
-	auto normalized = region;
-	StringUtil::Trim(normalized);
+	// Also trims the no-break spaces of spreadsheet exports
+	auto normalized = std::string(TrimUnicodeSpaces(region));
 	normalized = StringUtil::Upper(normalized);
 	// 'UK' is not an ISO 3166 code but is what most people type for the
 	// United Kingdom; libphonenumber metadata only knows 'GB'.
@@ -745,8 +782,7 @@ std::string PhoneNumberParts::ReportedReason() const {
 }
 
 PhoneNumberFormatOption ParseFormatOption(const std::string& format_str) {
-	auto trimmed = format_str;
-	StringUtil::Trim(trimmed);
+	auto trimmed = std::string(TrimUnicodeSpaces(format_str));
 	auto upper = StringUtil::Upper(trimmed);
 	if (upper == "E164") {
 		return PhoneNumberFormatOption::E164;

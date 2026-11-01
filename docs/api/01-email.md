@@ -84,10 +84,11 @@ The rule that the last domain label may not be all digits is part of the default
 no lookahead, so it is checked next to the pattern while the default pattern is active. A custom
 pattern decides on its own.
 
-Whitespace around the address (spaces, tabs, line breaks) is ignored in every mode, as
-`vat_is_valid` ignores it around a VAT number: `' max@web.de '` is valid, and the `dns` and
-`smtp` stages use the trimmed address. Whitespace inside the address (`'max muster@web.de'`)
-still makes it invalid. The functions return no cleaned address; store `trim(email)` (and
+Whitespace around the address (spaces, tabs, line breaks, and the no-break spaces U+00A0,
+U+2007 and U+202F that values copied from Excel, Word or a web page carry) is ignored in every
+mode, as `vat_is_valid` ignores it around a VAT number: `' max@web.de '` is valid, and the `dns`
+and `smtp` stages use the trimmed address. Whitespace inside the address (`'max muster@web.de'`,
+also with a no-break space) still makes it invalid. The functions return no cleaned address; store `trim(email)` (and
 `lower(...)` if you want one spelling) yourself.
 
 ```sql
@@ -138,7 +139,8 @@ email_is_valid(email VARCHAR [, mode VARCHAR]) -> BOOLEAN
 | `email` | `VARCHAR` | required | The address to check |
 | `mode` | `VARCHAR` | `anofox_tab_email_default_validation` (`regex`) | `regex`, `dns` or `smtp` |
 
-A `NULL` email returns `NULL`. A blank value (an empty string or whitespace only) returns
+A `NULL` email returns `NULL`. A blank value (an empty string or whitespace only, no-break
+spaces included) returns
 `false`; `email_validate` gives it the reason `empty`. The `regex` mode never returns `NULL` for a
 non-`NULL` address.
 

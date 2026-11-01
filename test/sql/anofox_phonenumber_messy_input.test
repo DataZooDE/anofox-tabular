@@ -84,14 +84,14 @@ FROM contacts WHERE id IN (2, 6, 13, 15) ORDER BY id;
 13	false	false	NULL
 15	false	false	NULL
 
-# The extension is not part of any format
+# Only the RFC3966 format carries the extension (as ';ext=')
 query TTTT
 SELECT phonenumber_format('+1 650-253-0000 ext. 123', NULL, 'E164'),
        phonenumber_format('+1 650-253-0000 ext. 123', NULL, 'INTERNATIONAL'),
        phonenumber_format('+1 650-253-0000 ext. 123', NULL, 'NATIONAL'),
        phonenumber_format('+1 650-253-0000 ext. 123', NULL, 'RFC3966');
 ----
-+16502530000	+1 650 253 0000	(650) 253-0000	tel:+1-650-253-0000
++16502530000	+1 650 253 0000	(650) 253-0000	tel:+1-650-253-0000;ext=123
 
 # The RFC3966 output reads back as the same number
 query T

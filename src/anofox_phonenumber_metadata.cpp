@@ -253,23 +253,28 @@ const std::unordered_map<std::string, CountryMetadata> REGION_METADATA = {
 		},
 	}},
 
-	// Mexico (MX)
+	// Mexico (MX). Since the 2019 numbering reform every number has 10 digits and
+	// there is no national prefix (libphonenumber v8.10.17+; the "01" national
+	// prefix was removed from its metadata in v8.13.38). Fixed-line and mobile
+	// ranges are the same apart from the 200/201 satellite ranges.
 	{"MX", {
 		52,                                   // country_code
 		"MX",                                 // region_code
-		{10, 11},                             // valid_lengths
-		"01",                                 // national_prefix
+		{10},                                 // valid_lengths
+		"",                                   // national_prefix
 		"00",                                 // international_prefix
 		"5512345678",                         // example_number
-		"[2-9]\\d{9,10}",                     // fixed_line_pattern
-		"1\\d{10}",                           // mobile_pattern
-		"800\\d{7}",                          // toll_free_pattern
+		"(?:2(?:0[01]|2\\d|3[1-35-8]|4[13-9]|7[1-689]|8[1-578]|9[467])|3(?:1[1-79]|[2458][1-9]|3\\d|7[1-8]|9[1-5])|4(?:1[1-57-9]|[267][1-9]|3[1-8]|[45]\\d|8[1-35-9]|9[2-689])|5(?:[56]\\d|88|9[1-79])|6(?:1[2-68]|[2-4][1-9]|5[1-36-9]|6[0-57-9]|7[1-7]|8[67]|9[4-8])|7(?:[1346][1-9]|[27]\\d|5[13-9]|8[1-69]|9[17])|8(?:1\\d|2[13-689]|3[1-6]|4[124-6]|6[1246-9]|7[0-378]|9[12479])|9(?:1[346-9]|2[1-4]|3[2-46-8]|5[1348]|[69]\\d|7[12]|8[1-8]))\\d{7}",  // fixed_line_pattern
+		"(?:2(?:2\\d|3[1-35-8]|4[13-9]|7[1-689]|8[1-578]|9[467])|3(?:1[1-79]|[2458][1-9]|3\\d|7[1-8]|9[1-5])|4(?:1[1-57-9]|[267][1-9]|3[1-8]|[45]\\d|8[1-35-9]|9[2-689])|5(?:[56]\\d|88|9[1-79])|6(?:1[2-68]|[2-4][1-9]|5[1-36-9]|6[0-57-9]|7[1-7]|8[67]|9[4-8])|7(?:[1346][1-9]|[27]\\d|5[13-9]|8[1-69]|9[17])|8(?:1\\d|2[13-689]|3[1-6]|4[124-6]|6[1246-9]|7[0-378]|9[12479])|9(?:1[346-9]|2[1-4]|3[2-46-8]|5[1348]|[69]\\d|7[12]|8[1-8]))\\d{7}",  // mobile_pattern
+		"8(?:00|88)\\d{7}",                   // toll_free_pattern
 		{  // number_formats: {leading_digits, pattern, national_format, international_format}
-			{"33|55|81", "(\\d{2})(\\d{4})(\\d{4})", "$1 $2 $3", "$1 $2 $3"},
+			{"33|5[56]|81", "(\\d{2})(\\d{4})(\\d{4})", "$1 $2 $3", "$1 $2 $3"},
 			{"[2-9]", "(\\d{3})(\\d{3})(\\d{4})", "$1 $2 $3", "$1 $2 $3"},
-			{"1(?:33|55|81)", "(\\d)(\\d{2})(\\d{4})(\\d{4})", "$1 $2 $3 $4", "$1 $2 $3 $4"},
-			{"1", "(\\d)(\\d{3})(\\d{3})(\\d{4})", "$1 $2 $3 $4", "$1 $2 $3 $4"},
 		},
+		// The abolished prefixes are still dropped when parsing old data, as
+		// libphonenumber did from v8.10.17 to v8.13.37: 01/02 (national trunk),
+		// 044/045 (domestic mobile) and the mobile token 1 ("+52 1 55 ...")
+		"0(?:[12]|4[45])|1",                  // national_prefix_for_parsing
 	}},
 
 	// Argentina (AR)
@@ -437,6 +442,7 @@ const CompiledRegionPatterns *GetCompiledPatternsForRegion(const std::string &re
 			patterns.fixed_line = CompilePattern(entry.second.fixed_line_pattern);
 			patterns.mobile = CompilePattern(entry.second.mobile_pattern);
 			patterns.toll_free = CompilePattern(entry.second.toll_free_pattern);
+			patterns.national_prefix_for_parsing = CompilePattern(entry.second.national_prefix_for_parsing);
 			for (const auto &format : entry.second.number_formats) {
 				auto pattern = CompilePattern(format.pattern);
 				if (!pattern) {

@@ -1,7 +1,8 @@
 # name: test/sql/anofox_sibling_session_tz_icu.test
-# description: profile_table reads its input through a second connection. That connection uses
-#              the caller's session TimeZone, so min_val, max_val and top_values of a
-#              TIMESTAMPTZ column render like the caller's own CAST(... AS VARCHAR).
+# description: profile_table reads its input through a second connection that uses the caller's
+#              session TimeZone. Its min_val, max_val and top_values of a TIMESTAMPTZ column are
+#              rendered in UTC all the same (issue #125), so the profile does not change with
+#              the session TimeZone while the caller's own CAST(... AS VARCHAR) does.
 # group: [anofox_tabular]
 
 require anofox_tabular
@@ -40,7 +41,7 @@ query TTTT
 SELECT min_val, max_val, top_values[1].value, (SELECT CAST(min(scanned_at) AS VARCHAR) FROM parcel_scans)
 FROM profile_table('parcel_scans', ['scanned_at'])
 ----
-2026-10-20 15:05:00+09	2026-10-20 17:15:00+09	2026-10-20 15:05:00+09	2026-10-20 15:05:00+09
+2026-10-20 06:05:00+00	2026-10-20 08:15:00+00	2026-10-20 06:05:00+00	2026-10-20 15:05:00+09
 
 statement ok
 SET TimeZone = 'America/New_York'
@@ -48,7 +49,7 @@ SET TimeZone = 'America/New_York'
 query TT
 SELECT min_val, max_val FROM profile_table('parcel_scans', ['scanned_at'])
 ----
-2026-10-20 02:05:00-04	2026-10-20 04:15:00-04
+2026-10-20 06:05:00+00	2026-10-20 08:15:00+00
 
 statement ok
 RESET TimeZone

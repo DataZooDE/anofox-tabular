@@ -105,7 +105,7 @@ The checks run in this order, and the first that fails gives the reason:
 
 | `reason` | Meaning |
 |----------|---------|
-| `empty` | The value is blank: an empty string or whitespace only (a quoted `''` CSV cell) |
+| `empty` | The value is blank: an empty string or whitespace only, no-break spaces included (a quoted `''` CSV cell) |
 | `missing_prefix` | After normalization the value does not start with two letters, e.g. `811128135` |
 | `unsupported_country` | Two letters that are not one of the 28 supported prefixes, e.g. `UK` (use `GB`) or `CH` |
 | `invalid_format` | The national part does not match the country's pattern: wrong length, a letter where a digit belongs, or nothing after the prefix |
@@ -264,8 +264,11 @@ vat_normalize(vat_number VARCHAR) -> VARCHAR
 
 Full-width letters, digits and punctuation (`ＤＥ８１１ １２８ １３５`, as typed with an East
 Asian input method) and the ideographic space are first folded to ASCII, so they are kept as the
-letters and digits they stand for. Every VAT function normalizes its input this way. Other
-characters outside ASCII are removed.
+letters and digits they stand for. The no-break spaces of values copied from Excel, Word or a
+web page (U+00A0, U+2007, U+202F) are read as spaces, so like a space they are removed around
+and inside the number (`'DE' || chr(160) || '811128135'` is `DE811128135`). Every VAT function
+normalizes its input this way, and a value of only (no-break) spaces is `empty` in
+`vat_validate`. Other characters outside ASCII are removed.
 
 ```sql
 SELECT vat_normalize('ＤＥ８１１　１２８　１３５') AS normalized, vat_is_valid('ＤＥ８１１１２８１３５') AS valid;

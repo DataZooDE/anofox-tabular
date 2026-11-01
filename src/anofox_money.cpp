@@ -553,6 +553,21 @@ static void AnofoxMoneyMultiplyFunction(DataChunk &args, ExpressionState &state,
 // Scalar Function: anofox_money_in_range(money, min_amount, max_amount) -> BOOLEAN
 //----------------------------------------------------------------------------------------------------------------------
 
+//! Bound rules as in the check functions: NULL means no bound on that side, NaN and
+//! min > max are errors (the function is fallible, so TRY() yields NULL for the row).
+static void ValidateInRangeBounds(bool has_min, double min_val, bool has_max, double max_val) {
+    if (has_min && std::isnan(min_val)) {
+        throw InvalidInputException("money_in_range: min must not be NaN (NULL means no lower bound)");
+    }
+    if (has_max && std::isnan(max_val)) {
+        throw InvalidInputException("money_in_range: max must not be NaN (NULL means no upper bound)");
+    }
+    if (has_min && has_max && min_val > max_val) {
+        throw InvalidInputException("money_in_range: min (%s) must not be greater than max (%s)",
+                                    Value::DOUBLE(min_val).ToString(), Value::DOUBLE(max_val).ToString());
+    }
+}
+
 static void AnofoxMoneyInRangeFunction(DataChunk &args, ExpressionState &state, Vector &result) {
     auto &money_vec = args.data[0];
     auto &min_vec = args.data[1];
@@ -567,21 +582,28 @@ static void AnofoxMoneyInRangeFunction(DataChunk &args, ExpressionState &state, 
 
     auto min_values = UnifiedVectorFormat::GetData<double>(min_data);
     auto max_values = UnifiedVectorFormat::GetData<double>(max_data);
+    result.SetVectorType(VectorType::FLAT_VECTOR);
     auto result_data = duckdb_compat::FlatData<bool>(result);
 
     for (idx_t i = 0; i < count; i++) {
+        if (!data.RowIsValid(i)) {
+            FlatVector::SetNull(result, i, true);
+            continue;
+        }
         auto min_idx = min_data.sel->get_index(i);
         auto max_idx = max_data.sel->get_index(i);
+        const bool has_min = min_data.validity.RowIsValid(min_idx);
+        const bool has_max = max_data.validity.RowIsValid(max_idx);
+        const double min_val = has_min ? min_values[min_idx] : 0.0;
+        const double max_val = has_max ? max_values[max_idx] : 0.0;
+        ValidateInRangeBounds(has_min, min_val, has_max, max_val);
 
-        if (!data.RowIsValid(i) || !min_data.validity.RowIsValid(min_idx) ||
-            !max_data.validity.RowIsValid(max_idx)) {
-            FlatVector::SetNull(result, i, true);
-        } else {
-            double amount = static_cast<double>(data.Amount(i)) / static_cast<double>(MONEY_SCALE_FACTOR);
-            double min_val = min_values[min_idx];
-            double max_val = max_values[max_idx];
-            result_data[i] = (amount >= min_val && amount <= max_val);
-        }
+        double amount = static_cast<double>(data.Amount(i)) / static_cast<double>(MONEY_SCALE_FACTOR);
+        result_data[i] = (!has_min || amount >= min_val) && (!has_max || amount <= max_val);
+    }
+
+    if (args.AllConstant()) {
+        result.SetVectorType(VectorType::CONSTANT_VECTOR);
     }
 }
 
@@ -926,14 +948,17 @@ void RegisterMoneyFunctions(ExtensionLoader &loader) {
     }
     {
         FunctionDescription desc;
-        desc.description = "Returns TRUE if the money amount is within the inclusive range [min, max].";
+        desc.description = "Returns TRUE if the money amount is within the inclusive range [min, max]. A NULL bound means no bound on that side; a NaN bound or min > max raises an error.";
         desc.parameter_names = {"money", "min", "max"};
         desc.parameter_types = {GetMoneyType(), LogicalType::DOUBLE, LogicalType::DOUBLE};
-        desc.examples = {"SELECT money_in_range(money(15.00, 'USD'), 10.0, 20.0);"};
+        desc.examples = {"SELECT money_in_range(money(15.00, 'USD'), 10.0, 20.0);",
+                         "SELECT money_in_range(money(15.00, 'USD'), 0, NULL);"};
         desc.categories = {"money", "validation"};
         ScalarFunction money_in_range_func("anofox_tab_money_in_range", {GetMoneyType(), LogicalTypeId::DOUBLE, LogicalTypeId::DOUBLE}, LogicalTypeId::BOOLEAN, AnofoxMoneyInRangeFunction);
         money_in_range_func.SetBindCallback(&ScalarContextBind<MoneyInRangeBind>::Bind);
         money_in_range_func.SetFallible();
+        // A NULL bound is no bound on that side, so NULL arguments reach the function
+        duckdb_compat::SetNullHandling(money_in_range_func, FunctionNullHandling::SPECIAL_HANDLING);
         RegisterScalarFunctionWithAlias(loader, money_in_range_func, "money_in_range", {std::move(desc)});
     }
     {

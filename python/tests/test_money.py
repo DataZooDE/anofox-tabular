@@ -158,6 +158,22 @@ class TestMoneyPredicates:
         m = {"amount": 150.0, "currency": "USD"}
         assert money.money_in_range(conn, m, 0.0, 100.0) is False
 
+    def test_in_range_open_bounds(self, conn):
+        """Invoices against optional credit limits: None means no limit on that side."""
+        from anofox import money
+        invoice = {"amount": Decimal("7800.50"), "currency": "EUR"}
+        assert money.money_in_range(conn, invoice, 50.0, None) is True
+        assert money.money_in_range(conn, invoice, None, 5000.0) is False
+        assert money.money_in_range(conn, invoice, None, None) is True
+
+    def test_in_range_rejects_swapped_or_nan_bounds(self, conn):
+        from anofox import money
+        invoice = {"amount": Decimal("1250.00"), "currency": "EUR"}
+        with pytest.raises(Exception, match="min .* must not be greater than max"):
+            money.money_in_range(conn, invoice, 5000.0, 50.0)
+        with pytest.raises(Exception, match="max must not be NaN"):
+            money.money_in_range(conn, invoice, 0.0, float("nan"))
+
     def test_same_currency_true(self, conn):
         from anofox import money
         m1 = {"amount": 10.0, "currency": "USD"}

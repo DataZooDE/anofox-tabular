@@ -93,6 +93,12 @@ vector<idx_t> MatchColumnNames(const string &function_name, const string &table_
 vector<ResolvedColumn> ResolveColumns(ClientContext &context, const string &function_name, const string &table_name,
                                       const vector<string> &requested);
 
+// Reject a column listed twice in the feature columns of a multi-column function, which would
+// count as two dimensions. `resolved` holds the table's spellings (ResolveColumns), so
+// 'Amount, amount' is a duplicate too: BinderException("<fn>: column '<name>' is listed more
+// than once"). Takes a std::vector so that both duckdb::vector and std::vector callers bind.
+void RejectDuplicateColumns(const string &function_name, const std::vector<string> &resolved);
+
 // A table or view looked up through the catalog of the calling context (TEMP tables and
 // the search path included, no sibling connection).
 struct RelationInfo {

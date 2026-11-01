@@ -214,13 +214,13 @@ isolation_forest_mv(table_name VARCHAR, column_names VARCHAR
 | # | Parameter | Type | Default | Description |
 |---|-----------|------|---------|-------------|
 | 1 | `table_name` | `VARCHAR` | required | Table or view to read |
-| 2 | `column_names` | `VARCHAR` | required | Comma-separated columns, e.g. `'temperature, humidity'` |
+| 2 | `column_names` | `VARCHAR` | required | Comma-separated columns, e.g. `'temperature, humidity'`; each column at most once (names match case-insensitively) |
 | 3 | `n_trees` | `BIGINT` | `100` | Number of trees, 1 to 500 |
 | 4 | `sample_size` | `BIGINT` | `256` | Rows sampled per tree, 1 to 10000 |
 | 5 | `contamination` | `DOUBLE` | `0.1` | Expected share of anomalies, 0.0 to 0.5 |
 | 6 | `output_mode` | `VARCHAR` | `'summary'` | `'summary'` or `'scores'` (case-insensitive) |
 | 7 | `seed` | `BIGINT` | `NULL` (random) | Fixed seed; `NULL` keeps it random |
-| 8 | `ndim` | `BIGINT` | `1` | Columns combined per split, at least 1. Above 1 the trees split on random hyperplanes (Extended Isolation Forest) |
+| 8 | `ndim` | `BIGINT` | `1` | Columns combined per split, at least 1 and at most the number of columns. Above 1 the trees split on random hyperplanes (Extended Isolation Forest) |
 | 9 | `coef_type` | `VARCHAR` | `'uniform'` | Distribution of the hyperplane coefficients: `'uniform'` or `'normal'` |
 | 10 | `scoring_metric` | `VARCHAR` | `'depth'` | `'depth'`, `'density'` or `'adj_depth'` |
 | 11 | `weight_column` | `VARCHAR` | `NULL` (equal weights) | Numeric column with sample weights |
@@ -230,6 +230,27 @@ isolation_forest_mv(table_name VARCHAR, column_names VARCHAR
 
 Every optional parameter accepts `NULL` to keep its default, so you can set a later parameter
 without spelling out the earlier ones. `coef_type` and `scoring_metric` are case-insensitive.
+
+A column listed twice (also in another spelling) would count as two dimensions, and a hyperplane
+cannot combine more columns than there are, so both are binder errors:
+
+```sql
+SELECT * FROM isolation_forest_mv('readings', 'temperature, humidity, Temperature');
+SELECT * FROM isolation_forest_mv('readings', 'temperature, humidity', 100, 256, 0.1, 'summary', 42, 3);
+```
+
+```text
+Binder Error: isolation_forest_mv: column 'temperature' is listed more than once
+-> Unexpected? Please report it: https://github.com/DataZooDE/anofox-tabular/issues
+
+LINE 1: SELECT * FROM isolation_forest_mv('readings', 'temperature, humidity,...
+                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+Binder Error: isolation_forest_mv: ndim (3) must not exceed the number of columns (2)
+-> Unexpected? Please report it: https://github.com/DataZooDE/anofox-tabular/issues
+
+LINE 1: SELECT * FROM isolation_forest_mv('readings', 'temperature, humidity'...
+                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+```
 
 **Output, `'summary'` mode** (one row): `status`, `outlier_count`, `total_count` as for
 `isolation_forest`, then:
@@ -462,7 +483,8 @@ dbscan_mv(table_name VARCHAR, column_names VARCHAR
           [, id_column := VARCHAR]) -> TABLE
 ```
 
-The parameters are those of [`dbscan`](#dbscan), with `column_names` as a comma-separated list.
+The parameters are those of [`dbscan`](#dbscan), with `column_names` as a comma-separated list;
+a column listed twice is a binder error, as for [`isolation_forest_mv`](#isolation_forest_mv).
 
 **Output, `'summary'` mode**: the columns of `dbscan`, plus `n_columns INTEGER` before
 `message`.
@@ -571,7 +593,7 @@ outlier_tree(table_name VARCHAR, columns VARCHAR, output_mode VARCHAR,
 | Parameter | Type | Default (3-argument form) | Description |
 |-----------|------|---------|-------------|
 | `table_name` | `VARCHAR` | required | Table or view to read |
-| `columns` | `VARCHAR` | required | Comma-separated columns to analyze |
+| `columns` | `VARCHAR` | required | Comma-separated columns to analyze, each at most once (names match case-insensitively) |
 | `output_mode` | `VARCHAR` | required | `'summary'` for one summary row, `'outliers'` for one row per outlier value, so a row with outliers in two columns gives two rows (case-insensitive; any other value is an error, `NULL` means `'summary'`) |
 | `max_depth` | `INTEGER` | `4` | Maximum tree depth, 1 to 1024 |
 | `max_perc_outliers` | `DOUBLE` | `0.01` | Largest share of a group that may be flagged, above 0 and at most 1 |

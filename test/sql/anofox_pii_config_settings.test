@@ -1,0 +1,103 @@
+# name: test/sql/anofox_pii_config_settings.test
+# description: pii_config() shows each PII setting exactly as current_setting() and
+#              duckdb_settings() do (issue #125): the mask strategy in lower case, the
+#              confidence as a DOUBLE prints, the default enabled types as the empty
+#              string, whose meaning the description column explains.
+# group: [sql]
+
+require anofox_tabular
+
+statement ok
+LOAD anofox_tabular;
+
+# Defaults: every row of pii_config() equals current_setting() and duckdb_settings()
+query TTT
+SELECT c.option_name, c.option_value, c.option_value = s.value
+FROM pii_config() c JOIN duckdb_settings() s ON s.name = c.option_name
+ORDER BY c.option_name;
+----
+anofox_pii_deep_validation	false	true
+anofox_pii_default_mask_strategy	redact	true
+anofox_pii_enabled_types	(empty)	true
+anofox_pii_min_confidence	0.5	true
+anofox_pii_require_checksum	true	true
+
+query TT
+SELECT current_setting('anofox_pii_default_mask_strategy'), current_setting('anofox_pii_enabled_types');
+----
+redact	(empty)
+
+# The empty value keeps its meaning in the description
+query T
+SELECT description LIKE '%empty = all types except POSTAL_CODE%'
+FROM pii_config() WHERE option_name = 'anofox_pii_enabled_types';
+----
+true
+
+# After a compliance team sets an export preset in mixed case, all three views agree again
+statement ok
+SET anofox_pii_default_mask_strategy = 'HASH';
+
+statement ok
+SET anofox_pii_min_confidence = 0.75;
+
+statement ok
+SET anofox_pii_enabled_types = 'email,phone,iban';
+
+statement ok
+SET anofox_pii_require_checksum = false;
+
+query TTT
+SELECT c.option_name, c.option_value, c.option_value = s.value
+FROM pii_config() c JOIN duckdb_settings() s ON s.name = c.option_name
+ORDER BY c.option_name;
+----
+anofox_pii_deep_validation	false	true
+anofox_pii_default_mask_strategy	hash	true
+anofox_pii_enabled_types	EMAIL,PHONE,IBAN	true
+anofox_pii_min_confidence	0.75	true
+anofox_pii_require_checksum	false	true
+
+query T
+SELECT current_setting('anofox_pii_default_mask_strategy');
+----
+hash
+
+# Aliases are stored by their canonical name
+statement ok
+SET anofox_pii_default_mask_strategy = 'Asterisks';
+
+query TT
+SELECT current_setting('anofox_pii_default_mask_strategy'),
+       (SELECT option_value FROM pii_config() WHERE option_name = 'anofox_pii_default_mask_strategy');
+----
+asterisk	asterisk
+
+# The stored lower-case strategy still drives masking
+query T
+SELECT pii_redact_column('mail jane.doe@acme-corp.com');
+----
+mail **********************
+
+statement ok
+RESET anofox_pii_default_mask_strategy;
+
+statement ok
+RESET anofox_pii_min_confidence;
+
+statement ok
+RESET anofox_pii_enabled_types;
+
+statement ok
+RESET anofox_pii_require_checksum;
+
+query TTT
+SELECT c.option_name, c.option_value, c.option_value = s.value
+FROM pii_config() c JOIN duckdb_settings() s ON s.name = c.option_name
+ORDER BY c.option_name;
+----
+anofox_pii_deep_validation	false	true
+anofox_pii_default_mask_strategy	redact	true
+anofox_pii_enabled_types	(empty)	true
+anofox_pii_min_confidence	0.5	true
+anofox_pii_require_checksum	true	true

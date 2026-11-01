@@ -52,7 +52,7 @@ NER types need the NER model.
 | Type | Detects | Method |
 |------|---------|--------|
 | `EMAIL` | Email addresses, also with non-ASCII letters (`jörg.k@müller-gmbh.de`); a local part of at most 64 characters and domain labels of at most 63. The local part ends at `/`, `?`, `#`, `&`, `=` and `:`, so an address in a URL query or path or after `mailto:` is matched as the bare address (`max@web.de` in `https://shop.example.com/unsubscribe?email=max@web.de&id=7`) | pattern |
-| `PHONE` | International numbers with a `+` or `00` prefix (`+49 (0) 221 4711-0`, `0049 171 1234567`, `0049(0)171-2345678`), national numbers with an area code and a space, dash or slash, also with spaces around the slash (`0171 1234567`, `089/12345678`, `0171 / 2345678`, `(089) 123 456 78`) and US `(555) 123-4567`; 7 to 15 digits. A compact `00` number (`00491712345678`) is matched only when the [phone module](03-phone.md) accepts it as a valid `+` number of that country, so order and account numbers that start with `00` stay unmatched. A compact national number without separators (`01701234567`) is matched only right after a phone keyword (`Tel`, `Tel.`, `Telefon`, `Telefonnummer`, `Mobil`, `Handy`, `Fon`, `Fax`, `phone`, `mobile`, `cell`, optionally followed by `:` or `-Nr.`), because order and claim numbers have the same shape. A number starts and ends at the text boundary or at any character that is no letter, digit or `+`, so numbers in JSON values (`"phone":"+49 171 2345678"`), CSV fields, HTML cells (`<td>+49 30 1234567</td>`), `tel=+49...` and `Tel.+49...` are found. A number joined by a dash to letters or digits (`INC-0221-4711`, the groups of a UUID), or following a digit and a space, `/` or `.` (the groups of an IBAN), is part of a longer token and not matched | pattern |
+| `PHONE` | International numbers with a `+` or `00` prefix (`+49 (0) 221 4711-0`, `0049 171 1234567`, `0049(0)171-2345678`), national numbers with an area code and a space, dash or slash, also with spaces around the slash (`0171 1234567`, `089/12345678`, `0171 / 2345678`, `(089) 123 456 78`) and US numbers: `(555) 123-4567`, with dashes only (`212-555-0123`, `1-212-555-0123`) and with the country code `1` before the area code (`1 (212) 555-0123`), the leading `1` being part of the match. A dashed US number needs an area code and exchange that start with 2 to 9, as every US number does, so dates (`2026-10-31`), ZIP+4 codes (`10001-1234`), SSNs (`123-45-6789`, a `US_SSN`) and invoice numbers (`INV-2026-0042`) are no `PHONE`; 7 to 15 digits. A compact `00` number (`00491712345678`) is matched only when the [phone module](03-phone.md) accepts it as a valid `+` number of that country, so order and account numbers that start with `00` stay unmatched. A compact national number without separators (`01701234567`) is matched only right after a phone keyword (`Tel`, `Tel.`, `Telefon`, `Telefonnummer`, `Mobil`, `Handy`, `Fon`, `Fax`, `phone`, `mobile`, `cell`, optionally followed by `:` or `-Nr.`), because order and claim numbers have the same shape. A number starts and ends at the text boundary or at any character that is no letter, digit or `+`, so numbers in JSON values (`"phone":"+49 171 2345678"`), CSV fields, HTML cells (`<td>+49 30 1234567</td>`), `tel=+49...` and `Tel.+49...` are found. A number joined by a dash to letters or digits (`INC-0221-4711`, the groups of a UUID), or following a digit and a space, `/` or `.` (the groups of an IBAN), is part of a longer token and not matched | pattern |
 | `CREDIT_CARD` | Card numbers of Visa, Mastercard (51-55, 2221-2720), American Express, Discover, Maestro, JCB, Diners Club and UnionPay: 13 to 19 digits, compact or in groups joined by one space, dash or dot (`4111 1111 1111 1111`, `3782-822463-10005`, `4111.1111.1111.1111`). The digits must carry a brand prefix with a length the brand issues; digits that continue a longer token (`DE89 3704 ...`, `SN4111...`, `4111...-01`) are not matched | pattern + Luhn checksum + brand prefix |
 | `US_SSN` | US Social Security Numbers `XXX-XX-XXXX` or `XXX XX XXXX`; bare 9-digit numbers are not matched | pattern + area validation |
 | `IBAN` | International Bank Account Numbers, compact or in groups of four separated by single spaces or dashes (`DE89 3704 0044 0532 0130 00`). Irregular grouping (`DE89 37040044 0532013000`, `DE 89 370 400 440 532 013 000`, mixed spaces and dashes) is matched when the IBAN ends after exactly the country's length and its MOD-97 checksum holds. The country code must be in the SWIFT IBAN registry and the IBAN must have that country's length (`DE` 22, `NL` 18, ...), so a hex id such as `ce78d1da254c0843eb23951ae077ff5f` whose MOD-97 checksum holds by chance is no IBAN | pattern + registered country and length + MOD-97 checksum |
@@ -293,7 +293,7 @@ so hashed columns can still be joined and counted:
 
 | Type | Normalisation before hashing |
 |------|------------------------------|
-| `PHONE` | The E.164 form from the [phone module](03-phone.md) (`+49301234567`): a number with `+` or `00` and a country code for that country, a national number (`030 1234567`) for `anofox_tab_phonenumber_default_region`. A number the phone module does not accept as valid is hashed like a credit card number: separators removed, a leading `+` kept |
+| `PHONE` | The E.164 form from the [phone module](03-phone.md) (`+49301234567`): a number with `+` or `00` and a country code for that country, a national number (`030 1234567`) for `anofox_tab_phonenumber_default_region`, which a statement reads once at its start like the PII settings (a `SET` takes effect with the next statement). A number the phone module does not accept as valid is hashed like a credit card number: separators removed, a leading `+` kept |
 | `CREDIT_CARD`, `US_SSN`, `DE_TAX_ID` | Spaces, `-`, `.`, `/`, `(` and `)` removed (a leading `+` is kept) |
 | `IBAN`, `UK_NINO`, `DE_SVNR`, `DE_KVNR`, `DE_ID_CARD` | Same separators removed, upper-cased |
 | `EMAIL` | Lower-cased |
@@ -1072,7 +1072,11 @@ SELECT pii_type, recognizer_name, pattern_info FROM pii_status() ORDER BY pii_ty
 
 Canonical name: `anofox_tab_pii_config`. Table function.
 
-Shows the current values of the PII settings.
+Shows the current values of the PII settings. `option_value` is the value exactly as
+`current_setting()` and `duckdb_settings()` show it: the mask strategy by its lower-case name
+(`SET anofox_pii_default_mask_strategy = 'HASH'` shows `hash`), the confidence as a `DOUBLE`
+prints. An empty `anofox_pii_enabled_types` is the default set, all types except `POSTAL_CODE`;
+the `description` column says so.
 
 ```text
 pii_config() -> TABLE(option_name VARCHAR, option_value VARCHAR, description VARCHAR)
@@ -1083,16 +1087,16 @@ SELECT option_name, option_value FROM pii_config();
 ```
 
 ```text
-┌──────────────────────────────────┬────────────────────────────────┐
-│           option_name            │          option_value          │
-│             varchar              │            varchar             │
-├──────────────────────────────────┼────────────────────────────────┤
-│ anofox_pii_min_confidence        │ 0.500000                       │
-│ anofox_pii_default_mask_strategy │ REDACT                         │
-│ anofox_pii_enabled_types         │ (all types except POSTAL_CODE) │
-│ anofox_pii_deep_validation       │ false                          │
-│ anofox_pii_require_checksum      │ true                           │
-└──────────────────────────────────┴────────────────────────────────┘
+┌──────────────────────────────────┬──────────────┐
+│           option_name            │ option_value │
+│             varchar              │   varchar    │
+├──────────────────────────────────┼──────────────┤
+│ anofox_pii_min_confidence        │ 0.5          │
+│ anofox_pii_default_mask_strategy │ redact       │
+│ anofox_pii_enabled_types         │              │
+│ anofox_pii_deep_validation       │ false        │
+│ anofox_pii_require_checksum      │ true         │
+└──────────────────────────────────┴──────────────┘
 ```
 
 ---
@@ -1270,7 +1274,7 @@ need it, or on a sample first.
 | `anofox_pii_require_checksum` | `true` (default): an IBAN or card number must pass its checksum. `false`: values of the right shape that fail it are reported too, at confidence `0.6`, so mistyped account and card numbers are masked as well |
 | `anofox_pii_default_mask_strategy` | The strategy of `pii_redact_column(value)` and of `masked_value` in `pii_audit_table`; `none` is rejected |
 | `anofox_pii_min_confidence` | Minimum confidence of a match; dictionary name matches have 0.5, pattern matches 1.0 |
-| `anofox_pii_deep_validation` | Validate detected phone numbers with the built-in phone module. A match is dropped only when the module can judge the number and finds its length impossible: a number with `+CC` (or the default region's international prefix) for that country, a national number for `anofox_tab_phonenumber_default_region`. A national number in another country's format, such as `0171 1234567` with the default region `US`, cannot be judged and stays a match. |
+| `anofox_pii_deep_validation` | Validate detected phone numbers with the built-in phone module. A match is dropped only when the module can judge the number and finds its length impossible: a number with `+CC` (or the default region's international prefix) for that country, a national number for `anofox_tab_phonenumber_default_region`. A national number in another country's format, such as `0171 1234567` with the default region `US`, cannot be judged and stays a match. A US number without `+` (`212-555-0123`, `1 (212) 555-0123`) is judged as the `+1` number it is, whatever the default region. |
 | `anofox_ner_auto_download` | Download the NER model on first use |
 | `anofox_ner_model` | The NER model: `distilbert-en`, `distilbert-multi` or `bert-multi` (see [NER model](#ner-model)); set it before the model is loaded |
 | `anofox_ner_device` | OpenVINO device (`AUTO`, `CPU`, `GPU`, `GPU.0`, `HETERO:GPU,CPU`, ...); setting it retries a load that failed |

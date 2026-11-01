@@ -54,6 +54,12 @@ struct CountryMetadata {
 	// Layout rules for NATIONAL, INTERNATIONAL and RFC3966 output, tried in order
 	std::vector<NumberFormat> number_formats;
 
+	// libphonenumber's nationalPrefixForParsing: a regex matched at the start of the
+	// national number for prefixes that are dropped when parsing although they are
+	// not (or no longer) the national prefix, e.g. MX "0(?:[12]|4[45])|1" for the
+	// dialling prefixes abolished in 2019. Empty: national_prefix is used.
+	std::string national_prefix_for_parsing = "";
+
 	// Check if a length is valid for this country
 	bool IsValidLength(size_t length) const {
 		for (int valid_len : valid_lengths) {
@@ -77,6 +83,7 @@ struct CompiledRegionPatterns {
 	std::optional<std::regex> fixed_line;
 	std::optional<std::regex> mobile;
 	std::optional<std::regex> toll_free;
+	std::optional<std::regex> national_prefix_for_parsing;
 	std::vector<CompiledNumberFormat> number_formats;
 };
 

@@ -170,6 +170,9 @@ unknown column name is an error naming the column and the table; `run_checks` re
 `error` row of that check; `schema_check` reports a missing required column as `fail`. An
 unknown table is an error such as `null_rate: table 'ordrs' does not exist` in the data quality
 checks, the profiling, anomaly detection and PII table functions, and an empty name is `<function>: table_name must not be empty`.
+In the feature columns of `isolation_forest_mv`, `dbscan_mv` and `outlier_tree` a column listed
+twice, also in another spelling (`'amount, Amount'`), is a binder error such as
+`isolation_forest_mv: column 'amount' is listed more than once`: it would count as two dimensions.
 
 The table, column and key arguments of a table function are required: a `NULL` there is a
 binder error `<function>: <argument> must not be NULL`, also when it comes from a `NULL`
@@ -192,8 +195,9 @@ LINE 1: SELECT * FROM null_rate(NULL, 'v', 0.1);
 
 Some functions read the table through a second connection. That connection takes over the
 search path of your session (`SET schema`, `SET search_path`, `USE`) and its `TimeZone` and
-`Calendar` settings, so names resolve and a `TIMESTAMP WITH TIME ZONE` value shown as text
-(`profile_table`'s `min_val`, for example) reads as in your own queries. It cannot see TEMP
+`Calendar` settings, so names resolve and dates are computed as in your own queries
+(`profile_table` shows `TIMESTAMP WITH TIME ZONE` values in UTC, see
+[Values shown as text](10-profiling.md#values-shown-as-text)). It cannot see TEMP
 tables of your session, so these functions reject a TEMP table when the query is bound, with
 `TEMP tables are not supported by <function>; use a regular table`:
 
@@ -323,9 +327,9 @@ unknown currency code raises, because a money value without a valid currency can
 | Module | Bad value | Bad option |
 |--------|-----------|------------|
 | [Email](01-email.md) | `email_is_valid` is `false`; `email_validate` has `valid = false` and a `reason` (`empty` for a blank value). A DNS or SMTP check that gets no answer is `NULL` (`valid = NULL`) | An unknown mode raises (`Unknown email validation mode: ...`) |
-| [Postal](02-postal.md) | No error: parts that libpostal does not find are `NULL` | none; missing data starts the download, and a failed download raises |
+| [Postal](02-postal.md) | No error: parts that libpostal does not find are `NULL` | none; missing data starts the download, and a failed download raises. With `SET anofox_tab_postal_auto_download = false`, missing data raises instead |
 | [Phone](03-phone.md) | `phonenumber_is_valid` is `false`; `phonenumber_format` and `phonenumber_region` are `NULL`; `phonenumber_parse` has `valid = false` and a `reason` (`empty` for a blank value); `phonenumber_match` is `NOT_A_NUMBER`. An unsupported `region` argument makes the row invalid (`unsupported_region`) | An unknown format raises; an unsupported code in `SET anofox_tab_phonenumber_default_region` raises |
-| [Money](04-money.md) | An unknown currency code raises in `money` and `money_from_cents`; arithmetic on two currencies raises | An unknown `money_format` style raises |
+| [Money](04-money.md) | An unknown currency code raises in `money` and `money_from_cents`; arithmetic on two currencies raises | An unknown `money_format` style raises; `money_in_range` raises for `min > max` or a `NaN` bound (a `NULL` bound means no bound) |
 | [VAT](05-vat.md) | `vat_is_valid` is `false`; `vat_validate` has `valid = false` and a `reason` (`empty` for a blank value); `vat_format`, `vat_split` and `vat_country_name` are `NULL`; `vat_normalize` only cleans the text and does not validate | An unknown `vat_format` style raises |
 | [PII](06-pii.md) | No error: text without PII gives an empty list or the unchanged text | An unknown mask strategy raises |
 | Table functions ([checks](07-data-quality.md), [anomaly](08-anomaly-detection.md), [diff](09-diffing.md), [profile](10-profiling.md)) | Data never raises; checks report `fail` | An unknown table or column raises; `run_checks` reports it in an `error` row |

@@ -534,6 +534,7 @@ struct PIIConfigSnapshot {
     bool deep_validation = false;
     bool require_checksum = true;  // false: report checksum failures (IBAN, card) at lower confidence
     bool ner_required = false;     // anofox_ner_required: error instead of dictionary fallback without NER
+    std::string phone_default_region;  // anofox_tab_phonenumber_default_region (PHONE hash, deep validation)
 
     bool IsTypeEnabled(PIIType type) const;
 };

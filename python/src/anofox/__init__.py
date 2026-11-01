@@ -17,14 +17,40 @@ Or with a local dev build::
 
 from __future__ import annotations
 
+import importlib.metadata as _metadata
 import os
 from typing import Optional
 
 from ._connection import AnofoxConnection
 from ._loader import _DEFAULT_S3_BASE, UnsupportedDuckDBVersionError
-from . import profile
+from . import anomaly, diff, money, pii, profile, quality, validate, vat
 
-__all__ = ["connect", "AnofoxConnection", "UnsupportedDuckDBVersionError", "profile"]
+
+def _package_version() -> str:
+    # The version of the installed distribution (pyproject.toml); a source
+    # checkout on sys.path without an installed distribution has none
+    try:
+        return _metadata.version("anofox-tabular")
+    except _metadata.PackageNotFoundError:
+        return "0.0.0+unknown"
+
+
+__version__ = _package_version()
+
+__all__ = [
+    "__version__",
+    "connect",
+    "AnofoxConnection",
+    "UnsupportedDuckDBVersionError",
+    "anomaly",
+    "diff",
+    "money",
+    "pii",
+    "profile",
+    "quality",
+    "validate",
+    "vat",
+]
 
 
 def connect(

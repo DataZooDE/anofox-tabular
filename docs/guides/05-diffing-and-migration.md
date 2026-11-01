@@ -149,6 +149,12 @@ ORDER BY order_id;
 └───────────┴──────────┘
 ```
 
+When the new system recomputes amounts in floating point, a value such as `19.990000000000002`
+against the stored `19.99` is a change too. Pass `float_tolerance := 1e-9` (an absolute
+difference) to `diff_joindiff` to treat such numeric values as equal, or `float_precision := 6`
+(decimal digits to round to) to `diff_hashdiff`; see
+[Floating-point noise](../api/09-diffing.md#floating-point-noise).
+
 ## 5. Compound keys
 
 When a row is identified by several columns, pass them as a list. Key parts that are `NULL` on

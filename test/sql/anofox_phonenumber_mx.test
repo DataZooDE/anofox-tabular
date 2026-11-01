@@ -1,0 +1,103 @@
+# name: test/sql/anofox_phonenumber_mx.test
+# description: Mexican numbers after the 2019 numbering reform (libphonenumber v8.10.17+): every
+#              national significant number has 10 digits and there is no national prefix, so
+#              NATIONAL output is '55 1234 5678'. The abolished dialling prefixes 01 / 02 (national
+#              trunk), 044 / 045 (domestic mobile) and the international mobile token 1 after +52
+#              still occur in older address books; they are dropped when parsing, like
+#              libphonenumber did during the transition (nationalPrefixForParsing
+#              "0(?:[12]|4[45])|1"), so the legacy forms read as the same 10-digit number.
+# group: [anofox_tabular]
+
+require anofox_tabular
+
+statement ok
+LOAD anofox_tabular;
+
+statement ok
+SET anofox_tab_trace_level='warn';
+
+# A supplier contact list from a Mexican subsidiary, written in every style of the last 20 years
+statement ok
+CREATE TABLE contactos AS SELECT * FROM (VALUES
+    (1,  'Oficina CDMX',            '55 5208 3000',          'MX'),
+    (2,  'Oficina CDMX (lada 01)',  '01 55 5208 3000',       'MX'),
+    (3,  'Celular CDMX (044)',      '044 55 1234 5678',      'MX'),
+    (4,  'Celular Guadalajara',     '045 33 3614 1500',      'MX'),
+    (5,  'Celular (+52 1)',         '+52 1 55 1234 5678',    NULL),
+    (6,  'Guadalajara fijo',        '(33) 3614-1500',        'MX'),
+    (7,  'Monterrey',               '+52 81 8340 0000',      NULL),
+    (8,  'Puebla',                  '01 (222) 123 4567',     'MX'),
+    (9,  'Linea 800',               '01 800 123 4567',       'MX'),
+    (10, 'Desde Alemania',          '0052 1 33 3614 1500',   'DE'),
+    (11, 'Desde EE.UU.',            '011 52 55 5208 3000',   'US'),
+    (12, 'Celular +521 sin espacios', '+5215512345678',      NULL),
+    (13, 'Demasiado corto',         '+52 1 55 1234 567',     NULL),
+    (14, 'Empieza con 1',           '1234567890',            'MX')
+) t(id, contacto, telefono, pais);
+
+query IITTTT
+SELECT id, (p).valid, (p).country_code, (p).national_number, (p).type, (p).reason
+FROM (SELECT id, phonenumber_parse(telefono, pais) AS p FROM contactos)
+ORDER BY id;
+----
+1	true	52	5552083000	fixed_line_or_mobile	NULL
+2	true	52	5552083000	fixed_line_or_mobile	NULL
+3	true	52	5512345678	fixed_line_or_mobile	NULL
+4	true	52	3336141500	fixed_line_or_mobile	NULL
+5	true	52	5512345678	fixed_line_or_mobile	NULL
+6	true	52	3336141500	fixed_line_or_mobile	NULL
+7	true	52	8183400000	fixed_line_or_mobile	NULL
+8	true	52	2221234567	fixed_line_or_mobile	NULL
+9	true	52	8001234567	toll_free	NULL
+10	true	52	3336141500	fixed_line_or_mobile	NULL
+11	true	52	5552083000	fixed_line_or_mobile	NULL
+12	true	52	5512345678	fixed_line_or_mobile	NULL
+13	false	NULL	NULL	NULL	invalid_pattern
+14	false	NULL	NULL	NULL	invalid_pattern
+
+# E164, NATIONAL (no prefix since the reform) and INTERNATIONAL; 2-digit area codes 33/55/56/81
+query ITTTT
+SELECT id,
+       phonenumber_format(telefono, pais, 'E164'),
+       phonenumber_format(telefono, pais, 'NATIONAL'),
+       phonenumber_format(telefono, pais, 'INTERNATIONAL'),
+       phonenumber_format(telefono, pais, 'RFC3966')
+FROM contactos
+ORDER BY id;
+----
+1	+525552083000	55 5208 3000	+52 55 5208 3000	tel:+52-55-5208-3000
+2	+525552083000	55 5208 3000	+52 55 5208 3000	tel:+52-55-5208-3000
+3	+525512345678	55 1234 5678	+52 55 1234 5678	tel:+52-55-1234-5678
+4	+523336141500	33 3614 1500	+52 33 3614 1500	tel:+52-33-3614-1500
+5	+525512345678	55 1234 5678	+52 55 1234 5678	tel:+52-55-1234-5678
+6	+523336141500	33 3614 1500	+52 33 3614 1500	tel:+52-33-3614-1500
+7	+528183400000	81 8340 0000	+52 81 8340 0000	tel:+52-81-8340-0000
+8	+522221234567	222 123 4567	+52 222 123 4567	tel:+52-222-123-4567
+9	+528001234567	800 123 4567	+52 800 123 4567	tel:+52-800-123-4567
+10	+523336141500	33 3614 1500	+52 33 3614 1500	tel:+52-33-3614-1500
+11	+525552083000	55 5208 3000	+52 55 5208 3000	tel:+52-55-5208-3000
+12	+525512345678	55 1234 5678	+52 55 1234 5678	tel:+52-55-1234-5678
+13	NULL	NULL	NULL	NULL
+14	NULL	NULL	NULL	NULL
+
+# The legacy and the current form are the same number
+query TTT
+SELECT phonenumber_match('044 55 1234 5678', '+52 55 1234 5678', 'MX'),
+       phonenumber_match('+52 1 33 3614 1500', '(33) 3614-1500', 'MX'),
+       phonenumber_match('01 55 5208 3000', '55 5208 3000', 'MX');
+----
+EXACT_MATCH	EXACT_MATCH	EXACT_MATCH
+
+# The national form of a valid number reads back as the same number
+query I
+SELECT count(*) FROM contactos
+WHERE phonenumber_is_valid(telefono, pais)
+  AND phonenumber_format(phonenumber_format(telefono, pais, 'NATIONAL'), 'MX', 'E164')
+      IS DISTINCT FROM phonenumber_format(telefono, pais, 'E164');
+----
+0
+
+query TT
+SELECT phonenumber_example('MX'), phonenumber_is_valid(phonenumber_example('MX'), 'MX');
+----
++525512345678	true

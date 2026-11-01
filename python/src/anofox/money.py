@@ -295,12 +295,33 @@ def money_multiply(conn: Any, money: Optional[dict], factor: Optional[float]) ->
     return _struct_to_dict(result[0])
 
 
+def _optional_bound(bound: Any) -> Any:
+    """
+    The SQL value of a ``money_in_range`` bound: ``None`` (no bound) for ``None``,
+    ``pandas.NA`` or ``pandas.NaT``; a float/Decimal NaN stays NaN so SQL rejects it.
+    """
+    if not is_missing(bound):
+        return bound
+    if isinstance(bound, (float, Decimal)) or type(bound).__module__.split(".")[0] == "numpy":
+        return float("nan")
+    return None
+
+
 def money_in_range(
     conn: Any, money: Optional[dict], min_amount: Optional[float], max_amount: Optional[float]
 ) -> Optional[bool]:
-    """Return True if the money amount is within [min_amount, max_amount]."""
-    if is_missing(money) or is_missing(min_amount) or is_missing(max_amount):
+    """
+    Return True if the money amount is within [min_amount, max_amount], like SQL
+    ``money_in_range``.
+
+    A bound of ``None`` (or ``pandas.NA``) means no bound on that side:
+    ``money_in_range(conn, m, 0, None)`` is ``amount >= 0``. A NaN bound or
+    ``min_amount > max_amount`` raises an error. A missing *money* gives ``None``.
+    """
+    if is_missing(money):
         return None
+    min_amount = _optional_bound(min_amount)
+    max_amount = _optional_bound(max_amount)
     result = fetch_row(
         conn,
         f"SELECT anofox_tab_money_in_range({_MONEY_SQL}, ?, ?)",

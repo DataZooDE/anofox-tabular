@@ -1,5 +1,6 @@
 #include "anofox_vat.hpp"
 #include "anofox_function_alias.hpp"
+#include "anofox_text_fold.hpp"
 #include "telemetry.hpp"
 #include "duckdb/function/scalar_function.hpp"
 #include "duckdb/parser/parsed_expression.hpp"
@@ -218,10 +219,9 @@ static void VATValidateFunc(DataChunk& args, ExpressionState& state,
     bool has_letter_prefix = normalized.size() >= 2 && std::isalpha(static_cast<unsigned char>(normalized[0])) &&
                              std::isalpha(static_cast<unsigned char>(normalized[1]));
     auto split_result = registry.SplitVAT(input);
-    // A blank field (empty or whitespace only) is a missing value, not a number without prefix
-    const bool blank = std::all_of(input.begin(), input.end(), [](char c) {
-      return c == ' ' || c == '\t' || c == '\r' || c == '\n' || c == '\v' || c == '\f';
-    });
+    // A blank field (empty or whitespace only, incl. the no-break spaces of
+    // spreadsheet exports) is a missing value, not a number without prefix
+    const bool blank = anofox::TrimUnicodeSpaces(input).empty();
     if (blank) {
       reason = VAT_REASON_EMPTY;
     } else if (!has_letter_prefix) {

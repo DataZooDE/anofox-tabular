@@ -252,7 +252,8 @@ SELECT * FROM schema_check('orders', ['order_id', 'order_date', 'discount']);
 └─────────┴─────────────────┴─────────────────────────────────────┘
 ```
 
-`schema_check` cannot run inside a [`run_checks`](#run_checks) suite.
+In a [`run_checks`](#run_checks) suite it is the check type `schema_check`, with the columns in
+`params.columns` (see [Required columns in a suite](#required-columns-in-a-suite)).
 
 ---
 
@@ -1153,7 +1154,7 @@ ignored. A checks table without a required column is an error that names it, for
 
 ### Check types
 
-`run_checks` runs 14 check types. `zscore`, `iqr`, `schema_check` and the `_events` functions
+`run_checks` runs 15 check types. `zscore`, `iqr` and the `_events` functions
 are not available in a suite; such a row is an `error` row with the message
 `check type 'zscore' is not supported in run_checks (use the zscore() function)`. The direct
 `agg_check` is the type `agg` here (`check type 'agg_check' is called 'agg' in run_checks ...`).
@@ -1166,15 +1167,16 @@ The `value` column holds the measure of each type:
 | `distinct_count` | distinct values | none | yes |
 | `regex_match` | match rate | `pattern` (required) | yes |
 | `values_in_set` | share in set | `allowed_values` (JSON array of strings) | yes |
-| `agg` | the aggregate (`min`, `max`, `sum` of an integer or `DECIMAL` column and `median` of a `DECIMAL` column are compared exactly, as in [`agg_check`](#agg_check); a `sum` or `avg` whose exact sum leaves its range is an `error` row) | `agg` (required): `avg`, `min`, `max`, `sum`, `median`, `stddev` | yes |
+| `agg` | the aggregate (`min`, `max`, `sum` of an integer or `DECIMAL` column and `median` of a `DECIMAL` column are compared exactly, as in [`agg_check`](#agg_check); a `sum` or `avg` whose exact sum leaves its range is an `error` row) | `agg` (required): `avg`, `min`, `max`, `sum`, `median`, `stddev`; case and surrounding spaces do not matter (`"SUM "` is `sum`) | yes |
 | `duplicate_count` | duplicates | none (the key is `column_name`: a comma-separated list or a JSON array) | yes |
 | `compliance` | compliance rate | `expression` (required) | yes |
 | `freshness` | age in seconds (the thresholds are seconds too); `column_name` must be a date, timestamp or text column | `reference_time` (default: the current UTC time, no ICU needed) | yes |
-| `occurrence` | frequency of the extreme value | `mode`: `max` (default) or `min` | no |
+| `occurrence` | frequency of the extreme value | `mode`: `max` (default) or `min`; case and surrounding spaces do not matter | no |
 | `match_rate` | match rate over the rows with a non-NULL key | `right_table`, `right_keys` (required), `left_keys` (default `column_name`); the keys as a comma-separated string or a JSON array (`["customer_id", "region"]`) | no |
 | `rel_count_change` | relative change; without `lower_threshold` and `upper_threshold` a monitor row that only records it (the direct function defaults to -0.5 and 0.5) | `date_column` (required), `count_column` (counted with `COUNT(DISTINCT ...)` per day; default: rows), `window_days` (7), `reference_date`, `fill_missing_days` (`false`) | no |
 | `metric_anomaly_iqr` | daily metric: `AVG` of `metric_column`, else of `column_name`, else the row count (0 on a reference date without rows) | `date_column` (required), `metric_column`, `window_days` (30), `k` (1.5), `reference_date` | no |
 | `rolling_values_in_set` | share in set | `date_column` (required), `allowed_values`, `window_days` (7), `reference_date` | no |
+| `schema_check` | number of missing columns; without `lower_threshold` and `upper_threshold` it fails when any column is missing (`upper_threshold` 0) | `columns` (required): a JSON array (`["customer_id", "email"]`) or a comma-separated string; `fail_on_empty` does not apply | no |
 
 For `metric_anomaly_iqr` the IQR bounds replace the table's thresholds and appear in
 `lower_threshold` and `upper_threshold`. The `mode` parameter of the direct function is not
@@ -1220,7 +1222,7 @@ type (epoch seconds as `BIGINT` or `DOUBLE`, a `TIME`, an `ENUM`, a `BOOLEAN`) i
 row:
 `check 'fresh_epoch' (freshness) cannot run: column_name 'seen_epoch' has type BIGINT; expected DATE, TIMESTAMP, TIMESTAMP WITH TIME ZONE or a VARCHAR holding timestamps`.
 
-Every type also accepts the `params` key `fail_on_empty` (`true` or `false`, default `false`):
+Every type except `schema_check` also accepts the `params` key `fail_on_empty` (`true` or `false`, default `false`):
 with `true` a check that has no rows to evaluate (an empty table, or a `filter_expr` that
 matches no row) is `fail` (or `warn`) with a NULL `value` and the message
 `No rows to evaluate: filter matched 0/399 rows (fail_on_empty)` or
@@ -1254,6 +1256,44 @@ whose filter matches nothing (the load did not arrive) is visible as such. With 
 at all, the check still returns one row with a NULL `identifier` (`pass` with
 `No value to evaluate; check passed trivially; filter matched 0/399 rows`, or `fail` with
 `fail_on_empty`).
+
+### Required columns in a suite
+
+A `schema_check` row gates on the columns of its table, like the direct
+[`schema_check`](#schema_check): `value` is the number of columns of `params.columns` the table
+lacks, matched case-insensitively (`email` finds `Email`), and the message lists them. Without
+`lower_threshold` and `upper_threshold` the check fails as soon as one column is missing (the
+row shows `upper_threshold` 0); set `upper_threshold` to tolerate some, or `monitor_only` to
+record a `warn`. `params.columns` is a JSON array or a comma-separated string:
+
+```sql
+CREATE TABLE crm_customers (customer_id BIGINT, Email VARCHAR, full_name VARCHAR, Country VARCHAR);
+CREATE TABLE schema_gates (check_name VARCHAR, check_type VARCHAR, table_name VARCHAR, params VARCHAR,
+                           upper_threshold DOUBLE, monitor_only BOOLEAN);
+INSERT INTO schema_gates VALUES
+    ('crm_contact_columns',  'schema_check', 'crm_customers', '{"columns": ["customer_id", "email", "full_name"]}', NULL, false),
+    ('crm_required_columns', 'schema_check', 'crm_customers', '{"columns": ["customer_id", "country_code", "phone"]}', NULL, false),
+    ('crm_optional_columns', 'schema_check', 'crm_customers', '{"columns": "phone, fax"}', NULL, true);
+
+SELECT check_name, value, upper_threshold, status, message FROM run_checks('schema_gates');
+```
+
+```text
+┌──────────────────────┬────────┬─────────────────┬─────────┬────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│      check_name      │ value  │ upper_threshold │ status  │                                                message                                                 │
+│       varchar        │ double │     double      │ varchar │                                                varchar                                                 │
+├──────────────────────┼────────┼─────────────────┼─────────┼────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+│ crm_contact_columns  │    0.0 │             0.0 │ pass    │ schema_check value 0.0 is within thresholds                                                            │
+│ crm_optional_columns │    2.0 │             0.0 │ warn    │ schema_check value 2.0 violates thresholds (2.0 > upper 0.0); missing columns: 'phone', 'fax'          │
+│ crm_required_columns │    2.0 │             0.0 │ fail    │ schema_check value 2.0 violates thresholds (2.0 > upper 0.0); missing columns: 'country_code', 'phone' │
+└──────────────────────┴────────┴─────────────────┴─────────┴────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+```
+
+The check looks at the columns, not the rows, so it takes no `column_name`
+(`column_name is not used by schema_check (list the required columns in params.columns)`), no
+`filter_expr`, no `identifier_column` and no `fail_on_empty`; each is an `error` row of that
+check. Without `params.columns` the row is `requires params.columns`, and a missing table is
+`target table 'crm_customers_stage' does not exist`, as for every check type.
 
 ### Status
 

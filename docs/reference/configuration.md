@@ -41,11 +41,12 @@ ORDER BY name;
 │ anofox_tab_email_smtp_port               │ INTEGER    │
 │ anofox_tab_email_smtp_read_timeout_ms    │ BIGINT     │
 │ anofox_tab_phonenumber_default_region    │ VARCHAR    │
+│ anofox_tab_postal_auto_download          │ BOOLEAN    │
 │ anofox_tab_postal_data_path              │ VARCHAR    │
 │ anofox_tab_trace_enabled                 │ BOOLEAN    │
 │ anofox_tab_trace_level                   │ VARCHAR    │
 └──────────────────────────────────────────┴────────────┘
-  13 rows                                     2 columns
+  14 rows                                     2 columns
 ```
 
 ## All settings
@@ -63,6 +64,7 @@ ORDER BY name;
 | `anofox_tab_email_smtp_mail_from` | `VARCHAR` | `validator@duckdb.local` | [Email](#email) |
 | `anofox_tab_phonenumber_default_region` | `VARCHAR` | `US` | [Phone](#phone) |
 | `anofox_tab_postal_data_path` | `VARCHAR` | `~/.duckdb/extensions/libpostal` | [Postal](#postal) |
+| `anofox_tab_postal_auto_download` | `BOOLEAN` | `true` | [Postal](#postal) |
 | `anofox_tab_trace_enabled` | `BOOLEAN` | `true` | [Tracing](#tracing) |
 | `anofox_tab_trace_level` | `VARCHAR` | `info` | [Tracing](#tracing) |
 | `anofox_pii_enabled_types` | `VARCHAR` | empty (all types except `POSTAL_CODE`) | [PII](#pii) |
@@ -79,7 +81,7 @@ ORDER BY name;
 | `anofox_telemetry_key` | `VARCHAR` | the project's PostHog key | [Telemetry](#telemetry) |
 | `datazoo_banner` | `BOOLEAN` | `true` | [Banner](#banner) |
 
-The postal setting exists only in builds with the postal module (not on Windows). The defaults above are
+The postal settings exist only in builds with the postal module (not on Windows). The defaults above are
 the values `duckdb_settings()` reports in a new session.
 
 ## Email
@@ -128,6 +130,7 @@ SELECT key, value FROM email_config() WHERE key LIKE 'dns%';
 | Setting | Effect |
 |---------|--------|
 | `anofox_tab_postal_data_path` | Directory of the libpostal data. The default is in the home directory (`~` is expanded with DuckDB's `home_directory` setting, else `HOME`, or `USERPROFILE` on Windows). At the default, a complete copy in `.duckdb/extensions/libpostal` under the working directory, the default of v2026.10.25 and older, is still used when the home directory has none. `RESET` returns to the default. See [Postal addresses](../api/02-postal.md#where-the-data-goes). |
+| `anofox_tab_postal_auto_download` | `true` (default): the first `postal_parse_address` or `postal_expand_address` call downloads the libpostal data (about 500 MB) when it is not in `anofox_tab_postal_data_path`. `false` never downloads on first use: such a call raises an `IO Error` that names the directory and how to get the data. An explicit `postal_load_data()` still downloads, as the call itself is the consent. `NULL` is rejected. See [Postal addresses](../api/02-postal.md#turning-the-automatic-download-off). |
 
 ## Tracing
 
@@ -163,11 +166,11 @@ Used by the [PII functions](../api/06-pii.md).
 |---------|--------|
 | `anofox_pii_enabled_types` | Comma-separated list of PII types to detect, e.g. `'EMAIL,US_SSN'`. Empty means all types except `POSTAL_CODE`, which is detected only when listed. `DEFAULT` stands for the default set, so `'DEFAULT,POSTAL_CODE'` adds postal codes. All PII functions honor it, including `pii_mask`, `pii_scan_table` and `pii_audit_table`; an explicit type argument (`pii_mask_column`) overrides it. |
 | `anofox_pii_min_confidence` | Matches below this confidence (0.0 to 1.0) are dropped, whatever their type. Pattern matches have confidence 1.0, checksum failures (`anofox_pii_require_checksum = false`) 0.6, dictionary name matches 0.5, and NER matches the model score (at least 0.7). |
-| `anofox_pii_default_mask_strategy` | Strategy of `pii_redact_column(value)` without a strategy argument and of the `masked_value` column of `pii_audit_table`: `redact`, `hash`, `partial` or `asterisk` (case-insensitive). `none` is rejected, because a default that turns masking off would expose raw PII; pass `'none'` as an explicit argument instead. `pii_mask(text)` always redacts. |
+| `anofox_pii_default_mask_strategy` | Strategy of `pii_redact_column(value)` without a strategy argument and of the `masked_value` column of `pii_audit_table`: `redact`, `hash`, `partial` or `asterisk` (case-insensitive, stored by its lower-case name). `none` is rejected, because a default that turns masking off would expose raw PII; pass `'none'` as an explicit argument instead. `pii_mask(text)` always redacts. |
 | `anofox_pii_deep_validation` | `true` validates detected phone numbers with the phone module and drops a match only when the module can judge the number and finds its length impossible. A number with `+CC`, or with the international prefix of `anofox_tab_phonenumber_default_region` (`00` for `DE`, `011` for `US`), is judged for that country; a national number is judged for `anofox_tab_phonenumber_default_region` when it is written in that region's format. A national number in another country's format (`0171 1234567` or `0049 171 1234567` with the default region `US`) cannot be judged and is kept, so deep validation never unmasks a number because the default region differs. |
 | `anofox_pii_require_checksum` | `true` (default) reports an IBAN or credit card number only when its checksum (MOD-97, Luhn) holds. `false` also reports values of the right shape whose checksum fails, at confidence `0.6`, so mistyped numbers are masked too; an IBAN must still have its country's length. `pii_is_valid_iban` and `pii_is_valid_credit_card` stay strict. A `anofox_pii_min_confidence` above 0.6 drops these matches again. |
 
-`pii_config()` lists the current PII values.
+`pii_config()` lists the current PII values as `current_setting()` shows them (the mask strategy by its lower-case name, an empty `anofox_pii_enabled_types` for the default set), with a description per setting.
 
 ```sql
 SET anofox_pii_enabled_types = 'EMAIL';
@@ -225,7 +228,7 @@ SELECT current_setting('anofox_pii_require_checksum') AS require_checksum,
 │ require_checksum │ min_confidence │           enabled_types           │ mask_strategy │ ner_model  │
 │     boolean      │     double     │              varchar              │    varchar    │  varchar   │
 ├──────────────────┼────────────────┼───────────────────────────────────┼───────────────┼────────────┤
-│ false            │            0.5 │ EMAIL,PHONE,IBAN,CREDIT_CARD,NAME │ REDACT        │ bert-multi │
+│ false            │            0.5 │ EMAIL,PHONE,IBAN,CREDIT_CARD,NAME │ redact        │ bert-multi │
 └──────────────────┴────────────────┴───────────────────────────────────┴───────────────┴────────────┘
 ```
 

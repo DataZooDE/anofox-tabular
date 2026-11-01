@@ -195,6 +195,11 @@ void PostalManager::SetDataDirectory(const std::string &path) {
            "Postal data directory set to " + data_directory);
 }
 
+void PostalManager::SetAutoDownload(bool enabled) {
+	auto_download.store(enabled);
+	AnofoxTrace(AnofoxLogLevel::Debug, std::string("Postal auto download ") + (enabled ? "enabled" : "disabled"));
+}
+
 std::string PostalManager::GetDataDirectory() const {
 	std::lock_guard<std::mutex> lock(init_lock);
 	return data_directory;
@@ -405,6 +410,15 @@ PostalStatus PostalManager::GetStatusInternal(ClientContext &context) const {
 void PostalManager::Initialize(ClientContext &context) {
 	// Caller holds init_lock.
 	auto status = GetStatusInternal(context);
+	if (!status.data_present && !auto_download.load()) {
+		AnofoxTrace(AnofoxLogLevel::Info,
+		            "Postal data not found in '" + status.data_dir + "' and auto download is off; not downloading");
+		throw IOException("libpostal data not downloaded: anofox_tab_postal_auto_download is false and '" +
+		                  status.data_dir +
+		                  "' holds no libpostal data. SET anofox_tab_postal_auto_download = true to download it on "
+		                  "first use, or call postal_load_data() to download it now (about 500 MB), or SET "
+		                  "anofox_tab_postal_data_path to a directory that holds the data");
+	}
 	if (!status.data_present) {
 		AnofoxTrace(AnofoxLogLevel::Info,
 		           "Libpostal data not found in '" + status.data_dir + "', downloading automatically...");
@@ -474,6 +488,13 @@ static void SetPostalDataPathOption(ClientContext &, SetScope, Value &parameter)
         throw InvalidInputException("anofox_tab_postal_data_path cannot be NULL");
     }
     PostalManager::Instance().SetDataDirectory(parameter.ToString());
+}
+
+static void SetPostalAutoDownloadOption(ClientContext &, SetScope, Value &parameter) {
+    if (parameter.IsNull()) {
+        throw InvalidInputException("anofox_tab_postal_auto_download cannot be NULL");
+    }
+    PostalManager::Instance().SetAutoDownload(BooleanValue::Get(parameter));
 }
 
 void PostalParseAddressFunction(DataChunk &args, ExpressionState &state, Vector &result) {
@@ -708,6 +729,11 @@ void RegisterPostalOptions(ExtensionLoader &loader) {
 	config.AddExtensionOption("anofox_tab_postal_data_path",
 	                          "Directory storing libpostal assets",
 	                          LogicalTypeId::VARCHAR, Value(postal::DEFAULT_POSTAL_DIR), SetPostalDataPathOption);
+	config.AddExtensionOption("anofox_tab_postal_auto_download",
+	                          "Download the libpostal data (about 500 MB) on the first postal_parse_address / "
+	                          "postal_expand_address call when it is not in anofox_tab_postal_data_path; false raises "
+	                          "an error instead (postal_load_data() still downloads it)",
+	                          LogicalTypeId::BOOLEAN, Value::BOOLEAN(true), SetPostalAutoDownloadOption);
 }
 
 void RegisterPostalFunctions(ExtensionLoader &loader) {

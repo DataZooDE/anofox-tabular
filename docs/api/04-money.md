@@ -5,6 +5,7 @@
 **Use this page to:**
 - Build money values from amounts or from integer cents
 - Add, subtract and multiply without mixing currencies
+- Total amounts per currency
 - Format amounts for display
 - Look up currency symbols and names
 
@@ -287,6 +288,83 @@ SELECT money_multiply(money(1e14, 'USD'), 1000);
 Out of Range Error: Money multiplication result is out of range for DECIMAL(18,3)
 ```
 
+### Totals per currency
+
+`sum(amount)` over a money column is a binder error: `sum` has no variant for the money struct,
+and adding amounts of different currencies would not be meaningful anyway.
+
+```sql
+CREATE TABLE invoices AS
+SELECT invoice_no, money(amount, currency) AS amount
+FROM (VALUES ('RE-2026-0101', 1250.00, 'EUR'), ('RE-2026-0102', 7800.50, 'EUR'),
+             ('RE-2026-0103', 19.90, 'EUR'), ('RE-2026-0104', 2600.00, 'CHF'),
+             ('RE-2026-0105', 75.00, 'CHF'), ('RE-2026-0106', 480.25, 'GBP'))
+     t(invoice_no, amount, currency);
+
+SELECT sum(amount) FROM invoices;
+```
+
+```text
+Binder Error: No function matches the given name and argument types 'sum(STRUCT(amount DECIMAL(18,3), currency VARCHAR))'. You might need to add explicit type casts.
+	Candidate functions:
+	sum(arg DECIMAL) -> DECIMAL
+	sum(arg BOOLEAN, /) -> HUGEINT
+	sum(arg SMALLINT, /) -> HUGEINT
+	sum(arg INTEGER, /) -> HUGEINT
+	sum(arg BIGINT, /) -> HUGEINT
+	sum(arg HUGEINT, /) -> HUGEINT
+	sum(arg DOUBLE, /) -> DOUBLE
+	sum(arg BIGNUM, /) -> BIGNUM
+
+
+LINE 1: SELECT sum(amount) FROM invoices;
+               ^^^^^^^^^^^
+```
+
+Group by the currency and sum the exact `DECIMAL` amounts instead:
+
+```sql
+SELECT money_currency(amount) AS currency,
+       count(*) AS invoices,
+       sum(money_amount(amount)) AS total
+FROM invoices
+GROUP BY ALL
+ORDER BY currency;
+```
+
+```text
+┌──────────┬──────────┬───────────────┐
+│ currency │ invoices │     total     │
+│ varchar  │  int64   │ decimal(38,3) │
+├──────────┼──────────┼───────────────┤
+│ CHF      │        2 │      2675.000 │
+│ EUR      │        3 │      9070.400 │
+│ GBP      │        1 │       480.250 │
+└──────────┴──────────┴───────────────┘
+```
+
+To get money values back, for example to format them, wrap each total in `money`:
+
+```sql
+SELECT currency, money_format(money(total, currency), 'symbol') AS total
+FROM (SELECT money_currency(amount) AS currency, sum(money_amount(amount)) AS total
+      FROM invoices GROUP BY ALL)
+ORDER BY currency;
+```
+
+```text
+┌──────────┬──────────────┐
+│ currency │    total     │
+│ varchar  │   varchar    │
+├──────────┼──────────────┤
+│ CHF      │ 2'675.00 CHF │
+│ EUR      │ 9.070,40 €   │
+│ GBP      │ £480.25      │
+└──────────┴──────────────┘
+```
+
+A total outside the `DECIMAL(18,3)` range cannot become a money value: the cast of the `DECIMAL(38,3)` sum to `DECIMAL(18,3)` raises a `Conversion Error`.
+
 ---
 
 ## Tests
@@ -320,10 +398,62 @@ money_is_zero(money MONEY) -> BOOLEAN
 ### `money_in_range`
 
 Canonical name: `anofox_tab_money_in_range`. Scalar function. `true` when
-`min <= amount <= max`.
+`min <= amount <= max`. The bounds follow the same rules as the
+[check functions](07-data-quality.md):
 
 ```text
 money_in_range(money MONEY, min DOUBLE, max DOUBLE) -> BOOLEAN
+```
+
+- A `NULL` bound means no bound on that side: `money_in_range(m, 0, NULL)` is `amount >= 0`,
+  and with both bounds `NULL` the result is `true` for every non-`NULL` money value.
+- A `NULL` money value returns `NULL`.
+- `min > max` and a `NaN` bound raise an `Invalid Input Error`. The function is fallible, so
+  `TRY(money_in_range(...))` returns `NULL` for that row instead.
+
+Open invoices against optional limits per customer (a customer without a credit limit has
+`NULL` in `credit_limit`):
+
+```sql
+CREATE TABLE open_invoices AS
+SELECT invoice_no, money(amount, currency) AS amount, min_order, credit_limit
+FROM (VALUES ('RE-2026-0101', 1250.00, 'EUR', 50.00, 5000.00),
+             ('RE-2026-0102', 7800.50, 'EUR', 50.00, 5000.00),
+             ('RE-2026-0103',   19.90, 'EUR', 50.00, NULL),
+             ('RE-2026-0104', 9999.99, 'EUR', NULL,  NULL))
+     t(invoice_no, amount, currency, min_order, credit_limit);
+
+SELECT invoice_no, min_order, credit_limit,
+       money_in_range(amount, min_order, credit_limit) AS within_limits
+FROM open_invoices ORDER BY invoice_no;
+```
+
+```text
+┌──────────────┬──────────────┬──────────────┬───────────────┐
+│  invoice_no  │  min_order   │ credit_limit │ within_limits │
+│   varchar    │ decimal(4,2) │ decimal(6,2) │    boolean    │
+├──────────────┼──────────────┼──────────────┼───────────────┤
+│ RE-2026-0101 │        50.00 │      5000.00 │ true          │
+│ RE-2026-0102 │        50.00 │      5000.00 │ false         │
+│ RE-2026-0103 │        50.00 │         NULL │ false         │
+│ RE-2026-0104 │         NULL │         NULL │ true          │
+└──────────────┴──────────────┴──────────────┴───────────────┘
+```
+
+```sql
+SELECT money_in_range(money(100, 'EUR'), 5000, 50);
+```
+
+```text
+Invalid Input Error: money_in_range: min (5000.0) must not be greater than max (50.0)
+```
+
+```sql
+SELECT money_in_range(money(100, 'EUR'), 'nan'::DOUBLE, 500);
+```
+
+```text
+Invalid Input Error: money_in_range: min must not be NaN (NULL means no lower bound)
 ```
 
 ### `money_same_currency`

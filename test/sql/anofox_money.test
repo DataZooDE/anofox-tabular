@@ -645,10 +645,11 @@ SELECT anofox_tab_money_in_range(NULL, 10.0, 100.0);
 ----
 NULL
 
+# A NULL bound means no bound on that side (see anofox_money_in_range_bounds.test)
 query I
 SELECT anofox_tab_money_in_range(anofox_tab_money(50.0, 'USD'), NULL, 100.0);
 ----
-NULL
+true
 
 # Test anofox_tab_money_same_currency
 query I

@@ -72,6 +72,12 @@ inline bool CurrencyCIEquals(string_t left, string_t right) {
 }
 
 inline MoneyStructData ExtractMoneyStruct(Vector& money_vec, idx_t count) {
+  // A dictionary selects rows of the underlying struct, whose children are unified with
+  // `count` only: a constant child then has a zero selection of `count` entries, and a
+  // dictionary index >= count (a filter, or TRY() re-running one row) reads past it.
+  if (money_vec.GetVectorType() == VectorType::DICTIONARY_VECTOR) {
+    money_vec.Flatten(count);
+  }
   auto& children = StructVector::GetEntries(money_vec);
   if (children.size() != 2) {
     throw InvalidInputException("Money struct must have exactly 2 fields");

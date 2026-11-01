@@ -358,6 +358,10 @@ std::string MaskWordKeepingPrefix(const std::string &word, size_t keep) {
     return Utf8Prefix(word, keep) + std::string(length - keep, '*');
 }
 
+// anofox_tab_phonenumber_default_region of the running statement (defined
+// with the statement configuration below)
+std::string ActivePhoneDefaultRegion();
+
 // E.164 form of a phone number ("+49301234567") as the phone module parses it:
 // a number with +CC or the default region's international prefix (0049...) for
 // that country, a national number (030 ...) for
@@ -365,7 +369,7 @@ std::string MaskWordKeepingPrefix(const std::string &word, size_t keep) {
 // the number as valid.
 std::string PhoneToE164(const std::string &text) {
     try {
-        const auto parts = phonenumber::PhoneNumberManager::Instance().Parse(text, "");
+        const auto parts = phonenumber::PhoneNumberManager::Instance().Parse(text, "", ActivePhoneDefaultRegion());
         if (parts.valid && parts.matches_valid_pattern && parts.country_code > 0 &&
             !parts.national_number.empty()) {
             return "+" + std::to_string(parts.country_code) + parts.national_number;
@@ -752,6 +756,7 @@ PIIConfigSnapshot PIIConfig::Snapshot() const {
     snapshot.deep_validation = deep_validation_;
     snapshot.require_checksum = require_checksum_;
     snapshot.ner_required = NERModelManager::Instance().IsRequired();
+    snapshot.phone_default_region = phonenumber::PhoneNumberManager::Instance().GetDefaultRegion();
     return snapshot;
 }
 
@@ -790,6 +795,12 @@ bool DeepValidationEnabled() {
     return active_config ? active_config->deep_validation : PIIConfig::Get().IsDeepValidationEnabled();
 }
 
+// The statement's snapshot of anofox_tab_phonenumber_default_region; empty
+// (the phone module's current default) outside of a statement configuration
+std::string ActivePhoneDefaultRegion() {
+    return active_config ? active_config->phone_default_region : std::string();
+}
+
 } // namespace
 
 void PIIConfig::SetMinConfidence(double value) {
@@ -804,7 +815,7 @@ void PIIConfig::SetMinConfidence(double value) {
 
 std::string PIIConfig::GetDefaultMaskStrategyString() const {
     std::lock_guard<std::mutex> guard(mutex_);
-    return MaskStrategyToString(default_mask_strategy_);
+    return StringUtil::Lower(MaskStrategyToString(default_mask_strategy_));
 }
 
 void PIIConfig::SetDefaultMaskStrategy(const std::string &strategy) {
@@ -2252,14 +2263,21 @@ PhoneRecognizer::PhoneRecognizer()
         //   "089 / 12345678", "089-123456-78"
         // The number must end at the end of text or at a character that is no
         // letter, digit or '+' ("</td>", '"', '&', ...).
-        // Group 2: US style (555) 123-4567.
+        // Group 2: a US/NANP number without "+", at the same boundaries:
+        // dashes only with an optional country code 1 ("212-555-0123",
+        // "1-212-555-0123") or a parenthesised area code after the country
+        // code 1 ("1 (212) 555-0123"). Area code and exchange start with 2-9,
+        // as in every NANP number, so dates (2026-10-31), ZIP+4 (10001-1234),
+        // SSNs (123-45-6789) and invoice numbers keep their shape apart.
+        // Group 3: US style (555) 123-4567 anywhere.
         // Dots are no separator in national numbers so dates (25.10.2026),
         // amounts and version strings stay unmatched; Validate() checks the
         // digit count.
         R"((?:^|[^A-Za-z0-9+]))"
-        R"(((?:\+\d{1,3}|00[1-9]\d{0,2}(?=[ \-./(]))(?:[ \-./]?\(\d{1,4}\)|[ \-./]?\d{1,5}){1,6})"
+        R"((?:((?:\+\d{1,3}|00[1-9]\d{0,2}(?=[ \-./(]))(?:[ \-./]?\(\d{1,4}\)|[ \-./]?\d{1,5}){1,6})"
         R"(|00[1-9]\d{6,13})"
         R"(|(?:\(0[1-9]\d{1,4}\) ?|0[1-9]\d{1,4}(?: ?/ ?|[ \-]))\d{2,8}(?:[ \-/]\d{1,8}){0,3}))"
+        R"(|(1[ \-]?\([2-9]\d{2}\)[ \-.]?[2-9]\d{2}[ \-.]?\d{4}|(?:1-)?[2-9]\d{2}-[2-9]\d{2}-\d{4})))"
         R"((?=$|[^A-Za-z0-9+]))"
         R"(|(\(\d{3}\)[\s\-\.]?\d{3}[\s\-\.]?\d{4}))"
     ) {}
@@ -2273,10 +2291,12 @@ std::vector<PIIMatch> PhoneRecognizer::FindMatches(const std::string &text) cons
     std::sregex_iterator end;
     for (std::sregex_iterator iter(text.begin(), text.end(), pattern_); iter != end; ++iter) {
         const auto &match = *iter;
-        const size_t group = match[1].matched ? 1 : (match[2].matched ? 2 : 0);
+        const size_t group = match[1].matched ? 1 : (match[2].matched ? 2 : (match[3].matched ? 3 : 0));
         if (group == 0) {
             continue;
         }
+        // Groups 1 and 2 stand at a token boundary; group 3 (555) 123-4567 anywhere
+        const bool bounded = group == 1 || group == 2;
         auto start = static_cast<size_t>(match.position(group));
         std::string number = match[group].str();
 
@@ -2284,7 +2304,7 @@ std::vector<PIIMatch> PhoneRecognizer::FindMatches(const std::string &text) cons
         // '/', '.') continues a longer digit sequence, e.g. the
         // "0044 0532 0130 00" groups of an IBAN. A dash joins it to any
         // letter or digit before ("20261027-0001", the groups of a UUID).
-        if (group == 1 && number[0] != '+' && start >= 2) {
+        if (bounded && number[0] != '+' && start >= 2) {
             const auto before = static_cast<unsigned char>(text[start - 1]);
             const auto previous = static_cast<unsigned char>(text[start - 2]);
             const bool continues = (before == '-' && std::isalnum(previous)) ||
@@ -2297,12 +2317,25 @@ std::vector<PIIMatch> PhoneRecognizer::FindMatches(const std::string &text) cons
         // Likewise a dash right after the number that leads on to letters or
         // digits ("0123-4567-8901-abcdef...") makes it part of a longer token
         const size_t stop = start + number.size();
-        if (group == 1 && stop + 1 < text.size() && text[stop] == '-' &&
+        if (bounded && stop + 1 < text.size() && text[stop] == '-' &&
             std::isalnum(static_cast<unsigned char>(text[stop + 1]))) {
             AnofoxTrace(AnofoxLogLevel::Trace, "pii: phone candidate continues into a longer token: " + number);
             continue;
         }
-        if (Validate(number)) {
+        // A NANP number without "+" is validated as the +1 number it is, so
+        // deep validation judges it for the US whatever the default region
+        std::string validated = number;
+        if (group == 2) {
+            std::string digits;
+            for (char c : number) {
+                if (std::isdigit(static_cast<unsigned char>(c))) {
+                    digits += c;
+                }
+            }
+            validated = "+1 " + digits.substr(digits.size() - 10);
+            AnofoxTrace(AnofoxLogLevel::Trace, "pii: NANP phone candidate " + number + " validated as " + validated);
+        }
+        if (Validate(validated)) {
             matches.emplace_back(type_, number, start, start + number.size(), 1.0);
         }
     }
@@ -2395,7 +2428,8 @@ bool PhoneRecognizer::PassesDeepValidation(const std::string &text) {
     // which has no trunk prefix 0) cannot be judged and is kept, so deep
     // validation never unmasks a number just because the region differs.
     auto &manager = phonenumber::PhoneNumberManager::Instance();
-    const auto parts = manager.Parse(text, "");
+    const auto default_region = ActivePhoneDefaultRegion();
+    const auto parts = manager.Parse(text, "", default_region);
     if (parts.valid) {
         return true;
     }
@@ -2412,7 +2446,7 @@ bool PhoneRecognizer::PassesDeepValidation(const std::string &text) {
     }
     const bool international = !text.empty() && text[0] == '+';
     if (!international) {
-        const auto region = manager.EffectiveDefaultRegion("");
+        const auto region = manager.EffectiveDefaultRegion(default_region);
         const auto *metadata = phonenumber::GetMetadataForRegion(region);
         const bool region_idd = metadata && !metadata->international_prefix.empty() &&
                                 digits.compare(0, metadata->international_prefix.size(), metadata->international_prefix) == 0;
@@ -3661,6 +3695,8 @@ std::string PIIEngine::Mask(
     const std::vector<PIIType> &types,
     const PIIConfigSnapshot &config
 ) const {
+    // The HASH strategy reads the phone default region of `config`
+    const ActiveConfigScope active_scope(config);
     // Detect() returns non-overlapping matches sorted by position, so each
     // region of the input is replaced exactly once.
     auto matches = Detect(text, types, config);
@@ -4175,6 +4211,9 @@ struct PIIMaskColumnFunction {
 struct PIIMaskValueFunction {
     static void Execute(DataChunk &args, ExpressionState &state, Vector &result) {
         auto &engine = PIIEngine::Instance();
+        // The phone default region of the HASH strategy, as of the statement start
+        const auto config = StatementPIIConfig(StatementContext(state));
+        const ActiveConfigScope active_scope(config);
 
         TernaryExecutor::Execute<string_t, string_t, string_t, string_t>(
             args.data[0], args.data[1], args.data[2], result, args.size(),
@@ -5423,6 +5462,7 @@ void SetPIIDefaultMaskStrategyOption(ClientContext &, SetScope, Value &parameter
                                     "asterisk (pass 'none' explicitly to pii_mask and friends instead)");
     }
     PIIConfig::Get().SetDefaultMaskStrategy(strategy);
+    // Stored by its canonical lower-case name, like the default 'redact'
     parameter = Value(PIIConfig::Get().GetDefaultMaskStrategyString());
 }
 
@@ -5490,19 +5530,21 @@ void PIIConfigFunction(ClientContext &context, TableFunctionInput &input, DataCh
         const char* description;
     };
 
-    // Single consistent snapshot of the configuration
+    // Single consistent snapshot of the configuration. Each value is shown as
+    // current_setting() and duckdb_settings() show it: the strategy in lower
+    // case, the confidence as a DOUBLE prints, the default type set empty
     const auto config = StatementPIIConfig(&context);
     const auto enabled_types_str = EnabledTypesToString(config.enabled_types);
 
     std::vector<ConfigOption> options = {
         {"anofox_pii_min_confidence",
-         std::to_string(config.min_confidence),
+         Value::DOUBLE(config.min_confidence).ToString(),
          "Minimum confidence of a PII match (0.0 - 1.0); applies to every match: pattern matches have 1.0, " "checksum failures 0.6, dictionary names 0.5, NER matches the model score"},
         {"anofox_pii_default_mask_strategy",
-         MaskStrategyToString(config.default_mask_strategy),
-         "Default masking strategy (REDACT, HASH, PARTIAL, ASTERISK; NONE is rejected)"},
+         StringUtil::Lower(MaskStrategyToString(config.default_mask_strategy)),
+         "Default masking strategy (redact, hash, partial, asterisk; none is rejected)"},
         {"anofox_pii_enabled_types",
-         enabled_types_str.empty() ? "(all types except POSTAL_CODE)" : enabled_types_str,
+         enabled_types_str,
          "Comma-separated list of PII types to detect (empty = all types except POSTAL_CODE; DEFAULT stands " "for that set)"},
         {"anofox_pii_deep_validation",
          config.deep_validation ? "true" : "false",
@@ -5551,7 +5593,7 @@ void RegisterPIIOptions(ExtensionLoader &loader) {
                               SetPIIMinConfidenceOption);
 
     config.AddExtensionOption("anofox_pii_default_mask_strategy",
-                              "Default masking strategy (REDACT, HASH, PARTIAL, ASTERISK; NONE is rejected)",
+                              "Default masking strategy (redact, hash, partial, asterisk; none is rejected)",
                               LogicalTypeId::VARCHAR,
                               Value(PIIConfig::DEFAULT_MASK_STRATEGY),
                               SetPIIDefaultMaskStrategyOption);

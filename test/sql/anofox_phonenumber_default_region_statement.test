@@ -1,0 +1,88 @@
+# name: test/sql/anofox_phonenumber_default_region_statement.test
+# description: anofox_tab_phonenumber_default_region is read once per statement (when the phone
+#              functions are bound), not per row: a SET between two statements takes effect in the
+#              next statement, and all rows of one statement are read in the same region.
+# group: [anofox_tabular]
+
+require anofox_tabular
+
+statement ok
+LOAD anofox_tabular;
+
+statement ok
+SET anofox_tab_trace_level='warn';
+
+# National numbers without a country column, as an Excel import from one office delivers them
+statement ok
+CREATE TABLE anrufliste AS
+SELECT i AS id, CASE i % 2 WHEN 0 THEN '030 12345678' ELSE '020 7946 0018' END AS nummer
+FROM range(10000) t(i);
+
+statement ok
+SET anofox_tab_phonenumber_default_region = 'DE';
+
+query IIT
+SELECT count(*), count(DISTINCT (phonenumber_parse(nummer, NULL)).region),
+       min(phonenumber_format(nummer, NULL, 'E164'))
+FROM anrufliste WHERE id % 2 = 0;
+----
+5000	1	+493012345678
+
+query TT
+SELECT phonenumber_format('020 7946 0018', NULL, 'E164'), (phonenumber_parse('020 7946 0018', NULL)).region;
+----
++492079460018	DE
+
+statement ok
+SET anofox_tab_phonenumber_default_region = 'GB';
+
+query TT
+SELECT phonenumber_format('020 7946 0018', NULL, 'E164'), (phonenumber_parse('020 7946 0018', NULL)).region;
+----
++442079460018	GB
+
+# All 10000 rows of one statement are read in the same region (GB), by every phone function
+# (030 1234 5678 is a valid UK-wide 03 number in GB)
+query IIIII
+SELECT count(*),
+       count(DISTINCT (phonenumber_parse(nummer, NULL)).region),
+       count(*) FILTER (WHERE phonenumber_format(nummer, NULL, 'E164') LIKE '+44%'),
+       count(*) FILTER (WHERE phonenumber_is_valid_for_region(nummer, NULL)),
+       count(*) FILTER (WHERE phonenumber_region(nummer, NULL) = 'GB')
+FROM anrufliste;
+----
+10000	1	10000	10000	10000
+
+query T
+SELECT default_region FROM phonenumber_status();
+----
+GB
+
+# A prepared statement reads the setting when it is executed, not when it was prepared
+statement ok
+SET anofox_tab_phonenumber_default_region = 'DE';
+
+statement ok
+PREPARE to_e164 AS SELECT phonenumber_format(?, NULL, 'E164'), (phonenumber_parse(?, NULL)).region;
+
+query TT
+EXECUTE to_e164('020 7946 0018', '020 7946 0018');
+----
++492079460018	DE
+
+statement ok
+SET anofox_tab_phonenumber_default_region = 'GB';
+
+query TT
+EXECUTE to_e164('020 7946 0018', '020 7946 0018');
+----
++442079460018	GB
+
+# A RESET returns to the default 'US' for the next statement
+statement ok
+RESET anofox_tab_phonenumber_default_region;
+
+query TT
+SELECT (phonenumber_parse('(650) 253-0000', NULL)).region, default_region FROM phonenumber_status();
+----
+US	US

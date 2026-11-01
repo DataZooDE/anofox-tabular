@@ -17,6 +17,7 @@ def joindiff(
     primary_keys: Union[str, list[str]],
     compare_columns: Optional[list[str]] = None,
     include_unchanged: bool = False,
+    float_tolerance: Optional[float] = None,
 ) -> DataFrame:
     """
     Compare two tables using a full-outer-join strategy.
@@ -39,6 +40,10 @@ def joindiff(
         When *None* all non-key columns are compared.
     include_unchanged:
         Include unchanged rows in the result (default False).
+    float_tolerance:
+        Absolute tolerance for numeric compare columns: values with
+        ``|a - b| <= float_tolerance`` count as equal (default *None*: exact
+        comparison). Must be a finite number >= 0.
 
     Returns
     -------
@@ -55,8 +60,11 @@ def joindiff(
         if compare_columns is not None:
             query += ", ?::VARCHAR[]"
             params.append(column_list(compare_columns))
-            if include_unchanged:
-                query += ", true"
+        if include_unchanged:
+            query += ", include_all := true"
+        if float_tolerance is not None:
+            query += ", float_tolerance := ?::DOUBLE"
+            params.append(float_tolerance)
         query += ")"
 
         result = fetch_frame(conn, query, params, output_df_type(src, tgt))
@@ -70,6 +78,7 @@ def hashdiff(
     primary_keys: Union[str, list[str]],
     bisection_threshold: Optional[int] = None,
     bisection_factor: Optional[int] = None,
+    float_precision: Optional[int] = None,
 ) -> DataFrame:
     """
     Compare two tables using row hashes.
@@ -90,6 +99,12 @@ def hashdiff(
     bisection_factor:
         Bisection factor (requires bisection_threshold). Not implemented
         yet — passing a value raises a DuckDB binder error.
+    float_precision:
+        Round FLOAT/DOUBLE columns to this many decimal digits before
+        comparing (default *None*: no rounding); DECIMAL and integer columns
+        are compared as they are. Values on either side of a rounding
+        boundary still differ; :func:`joindiff` with ``float_tolerance`` is
+        the exact alternative. Must be >= 0.
 
     Returns
     -------
@@ -108,6 +123,9 @@ def hashdiff(
             if bisection_factor is not None:
                 query += ", ?::BIGINT"
                 params.append(bisection_factor)
+        if float_precision is not None:
+            query += ", float_precision := ?::INTEGER"
+            params.append(float_precision)
         query += ")"
 
         result = fetch_frame(conn, query, params, output_df_type(src, tgt))

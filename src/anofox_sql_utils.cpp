@@ -293,6 +293,16 @@ vector<ResolvedColumn> ResolveColumns(ClientContext &context, const string &func
 	return columns;
 }
 
+void RejectDuplicateColumns(const string &function_name, const std::vector<string> &resolved) {
+	for (idx_t i = 0; i < resolved.size(); i++) {
+		for (idx_t j = 0; j < i; j++) {
+			if (StringUtil::CIEquals(resolved[i], resolved[j])) {
+				throw BinderException("%s: column '%s' is listed more than once", function_name, resolved[j]);
+			}
+		}
+	}
+}
+
 namespace {
 // DuckDB v1.5 and 2.0 resolve view columns via BindView()/GetColumnInfo(); the fallback
 // (bound names/types stored on the entry) is only instantiated when GetColumnInfo() is

@@ -1,0 +1,68 @@
+# name: test/sql/anofox_anomaly_column_list.test
+# description: Issue #125: the column list of the multi-column anomaly functions (isolation_forest_mv,
+#              dbscan_mv, outlier_tree) rejects a column named twice (case-insensitively, like the
+#              column resolution), and isolation_forest_mv rejects an ndim above the number of
+#              columns; both counted as extra dimensions before.
+# group: [anofox_tabular]
+
+require anofox_tabular
+
+statement ok
+LOAD anofox_tabular
+
+statement ok
+SET anofox_tab_trace_enabled = false
+
+statement ok
+CREATE TABLE sensor_readings AS
+SELECT i AS reading_id,
+       'sensor-' || (i % 12) AS sensor_id,
+       20.0 + (i % 17) * 0.4 + CASE WHEN i = 250 THEN 35.0 ELSE 0.0 END AS temperature_c,
+       45.0 + (i % 23) * 0.9 AS humidity_pct,
+       1013.0 + (i % 11) * 0.3 AS pressure_hpa
+FROM range(1, 501) t(i)
+
+# ===--------------------------------------------------------------------===
+# A column named twice is a binder error (it would count as two dimensions)
+# ===--------------------------------------------------------------------===
+
+statement error
+SELECT * FROM isolation_forest_mv('sensor_readings', 'temperature_c, humidity_pct, temperature_c')
+----
+isolation_forest_mv: column 'temperature_c' is listed more than once
+
+# Column resolution is case-insensitive, so is the duplicate check; the message uses the table's spelling
+statement error
+SELECT * FROM isolation_forest_mv('sensor_readings', 'Temperature_C,temperature_c')
+----
+isolation_forest_mv: column 'temperature_c' is listed more than once
+
+statement error
+SELECT * FROM dbscan_mv('sensor_readings', 'humidity_pct, pressure_hpa, HUMIDITY_PCT', 1.0, 5)
+----
+dbscan_mv: column 'humidity_pct' is listed more than once
+
+statement error
+SELECT * FROM outlier_tree('sensor_readings', 'sensor_id, temperature_c, Sensor_ID', 'summary')
+----
+outlier_tree: column 'sensor_id' is listed more than once
+
+# Distinct columns still work
+query II
+SELECT n_columns, total_count FROM isolation_forest_mv('sensor_readings', 'temperature_c, humidity_pct', 50, 256, 0.05, 'summary', 42)
+----
+2	500
+
+# ===--------------------------------------------------------------------===
+# ndim cannot exceed the number of columns
+# ===--------------------------------------------------------------------===
+
+statement error
+SELECT * FROM isolation_forest_mv('sensor_readings', 'temperature_c, humidity_pct', 50, 256, 0.05, 'summary', 42, 3)
+----
+isolation_forest_mv: ndim (3) must not exceed the number of columns (2)
+
+query I
+SELECT n_columns FROM isolation_forest_mv('sensor_readings', 'temperature_c, humidity_pct, pressure_hpa', 50, 256, 0.05, 'summary', 42, 3)
+----
+3

@@ -14,6 +14,7 @@
 #include "duckdb/main/client_context.hpp"
 #include "duckdb_compat.hpp"
 
+#include <cmath>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -239,11 +240,20 @@ struct RetypedColumn {
 	LogicalType target_type;
 };
 
-// The resolved column plan of a diff: the effective compare set and the retyped key and
-// compare columns (by lower-case name).
+// The resolved column plan of a diff: the effective compare set, the retyped key and
+// compare columns (by lower-case name), the type of each compare column on both sides and how
+// numeric compare columns are compared.
 struct DiffColumnPlan {
 	vector<string> compare_columns;
 	std::unordered_map<string, RetypedColumn> retyped_columns;
+	// (source type, target type) of each compare column, by lower-case name
+	std::unordered_map<string, std::pair<LogicalType, LogicalType>> compare_types;
+	// diff_joindiff(float_tolerance := ...): numeric compare columns with |s - t| <= tolerance
+	// are equal; 0 compares exactly
+	double float_tolerance = 0;
+	// diff_hashdiff(float_precision := ...): FLOAT/DOUBLE compare columns are rounded to this many
+	// decimal digits before the comparison; negative: no rounding
+	int32_t float_precision = -1;
 };
 
 // Note the columns of `names` whose type differs between the two tables, with a trace warning.
@@ -323,6 +333,10 @@ DiffColumnPlan ResolveCompareColumns(ClientContext &context, const string &funct
 	}
 	PlanTypeChanges(function_name, primary_keys, "key", source_columns, target_columns, plan);
 	PlanTypeChanges(function_name, plan.compare_columns, "compare", source_columns, target_columns, plan);
+	for (const auto &name : plan.compare_columns) {
+		plan.compare_types[StringUtil::Lower(name)] = {ColumnType(source_columns, name),
+		                                               ColumnType(target_columns, name)};
+	}
 	return plan;
 }
 
@@ -440,6 +454,43 @@ static string SideColumnSQL(const string &side, const string &column, const Diff
 	return UtcTextSQL(ref, type);
 }
 
+static bool IsFloatingPoint(const LogicalType &type) {
+	return type.id() == LogicalTypeId::FLOAT || type.id() == LogicalTypeId::DOUBLE;
+}
+
+// Whether compare column `column` differs between the source and target row, as SQL. By default
+// `IS DISTINCT FROM` on the compared form (SideColumnSQL). With float_precision a FLOAT/DOUBLE
+// side compared by value is rounded first; with float_tolerance two non-NULL numeric values
+// within the tolerance are equal (the difference is taken in DOUBLE). NULL handling stays that
+// of IS DISTINCT FROM: NULL equals NULL, NULL differs from a value.
+static string ColumnDiffersSQL(const string &column, const DiffColumnPlan &plan) {
+	auto source = SideColumnSQL("s", column, plan);
+	auto target = SideColumnSQL("t", column, plan);
+	auto types = plan.compare_types.find(StringUtil::Lower(column));
+	if (types == plan.compare_types.end()) {
+		return source + " IS DISTINCT FROM " + target;
+	}
+	auto &source_type = types->second.first;
+	auto &target_type = types->second.second;
+	bool by_value = source_type == target_type || (source_type.IsNumeric() && target_type.IsNumeric());
+	if (by_value && plan.float_precision >= 0) {
+		auto precision = std::to_string(plan.float_precision);
+		if (IsFloatingPoint(source_type)) {
+			source = "round(" + source + ", " + precision + ")";
+		}
+		if (IsFloatingPoint(target_type)) {
+			target = "round(" + target + ", " + precision + ")";
+		}
+	}
+	string differs = source + " IS DISTINCT FROM " + target;
+	if (plan.float_tolerance > 0 && source_type.IsNumeric() && target_type.IsNumeric()) {
+		auto tolerance = "CAST('" + Value::DOUBLE(plan.float_tolerance).ToString() + "' AS DOUBLE)";
+		differs = "(" + differs + " AND NOT (" + source + " IS NOT NULL AND " + target + " IS NOT NULL AND abs(CAST(" +
+		          source + " AS DOUBLE) - CAST(" + target + " AS DOUBLE)) <= " + tolerance + "))";
+	}
+	return differs;
+}
+
 // The changed_columns output column: for a 'changed' row the compare columns that differ, in
 // compare order; [] for an 'unchanged' row; NULL for an 'added' or 'removed' row, which has no
 // counterpart to compare.
@@ -449,8 +500,7 @@ static string ChangedColumnsSQL(const DiffColumnPlan &plan) {
 		list = "list_filter([";
 		for (size_t i = 0; i < plan.compare_columns.size(); i++) {
 			auto &column = plan.compare_columns[i];
-			list += (i > 0 ? ", " : "") + string("CASE WHEN ") + SideColumnSQL("s", column, plan) +
-			        " IS DISTINCT FROM " + SideColumnSQL("t", column, plan) + " THEN '" +
+			list += (i > 0 ? ", " : "") + string("CASE WHEN ") + ColumnDiffersSQL(column, plan) + " THEN '" +
 			        EscapeSqlStringLiteral(column) + "' END";
 		}
 		list += "]::VARCHAR[], lambda x: x IS NOT NULL)";
@@ -498,8 +548,7 @@ static string GenerateJoinDiffSQL(const string &function_name, const string &sou
 			if (i > 0) {
 				sql += " OR ";
 			}
-			sql += SideColumnSQL("s", compare_columns[i], plan) + " IS DISTINCT FROM " +
-			       SideColumnSQL("t", compare_columns[i], plan);
+			sql += ColumnDiffersSQL(compare_columns[i], plan);
 		}
 		sql += ") THEN 'changed' ";
 	}
@@ -559,9 +608,25 @@ static unique_ptr<TableRef> JoinDiffBindReplace(ClientContext &context, TableFun
 		include_all = include_all_value->GetValue<bool>();
 	}
 
+	// float_tolerance (named only, default 0 = exact)
+	double float_tolerance = 0;
+	auto tolerance_value = duckdb_compat::FindNamedParameter(input.named_parameters, "float_tolerance");
+	if (tolerance_value && !tolerance_value->IsNull()) {
+		float_tolerance = tolerance_value->GetValue<double>();
+		if (!std::isfinite(float_tolerance) || float_tolerance < 0) {
+			throw BinderException("diff_joindiff: float_tolerance must be a finite number >= 0 (got %s)",
+			                      tolerance_value->ToString());
+		}
+	}
+
 	// Validate both schemas and resolve the effective compare set
 	auto plan = ResolveCompareColumns(context, "diff_joindiff", args.source_table, args.target_table,
 	                                  args.primary_keys, compare_columns);
+	plan.float_tolerance = float_tolerance;
+	if (float_tolerance > 0) {
+		AnofoxTrace(AnofoxLogLevel::Debug, "diff_joindiff: numeric compare columns within " +
+		                                       tolerance_value->ToString() + " count as equal");
+	}
 
 	// Generate SQL query
 	string sql = GenerateJoinDiffSQL("diff_joindiff", args.source_table, args.target_table, args.primary_keys,
@@ -589,9 +654,24 @@ static unique_ptr<TableRef> HashDiffBindReplace(ClientContext &context, TableFun
 
 	auto args = ResolveDiffArguments("diff_hashdiff", input);
 
+	// float_precision (named only, default: no rounding)
+	int32_t float_precision = -1;
+	auto precision_value = duckdb_compat::FindNamedParameter(input.named_parameters, "float_precision");
+	if (precision_value && !precision_value->IsNull()) {
+		float_precision = precision_value->GetValue<int32_t>();
+		if (float_precision < 0) {
+			throw BinderException("diff_hashdiff: float_precision must be >= 0 (got %s)", precision_value->ToString());
+		}
+	}
+
 	// Validate both schemas and resolve the compare set (all shared non-key columns)
 	auto plan =
 	    ResolveCompareColumns(context, "diff_hashdiff", args.source_table, args.target_table, args.primary_keys, {});
+	plan.float_precision = float_precision;
+	if (float_precision >= 0) {
+		AnofoxTrace(AnofoxLogLevel::Debug, "diff_hashdiff: FLOAT/DOUBLE compare columns rounded to " +
+		                                       std::to_string(float_precision) + " decimal digit(s)");
+	}
 
 	// Generate SQL query using same logic as JoinDiff
 	string sql = GenerateJoinDiffSQL("diff_hashdiff", args.source_table, args.target_table, args.primary_keys,
@@ -693,6 +773,7 @@ static void AddJoinDiffNamedParameters(TableFunction &fn) {
 	AddCommonDiffNamedParameters(fn);
 	duckdb_compat::AddNamedParameter(fn, "compare_columns", LogicalType::LIST(LogicalType(LogicalTypeId::VARCHAR)));
 	duckdb_compat::AddNamedParameter(fn, "include_all", LogicalType(LogicalTypeId::BOOLEAN));
+	duckdb_compat::AddNamedParameter(fn, "float_tolerance", LogicalType(LogicalTypeId::DOUBLE));
 }
 
 static void AddHashDiffNamedParameters(TableFunction &fn) {
@@ -700,6 +781,7 @@ static void AddHashDiffNamedParameters(TableFunction &fn) {
 	// Declared so they reach the bind, which rejects them as not implemented
 	duckdb_compat::AddNamedParameter(fn, "bisection_threshold", LogicalType(LogicalTypeId::BIGINT));
 	duckdb_compat::AddNamedParameter(fn, "bisection_factor", LogicalType(LogicalTypeId::BIGINT));
+	duckdb_compat::AddNamedParameter(fn, "float_precision", LogicalType(LogicalTypeId::INTEGER));
 }
 
 // Add one overload per positional signature to `set`, all sharing the same
@@ -744,7 +826,7 @@ void RegisterDiffFunctions(ExtensionLoader &loader) {
 
 	{
 		FunctionDescription desc;
-		desc.description = "Computes a row-level diff between two tables using a primary key (VARCHAR or VARCHAR[]), returning rows that were added, removed, or changed. Primary keys are matched NULL-safely (IS NOT DISTINCT FROM).";
+		desc.description = "Computes a row-level diff between two tables using a primary key (VARCHAR or VARCHAR[]), returning rows that were added, removed, or changed. Primary keys are matched NULL-safely (IS NOT DISTINCT FROM). float_tolerance := DOUBLE treats numeric compare columns within that absolute difference as equal.";
 		desc.parameter_names = {"source_table", "target_table", "primary_key", "compare_columns", "include_all"};
 		desc.examples = {"SELECT * FROM diff_joindiff('orders_v1', 'orders_v2', 'order_id');",
 		                 "SELECT * FROM diff_joindiff('orders_v1', 'orders_v2', ['order_id', 'line_id']);"};
@@ -778,7 +860,7 @@ void RegisterDiffFunctions(ExtensionLoader &loader) {
 
 	{
 		FunctionDescription desc;
-		desc.description = "Computes a row-level diff between two tables using a primary key (VARCHAR or VARCHAR[]). Currently identical to diff_joindiff; the bisection_threshold/bisection_factor parameters are not implemented and rejected.";
+		desc.description = "Computes a row-level diff between two tables using a primary key (VARCHAR or VARCHAR[]). Currently identical to diff_joindiff; the bisection_threshold/bisection_factor parameters are not implemented and rejected. float_precision := INTEGER rounds FLOAT/DOUBLE columns to that many decimal digits before comparing.";
 		desc.parameter_names = {"source_table", "target_table", "primary_key", "bisection_threshold", "bisection_factor"};
 		desc.examples = {"SELECT * FROM diff_hashdiff('products_v1', 'products_v2', 'product_id');",
 		                 "SELECT * FROM diff_hashdiff('products_v1', 'products_v2', ['product_id', 'sku']);"};
