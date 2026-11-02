@@ -274,7 +274,7 @@ print(checks.checks["null_rate"]["null_rate"])
 The package namespace itself holds `anofox.connect`, `anofox.AnofoxConnection`,
 `anofox.UnsupportedDuckDBVersionError` and the modules above; `from anofox import *` imports
 exactly these and `__version__` (the names in `anofox.__all__`). `anofox.__version__` is the
-version of the installed `anofox-tabular` package (for example `"2026.11.1"`), read from the
+version of the installed `anofox-tabular` package (for example `"2026.11.2"`), read from the
 package metadata; a source checkout used without installing it reports `"0.0.0+unknown"`.
 
 ## CLI
