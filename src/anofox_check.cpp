@@ -702,13 +702,13 @@ static string GenerateOccurrenceSQL(const string &table_ref, const string &colum
 	string extreme_agg = is_max ? "MAX(c)" : "MIN(c)";
 	string extreme_val_agg = is_max ? "arg_max(val, c)" : "arg_min(val, c)";
 
-	return "WITH counts AS ("
+	return "WITH __anofox_counts AS ("
 		"SELECT CAST(" + col_id + " AS VARCHAR) AS val, COUNT(*) AS c "
 		"FROM " + table_ref + " WHERE " + col_id + " IS NOT NULL GROUP BY 1"
 		"), "
-		"summary AS ("
+		"__anofox_summary AS ("
 		"SELECT " + extreme_agg + " AS occurrence, " + extreme_val_agg + " AS extreme_value, "
-		"COUNT(*) AS distinct_values FROM counts"
+		"COUNT(*) AS distinct_values FROM __anofox_counts"
 		") "
 		"SELECT "
 		"CASE "
@@ -734,7 +734,7 @@ static string GenerateOccurrenceSQL(const string &table_ref, const string &colum
 		"  ELSE '" + mode_keyword + " occurrence ' || CAST(occurrence AS VARCHAR) || ' (value: ' || extreme_value || "
 		"    ') is within acceptable range' "
 		"END AS message "
-		"FROM summary";
+		"FROM __anofox_summary";
 }
 
 // Helper: Generate SQL for cross-table match rate checks (referential integrity).
@@ -767,24 +767,24 @@ static string GenerateMatchRateSQL(const string &left_ref, const string &right_r
 		join_cond += "l." + alias + " = r." + alias;
 	}
 
-	return "WITH l_all AS ("
+	return "WITH __anofox_l_all AS ("
 		"SELECT " + left_cols + " FROM " + left_ref +
 		"), "
-		"l AS (SELECT * FROM l_all WHERE NOT (" + any_key_null + ")), "
-		"r AS ("
+		"__anofox_l AS (SELECT * FROM __anofox_l_all WHERE NOT (" + any_key_null + ")), "
+		"__anofox_r AS ("
 		"SELECT DISTINCT " + right_cols + ", 1 AS matched FROM " + right_ref +
 		"), "
-		"joined AS ("
-		"SELECT l.*, r.matched FROM l LEFT JOIN r ON " + join_cond +
+		"__anofox_joined AS ("
+		"SELECT l.*, r.matched FROM __anofox_l l LEFT JOIN __anofox_r r ON " + join_cond +
 		"), "
-		"stats AS ("
+		"__anofox_stats AS ("
 		"SELECT "
-		"  (SELECT COUNT(*) FROM l_all WHERE " + any_key_null + ") AS null_key_count, "
+		"  (SELECT COUNT(*) FROM __anofox_l_all WHERE " + any_key_null + ") AS null_key_count, "
 		"  COUNT(*) AS total_count, "
 		"  COALESCE(CAST(COUNT(matched) AS BIGINT), 0) AS matched_count, "
 		"  COALESCE(CAST(COUNT(matched) AS DOUBLE) / NULLIF(COUNT(*), 0), 0.0) AS match_rate, "
 		"  " + SampleAggregateSQL(KeyTextSQL(key_aliases), "matched IS NULL") + " AS samples "
-		"FROM joined"
+		"FROM __anofox_joined"
 		") "
 		"SELECT "
 		"CASE "
@@ -809,7 +809,7 @@ static string GenerateMatchRateSQL(const string &left_ref, const string &right_r
 		SamplesSuffixSQL("samples") + " "
 		"END || CASE WHEN total_count > 0 AND null_key_count > 0 THEN '; ' || CAST(null_key_count AS VARCHAR) || "
 		"  ' row(s) with a NULL key excluded' ELSE '' END AS message "
-		"FROM stats";
+		"FROM __anofox_stats";
 }
 
 // Helper: Generate SQL for custom-predicate compliance checks.
@@ -869,9 +869,9 @@ struct ReferenceDates {
 	}
 };
 
-// Helper: the body of the "ref" CTE, one row (ref_d DATE) per reference date.
+// Helper: the body of the "__anofox_ref" CTE, one row (ref_d DATE) per reference date.
 // latest_expr / latest_from compute the default reference date (the latest date
-// in the data) of the single-date form, e.g. "MAX(d)" over "daily".
+// in the data) of the single-date form, e.g. "MAX(d)" over "__anofox_daily".
 static string BuildReferenceDatesSQL(const ReferenceDates &dates, const string &latest_expr,
                                      const string &latest_from) {
 	if (dates.IsRange()) {
@@ -886,14 +886,14 @@ string BuildRelCountBaselineSQL(const string &ref_expr, int64_t window_days, boo
 	string window_val = std::to_string(window_days);
 	string in_window = "d < " + ref_expr + " AND d >= " + ref_expr + " - " + window_val;
 	if (!fill_missing_days) {
-		return "(SELECT AVG(c) FROM daily WHERE " + in_window + ") AS baseline_avg, "
-		       "(SELECT COUNT(*) FROM daily WHERE " + in_window + ") AS baseline_days";
+		return "(SELECT AVG(c) FROM __anofox_daily WHERE " + in_window + ") AS baseline_avg, "
+		       "(SELECT COUNT(*) FROM __anofox_daily WHERE " + in_window + ") AS baseline_days";
 	}
 	// Calendar days of the window from the first day with data on (the days before the data
 	// starts are no history, not an outage); the days without rows add 0 to the sum
 	string calendar_days = "GREATEST(CAST(" + ref_expr + " - GREATEST(" + ref_expr + " - " + window_val +
-	                       ", (SELECT MIN(d) FROM daily)) AS BIGINT), 0)";
-	return "CASE WHEN " + calendar_days + " > 0 THEN CAST(COALESCE((SELECT SUM(c) FROM daily WHERE " + in_window +
+	                       ", (SELECT MIN(d) FROM __anofox_daily)) AS BIGINT), 0)";
+	return "CASE WHEN " + calendar_days + " > 0 THEN CAST(COALESCE((SELECT SUM(c) FROM __anofox_daily WHERE " + in_window +
 	       "), 0) AS DOUBLE) / " + calendar_days + " END AS baseline_avg, " + calendar_days + " AS baseline_days";
 }
 
@@ -917,22 +917,22 @@ static string GenerateRelCountChangeSQL(const string &table_ref, const string &d
 	string window_val = std::to_string(window_days);
 	string cnt_expr = count_column.empty() ? "COUNT(*)" : "COUNT(DISTINCT " + QuoteSqlIdentifier(count_column) + ")";
 
-	return "WITH daily AS ("
+	return "WITH __anofox_daily AS ("
 		"SELECT " + UtcDateSQL(date_id, date_type) + " AS d, " + cnt_expr + " AS c "
 		"FROM " + table_ref + " WHERE " + date_id + " IS NOT NULL AND NOT " + infinite + " GROUP BY 1"
 		"), "
-		"ref AS (" + BuildReferenceDatesSQL(dates, "MAX(d)", "daily") + "), "
-		"refstats AS ("
+		"__anofox_ref AS (" + BuildReferenceDatesSQL(dates, "MAX(d)", "__anofox_daily") + "), "
+		"__anofox_refstats AS ("
 		"SELECT r.ref_d, "
-		"  (SELECT c FROM daily WHERE d = r.ref_d) AS ref_c, " +
+		"  (SELECT c FROM __anofox_daily WHERE d = r.ref_d) AS ref_c, " +
 		BuildRelCountBaselineSQL("r.ref_d", window_days, fill_missing_days) + " "
-		"FROM ref r"
+		"FROM __anofox_ref r"
 		"), "
-		"summary AS ("
+		"__anofox_summary AS ("
 		"SELECT ref_d, COALESCE(ref_c, 0) AS ref_c, baseline_avg, baseline_days, "
 		"  CASE WHEN baseline_avg IS NULL OR baseline_avg = 0 THEN NULL "
 		"       ELSE (COALESCE(ref_c, 0) - baseline_avg) / baseline_avg END AS rel_change "
-		"FROM refstats"
+		"FROM __anofox_refstats"
 		") "
 		"SELECT "
 		"CASE "
@@ -960,7 +960,7 @@ static string GenerateRelCountChangeSQL(const string &table_ref, const string &d
 		"    'Count ' || CAST(ref_c AS VARCHAR) || ' on ' || CAST(ref_d AS VARCHAR) || ' is within ' || "
 		"    " + RoundedNumberSQL("rel_change") + " || ' of baseline average ' || " + RoundedNumberSQL("baseline_avg") + " "
 		"END || " + infinite_suffix + " AS message "
-		"FROM summary ORDER BY reference_date";
+		"FROM __anofox_summary ORDER BY reference_date";
 }
 
 // Helper: Generate SQL for metric-level IQR anomaly detection.
@@ -986,7 +986,7 @@ static string GenerateMetricAnomalyIQRSQL(const string &table_ref, const string 
 
 	// Row-count mode: a reference day without rows is a count of 0 (as in rel_count_change), so a
 	// feed that stops fails instead of passing trivially. A metric_column has no value on such a day.
-	string reference_metric = "(SELECT m FROM daily WHERE d = s.ref_d)";
+	string reference_metric = "(SELECT m FROM __anofox_daily WHERE d = s.ref_d)";
 	if (metric_column.empty()) {
 		reference_metric = "CASE WHEN s.ref_d IS NULL THEN NULL ELSE COALESCE(" + reference_metric + ", 0) END";
 	}
@@ -1002,25 +1002,25 @@ static string GenerateMetricAnomalyIQRSQL(const string &table_ref, const string 
 		fail_check = "(" + lower_check + " OR " + upper_check + ")";
 	}
 
-	return "WITH daily AS ("
+	return "WITH __anofox_daily AS ("
 		"SELECT " + UtcDateSQL(date_id, date_type) + " AS d, " + metric_expr + " AS m "
 		"FROM " + table_ref + " WHERE " + date_id + " IS NOT NULL AND NOT " + infinite + " GROUP BY 1"
 		"), "
-		"ref AS (" + BuildReferenceDatesSQL(dates, "MAX(d)", "daily") + "), "
+		"__anofox_ref AS (" + BuildReferenceDatesSQL(dates, "MAX(d)", "__anofox_daily") + "), "
 		// One baseline per reference date: the days strictly before it within the window
 		// (COUNT(w.d), not COUNT(w.m): a day whose metric is NULL still counts as a baseline day)
-		"stats AS ("
+		"__anofox_stats AS ("
 		"SELECT r.ref_d, QUANTILE_CONT(w.m, 0.25) AS q1, QUANTILE_CONT(w.m, 0.75) AS q3, COUNT(w.d) AS n "
-		"FROM ref r LEFT JOIN daily w ON w.d < r.ref_d AND w.d >= r.ref_d - " + window_val + " "
+		"FROM __anofox_ref r LEFT JOIN __anofox_daily w ON w.d < r.ref_d AND w.d >= r.ref_d - " + window_val + " "
 		"GROUP BY r.ref_d"
 		"), "
-		"summary AS ("
+		"__anofox_summary AS ("
 		"SELECT s.ref_d AS reference_date, "
 		"  " + reference_metric + " AS metric_value, "
 		"  s.q1, s.q3, s.n AS baseline_days, "
 		"  s.q1 - " + k_val + " * (s.q3 - s.q1) AS lower_bound, "
 		"  s.q3 + " + k_val + " * (s.q3 - s.q1) AS upper_bound "
-		"FROM stats s"
+		"FROM __anofox_stats s"
 		") "
 		"SELECT "
 		"CASE "
@@ -1043,7 +1043,7 @@ static string GenerateMetricAnomalyIQRSQL(const string &table_ref, const string 
 		"    'Metric ' || " + RoundedNumberSQL("metric_value") + " || ' on ' || CAST(reference_date AS VARCHAR) || "
 		"    ' is within IQR bounds [' || " + RoundedNumberSQL("lower_bound") + " || ', ' || " + RoundedNumberSQL("upper_bound") + " || ']' "
 		"END || " + infinite_suffix + " AS message "
-		"FROM summary ORDER BY reference_date";
+		"FROM __anofox_summary ORDER BY reference_date";
 }
 
 // Helper: Generate SQL for rolling values-in-set checks.
@@ -1064,21 +1064,21 @@ static string GenerateRollingValuesInSetSQL(const string &table_ref, const strin
 	string infinite_suffix = InfiniteDatesSuffixSQL(table_ref, date_column, date_type);
 	string window_val = std::to_string(window_days);
 
-	return "WITH dv AS ("
+	return "WITH __anofox_dv AS ("
 		"SELECT " + UtcDateSQL(date_id, date_type) + " AS d, " + col_str + " AS v, COUNT(*) AS n FROM " + table_ref +
 		" WHERE " + date_id + " IS NOT NULL AND NOT " + infinite + " GROUP BY 1, 2"
 		"), "
-		"ref AS (" + BuildReferenceDatesSQL(dates, "MAX(d)", "dv") + "), "
-		"stats AS ("
+		"__anofox_ref AS (" + BuildReferenceDatesSQL(dates, "MAX(d)", "__anofox_dv") + "), "
+		"__anofox_stats AS ("
 		"SELECT r.ref_d, "
 		"  CAST(COALESCE(SUM(CASE WHEN list_contains(" + allowed_array + ", w.v) THEN w.n ELSE 0 END), 0) AS BIGINT) AS in_set_count, "
 		"  CAST(COALESCE(SUM(w.n), 0) AS BIGINT) AS total_count, "
 		"  list_sort(list(DISTINCT w.v) FILTER (WHERE NOT list_contains(" + allowed_array + ", w.v))) AS violations "
-		"FROM ref r LEFT JOIN dv w ON w.v IS NOT NULL AND w.d > r.ref_d - " + window_val + " AND w.d <= r.ref_d "
+		"FROM __anofox_ref r LEFT JOIN __anofox_dv w ON w.v IS NOT NULL AND w.d > r.ref_d - " + window_val + " AND w.d <= r.ref_d "
 		"GROUP BY r.ref_d"
 		"), "
-		"rates AS ("
-		"SELECT *, COALESCE(CAST(in_set_count AS DOUBLE) / NULLIF(total_count, 0), 0.0) AS in_set_rate FROM stats"
+		"__anofox_rates AS ("
+		"SELECT *, COALESCE(CAST(in_set_count AS DOUBLE) / NULLIF(total_count, 0), 0.0) AS in_set_rate FROM __anofox_stats"
 		") "
 		"SELECT "
 		"CASE "
@@ -1101,7 +1101,7 @@ static string GenerateRollingValuesInSetSQL(const string &table_ref, const strin
 		"    'In-set rate ' || " + RoundedNumberSQL("in_set_rate") + " || ' (' || CAST(in_set_count AS VARCHAR) || '/' || "
 		"    CAST(total_count AS VARCHAR) || ') over the trailing " + window_val + " day(s) is below minimum ' || CAST(" + min_val + " AS VARCHAR) "
 		"END || " + infinite_suffix + " AS message "
-		"FROM rates ORDER BY reference_date";
+		"FROM __anofox_rates ORDER BY reference_date";
 }
 
 // Helper: the type of the date column of a time-aware check, so a TIMESTAMP WITH TIME ZONE

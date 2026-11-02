@@ -15,6 +15,9 @@ namespace anofox {
 
 string EscapeSqlStringLiteral(const string &value);
 string QuoteSqlIdentifier(const string &identifier);
+// The reference to a user table in generated SQL. A CTE of the generated query shadows a table of
+// the same name, so generated SQL names its CTEs with the __anofox_ prefix (__anofox_daily, not
+// daily): a check on a user table called 'daily' would otherwise read the CTE (issue #131)
 string BuildQueryTableRef(const string &table_name);
 // " (a table whose name contains a dot or a double quote is passed as a quoted identifier: "a.b")"
 // for such an unquoted table name, else empty: appended to a "does not exist" error

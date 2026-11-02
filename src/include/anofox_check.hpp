@@ -114,7 +114,7 @@ constexpr const char *WIDE_SUM_RISK_COLUMN = "__anofox_wide_sum";
 string WideSumRiskColumnSQL(const string &column_sql, const LogicalType &type, const string &rows_sql);
 
 // The baseline columns of rel_count_change ("<avg> AS baseline_avg, <days> AS baseline_days")
-// over a CTE daily(d DATE, c) for the reference date ref_expr: the window_days days strictly
+// over a CTE __anofox_daily(d DATE, c) for the reference date ref_expr: the window_days days strictly
 // before it. By default the days with rows are averaged; with fill_missing_days the calendar
 // days of the window from the first day with data on count, a day without rows as 0.
 string BuildRelCountBaselineSQL(const string &ref_expr, int64_t window_days, bool fill_missing_days);

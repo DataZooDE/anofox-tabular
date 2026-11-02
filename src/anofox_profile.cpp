@@ -205,10 +205,10 @@ static string GenerateSummarySQL(const string &table_name, int64_t total_nulls,
 	string estimated_bytes_sql =
 	    "CAST(r.row_count * " + col_count_lit + " * 8 AS BIGINT)";
 
-	return "WITH row_stats AS ("
+	return "WITH __anofox_row_stats AS ("
 	       "  SELECT COUNT(*) AS row_count FROM query_table('" + tbl + "')"
 	       "),"
-	       "dup_stats AS ("
+	       "__anofox_dup_stats AS ("
 	       "  SELECT COALESCE(SUM(cnt - 1), 0) AS duplicate_row_count"
 	       "  FROM (SELECT COUNT(*) AS cnt, * FROM query_table('" + tbl + "') GROUP BY ALL)"
 	       ")"
@@ -228,7 +228,7 @@ static string GenerateSummarySQL(const string &table_name, int64_t total_nulls,
 	       "  END AS total_null_rate,"
 	       "  CAST(d.duplicate_row_count AS BIGINT) AS duplicate_row_count,"
 	       "  " + estimated_bytes_sql + " AS estimated_memory_bytes"
-	       " FROM row_stats r, dup_stats d";
+	       " FROM __anofox_row_stats r, __anofox_dup_stats d";
 }
 
 static unique_ptr<TableRef> ProfileSummaryBindReplace(ClientContext &context,
@@ -511,7 +511,7 @@ static string BuildColumnProfileSQL(const string &col_name, const string &col_ty
 	string centering_type = cat == ColumnCategory::NUMERIC ? ExactCenteringType(col_type) : "";
 	if (!centering_type.empty()) {
 		string centred =
-		    CenteredDoubleSQL(ec, centering_type, "(SELECT " + CenteringReferenceSQL(ec, centering_type) + " FROM src)");
+		    CenteredDoubleSQL(ec, centering_type, "(SELECT " + CenteringReferenceSQL(ec, centering_type) + " FROM __anofox_src)");
 		mean_sql = "CAST(AVG(" + ec + ") AS DOUBLE)";
 		median_sql = "CAST(MEDIAN(" + ec + ") AS DOUBLE)";
 		p25_sql = "CAST(PERCENTILE_CONT(0.25) WITHIN GROUP (ORDER BY " + ec + ") AS DOUBLE)";
@@ -525,13 +525,13 @@ static string BuildColumnProfileSQL(const string &col_name, const string &col_ty
 	// their type, the statistic is NULL instead of an Out of Range error failing the profile
 	string overflow_bound = cat == ColumnCategory::NUMERIC ? ProfileOverflowBoundSQL(col_type) : "";
 	if (!overflow_bound.empty()) {
-		string safe_sum = "(SELECT NOT " + SumOverflowRiskSQL(ec, overflow_bound) + " FROM src)";
+		string safe_sum = "(SELECT NOT " + SumOverflowRiskSQL(ec, overflow_bound) + " FROM __anofox_src)";
 		mean_sql = "CAST(AVG(CASE WHEN " + safe_sum + " THEN " + ec + " END) AS DOUBLE)";
 		if (StringUtil::StartsWith(centering_type, "DECIMAL")) {
 			string safe_range = "(SELECT COALESCE(MAX(CAST(" + ec + " AS DOUBLE)) - MIN(CAST(" + ec +
-			                    " AS DOUBLE)), 0) < " + overflow_bound + " FROM src)";
+			                    " AS DOUBLE)), 0) < " + overflow_bound + " FROM __anofox_src)";
 			string centred = CenteredDoubleSQL("(CASE WHEN " + safe_range + " THEN " + ec + " END)", centering_type,
-			                                   "(SELECT " + CenteringReferenceSQL(ec, centering_type) + " FROM src)");
+			                                   "(SELECT " + CenteringReferenceSQL(ec, centering_type) + " FROM __anofox_src)");
 			stddev_sql = "STDDEV_SAMP(" + centred + ")";
 			skewness_sql = "SKEWNESS(" + centred + ")";
 			kurtosis_sql = "KURTOSIS(" + centred + ")";
@@ -629,7 +629,7 @@ static string BuildColumnProfileSQL(const string &col_name, const string &col_ty
 	string top_val_filter = (cat == ColumnCategory::NUMERIC) ? "isfinite(" + dbl + ")" : ec + " IS NOT NULL";
 	string top_val_sql =
 	    "(SELECT LIST({'value': " + display_sql("v") + ", 'count': cnt} ORDER BY cnt DESC, v)"
-	    " FROM (SELECT " + ec + " AS v, COUNT(*) AS cnt FROM src"
+	    " FROM (SELECT " + ec + " AS v, COUNT(*) AS cnt FROM __anofox_src"
 	    "       WHERE " + top_val_filter +
 	    "       GROUP BY " + ec +
 	    "       ORDER BY cnt DESC, v LIMIT 5))";
@@ -668,7 +668,7 @@ static string BuildColumnProfileSQL(const string &col_name, const string &col_ty
 	       " " + sample_size_str + "::BIGINT AS actual_sample_size,"
 	       " " + nan_sql + " AS nan_count,"
 	       " " + inf_sql + " AS inf_count"
-	       " FROM src";
+	       " FROM __anofox_src";
 }
 
 static string BuildProfileTableSQL(const string &table_name,
@@ -676,7 +676,7 @@ static string BuildProfileTableSQL(const string &table_name,
                                    bool is_sampled, int64_t actual_sample_size,
                                    int64_t sample_size) {
 	string tbl = EscapeStringLiteral(table_name);
-	string sql = "WITH src AS (SELECT * FROM query_table('" + tbl + "')";
+	string sql = "WITH __anofox_src AS (SELECT * FROM query_table('" + tbl + "')";
 	if (is_sampled) {
 		// REPEATABLE needs an explicit sampling method; "USING SAMPLE n ROWS REPEATABLE (s)" is a syntax error
 		sql += " USING SAMPLE reservoir(" + std::to_string(sample_size) + " ROWS) REPEATABLE (42)";
@@ -878,7 +878,7 @@ static void ProfileCorrelationsExecute(ClientContext &context, TableFunctionInpu
 				                           ? "TRY_CAST(" + ec + " AS DOUBLE)"
 				                           : CenteredDoubleSQL(ec, centering_type,
 				                                               "(SELECT " + CenteringReferenceSQL(ec, centering_type) +
-				                                                   " FROM src)"));
+				                                                   " FROM __anofox_src)"));
 			}
 		}
 
@@ -890,7 +890,7 @@ static void ProfileCorrelationsExecute(ClientContext &context, TableFunctionInpu
 
 		// Build pairwise correlation SQL with a single src CTE
 		string tbl = EscapeStringLiteral(bind_data.table_name);
-		string sql = "WITH src AS (SELECT * FROM query_table('" + tbl + "'))";
+		string sql = "WITH __anofox_src AS (SELECT * FROM query_table('" + tbl + "'))";
 
 		bool first = true;
 		for (size_t i = 0; i < numeric_cols.size(); i++) {
@@ -925,7 +925,7 @@ static void ProfileCorrelationsExecute(ClientContext &context, TableFunctionInpu
 				       "       AS a_rank,"
 				       "     CAST(RANK() OVER (ORDER BY " + eb + ") AS DOUBLE)"
 				       "       AS b_rank"
-				       "   FROM src"
+				       "   FROM __anofox_src"
 				       // finite pairs only: one NaN/Inf turns CORR into NaN
 				       "   WHERE isfinite(TRY_CAST(" + ea + " AS DOUBLE)) AND isfinite(TRY_CAST(" + eb + " AS DOUBLE))"
 				       " ) _corr_sub) _corr_pair";

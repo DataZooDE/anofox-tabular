@@ -1251,20 +1251,20 @@ static CheckBranch BuildCheckBranch(ClientContext &context, const CheckSpec &spe
 		string dup_keys = "SELECT " + KeyTextSQL(key_exprs) + " AS k";
 		if (grouped) {
 			const string &id_col = branch.identifier_sql;
-			dup_keys = "SELECT " + id_col + " AS identifier, " + KeyTextSQL(key_exprs) + " AS k FROM __base GROUP BY " +
+			dup_keys = "SELECT " + id_col + " AS identifier, " + KeyTextSQL(key_exprs) + " AS k FROM __anofox_base GROUP BY " +
 			           id_col + ", " + key_group + " HAVING COUNT(*) > 1";
-			branch.inner_sql = "WITH __base AS (SELECT * FROM " + table_ref + where_clause + "), "
-			                   "__dup AS (" + dup_keys + "), "
-			                   "__v AS (SELECT " + id_col + " AS identifier, " + value_sql + " FROM __base GROUP BY 1) "
-			                   "SELECT __v.identifier, __v.value, (SELECT min(k, " + std::to_string(SAMPLE_LIMIT) +
-			                   ") FROM __dup WHERE __dup.identifier IS NOT DISTINCT FROM __v.identifier) AS samples "
-			                   "FROM __v";
+			branch.inner_sql = "WITH __anofox_base AS (SELECT * FROM " + table_ref + where_clause + "), "
+			                   "__anofox_dup AS (" + dup_keys + "), "
+			                   "__anofox_v AS (SELECT " + id_col + " AS identifier, " + value_sql + " FROM __anofox_base GROUP BY 1) "
+			                   "SELECT __anofox_v.identifier, __anofox_v.value, (SELECT min(k, " + std::to_string(SAMPLE_LIMIT) +
+			                   ") FROM __anofox_dup WHERE __anofox_dup.identifier IS NOT DISTINCT FROM __anofox_v.identifier) AS samples "
+			                   "FROM __anofox_v";
 		} else {
-			dup_keys += " FROM __base GROUP BY " + key_group + " HAVING COUNT(*) > 1";
-			branch.inner_sql = "WITH __base AS (SELECT * FROM " + table_ref + where_clause + "), "
-			                   "__dup AS (" + dup_keys + ") "
+			dup_keys += " FROM __anofox_base GROUP BY " + key_group + " HAVING COUNT(*) > 1";
+			branch.inner_sql = "WITH __anofox_base AS (SELECT * FROM " + table_ref + where_clause + "), "
+			                   "__anofox_dup AS (" + dup_keys + ") "
 			                   "SELECT " + value_sql + ", (SELECT min(k, " + std::to_string(SAMPLE_LIMIT) +
-			                   ") FROM __dup) AS samples FROM __base";
+			                   ") FROM __anofox_dup) AS samples FROM __anofox_base";
 		}
 		branch.has_samples = true;
 		return branch;
@@ -1333,10 +1333,10 @@ static CheckBranch BuildCheckBranch(ClientContext &context, const CheckSpec &spe
 		}
 		string col = QuoteSqlIdentifier(spec.column_name);
 		string extreme = (mode == "max") ? "MAX(c)" : "MIN(c)";
-		branch.inner_sql = "WITH counts AS (SELECT CAST(" + col + " AS VARCHAR) AS v, COUNT(*) AS c FROM " +
+		branch.inner_sql = "WITH __anofox_counts AS (SELECT CAST(" + col + " AS VARCHAR) AS v, COUNT(*) AS c FROM " +
 		                   table_ref + " WHERE " + col + " IS NOT NULL" +
 		                   (filter_sql.empty() ? "" : " AND (" + filter_sql + ")") +
-		                   " GROUP BY 1) SELECT CAST(" + extreme + " AS DOUBLE) AS value FROM counts";
+		                   " GROUP BY 1) SELECT CAST(" + extreme + " AS DOUBLE) AS value FROM __anofox_counts";
 		return branch;
 	} else if (spec.check_type == "match_rate") {
 		// The left keys: params.left_keys, else column_name
@@ -1394,14 +1394,14 @@ static CheckBranch BuildCheckBranch(ClientContext &context, const CheckSpec &spe
 		auto date = SuiteDateSQL(context, spec, filter_sql);
 		const string &date_sql = date.date_sql;
 		branch.inner_sql =
-		    "WITH daily AS (SELECT " + date_sql + " AS d, " + cnt_expr + " AS c FROM " + table_ref +
+		    "WITH __anofox_daily AS (SELECT " + date_sql + " AS d, " + cnt_expr + " AS c FROM " + table_ref +
 		    " WHERE " + date_sql + " IS NOT NULL" + (filter_sql.empty() ? "" : " AND (" + filter_sql + ")") +
 		    " GROUP BY 1), "
-		    "ref AS (SELECT COALESCE(" + ref_lit + ", MAX(d)) AS ref_d FROM daily), "
-		    "b AS (SELECT r.ref_d, (SELECT c FROM daily WHERE d = r.ref_d) AS ref_c, " +
-		    BuildRelCountBaselineSQL("r.ref_d", window_days, spec.fill_missing_days) + " FROM ref r) "
+		    "__anofox_ref AS (SELECT COALESCE(" + ref_lit + ", MAX(d)) AS ref_d FROM __anofox_daily), "
+		    "__anofox_b AS (SELECT r.ref_d, (SELECT c FROM __anofox_daily WHERE d = r.ref_d) AS ref_c, " +
+		    BuildRelCountBaselineSQL("r.ref_d", window_days, spec.fill_missing_days) + " FROM __anofox_ref r) "
 		    "SELECT CAST(CASE WHEN baseline_avg IS NULL OR baseline_avg = 0 THEN NULL "
-		    "ELSE (COALESCE(ref_c, 0) - baseline_avg) / baseline_avg END AS DOUBLE) AS value FROM b";
+		    "ELSE (COALESCE(ref_c, 0) - baseline_avg) / baseline_avg END AS DOUBLE) AS value FROM __anofox_b";
 		AddSkippedDates(branch, spec, date);
 		return branch;
 	} else if (spec.check_type == "metric_anomaly_iqr") {
@@ -1417,7 +1417,7 @@ static CheckBranch BuildCheckBranch(ClientContext &context, const CheckSpec &spe
 		string metric_expr = metric_column.empty() ? "CAST(COUNT(*) AS DOUBLE)"
 		                                           : "AVG(CAST(" + QuoteSqlIdentifier(metric_column) + " AS DOUBLE))";
 		// Row-count mode: a reference day without rows counts 0 rows (as the direct function)
-		string reference_metric = "(SELECT m FROM daily WHERE d = ref.ref_d)";
+		string reference_metric = "(SELECT m FROM __anofox_daily WHERE d = ref.ref_d)";
 		if (metric_column.empty()) {
 			reference_metric = "CASE WHEN ref.ref_d IS NULL THEN NULL ELSE COALESCE(" + reference_metric + ", 0) END";
 		} else {
@@ -1441,17 +1441,17 @@ static CheckBranch BuildCheckBranch(ClientContext &context, const CheckSpec &spe
 		auto date = SuiteDateSQL(context, spec, filter_sql);
 		const string &date_sql = date.date_sql;
 		branch.inner_sql =
-		    "WITH daily AS (SELECT " + date_sql + " AS d, " + metric_expr + " AS m FROM " + table_ref +
+		    "WITH __anofox_daily AS (SELECT " + date_sql + " AS d, " + metric_expr + " AS m FROM " + table_ref +
 		    " WHERE " + date_sql + " IS NOT NULL" + (filter_sql.empty() ? "" : " AND (" + filter_sql + ")") +
 		    " GROUP BY 1), "
-		    "ref AS (SELECT COALESCE(" + ref_lit + ", MAX(d)) AS ref_d FROM daily), "
-		    "w AS (SELECT m FROM daily, ref WHERE d < ref_d AND d >= ref_d - " + window_val + "), "
-		    "s AS (SELECT QUANTILE_CONT(m, 0.25) AS q1, QUANTILE_CONT(m, 0.75) AS q3, COUNT(*) AS n FROM w) "
+		    "__anofox_ref AS (SELECT COALESCE(" + ref_lit + ", MAX(d)) AS ref_d FROM __anofox_daily), "
+		    "__anofox_w AS (SELECT m FROM __anofox_daily, __anofox_ref WHERE d < ref_d AND d >= ref_d - " + window_val + "), "
+		    "__anofox_s AS (SELECT QUANTILE_CONT(m, 0.25) AS q1, QUANTILE_CONT(m, 0.75) AS q3, COUNT(*) AS n FROM __anofox_w) "
 		    "SELECT CAST(" + reference_metric + " AS DOUBLE) AS value, "
 		    "CAST(CASE WHEN s.n = 0 THEN NULL ELSE s.q1 - " + k_val + " * (s.q3 - s.q1) END AS DOUBLE) AS lower_threshold, "
 		    "CAST(CASE WHEN s.n = 0 THEN NULL ELSE s.q3 + " + k_val + " * (s.q3 - s.q1) END AS DOUBLE) AS upper_threshold, "
 		    "ref.ref_d AS __ref_d "
-		    "FROM s, ref";
+		    "FROM __anofox_s s, __anofox_ref ref";
 		branch.computed_thresholds = true;
 		AddSkippedDates(branch, spec, date);
 		return branch;
@@ -1466,14 +1466,14 @@ static CheckBranch BuildCheckBranch(ClientContext &context, const CheckSpec &spe
 		auto date = SuiteDateSQL(context, spec, filter_sql);
 		const string &date_sql = date.date_sql;
 		branch.inner_sql =
-		    "WITH ref AS (SELECT COALESCE(" + ref_lit + ", MAX(" + date_sql + ")) AS ref_d FROM " +
+		    "WITH __anofox_ref AS (SELECT COALESCE(" + ref_lit + ", MAX(" + date_sql + ")) AS ref_d FROM " +
 		    table_ref + "), "
-		    "win AS (SELECT CAST(" + col + " AS VARCHAR) AS v FROM " + table_ref + ", ref WHERE " + col +
+		    "__anofox_win AS (SELECT CAST(" + col + " AS VARCHAR) AS v FROM " + table_ref + ", __anofox_ref WHERE " + col +
 		    " IS NOT NULL AND " + date_id + " IS NOT NULL AND " + date_sql + " > ref_d - " + window_val +
 		    " AND " + date_sql + " <= ref_d" +
 		    (filter_sql.empty() ? "" : " AND (" + filter_sql + ")") + ") "
 		    "SELECT CAST(SUM(CASE WHEN list_contains(" + arr +
-		    ", v) THEN 1 ELSE 0 END) AS DOUBLE) / NULLIF(COUNT(*), 0) AS value FROM win";
+		    ", v) THEN 1 ELSE 0 END) AS DOUBLE) / NULLIF(COUNT(*), 0) AS value FROM __anofox_win";
 		AddSkippedDates(branch, spec, date);
 		return branch;
 	} else if (spec.check_type == "schema_check") {
