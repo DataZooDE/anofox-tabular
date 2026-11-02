@@ -59,7 +59,7 @@ FORCE INSTALL anofox_tabular FROM community;
 
 Supported: DuckDB v1.5.6 and 2.0 on `linux_amd64`, `osx_arm64` (Apple silicon) and
 `windows_amd64`. Intel Macs (`osx_amd64`) are no longer supported since v2026.10.31. Releases use
-date versions such as `v2026.11.01`.
+date versions such as `v2026.11.02`.
 
 The community build can be older than these docs. Check which release you have:
 
@@ -67,7 +67,7 @@ The community build can be older than these docs. Check which release you have:
 SELECT extension_version FROM duckdb_extensions() WHERE extension_name = 'anofox_tabular';
 ```
 
-This is the date version of the release (`v2026.11.01`). Builds for DuckDB v1.5.6 up to
+This is the date version of the release (`v2026.11.02`). Builds for DuckDB v1.5.6 up to
 v2026.10.29 report the short git commit hash of the release instead (for example `a3bc642`), as
 does a build made from a checkout without the release tags. To map a hash to its release, open `https://github.com/DataZooDE/anofox-tabular/commit/<hash>`
 (GitHub lists the release tags that contain the commit), or run `git tag --contains <hash>` in
