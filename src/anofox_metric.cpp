@@ -108,8 +108,8 @@ static string GenerateDistinctCountSQL(const string &table_ref, const string &co
 		"FROM (SELECT COUNT(DISTINCT " + col_id + ") AS distinct_count FROM " + table_ref + ")";
 }
 
-// The CTEs that read the non-NULL values of `col_id` as DOUBLE: `all_vals(val)` and, when the
-// column has an exact numeric type (integers, DECIMAL), a one-row `ref(r)` with the reference
+// The CTEs that read the non-NULL values of `col_id` as DOUBLE: `__anofox_all_vals(val)` and, when the
+// column has an exact numeric type (integers, DECIMAL), a one-row `__anofox_ref(r)` with the reference
 // value the values are centred on (see ExactCenteringType): val is then the exact difference to
 // it, so values above 2^53 stay distinct. `offset_sql` is the DOUBLE to add to a centred
 // location (mean, quantile, bound) to report it on the column's scale ("" when not centred).
@@ -123,14 +123,14 @@ static CenteredValuesSQL BuildCenteredValuesSQL(const string &table_ref, const s
 	auto centering_type =
 	    column_type.id() == LogicalTypeId::INVALID ? string() : ExactCenteringType(column_type.ToString());
 	if (centering_type.empty()) {
-		return {"all_vals AS (SELECT CAST(" + col_id + " AS DOUBLE) AS val FROM " + table_ref + " WHERE " + col_id +
+		return {"__anofox_all_vals AS (SELECT CAST(" + col_id + " AS DOUBLE) AS val FROM " + table_ref + " WHERE " + col_id +
 		            " IS NOT NULL), ",
 		        ""};
 	}
-	return {"ref AS (SELECT " + CenteringReferenceSQL(col_id, centering_type) + " AS r FROM " + table_ref + "), "
-	        "all_vals AS (SELECT " + CenteredDoubleSQL(col_id, centering_type, "ref.r") + " AS val FROM " + table_ref +
-	            ", ref WHERE " + col_id + " IS NOT NULL), ",
-	        "(SELECT CAST(r AS DOUBLE) FROM ref)"};
+	return {"__anofox_ref AS (SELECT " + CenteringReferenceSQL(col_id, centering_type) + " AS r FROM " + table_ref + "), "
+	        "__anofox_all_vals AS (SELECT " + CenteredDoubleSQL(col_id, centering_type, "__anofox_ref.r") + " AS val FROM " + table_ref +
+	            ", __anofox_ref WHERE " + col_id + " IS NOT NULL), ",
+	        "(SELECT CAST(r AS DOUBLE) FROM __anofox_ref)"};
 }
 
 // `centred_sql` shifted back by the offset of BuildCenteredValuesSQL
@@ -144,7 +144,7 @@ static string GenerateZscoreSQL(const string &table_ref, const string &column_na
 	string thresh_val = DoubleThresholdSQL(threshold, "3.0");
 	string col_id = QuoteSqlIdentifier(column_name);
 
-	// Use CTEs to avoid nested aggregate error:
+	// Use CTEs (named __anofox_<step>) to avoid nested aggregate error:
 	// 1. vals: the non-NULL values cast to DOUBLE (exact numeric types centred first, see
 	//    BuildCenteredValuesSQL; mean is reported on the column's scale)
 	// 2. stats: compute mean and stddev (always exactly one row)
@@ -160,21 +160,21 @@ static string GenerateZscoreSQL(const string &table_ref, const string &column_na
 	    "ELSE '' END";
 	auto values = BuildCenteredValuesSQL(table_ref, col_id, column_type);
 	return "WITH " + values.ctes +
-		"vals AS (SELECT val FROM all_vals WHERE isfinite(val)), "
-		"stats AS ("
+		"__anofox_vals AS (SELECT val FROM __anofox_all_vals WHERE isfinite(val)), "
+		"__anofox_stats AS ("
 		"SELECT AVG(val) AS centred_mean, " + Uncentered(values, "AVG(val)") + " AS mean, STDDEV(val) AS stddev, COUNT(*) AS total_count, "
-		"(SELECT COUNT(*) FROM all_vals WHERE NOT isfinite(val)) AS nonfinite_count FROM vals"
+		"(SELECT COUNT(*) FROM __anofox_all_vals WHERE NOT isfinite(val)) AS nonfinite_count FROM __anofox_vals"
 		"), "
-		"with_zscore AS ("
+		"__anofox_with_zscore AS ("
 		"SELECT CASE WHEN s.stddev IS NULL OR s.stddev = 0 THEN 0.0 "
 		"            ELSE ABS((v.val - s.centred_mean) / s.stddev) END AS abs_zscore "
-		"FROM vals v, stats s"
+		"FROM __anofox_vals v, __anofox_stats s"
 		"), "
-		"summary AS ("
+		"__anofox_summary AS ("
 		"SELECT "
 		"  s.mean, s.stddev, s.total_count, s.nonfinite_count, "
-		"  (SELECT COUNT(*) FROM with_zscore z WHERE z.abs_zscore > " + thresh_val + ") AS outlier_count "
-		"FROM stats s"
+		"  (SELECT COUNT(*) FROM __anofox_with_zscore z WHERE z.abs_zscore > " + thresh_val + ") AS outlier_count "
+		"FROM __anofox_stats s"
 		") "
 		"SELECT "
 		"CASE WHEN outlier_count = 0 THEN 'pass' ELSE 'fail' END AS status, "
@@ -196,7 +196,7 @@ static string GenerateZscoreSQL(const string &table_ref, const string &column_na
 		"    " + RoundedNumberSQL("CAST(outlier_count AS DOUBLE) / total_count * 100") + " || "
 		"    '% of ' || CAST(total_count AS VARCHAR) || ' rows' || " + nonfinite_note + " || ')' "
 		"END AS message "
-		"FROM summary";
+		"FROM __anofox_summary";
 }
 
 // Helper: Generate SQL for IQR metrics using CTE to avoid nested aggregates
@@ -205,7 +205,7 @@ static string GenerateIQRSQL(const string &table_ref, const string &column_name,
 	string mult_val = DoubleThresholdSQL(iqr_multiplier, "1.5");
 	string col_id = QuoteSqlIdentifier(column_name);
 
-	// Use CTEs to avoid nested aggregate error:
+	// Use CTEs (named __anofox_<step>) to avoid nested aggregate error:
 	// 1. vals: the finite non-NULL values cast to DOUBLE (exact numeric types centred first, see
 	//    BuildCenteredValuesSQL; quantiles and bounds are reported on the column's scale)
 	// 2. stats: compute Q1 and Q3 quantiles (always exactly one row)
@@ -220,12 +220,12 @@ static string GenerateIQRSQL(const string &table_ref, const string &column_name,
 	    "ELSE '' END";
 	auto values = BuildCenteredValuesSQL(table_ref, col_id, column_type);
 	return "WITH " + values.ctes +
-		"vals AS (SELECT val FROM all_vals WHERE isfinite(val)), "
-		"stats AS ("
+		"__anofox_vals AS (SELECT val FROM __anofox_all_vals WHERE isfinite(val)), "
+		"__anofox_stats AS ("
 		"SELECT QUANTILE_CONT(val, 0.25) AS q1, QUANTILE_CONT(val, 0.75) AS q3, COUNT(*) AS total_count, "
-		"(SELECT COUNT(*) FROM all_vals WHERE NOT isfinite(val)) AS nonfinite_count FROM vals"
+		"(SELECT COUNT(*) FROM __anofox_all_vals WHERE NOT isfinite(val)) AS nonfinite_count FROM __anofox_vals"
 		"), "
-		"bounds AS ("
+		"__anofox_bounds AS ("
 		"SELECT "
 		"  q1, "
 		"  q3, "
@@ -233,9 +233,9 @@ static string GenerateIQRSQL(const string &table_ref, const string &column_name,
 		"  nonfinite_count, "
 		"  q1 - " + mult_val + " * (q3 - q1) AS lower_bound, "
 		"  q3 + " + mult_val + " * (q3 - q1) AS upper_bound "
-		"FROM stats"
+		"FROM __anofox_stats"
 		"), "
-		"summary AS ("
+		"__anofox_summary AS ("
 		"SELECT "
 		"  " + Uncentered(values, "b.q1") + " AS q1, "
 		"  " + Uncentered(values, "b.q3") + " AS q3, "
@@ -244,8 +244,8 @@ static string GenerateIQRSQL(const string &table_ref, const string &column_name,
 		"  b.nonfinite_count, "
 		"  " + Uncentered(values, "b.lower_bound") + " AS lower_bound, "
 		"  " + Uncentered(values, "b.upper_bound") + " AS upper_bound, "
-		"  (SELECT COUNT(*) FROM vals v, bounds b2 WHERE v.val < b2.lower_bound OR v.val > b2.upper_bound) AS outlier_count "
-		"FROM bounds b"
+		"  (SELECT COUNT(*) FROM __anofox_vals v, __anofox_bounds b2 WHERE v.val < b2.lower_bound OR v.val > b2.upper_bound) AS outlier_count "
+		"FROM __anofox_bounds b"
 		") "
 		"SELECT "
 		"CASE WHEN outlier_count = 0 THEN 'pass' ELSE 'fail' END AS status, "
@@ -265,7 +265,7 @@ static string GenerateIQRSQL(const string &table_ref, const string &column_name,
 		"  ELSE "
 		"    CAST(outlier_count AS VARCHAR) || ' outlier(s) detected outside bounds [' || " + RoundedNumberSQL("lower_bound") + " || ', ' || " + RoundedNumberSQL("upper_bound") + " || ']' || " + nonfinite_note + " "
 		"END AS message "
-		"FROM summary";
+		"FROM __anofox_summary";
 }
 
 static string GenerateSchemaSQL(const string &table_name, const vector<string> &required_columns) {
@@ -281,20 +281,20 @@ static string GenerateSchemaSQL(const string &table_name, const vector<string> &
 		required_array += "]::VARCHAR[]";
 	}
 
-	return "WITH required(col) AS ("
+	return "WITH __anofox_required(col) AS ("
 	       "  SELECT unnest(" + required_array + ")"
-	       "), actual(col) AS ("
+	       "), __anofox_actual(col) AS ("
 	       "  SELECT column_name"
 	       "  FROM (DESCRIBE SELECT * FROM " + BuildQueryTableRef(table_name) + ")"
-	       "), missing AS ("
+	       "), __anofox_missing AS ("
 	       // Column names match case-insensitively, like DuckDB identifiers
-	       "  SELECT DISTINCT col FROM required r"
-	       "  WHERE NOT EXISTS (SELECT 1 FROM actual a WHERE lower(a.col) = lower(r.col))"
-	       "), missing_stats AS ("
+	       "  SELECT DISTINCT col FROM __anofox_required r"
+	       "  WHERE NOT EXISTS (SELECT 1 FROM __anofox_actual a WHERE lower(a.col) = lower(r.col))"
+	       "), __anofox_missing_stats AS ("
 	       "  SELECT"
 	       "    COALESCE(COUNT(*), 0) AS missing_count,"
 	       "    COALESCE(array_agg(col), []::VARCHAR[]) AS missing_columns"
-	       "  FROM missing"
+	       "  FROM __anofox_missing"
 	       ")"
 	       "SELECT"
 	       "  CASE WHEN missing_count = 0 THEN 'pass' ELSE 'fail' END AS status,"
@@ -303,7 +303,7 @@ static string GenerateSchemaSQL(const string &table_name, const vector<string> &
 	       "    WHEN missing_count = 0 THEN ' has all required columns'"
 	       "    ELSE ' is missing ' || CAST(missing_count AS VARCHAR) || ' column(s)'"
 	       "  END AS message"
-	       " FROM missing_stats";
+	       " FROM __anofox_missing_stats";
 }
 
 // Helper: Generate SQL for freshness metrics

@@ -1,0 +1,425 @@
+# name: test/sql/anofox_check_table_name_collision.test
+# description: The checks generate SQL with common table expressions. A user table that has the
+#              name of one of them (a table of daily figures called 'daily', a lookup table
+#              called 'ref', a view called 'summary') is still the table the check reads, not
+#              the internal CTE (issue #131: metric_anomaly_iqr on a table named 'daily' failed
+#              with 'Referenced column "day" not found ... Candidate bindings: "d"').
+# group: [anofox_tabular]
+
+require anofox_tabular
+
+statement ok
+LOAD anofox_tabular
+
+statement ok
+SET anofox_tab_trace_enabled = false
+
+# Issue #131: the daily revenue of a shop, one row per day, in a table named 'daily'
+statement ok
+CREATE TABLE daily AS
+SELECT DATE '2026-06-01' + i::INTEGER AS day, 100.0 + (i * 13) % 17 AS revenue FROM range(30) t(i)
+
+query TTRRRRRIT
+SELECT status, reference_date, metric_value, q1, q3, lower_bound, upper_bound, baseline_days, message
+FROM anofox_tab_metric_anomaly_iqr('daily', 'day', 'revenue', 14, 1.5, 'both', DATE '2026-06-20')
+----
+pass	2026-06-20	109.0	104.5	112.75	92.125	125.125	14	Metric 109.0 on 2026-06-20 is within IQR bounds [92.125, 125.125]
+
+# A revenue spike on 2026-07-01: the 6-argument form evaluates the latest day and fails
+statement ok
+INSERT INTO daily VALUES (DATE '2026-07-01', 250.0)
+
+query TTRRRI
+SELECT status, reference_date, metric_value, lower_bound, upper_bound, baseline_days
+FROM metric_anomaly_iqr('daily', 'day', 'revenue', 14, 1.5, 'both')
+----
+fail	2026-07-01	250.0	92.0	122.0	14
+
+query TTTTRRT
+SELECT ds, kind, label, severity, value, threshold, series
+FROM anofox_tab_metric_anomaly_iqr_events('daily', 'day', 'revenue', 14, 1.5, 'both',
+                                          start_date := DATE '2026-06-25', end_date := DATE '2026-07-01')
+----
+2026-07-01	metric_anomaly_iqr	Metric 250.0 on 2026-07-01 is outside IQR bounds [92.0, 122.0] (mode: both)	alarm	250.0	122.0	daily.revenue
+
+# The orders of a web shop from 2026-05-01 to 2026-06-29: 6 to 12 orders a day, some cancelled
+# or pending, an occasional bulk order, customers 20 to 22 are missing from the CRM
+statement ok
+CREATE TABLE shop_orders AS
+SELECT 'ORD-' || strftime(day, '%Y%m%d') || '-' || lpad(CAST(i AS VARCHAR), 2, '0') AS order_id,
+       day AS order_date,
+       CAST((day_no * 31 + i * 37) % 23 AS INTEGER) AS customer_id,
+       CASE WHEN (day_no + i) % 11 = 0 THEN 'cancelled' WHEN (day_no + i) % 5 = 0 THEN 'pending' ELSE 'shipped' END AS status,
+       CASE WHEN day_no % 17 = 0 AND i = 0 THEN 1250.0 ELSE CAST(20 + (day_no * 13 + i * 29) % 97 + 0.5 AS DOUBLE) END AS amount
+FROM (SELECT CAST(d AS DATE) AS day, CAST(row_number() OVER (ORDER BY d) AS INTEGER) AS day_no
+      FROM generate_series(DATE '2026-05-01', DATE '2026-06-29', INTERVAL 1 DAY) g(d)) days,
+     range(12) r(i)
+WHERE i < 6 + (day_no * 5) % 7
+
+statement ok
+CREATE TABLE crm_customers AS SELECT CAST(i AS INTEGER) AS customer_id FROM range(20) t(i)
+
+# The results on shop_orders that the tables named like a CTE must reproduce below
+query TTRRRI
+SELECT status, reference_date, metric_value, lower_bound, upper_bound, baseline_days
+FROM metric_anomaly_iqr('shop_orders', 'order_date', 'amount', 14, 1.5, 'both', DATE '2026-06-20')
+----
+fail	2026-06-20	194.22222222222223	58.25000000000002	81.69444444444443	14
+
+query I
+SELECT count(*) FROM metric_anomaly_iqr_events('shop_orders', 'order_date', 'amount', 14, 1.5, 'both',
+                                               start_date := DATE '2026-06-01', end_date := DATE '2026-06-29')
+----
+2
+
+query TTRRT
+SELECT status, reference_date, reference_count, rel_change, message FROM rel_count_change('shop_orders', 'order_date')
+----
+pass	2026-06-29	12.0	0.3333333333333333	Count 12 on 2026-06-29 is within 0.333 of baseline average 9.0
+
+query I
+SELECT count(*) FROM rel_count_change_events('shop_orders', 'order_date', NULL, 7, -0.2, 0.2,
+                                             start_date := DATE '2026-06-01', end_date := DATE '2026-06-29')
+----
+17
+
+query TRII
+SELECT status, in_set_rate, in_set_count, total_count
+FROM rolling_values_in_set('shop_orders', 'status', ['shipped', 'pending'], 'order_date', 7, 0.95)
+----
+fail	0.9206349206349206	58	63
+
+query TII
+SELECT status, outlier_count, total_count FROM zscore('shop_orders', 'amount', 3)
+----
+fail	3	543
+
+query TII
+SELECT status, outlier_count, total_count FROM iqr('shop_orders', 'amount', 1.5)
+----
+fail	3	543
+
+query TRII
+SELECT status, match_rate, matched_count, total_count
+FROM match_rate('shop_orders', 'crm_customers', 'customer_id', 'customer_id', 0.9)
+----
+fail	0.8692449355432781	472	543
+
+query I
+SELECT count(*) FROM rolling_values_in_set_events('shop_orders', 'status', ['shipped', 'pending'], 'order_date', 7, 0.95,
+                                                  start_date := DATE '2026-06-01', end_date := DATE '2026-06-29')
+----
+29
+
+query TII
+SELECT status, outlier_count, total_count FROM zscore('shop_orders', 'customer_id', 1.5)
+----
+fail	94	543
+
+query TRRI
+SELECT status, q1, q3, outlier_count FROM iqr('shop_orders', 'customer_id', 0.5)
+----
+pass	5.0	17.0	0
+
+query TTRRI
+SELECT * FROM profile_correlations('shop_orders')
+----
+customer_id	amount	0.08023472445134965	-0.006447483086762259	543
+
+# Each check on a copy of shop_orders named like one of the internal CTEs returns exactly what
+# it returns on shop_orders: the symmetric difference of both results is empty (a table resolved
+# to the CTE is a Binder Error or a different result)
+foreach name daily ref refstats summary stats dv rates counts l_all l r joined all_vals vals with_zscore bounds required actual missing missing_stats row_stats dup_stats src win b w s __base __dup __v
+
+statement ok
+CREATE OR REPLACE TABLE ${name} AS SELECT * FROM shop_orders
+
+query I
+SELECT count(*) FROM (
+  (SELECT * FROM metric_anomaly_iqr('${name}', 'order_date', 'amount', 14, 1.5, 'both', DATE '2026-06-20') EXCEPT ALL SELECT * FROM metric_anomaly_iqr('shop_orders', 'order_date', 'amount', 14, 1.5, 'both', DATE '2026-06-20'))
+  UNION ALL
+  (SELECT * FROM metric_anomaly_iqr('shop_orders', 'order_date', 'amount', 14, 1.5, 'both', DATE '2026-06-20') EXCEPT ALL SELECT * FROM metric_anomaly_iqr('${name}', 'order_date', 'amount', 14, 1.5, 'both', DATE '2026-06-20'))
+)
+----
+0
+
+query I
+SELECT count(*) FROM (
+  (SELECT * FROM metric_anomaly_iqr('${name}', 'order_date') EXCEPT ALL SELECT * FROM metric_anomaly_iqr('shop_orders', 'order_date'))
+  UNION ALL
+  (SELECT * FROM metric_anomaly_iqr('shop_orders', 'order_date') EXCEPT ALL SELECT * FROM metric_anomaly_iqr('${name}', 'order_date'))
+)
+----
+0
+
+query I
+SELECT count(*) FROM (
+  (SELECT * EXCLUDE (series) FROM metric_anomaly_iqr_events('${name}', 'order_date', 'amount', 14, 1.5, 'both',
+     start_date := DATE '2026-06-01', end_date := DATE '2026-06-29') EXCEPT ALL SELECT * EXCLUDE (series) FROM metric_anomaly_iqr_events('shop_orders', 'order_date', 'amount', 14, 1.5, 'both',
+     start_date := DATE '2026-06-01', end_date := DATE '2026-06-29'))
+  UNION ALL
+  (SELECT * EXCLUDE (series) FROM metric_anomaly_iqr_events('shop_orders', 'order_date', 'amount', 14, 1.5, 'both',
+     start_date := DATE '2026-06-01', end_date := DATE '2026-06-29') EXCEPT ALL SELECT * EXCLUDE (series) FROM metric_anomaly_iqr_events('${name}', 'order_date', 'amount', 14, 1.5, 'both',
+     start_date := DATE '2026-06-01', end_date := DATE '2026-06-29'))
+)
+----
+0
+
+query I
+SELECT count(*) FROM (
+  (SELECT * FROM rel_count_change('${name}', 'order_date') EXCEPT ALL SELECT * FROM rel_count_change('shop_orders', 'order_date'))
+  UNION ALL
+  (SELECT * FROM rel_count_change('shop_orders', 'order_date') EXCEPT ALL SELECT * FROM rel_count_change('${name}', 'order_date'))
+)
+----
+0
+
+query I
+SELECT count(*) FROM (
+  (SELECT * FROM rel_count_change('${name}', 'order_date', fill_missing_days := true) EXCEPT ALL SELECT * FROM rel_count_change('shop_orders', 'order_date', fill_missing_days := true))
+  UNION ALL
+  (SELECT * FROM rel_count_change('shop_orders', 'order_date', fill_missing_days := true) EXCEPT ALL SELECT * FROM rel_count_change('${name}', 'order_date', fill_missing_days := true))
+)
+----
+0
+
+query I
+SELECT count(*) FROM (
+  (SELECT * FROM rel_count_change('${name}', 'order_date', 'customer_id', 7, -0.1, 0.1, DATE '2026-06-29') EXCEPT ALL SELECT * FROM rel_count_change('shop_orders', 'order_date', 'customer_id', 7, -0.1, 0.1, DATE '2026-06-29'))
+  UNION ALL
+  (SELECT * FROM rel_count_change('shop_orders', 'order_date', 'customer_id', 7, -0.1, 0.1, DATE '2026-06-29') EXCEPT ALL SELECT * FROM rel_count_change('${name}', 'order_date', 'customer_id', 7, -0.1, 0.1, DATE '2026-06-29'))
+)
+----
+0
+
+query I
+SELECT count(*) FROM (
+  (SELECT * EXCLUDE (series) FROM rel_count_change_events('${name}', 'order_date', NULL, 7, -0.2, 0.2,
+     start_date := DATE '2026-06-01', end_date := DATE '2026-06-29') EXCEPT ALL SELECT * EXCLUDE (series) FROM rel_count_change_events('shop_orders', 'order_date', NULL, 7, -0.2, 0.2,
+     start_date := DATE '2026-06-01', end_date := DATE '2026-06-29'))
+  UNION ALL
+  (SELECT * EXCLUDE (series) FROM rel_count_change_events('shop_orders', 'order_date', NULL, 7, -0.2, 0.2,
+     start_date := DATE '2026-06-01', end_date := DATE '2026-06-29') EXCEPT ALL SELECT * EXCLUDE (series) FROM rel_count_change_events('${name}', 'order_date', NULL, 7, -0.2, 0.2,
+     start_date := DATE '2026-06-01', end_date := DATE '2026-06-29'))
+)
+----
+0
+
+query I
+SELECT count(*) FROM (
+  (SELECT * FROM rolling_values_in_set('${name}', 'status', ['shipped', 'pending'], 'order_date', 7, 0.95) EXCEPT ALL SELECT * FROM rolling_values_in_set('shop_orders', 'status', ['shipped', 'pending'], 'order_date', 7, 0.95))
+  UNION ALL
+  (SELECT * FROM rolling_values_in_set('shop_orders', 'status', ['shipped', 'pending'], 'order_date', 7, 0.95) EXCEPT ALL SELECT * FROM rolling_values_in_set('${name}', 'status', ['shipped', 'pending'], 'order_date', 7, 0.95))
+)
+----
+0
+
+query I
+SELECT count(*) FROM (
+  (SELECT * EXCLUDE (series) FROM rolling_values_in_set_events('${name}', 'status', ['shipped', 'pending'], 'order_date', 7, 0.95,
+     start_date := DATE '2026-06-01', end_date := DATE '2026-06-29') EXCEPT ALL SELECT * EXCLUDE (series) FROM rolling_values_in_set_events('shop_orders', 'status', ['shipped', 'pending'], 'order_date', 7, 0.95,
+     start_date := DATE '2026-06-01', end_date := DATE '2026-06-29'))
+  UNION ALL
+  (SELECT * EXCLUDE (series) FROM rolling_values_in_set_events('shop_orders', 'status', ['shipped', 'pending'], 'order_date', 7, 0.95,
+     start_date := DATE '2026-06-01', end_date := DATE '2026-06-29') EXCEPT ALL SELECT * EXCLUDE (series) FROM rolling_values_in_set_events('${name}', 'status', ['shipped', 'pending'], 'order_date', 7, 0.95,
+     start_date := DATE '2026-06-01', end_date := DATE '2026-06-29'))
+)
+----
+0
+
+query I
+SELECT count(*) FROM (
+  (SELECT * FROM zscore('${name}', 'amount', 3) EXCEPT ALL SELECT * FROM zscore('shop_orders', 'amount', 3))
+  UNION ALL
+  (SELECT * FROM zscore('shop_orders', 'amount', 3) EXCEPT ALL SELECT * FROM zscore('${name}', 'amount', 3))
+)
+----
+0
+
+query I
+SELECT count(*) FROM (
+  (SELECT * FROM zscore('${name}', 'customer_id', 1.5) EXCEPT ALL SELECT * FROM zscore('shop_orders', 'customer_id', 1.5))
+  UNION ALL
+  (SELECT * FROM zscore('shop_orders', 'customer_id', 1.5) EXCEPT ALL SELECT * FROM zscore('${name}', 'customer_id', 1.5))
+)
+----
+0
+
+query I
+SELECT count(*) FROM (
+  (SELECT * FROM iqr('${name}', 'amount', 1.5) EXCEPT ALL SELECT * FROM iqr('shop_orders', 'amount', 1.5))
+  UNION ALL
+  (SELECT * FROM iqr('shop_orders', 'amount', 1.5) EXCEPT ALL SELECT * FROM iqr('${name}', 'amount', 1.5))
+)
+----
+0
+
+query I
+SELECT count(*) FROM (
+  (SELECT * FROM iqr('${name}', 'customer_id', 0.5) EXCEPT ALL SELECT * FROM iqr('shop_orders', 'customer_id', 0.5))
+  UNION ALL
+  (SELECT * FROM iqr('shop_orders', 'customer_id', 0.5) EXCEPT ALL SELECT * FROM iqr('${name}', 'customer_id', 0.5))
+)
+----
+0
+
+query I
+SELECT count(*) FROM (
+  (SELECT * FROM occurrence('${name}', 'status', 'max', 0, 1000) EXCEPT ALL SELECT * FROM occurrence('shop_orders', 'status', 'max', 0, 1000))
+  UNION ALL
+  (SELECT * FROM occurrence('shop_orders', 'status', 'max', 0, 1000) EXCEPT ALL SELECT * FROM occurrence('${name}', 'status', 'max', 0, 1000))
+)
+----
+0
+
+query I
+SELECT count(*) FROM (
+  (SELECT * FROM profile_correlations('${name}') EXCEPT ALL SELECT * FROM profile_correlations('shop_orders'))
+  UNION ALL
+  (SELECT * FROM profile_correlations('shop_orders') EXCEPT ALL SELECT * FROM profile_correlations('${name}'))
+)
+----
+0
+
+query TTT
+SELECT status, missing_columns, message = 'Table ${name} is missing 1 column(s)'
+FROM schema_check('${name}', ['order_id', 'amount', 'currency'])
+----
+fail	[currency]	true
+
+# The same suite on the table named like a CTE and on shop_orders
+statement ok
+CREATE OR REPLACE TABLE suite_checks AS
+SELECT check_name || '@' || t.table_name AS check_name, check_type, t.table_name, column_name, params, identifier_column
+FROM (VALUES
+  ('iqr', 'metric_anomaly_iqr', 'amount', '{"date_column": "order_date", "window_days": 14, "reference_date": "2026-06-20"}', NULL),
+  ('iqr_rows', 'metric_anomaly_iqr', NULL, '{"date_column": "order_date"}', NULL),
+  ('rcc', 'rel_count_change', NULL, '{"date_column": "order_date", "fill_missing_days": true}', NULL),
+  ('rvis', 'rolling_values_in_set', 'status', '{"date_column": "order_date", "allowed_values": ["shipped", "pending"]}', NULL),
+  ('occ', 'occurrence', 'customer_id', '{}', NULL),
+  ('dup', 'duplicate_count', 'customer_id', '{}', NULL),
+  ('dup_by_status', 'duplicate_count', 'customer_id', '{}', 'status')
+) c(check_name, check_type, column_name, params, identifier_column),
+(VALUES ('${name}'), ('shop_orders')) t(table_name)
+
+query I
+SELECT count(*) FROM (
+  (SELECT * EXCLUDE (run_ts, table_name) REPLACE (split_part(check_name, '@', 1) AS check_name) FROM run_checks('suite_checks') WHERE table_name = '${name}'
+   EXCEPT ALL
+   SELECT * EXCLUDE (run_ts, table_name) REPLACE (split_part(check_name, '@', 1) AS check_name) FROM run_checks('suite_checks') WHERE table_name = 'shop_orders')
+  UNION ALL
+  (SELECT * EXCLUDE (run_ts, table_name) REPLACE (split_part(check_name, '@', 1) AS check_name) FROM run_checks('suite_checks') WHERE table_name = 'shop_orders'
+   EXCEPT ALL
+   SELECT * EXCLUDE (run_ts, table_name) REPLACE (split_part(check_name, '@', 1) AS check_name) FROM run_checks('suite_checks') WHERE table_name = '${name}')
+)
+----
+0
+
+query I
+SELECT count(*) FROM run_checks('suite_checks') WHERE table_name = '${name}' AND status = 'error'
+----
+0
+
+# Every order of 2026-06-29 exported twice
+statement ok
+INSERT INTO ${name} SELECT * FROM shop_orders WHERE order_date = DATE '2026-06-29'
+
+query II
+SELECT row_count - (SELECT count(*) FROM shop_orders), duplicate_row_count FROM profile_summary('${name}')
+----
+12	12
+
+query T
+SELECT list(column_name ORDER BY column_name) FROM profile_table('${name}') WHERE distinct_count > 0
+----
+[amount, customer_id, order_date, order_id, status]
+
+# A view named like a CTE
+statement ok
+DROP TABLE ${name}
+
+statement ok
+CREATE VIEW ${name} AS SELECT * FROM shop_orders
+
+query I
+SELECT count(*) FROM (
+  (SELECT * FROM metric_anomaly_iqr('${name}', 'order_date', 'amount', 14, 1.5, 'both', DATE '2026-06-20') EXCEPT ALL SELECT * FROM metric_anomaly_iqr('shop_orders', 'order_date', 'amount', 14, 1.5, 'both', DATE '2026-06-20'))
+  UNION ALL
+  (SELECT * FROM metric_anomaly_iqr('shop_orders', 'order_date', 'amount', 14, 1.5, 'both', DATE '2026-06-20') EXCEPT ALL SELECT * FROM metric_anomaly_iqr('${name}', 'order_date', 'amount', 14, 1.5, 'both', DATE '2026-06-20'))
+)
+----
+0
+
+query I
+SELECT count(*) FROM (
+  (SELECT * FROM rel_count_change('${name}', 'order_date') EXCEPT ALL SELECT * FROM rel_count_change('shop_orders', 'order_date'))
+  UNION ALL
+  (SELECT * FROM rel_count_change('shop_orders', 'order_date') EXCEPT ALL SELECT * FROM rel_count_change('${name}', 'order_date'))
+)
+----
+0
+
+query I
+SELECT count(*) FROM (
+  (SELECT * FROM rolling_values_in_set('${name}', 'status', ['shipped', 'pending'], 'order_date', 7, 0.95) EXCEPT ALL SELECT * FROM rolling_values_in_set('shop_orders', 'status', ['shipped', 'pending'], 'order_date', 7, 0.95))
+  UNION ALL
+  (SELECT * FROM rolling_values_in_set('shop_orders', 'status', ['shipped', 'pending'], 'order_date', 7, 0.95) EXCEPT ALL SELECT * FROM rolling_values_in_set('${name}', 'status', ['shipped', 'pending'], 'order_date', 7, 0.95))
+)
+----
+0
+
+statement ok
+DROP VIEW ${name}
+
+# The table named like a CTE as the right and as the left table of match_rate
+statement ok
+CREATE TABLE ${name} AS SELECT * FROM crm_customers
+
+query I
+SELECT count(*) FROM (
+  (SELECT * FROM match_rate('shop_orders', '${name}', 'customer_id', 'customer_id', 0.9)
+   EXCEPT ALL SELECT * FROM match_rate('shop_orders', 'crm_customers', 'customer_id', 'customer_id', 0.9))
+  UNION ALL
+  (SELECT * FROM match_rate('${name}', 'shop_orders', 'customer_id', 'customer_id', 0.9)
+   EXCEPT ALL SELECT * FROM match_rate('crm_customers', 'shop_orders', 'customer_id', 'customer_id', 0.9))
+)
+----
+0
+
+statement ok
+DROP TABLE ${name}
+
+endloop
+
+# run_checks on tables named like its CTEs: the daily revenue of issue #131 again (the loop
+# dropped it), with the spike on 2026-07-01
+statement ok
+CREATE TABLE daily AS
+SELECT DATE '2026-06-01' + i::INTEGER AS day, 100.0 + (i * 13) % 17 AS revenue FROM range(30) t(i)
+UNION ALL SELECT DATE '2026-07-01', 250.0
+
+statement ok
+CREATE TABLE ref AS SELECT * FROM shop_orders
+
+statement ok
+CREATE TABLE win AS SELECT * FROM shop_orders
+
+statement ok
+CREATE TABLE dq_checks AS SELECT * FROM (VALUES
+  ('iqr_daily', 'metric_anomaly_iqr', 'daily', 'revenue', '{"date_column": "day", "window_days": 14}'),
+  ('iqr_ref', 'metric_anomaly_iqr', 'ref', 'amount', '{"date_column": "order_date", "window_days": 14, "reference_date": "2026-06-20"}'),
+  ('rcc_daily', 'rel_count_change', 'daily', NULL, '{"date_column": "day", "fill_missing_days": true}'),
+  ('rcc_ref', 'rel_count_change', 'ref', NULL, '{"date_column": "order_date"}'),
+  ('rvis_ref', 'rolling_values_in_set', 'ref', 'status', '{"date_column": "order_date", "allowed_values": ["shipped", "pending"]}'),
+  ('rvis_win', 'rolling_values_in_set', 'win', 'status', '{"date_column": "order_date", "allowed_values": ["shipped", "pending"]}')
+) t(check_name, check_type, table_name, column_name, params)
+
+query TTRRRT
+SELECT check_name, status, value, lower_threshold, upper_threshold, message FROM run_checks('dq_checks')
+----
+iqr_daily	fail	250.0	92.0	122.0	metric_anomaly_iqr value 250.0 violates thresholds (250.0 > upper 122.0)
+iqr_ref	fail	194.22222222222223	58.25000000000002	81.69444444444443	metric_anomaly_iqr value 194.222 violates thresholds (194.222 > upper 81.694)
+rcc_daily	pass	0.0	NULL	NULL	rel_count_change value 0.0: no thresholds configured (monitor)
+rcc_ref	pass	0.3333333333333333	NULL	NULL	rel_count_change value 0.333: no thresholds configured (monitor)
+rvis_ref	pass	0.9206349206349206	NULL	NULL	rolling_values_in_set value 0.921: no thresholds configured (monitor)
+rvis_win	pass	0.9206349206349206	NULL	NULL	rolling_values_in_set value 0.921: no thresholds configured (monitor)
