@@ -18,7 +18,8 @@
 # The bundled ./duckdb is v2.0.0, which has every header the sources ever probed,
 # so the check only tests something against a v1.5.6 tree (CI clones one):
 #   DUCKDB_INCLUDE=<duckdb v1.5.6>/src/include scripts/check_compat_stray_headers.sh
-# (CXX and DUCKDB_INCLUDE override; DUCKDB_INCLUDE defaults to ./duckdb/src/include)
+# (CXX and DUCKDB_INCLUDE override; DUCKDB_INCLUDE defaults to ./duckdb/src/include,
+# which is v2.0.0 and plants nothing, so pass a v1.5.6 tree as CI does)
 set -euo pipefail
 
 root=$(cd "$(dirname "$0")/.." && pwd)
@@ -52,8 +53,11 @@ for header in $(printf '%s\n' $known $probed | sort -u); do
 	fi
 done
 
-if [ "$planted" -eq 0 ]; then
-	echo "warning: no stray headers planted; the check below tests nothing" >&2
+# With nothing planted the compile below tests nothing, so that is a failure: point
+# DUCKDB_INCLUDE at a DuckDB tree that lacks the probed headers (e.g. v1.5.6).
+if [ "$planted" -eq 0 ] && [ "${ALLOW_NO_STRAY:-0}" != 1 ]; then
+	echo "error: no stray headers planted, so this check would test nothing; set DUCKDB_INCLUDE to a DuckDB v1.5.6 tree (or ALLOW_NO_STRAY=1)" >&2
+	exit 1
 fi
 
 # The TU lives outside $stray: a quoted include searches the includer's directory first.
