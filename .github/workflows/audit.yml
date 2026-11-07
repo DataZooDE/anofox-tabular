@@ -1,0 +1,40 @@
+# Static audits: no build, no secrets.
+#
+# The compat-stray-headers job compiles src/include/anofox_duckdb_vectors.hpp
+# (syntax only) against DuckDB v1.5.6 headers with stray headers from another
+# DuckDB version on a later include path, as a system DuckDB package puts them
+# (scripts/check_compat_stray_headers.sh, ported from anofox-forecast#312). CI
+# runners have no system DuckDB, so without it a __has_include probe that finds
+# the wrong tree only breaks on developer machines. It checks v1.5.6, not the
+# bundled v2.0.0: 2.0 has every header the sources ever probed for, so only an
+# older tree can find a newer one by mistake.
+name: Static audits
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  compat-stray-headers:
+    name: anofox_duckdb_vectors.hpp with stray DuckDB headers (v1.5.6)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          submodules: false
+
+      - name: Fetch the DuckDB v1.5.6 headers
+        run: git clone --depth 1 --branch v1.5.6 https://github.com/duckdb/duckdb.git "$RUNNER_TEMP/duckdb-v1.5.6"
+
+      - name: Compile anofox_duckdb_vectors.hpp with stray headers on the include path
+        run: DUCKDB_INCLUDE="$RUNNER_TEMP/duckdb-v1.5.6/src/include" scripts/check_compat_stray_headers.sh
