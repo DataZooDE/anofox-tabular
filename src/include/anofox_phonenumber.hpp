@@ -71,7 +71,7 @@ struct PhoneNumberInvalidReason {
 	static constexpr const char *INVALID_CHARACTERS = "invalid_characters";
 	//! The region argument (or default region) is not a region of the metadata
 	static constexpr const char *UNSUPPORTED_REGION = "unsupported_region";
-	//! The country calling code has no metadata: unassigned (+999) or non-geographic (+800)
+	//! The country calling code has no metadata: it is not assigned (+999)
 	static constexpr const char *UNSUPPORTED_COUNTRY_CODE = "unsupported_country_code";
 	//! No country calling code can follow the '+': it starts with 0 or is missing
 	static constexpr const char *INVALID_COUNTRY_CODE = "invalid_country_code";

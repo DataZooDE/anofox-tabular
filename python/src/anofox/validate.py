@@ -171,7 +171,7 @@ def phone_is_valid(
 
     ``None`` (``NULL`` in a DataFrame) when the number cannot be judged: the
     region code is unknown (``"XX"``) or the country code has no metadata
-    (``+800``, ``+999``), like SQL ``phonenumber_is_valid``.
+    (``+999``, unassigned), like SQL ``phonenumber_is_valid``.
 
     Parameters
     ----------

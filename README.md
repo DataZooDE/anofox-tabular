@@ -19,7 +19,7 @@ columns. Everything runs inside DuckDB, on your tables, with SQL.
 |--------|--------------|------|
 | Email | Validate addresses by regex (format only: a typo like `gmail.con` passes), DNS MX lookup or SMTP handshake | [api/01-email](docs/api/01-email.md) |
 | Postal | Parse and normalize addresses with libpostal; needs ~500 MB of data in `~/.duckdb/extensions/libpostal`; parts are lower-case and the country is the name as written, not an ISO code | [api/02-postal](docs/api/02-postal.md) |
-| Phone | Parse, validate, format and compare phone numbers of all 245 libphonenumber regions, with libphonenumber's metadata (a number with an unknown region or country code is not judged: `NULL`) | [api/03-phone](docs/api/03-phone.md) |
+| Phone | Parse, validate, format and compare phone numbers of all 245 libphonenumber regions and its non-geographic numbers (`+800`, ...), with libphonenumber's metadata (a number with an unknown region or country code is not judged: `NULL`) | [api/03-phone](docs/api/03-phone.md) |
 | Money | Exact `DECIMAL(18,3)` money values, currency-safe arithmetic, formatting for 38 currencies | [api/04-money](docs/api/04-money.md) |
 | VAT | Validate VAT numbers of 28 countries (27 EU member states plus GB/XI): syntax for all, check digits for 16 of them | [api/05-vat](docs/api/05-vat.md) |
 | PII | Detect and mask emails, card numbers, IBANs, SSNs, dates of birth, German SV, health insurance (KVNR) and ID card numbers, names and more; scan whole tables | [api/06-pii](docs/api/06-pii.md) |

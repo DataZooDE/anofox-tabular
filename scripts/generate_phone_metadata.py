@@ -16,8 +16,9 @@ version), then run from the repository root:
 The output is constant-initialised C++ (string_view and integers only): no work at
 load time, and the regular expressions are compiled per region on first use.
 
-Non-geographic entities (+800, +882, ...: region "001") are not included; numbers
-with those country codes are reported as unsupported_country_code.
+The non-geographic entities of libphonenumber (international freephone +800, satellite
+and network codes +870, +881, +882, ...: region "001") follow the regions in the same
+table, one entry per country code, so they share the lookup and lazy compilation.
 """
 
 from __future__ import annotations
@@ -141,9 +142,13 @@ def main() -> None:
     out.append(f'constexpr const char *PHONE_METADATA_VERSION = "{phonenumbers.__version__}";\n')
     out.append("namespace {\n")
 
+    nongeo_codes = sorted(phonenumbers.COUNTRY_CODES_FOR_NON_GEO_REGIONS)
+    entries = [(region, PhoneMetadata.metadata_for_region(region)) for region in regions]
+    entries += [(f"001_{code}", PhoneMetadata.metadata_for_nongeo_region(code)) for code in nongeo_codes]
+
     region_entries: list[str] = []
-    for region in regions:
-        meta = PhoneMetadata.metadata_for_region(region)
+    for key, meta in entries:
+        region = meta.id  # "001" for every non-geographic entity
         override = OVERRIDES.get(region, {})
         national_prefix = meta.national_prefix or ""
         npfp = override.get(
@@ -164,8 +169,8 @@ def main() -> None:
             out.append(f"const NumberFormat {name}[] = {{\n" + "\n".join(entries) + "\n};")
             return f"{name}, {len(entries)}"
 
-        national_ref = emit_formats(f"NATIONAL_FORMATS_{region}", national)
-        intl_ref = emit_formats(f"INTL_FORMATS_{region}", intl)
+        national_ref = emit_formats(f"NATIONAL_FORMATS_{key}", national)
+        intl_ref = emit_formats(f"INTL_FORMATS_{key}", intl)
 
         descs = ",\n\t ".join(number_desc(getattr(meta, field)) for field in DESC_FIELDS)
         region_entries.append(
@@ -178,19 +183,24 @@ def main() -> None:
         )
 
     out.append("} // namespace\n")
-    out.append(f"constexpr size_t REGION_COUNT = {len(regions)};\n")
-    out.append("// Sorted by region code (binary search)")
-    out.append("const CountryMetadata REGION_METADATA_TABLE[REGION_COUNT] = {\n" + "\n".join(region_entries) + "\n};\n")
+    out.append(f"constexpr size_t REGION_COUNT = {len(regions)};")
+    out.append(f"constexpr size_t NONGEO_COUNT = {len(nongeo_codes)};\n")
+    out.append("// The regions sorted by region code (binary search), then the non-geographic")
+    out.append("// entities (region 001) sorted by country code")
+    out.append(
+        "const CountryMetadata REGION_METADATA_TABLE[REGION_COUNT + NONGEO_COUNT] = {\n"
+        + "\n".join(region_entries) + "\n};\n"
+    )
 
     codes = sorted(
         (code, regs)
         for code, regs in phonenumbers.COUNTRY_CODE_TO_REGION_CODE.items()
-        if any(r in phonenumbers.SUPPORTED_REGIONS for r in regs)
+        if any(r in phonenumbers.SUPPORTED_REGIONS or r == "001" for r in regs)
     )
     out.append("namespace {")
     code_entries = []
     for code, regs in codes:
-        regs = [r for r in regs if r in phonenumbers.SUPPORTED_REGIONS]
+        regs = [r for r in regs if r in phonenumbers.SUPPORTED_REGIONS or r == "001"]
         name = f"COUNTRY_CODE_REGIONS_{code}"
         out.append(f"const std::string_view {name}[] = {{" + ", ".join(f'"{r}"' for r in regs) + "};")
         code_entries.append(f"\t{{{code}, {name}, {len(regs)}}},")
@@ -203,7 +213,8 @@ def main() -> None:
     out.append("// clang-format on")
 
     OUTPUT.write_text("\n".join(out) + "\n")
-    print(f"wrote {OUTPUT} ({len(regions)} regions, {len(codes)} country codes)")
+    print(f"wrote {OUTPUT} ({len(regions)} regions, {len(nongeo_codes)} non-geographic entities, "
+          f"{len(codes)} country codes)")
 
 
 if __name__ == "__main__":

@@ -36,14 +36,23 @@ TYPES = {
 TYPE_NAMES = {**TYPES, PhoneNumberType.FIXED_LINE_OR_MOBILE: "fixed_line_or_mobile", PhoneNumberType.UNKNOWN: "unknown"}
 
 
-def example_numbers() -> list[tuple[str, str]]:
-    """(region, E.164) of every example number of every supported region and type."""
+def example_numbers(non_geo: bool = True) -> list[tuple[str, str]]:
+    """(region, E.164) of every example number of every supported region and type, and of
+    every non-geographic entity (region "001": +800, +882, ...)."""
     cases = []
     for region in sorted(phonenumbers.SUPPORTED_REGIONS):
         for number_type in TYPES:
             example = phonenumbers.example_number_for_type(region, number_type)
             if example is not None:
                 cases.append((region, phonenumbers.format_number(example, PhoneNumberFormat.E164)))
+    if non_geo:
+        for code in sorted(phonenumbers.COUNTRY_CODES_FOR_NON_GEO_REGIONS):
+            metadata = phonenumbers.PhoneMetadata.metadata_for_nongeo_region(code)
+            for field in ("fixed_line", "mobile", "toll_free", "premium_rate", "shared_cost", "voip",
+                          "personal_number", "pager", "uan", "voicemail"):
+                desc = getattr(metadata, field)
+                if desc is not None and desc.example_number:
+                    cases.append(("001", f"+{code}{desc.example_number}"))
     return cases
 
 
@@ -134,13 +143,16 @@ def test_metadata_is_the_generator_output(tmp_path):
 
 def test_example_numbers_in_e164(duck):
     """Every example number, written with +CC and no region."""
-    assert_parity(duck, [(e164, None) for _, e164 in example_numbers()])
+    cases = [(e164, None) for _, e164 in example_numbers()]
+    assert sum(1 for n, _ in cases if n[:4] in ("+800", "+882", "+979")) >= 3
+    assert_parity(duck, cases)
 
 
 def test_example_numbers_in_national_notation(duck):
-    """Every example number as written in its country (national format, region given)."""
+    """Every example number as written in its country (national format, region given). A
+    non-geographic number has no country to be written in."""
     cases = []
-    for region, e164 in example_numbers():
+    for region, e164 in example_numbers(non_geo=False):
         national = phonenumbers.format_number(phonenumbers.parse(e164), PhoneNumberFormat.NATIONAL)
         cases.append((national, region))
     assert_parity(duck, cases)

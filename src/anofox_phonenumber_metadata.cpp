@@ -76,7 +76,7 @@ struct CompiledSlot {
 };
 
 CompiledSlot *CompiledSlots() {
-	static CompiledSlot slots[REGION_COUNT];
+	static CompiledSlot slots[REGION_COUNT + NONGEO_COUNT];
 	return slots;
 }
 
@@ -120,6 +120,21 @@ const CountryMetadata *GetMetadataForRegion(std::string_view region_code) {
 	return nullptr;
 }
 
+const CountryMetadata *GetMetadataForCountryCodeRegion(int country_code, std::string_view region_code) {
+	if (region_code != NON_GEO_REGION) {
+		return GetMetadataForRegion(region_code);
+	}
+	const auto *begin = REGION_METADATA_TABLE + REGION_COUNT;
+	const auto *end = begin + NONGEO_COUNT;
+	const auto *it = std::lower_bound(begin, end, country_code, [](const CountryMetadata &metadata, int code) {
+		return metadata.country_code < code;
+	});
+	if (it != end && it->country_code == country_code) {
+		return it;
+	}
+	return nullptr;
+}
+
 const CountryCodeRegions *GetRegionsForCountryCode(int country_code) {
 	const auto *begin = COUNTRY_CODE_TABLE;
 	const auto *end = COUNTRY_CODE_TABLE + COUNTRY_CODE_COUNT;
@@ -139,7 +154,7 @@ std::string GetMainRegionForCountryCode(int country_code) {
 
 const CompiledRegionPatterns &GetCompiledPatterns(const CountryMetadata &metadata) {
 	const auto index = static_cast<size_t>(&metadata - REGION_METADATA_TABLE);
-	D_ASSERT(index < REGION_COUNT);
+	D_ASSERT(index < REGION_COUNT + NONGEO_COUNT);
 	auto &slot = CompiledSlots()[index];
 	std::call_once(slot.once,
 	               [&]() { slot.patterns = std::make_unique<CompiledRegionPatterns>(CompileRegion(metadata)); });

@@ -9,14 +9,16 @@
 
 The phone module is a built-in C++ implementation of Google's libphonenumber rules for parsing,
 validating and formatting. It does not link libphonenumber, but carries libphonenumber's number
-metadata for all 245 regions it knows (generated from the `phonenumbers` package, version
-9.0.43, see [Metadata](#metadata)): every number range (fixed line, mobile, toll-free,
-premium rate, shared cost, VoIP, personal, pager, UAN, voicemail), the possible lengths and the
-national layouts of every country.
+metadata for all 245 regions it knows and for its non-geographic entities (generated from the
+`phonenumbers` package, version 9.0.43, see [Metadata](#metadata)): every number range (fixed
+line, mobile, toll-free, premium rate, shared cost, VoIP, personal, pager, UAN, voicemail), the
+possible lengths and the national layouts of every country. Non-geographic numbers, such as
+international freephone `+800 1234 5678`, satellite phones (`+870`, `+881`) and international
+networks (`+882`, `+883`), are valid numbers of region `001`, as in libphonenumber.
 
 A number the module has no metadata for cannot be judged: a `region` that is no region code
-(`'XX'`, `'DEU'`) or a country code that no country uses (`+999`) or that is non-geographic
-(`+800` international freephone, `+882` networks). The validity functions return `NULL` for it,
+(`'XX'`, `'DEU'`) or a country code that is not assigned (`+999`). The validity functions return
+`NULL` for it,
 not `false`, and `phonenumber_parse(...).reason` is `unsupported_region` or
 `unsupported_country_code`. A data-quality check on `phonenumber_is_valid(...) = false` thus
 reports only numbers that are known to be invalid; count the `NULL`s separately.
@@ -227,7 +229,7 @@ phonenumber_parse(phone VARCHAR, region VARCHAR) -> STRUCT(
 | `not_a_number` | The input has no digits |
 | `invalid_characters` | The number contains letters, other than a leading label or a trailing extension marker |
 | `unsupported_region` | A number without `+` and a `region` that is no region code of the metadata, e.g. `'XX'`. The number is not judged: `valid` is `NULL` |
-| `unsupported_country_code` | The country code after `+` (or the international prefix) is used by no country (`+999`) or is non-geographic (`+800`). The number is not judged: `valid` is `NULL` |
+| `unsupported_country_code` | The country code after `+` (or the international prefix) is not assigned, e.g. `+999`. The number is not judged: `valid` is `NULL` |
 | `invalid_country_code` | No country code can follow the `+`: the digits after it start with `0` (`+0 30 123456`) or there are none. A typo, so the number is invalid (`valid` is `false`) |
 | `invalid_length` | The national number has a length that the region does not use, or the input has more than 32 digits |
 | `invalid_pattern` | The length fits, but the digits are in no number range of the region |
@@ -265,7 +267,7 @@ why, `unsupported_country_code` for the country code of a number with `+`,
 SELECT phone, region, (phonenumber_parse(phone, region)).valid AS valid,
        phonenumber_is_valid(phone, region) AS is_valid, (phonenumber_parse(phone, region)).reason AS reason
 FROM (VALUES ('+43 1 5321234', NULL), ('01 5321234', 'AT'), ('01 5321234', 'XX'),
-             ('+800 1234 5678', NULL)) t(phone, region);
+             ('+999 1234 5678', NULL)) t(phone, region);
 ```
 
 ```text
@@ -276,7 +278,7 @@ FROM (VALUES ('+43 1 5321234', NULL), ('01 5321234', 'AT'), ('01 5321234', 'XX')
 │ +43 1 5321234  │ NULL    │ true    │ true     │ NULL                     │
 │ 01 5321234     │ AT      │ true    │ true     │ NULL                     │
 │ 01 5321234     │ XX      │ NULL    │ NULL     │ unsupported_region       │
-│ +800 1234 5678 │ NULL    │ NULL    │ NULL     │ unsupported_country_code │
+│ +999 1234 5678 │ NULL    │ NULL    │ NULL     │ unsupported_country_code │
 └────────────────┴─────────┴─────────┴──────────┴──────────────────────────┘
 ```
 
@@ -658,9 +660,12 @@ compares the example numbers of every region with the same version), then run
 its first use.
 
 The only deliberate deviation from upstream is the parsing of Mexico's abolished prefixes (see
-[`phonenumber_format`](#phonenumber_format)). Not included are the non-geographic entities of
-libphonenumber (region `001`: `+800`, `+808`, `+870`, `+878`, `+881`, `+882`, `+883`, `+888`,
-`+979`); such numbers are not judged.
+[`phonenumber_format`](#phonenumber_format)). The non-geographic entities of libphonenumber
+(`+800`, `+808`, `+870`, `+878`, `+881`, `+882`, `+883`, `+888`, `+979`) all have the region
+code `001`: `phonenumber_region` returns `001` for their numbers and
+`phonenumber_is_valid_for_region(phone, '001')` is `true` for a valid one. `001` is no region a
+national number can be read in (`region` `'001'` gives `unsupported_region`), and it is not
+accepted as the default region; `phonenumber_example('001')` is `NULL`.
 
 ## See also
 

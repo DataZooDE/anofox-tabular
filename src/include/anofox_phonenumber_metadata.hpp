@@ -151,8 +151,17 @@ std::string ExpandGroups(std::string_view rule, const duckdb_re2::StringPiece *g
 //! Version of the phonenumbers package the metadata was generated from
 const char *MetadataVersion();
 
-//! Metadata of a region (upper-case ISO 3166 code), nullptr if unknown
+//! Region code of libphonenumber's non-geographic entities (+800, +882, ...)
+constexpr std::string_view NON_GEO_REGION = "001";
+
+//! Metadata of a region (upper-case ISO 3166 code), nullptr if unknown. Not for
+//! NON_GEO_REGION, which several country codes share: use
+//! GetMetadataForCountryCodeRegion
 const CountryMetadata *GetMetadataForRegion(std::string_view region_code);
+
+//! Metadata of a region of a country code: the non-geographic entity of the
+//! code for NON_GEO_REGION, GetMetadataForRegion otherwise
+const CountryMetadata *GetMetadataForCountryCodeRegion(int country_code, std::string_view region_code);
 
 //! Regions of a country calling code, main region first; nullptr if unknown
 const CountryCodeRegions *GetRegionsForCountryCode(int country_code);

@@ -303,7 +303,7 @@ std::string ResolveRegionForCountryCode(int country_code, const std::string& nat
 	}
 	for (size_t i = 0; i < entry->region_count; i++) {
 		const auto& candidate = entry->regions[i];
-		const CountryMetadata* metadata = GetMetadataForRegion(candidate);
+		const CountryMetadata* metadata = GetMetadataForCountryCodeRegion(country_code, candidate);
 		if (!metadata) {
 			continue;
 		}
@@ -473,7 +473,7 @@ PhoneNumberParts PhoneNumberManager::Parse(const std::string& raw_number, const 
 			parts.reason = PhoneNumberInvalidReason::UNSUPPORTED_COUNTRY_CODE;
 			return parts;
 		}
-		parse_metadata = GetMetadataForRegion(GetMainRegionForCountryCode(country_code));
+		parse_metadata = GetMetadataForCountryCodeRegion(country_code, GetMainRegionForCountryCode(country_code));
 	}
 	D_ASSERT(parse_metadata);
 
@@ -497,7 +497,7 @@ PhoneNumberParts PhoneNumberManager::Parse(const std::string& raw_number, const 
 		const CountryMetadata* read_metadata = read_region.empty() ? nullptr : GetMetadataForRegion(read_region);
 		region_code = read_metadata && read_metadata->country_code == country_code ? read_region : main_region;
 	}
-	const CountryMetadata* metadata = GetMetadataForRegion(region_code);
+	const CountryMetadata* metadata = GetMetadataForCountryCodeRegion(country_code, region_code);
 	if (!metadata) {
 		AnofoxTrace(AnofoxLogLevel::Debug, "PhoneNumber parse failed: no metadata for region=" + region_code);
 		parts.reason = PhoneNumberInvalidReason::UNSUPPORTED_REGION;
@@ -509,7 +509,7 @@ PhoneNumberParts PhoneNumberManager::Parse(const std::string& raw_number, const 
 	// Possible: libphonenumber's isPossibleNumber, judged with the code's main region
 	const auto length_result = national_number.size() < MIN_NSN_LENGTH || national_number.size() > MAX_NSN_LENGTH
 	                               ? LengthResult::INVALID_LENGTH
-	                               : TestNumberLength(national_number, *GetMetadataForRegion(main_region));
+	                               : TestNumberLength(national_number, *GetMetadataForCountryCodeRegion(country_code, main_region));
 	if (length_result != LengthResult::IS_POSSIBLE && length_result != LengthResult::IS_POSSIBLE_LOCAL_ONLY) {
 		AnofoxTrace(AnofoxLogLevel::Debug,
 		           "PhoneNumber parse failed: invalid length=" + std::to_string(national_number.size()) +
@@ -559,7 +559,8 @@ std::string PhoneNumberManager::Format(const std::string& raw_number, const std:
 
 	// As libphonenumber, the layout rules are those of the country code's main
 	// region (a GG number is laid out like a GB one)
-	const CountryMetadata* metadata = GetMetadataForRegion(GetMainRegionForCountryCode(parts.country_code));
+	const CountryMetadata* metadata =
+	    GetMetadataForCountryCodeRegion(parts.country_code, GetMainRegionForCountryCode(parts.country_code));
 	if (!metadata) {
 		throw InvalidInputException("No metadata for country code: %d", parts.country_code);
 	}
@@ -665,14 +666,18 @@ std::optional<bool> PhoneNumberManager::IsValidForRegion(const std::string& raw_
 
 	auto hint = NormalizeRegionCode(region_hint);
 	const std::string requested_region = hint.empty() ? EffectiveDefaultRegion(default_region) : hint;
-	const CountryMetadata* requested = GetMetadataForRegion(requested_region);
 	auto parts = Parse(raw_number, region_hint, default_region);
-	if (!requested || parts.CannotJudge()) {
+	// Region 001 (non-geographic entities) stands for the entity of the number's
+	// own country code; a number of another code is not valid for it
+	const bool non_geo = requested_region == NON_GEO_REGION;
+	const CountryMetadata* requested =
+	    non_geo ? GetMetadataForCountryCodeRegion(parts.country_code, NON_GEO_REGION) : GetMetadataForRegion(requested_region);
+	if ((!requested && !non_geo) || parts.CannotJudge()) {
 		AnofoxTrace(AnofoxLogLevel::Debug, "PhoneNumber IsValidForRegion cannot judge number=" + raw_number +
 		                                       " region=" + requested_region);
 		return std::nullopt;
 	}
-	if (!parts.valid) {
+	if (!parts.valid || !requested) {
 		return false;
 	}
 	// libphonenumber's isValidNumberForRegion: the region's country code, and a

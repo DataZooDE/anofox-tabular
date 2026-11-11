@@ -2212,12 +2212,92 @@ const NumberFormat INTL_FORMATS_ZW[] = {
 	{"3", "(\\d{3})(\\d{3})(\\d{3,4})", "$1 $2 $3"},
 	{"8", "(\\d{4})(\\d{6})", "$1 $2"},
 };
+const NumberFormat NATIONAL_FORMATS_001_800[] = {
+	{"\\d", "(\\d{4})(\\d{4})", "$1 $2"},
+};
+const NumberFormat INTL_FORMATS_001_800[] = {
+	{"\\d", "(\\d{4})(\\d{4})", "$1 $2"},
+};
+const NumberFormat NATIONAL_FORMATS_001_808[] = {
+	{"[1-9]", "(\\d{4})(\\d{4})", "$1 $2"},
+};
+const NumberFormat INTL_FORMATS_001_808[] = {
+	{"[1-9]", "(\\d{4})(\\d{4})", "$1 $2"},
+};
+const NumberFormat NATIONAL_FORMATS_001_870[] = {
+	{"[235-7]", "(\\d{3})(\\d{3})(\\d{3})", "$1 $2 $3"},
+};
+const NumberFormat INTL_FORMATS_001_870[] = {
+	{"[235-7]", "(\\d{3})(\\d{3})(\\d{3})", "$1 $2 $3"},
+};
+const NumberFormat NATIONAL_FORMATS_001_878[] = {
+	{"1", "(\\d{2})(\\d{5})(\\d{5})", "$1 $2 $3"},
+};
+const NumberFormat INTL_FORMATS_001_878[] = {
+	{"1", "(\\d{2})(\\d{5})(\\d{5})", "$1 $2 $3"},
+};
+const NumberFormat NATIONAL_FORMATS_001_881[] = {
+	{"[0-37-9]", "(\\d)(\\d{3})(\\d{5})", "$1 $2 $3"},
+	{"6", "(\\d)(\\d{3})(\\d{5,6})", "$1 $2 $3"},
+};
+const NumberFormat INTL_FORMATS_001_881[] = {
+	{"[0-37-9]", "(\\d)(\\d{3})(\\d{5})", "$1 $2 $3"},
+	{"6", "(\\d)(\\d{3})(\\d{5,6})", "$1 $2 $3"},
+};
+const NumberFormat NATIONAL_FORMATS_001_882[] = {
+	{"16|342", "(\\d{2})(\\d{5})", "$1 $2"},
+	{"49", "(\\d{2})(\\d{6})", "$1 $2"},
+	{"1[36]|9", "(\\d{2})(\\d{2})(\\d{4})", "$1 $2 $3"},
+	{"3[23]", "(\\d{2})(\\d{4})(\\d{3})", "$1 $2 $3"},
+	{"16", "(\\d{2})(\\d{3,4})(\\d{4})", "$1 $2 $3"},
+	{"10|23|3(?:[15]|4[57])|4|5[12]", "(\\d{2})(\\d{4})(\\d{4})", "$1 $2 $3"},
+	{"34", "(\\d{3})(\\d{4})(\\d{4})", "$1 $2 $3"},
+	{"[1-35]", "(\\d{2})(\\d{4,5})(\\d{5})", "$1 $2 $3"},
+};
+const NumberFormat INTL_FORMATS_001_882[] = {
+	{"16|342", "(\\d{2})(\\d{5})", "$1 $2"},
+	{"49", "(\\d{2})(\\d{6})", "$1 $2"},
+	{"1[36]|9", "(\\d{2})(\\d{2})(\\d{4})", "$1 $2 $3"},
+	{"3[23]", "(\\d{2})(\\d{4})(\\d{3})", "$1 $2 $3"},
+	{"16", "(\\d{2})(\\d{3,4})(\\d{4})", "$1 $2 $3"},
+	{"10|23|3(?:[15]|4[57])|4|5[12]", "(\\d{2})(\\d{4})(\\d{4})", "$1 $2 $3"},
+	{"34", "(\\d{3})(\\d{4})(\\d{4})", "$1 $2 $3"},
+	{"[1-35]", "(\\d{2})(\\d{4,5})(\\d{5})", "$1 $2 $3"},
+};
+const NumberFormat NATIONAL_FORMATS_001_883[] = {
+	{"[14]|2[24-689]|3[02-689]|51[24-9]", "(\\d{3})(\\d{3})(\\d{2,8})", "$1 $2 $3"},
+	{"510", "(\\d{3})(\\d{3})(\\d{3})", "$1 $2 $3"},
+	{"21", "(\\d{3})(\\d{3})(\\d{4})", "$1 $2 $3"},
+	{"51[13]", "(\\d{4})(\\d{4})(\\d{4})", "$1 $2 $3"},
+	{"[235]", "(\\d{3})(\\d{3})(\\d{3})(\\d{3})", "$1 $2 $3 $4"},
+};
+const NumberFormat INTL_FORMATS_001_883[] = {
+	{"[14]|2[24-689]|3[02-689]|51[24-9]", "(\\d{3})(\\d{3})(\\d{2,8})", "$1 $2 $3"},
+	{"510", "(\\d{3})(\\d{3})(\\d{3})", "$1 $2 $3"},
+	{"21", "(\\d{3})(\\d{3})(\\d{4})", "$1 $2 $3"},
+	{"51[13]", "(\\d{4})(\\d{4})(\\d{4})", "$1 $2 $3"},
+	{"[235]", "(\\d{3})(\\d{3})(\\d{3})(\\d{3})", "$1 $2 $3 $4"},
+};
+const NumberFormat NATIONAL_FORMATS_001_888[] = {
+	{"", "(\\d{3})(\\d{3})(\\d{5})", "$1 $2 $3"},
+};
+const NumberFormat INTL_FORMATS_001_888[] = {
+	{"", "(\\d{3})(\\d{3})(\\d{5})", "$1 $2 $3"},
+};
+const NumberFormat NATIONAL_FORMATS_001_979[] = {
+	{"[1359]", "(\\d)(\\d{4})(\\d{4})", "$1 $2 $3"},
+};
+const NumberFormat INTL_FORMATS_001_979[] = {
+	{"[1359]", "(\\d)(\\d{4})(\\d{4})", "$1 $2 $3"},
+};
 } // namespace
 
 constexpr size_t REGION_COUNT = 245;
+constexpr size_t NONGEO_COUNT = 9;
 
-// Sorted by region code (binary search)
-const CountryMetadata REGION_METADATA_TABLE[REGION_COUNT] = {
+// The regions sorted by region code (binary search), then the non-geographic
+// entities (region 001) sorted by country code
+const CountryMetadata REGION_METADATA_TABLE[REGION_COUNT + NONGEO_COUNT] = {
 	{"AC", 247, "00", "", "", "", "", false,
 	 {{{"(?:[01589]\\d|[2-467])\\d{4}", 0x00000060u, 0x00000000u, ""},
 	 {"6\\d{4}", 0x00000020u, 0x00000000u, "62889"},
@@ -5403,6 +5483,123 @@ const CountryMetadata REGION_METADATA_TABLE[REGION_COUNT] = {
 	 {"", 0x00000000u, 0x00000000u, ""},
 	 {"", 0x00000000u, 0x00000000u, ""}}},
 	 NATIONAL_FORMATS_ZW, 6, INTL_FORMATS_ZW, 6},
+	{"001", 800, "", "", "", "", "", true,
+	 {{{"(?:00|[1-9]\\d)\\d{6}", 0x00000100u, 0x00000000u, ""},
+	 {"", 0x00000000u, 0x00000000u, ""},
+	 {"", 0x00000000u, 0x00000000u, ""},
+	 {"(?:00|[1-9]\\d)\\d{6}", 0x00000100u, 0x00000000u, "12345678"},
+	 {"", 0x00000000u, 0x00000000u, ""},
+	 {"", 0x00000000u, 0x00000000u, ""},
+	 {"", 0x00000000u, 0x00000000u, ""},
+	 {"", 0x00000000u, 0x00000000u, ""},
+	 {"", 0x00000000u, 0x00000000u, ""},
+	 {"", 0x00000000u, 0x00000000u, ""},
+	 {"", 0x00000000u, 0x00000000u, ""}}},
+	 NATIONAL_FORMATS_001_800, 1, INTL_FORMATS_001_800, 1},
+	{"001", 808, "", "", "", "", "", true,
+	 {{{"[1-9]\\d{7}", 0x00000100u, 0x00000000u, ""},
+	 {"", 0x00000000u, 0x00000000u, ""},
+	 {"", 0x00000000u, 0x00000000u, ""},
+	 {"", 0x00000000u, 0x00000000u, ""},
+	 {"", 0x00000000u, 0x00000000u, ""},
+	 {"[1-9]\\d{7}", 0x00000100u, 0x00000000u, "12345678"},
+	 {"", 0x00000000u, 0x00000000u, ""},
+	 {"", 0x00000000u, 0x00000000u, ""},
+	 {"", 0x00000000u, 0x00000000u, ""},
+	 {"", 0x00000000u, 0x00000000u, ""},
+	 {"", 0x00000000u, 0x00000000u, ""}}},
+	 NATIONAL_FORMATS_001_808, 1, INTL_FORMATS_001_808, 1},
+	{"001", 870, "", "", "", "", "", false,
+	 {{{"7\\d{11}|[235-7]\\d{8}", 0x00001200u, 0x00000000u, ""},
+	 {"", 0x00000000u, 0x00000000u, ""},
+	 {"(?:[356]|774[45])\\d{8}|7[6-8]\\d{7}", 0x00001200u, 0x00000000u, "301234567"},
+	 {"", 0x00000000u, 0x00000000u, ""},
+	 {"", 0x00000000u, 0x00000000u, ""},
+	 {"", 0x00000000u, 0x00000000u, ""},
+	 {"", 0x00000000u, 0x00000000u, ""},
+	 {"2\\d{8}", 0x00000200u, 0x00000000u, "201234567"},
+	 {"", 0x00000000u, 0x00000000u, ""},
+	 {"", 0x00000000u, 0x00000000u, ""},
+	 {"", 0x00000000u, 0x00000000u, ""}}},
+	 NATIONAL_FORMATS_001_870, 1, INTL_FORMATS_001_870, 1},
+	{"001", 878, "", "", "", "", "", true,
+	 {{{"10\\d{10}", 0x00001000u, 0x00000000u, ""},
+	 {"", 0x00000000u, 0x00000000u, ""},
+	 {"", 0x00000000u, 0x00000000u, ""},
+	 {"", 0x00000000u, 0x00000000u, ""},
+	 {"", 0x00000000u, 0x00000000u, ""},
+	 {"", 0x00000000u, 0x00000000u, ""},
+	 {"", 0x00000000u, 0x00000000u, ""},
+	 {"10\\d{10}", 0x00001000u, 0x00000000u, "101234567890"},
+	 {"", 0x00000000u, 0x00000000u, ""},
+	 {"", 0x00000000u, 0x00000000u, ""},
+	 {"", 0x00000000u, 0x00000000u, ""}}},
+	 NATIONAL_FORMATS_001_878, 1, INTL_FORMATS_001_878, 1},
+	{"001", 881, "", "", "", "", "", false,
+	 {{{"6\\d{9}|[0-36-9]\\d{8}", 0x00000600u, 0x00000000u, ""},
+	 {"", 0x00000000u, 0x00000000u, ""},
+	 {"6\\d{9}|[0-36-9]\\d{8}", 0x00000600u, 0x00000000u, "612345678"},
+	 {"", 0x00000000u, 0x00000000u, ""},
+	 {"", 0x00000000u, 0x00000000u, ""},
+	 {"", 0x00000000u, 0x00000000u, ""},
+	 {"", 0x00000000u, 0x00000000u, ""},
+	 {"", 0x00000000u, 0x00000000u, ""},
+	 {"", 0x00000000u, 0x00000000u, ""},
+	 {"", 0x00000000u, 0x00000000u, ""},
+	 {"", 0x00000000u, 0x00000000u, ""}}},
+	 NATIONAL_FORMATS_001_881, 2, INTL_FORMATS_001_881, 2},
+	{"001", 882, "", "", "", "", "", false,
+	 {{{"[13]\\d{6}(?:\\d{2,5})?|[19]\\d{7}|(?:[25]\\d\\d|4)\\d{7}(?:\\d{2})?", 0x00001f80u, 0x00000000u, ""},
+	 {"", 0x00000000u, 0x00000000u, ""},
+	 {"342\\d{4}|(?:337|49)\\d{6}|(?:3(?:2|47|7\\d{3})|5(?:0\\d{3}|2[0-2]))\\d{7}", 0x00001780u, 0x00000000u, "3421234"},
+	 {"", 0x00000000u, 0x00000000u, ""},
+	 {"", 0x00000000u, 0x00000000u, ""},
+	 {"", 0x00000000u, 0x00000000u, ""},
+	 {"", 0x00000000u, 0x00000000u, ""},
+	 {"1(?:3(?:0[0347]|[13][0139]|2[035]|4[013568]|6[0459]|7[06]|8[15-8]|9[0689])\\d{4}|6\\d{5,10})|(?:345\\d|9[89])\\d{6}|(?:10|2(?:3|85\\d)|3(?:[15]|[69]\\d\\d)|4[15-8]|51)\\d{8}", 0x00001f80u, 0x00000000u, "390123456789"},
+	 {"", 0x00000000u, 0x00000000u, ""},
+	 {"", 0x00000000u, 0x00000000u, ""},
+	 {"348[57]\\d{7}", 0x00000800u, 0x00000000u, "34851234567"}}},
+	 NATIONAL_FORMATS_001_882, 8, INTL_FORMATS_001_882, 8},
+	{"001", 883, "", "", "", "", "", true,
+	 {{{"(?:[1-4]\\d|51)\\d{6,10}", 0x00001f00u, 0x00000000u, ""},
+	 {"", 0x00000000u, 0x00000000u, ""},
+	 {"", 0x00000000u, 0x00000000u, ""},
+	 {"", 0x00000000u, 0x00000000u, ""},
+	 {"", 0x00000000u, 0x00000000u, ""},
+	 {"", 0x00000000u, 0x00000000u, ""},
+	 {"", 0x00000000u, 0x00000000u, ""},
+	 {"(?:2(?:00\\d\\d|10)|(?:370[1-9]|51\\d0)\\d)\\d{7}|51(?:00\\d{5}|[24-9]0\\d{4,7})|(?:1[0-79]|2[24-689]|3[02-689]|4[0-4])0\\d{5,9}", 0x00001f00u, 0x00000000u, "510012345"},
+	 {"", 0x00000000u, 0x00000000u, ""},
+	 {"", 0x00000000u, 0x00000000u, ""},
+	 {"", 0x00000000u, 0x00000000u, ""}}},
+	 NATIONAL_FORMATS_001_883, 5, INTL_FORMATS_001_883, 5},
+	{"001", 888, "", "", "", "", "", true,
+	 {{{"\\d{11}", 0x00000800u, 0x00000000u, ""},
+	 {"", 0x00000000u, 0x00000000u, ""},
+	 {"", 0x00000000u, 0x00000000u, ""},
+	 {"", 0x00000000u, 0x00000000u, ""},
+	 {"", 0x00000000u, 0x00000000u, ""},
+	 {"", 0x00000000u, 0x00000000u, ""},
+	 {"", 0x00000000u, 0x00000000u, ""},
+	 {"", 0x00000000u, 0x00000000u, ""},
+	 {"", 0x00000000u, 0x00000000u, ""},
+	 {"\\d{11}", 0x00000800u, 0x00000000u, "12345678901"},
+	 {"", 0x00000000u, 0x00000000u, ""}}},
+	 NATIONAL_FORMATS_001_888, 1, INTL_FORMATS_001_888, 1},
+	{"001", 979, "", "", "", "", "", true,
+	 {{{"[1359]\\d{8}", 0x00000200u, 0x00000100u, ""},
+	 {"", 0x00000000u, 0x00000000u, ""},
+	 {"", 0x00000000u, 0x00000000u, ""},
+	 {"", 0x00000000u, 0x00000000u, ""},
+	 {"[1359]\\d{8}", 0x00000200u, 0x00000100u, "123456789"},
+	 {"", 0x00000000u, 0x00000000u, ""},
+	 {"", 0x00000000u, 0x00000000u, ""},
+	 {"", 0x00000000u, 0x00000000u, ""},
+	 {"", 0x00000000u, 0x00000000u, ""},
+	 {"", 0x00000000u, 0x00000000u, ""},
+	 {"", 0x00000000u, 0x00000000u, ""}}},
+	 NATIONAL_FORMATS_001_979, 1, INTL_FORMATS_001_979, 1},
 };
 
 namespace {
@@ -5582,13 +5779,21 @@ const std::string_view COUNTRY_CODE_REGIONS_689[] = {"PF"};
 const std::string_view COUNTRY_CODE_REGIONS_690[] = {"TK"};
 const std::string_view COUNTRY_CODE_REGIONS_691[] = {"FM"};
 const std::string_view COUNTRY_CODE_REGIONS_692[] = {"MH"};
+const std::string_view COUNTRY_CODE_REGIONS_800[] = {"001"};
+const std::string_view COUNTRY_CODE_REGIONS_808[] = {"001"};
 const std::string_view COUNTRY_CODE_REGIONS_850[] = {"KP"};
 const std::string_view COUNTRY_CODE_REGIONS_852[] = {"HK"};
 const std::string_view COUNTRY_CODE_REGIONS_853[] = {"MO"};
 const std::string_view COUNTRY_CODE_REGIONS_855[] = {"KH"};
 const std::string_view COUNTRY_CODE_REGIONS_856[] = {"LA"};
+const std::string_view COUNTRY_CODE_REGIONS_870[] = {"001"};
+const std::string_view COUNTRY_CODE_REGIONS_878[] = {"001"};
 const std::string_view COUNTRY_CODE_REGIONS_880[] = {"BD"};
+const std::string_view COUNTRY_CODE_REGIONS_881[] = {"001"};
+const std::string_view COUNTRY_CODE_REGIONS_882[] = {"001"};
+const std::string_view COUNTRY_CODE_REGIONS_883[] = {"001"};
 const std::string_view COUNTRY_CODE_REGIONS_886[] = {"TW"};
+const std::string_view COUNTRY_CODE_REGIONS_888[] = {"001"};
 const std::string_view COUNTRY_CODE_REGIONS_960[] = {"MV"};
 const std::string_view COUNTRY_CODE_REGIONS_961[] = {"LB"};
 const std::string_view COUNTRY_CODE_REGIONS_962[] = {"JO"};
@@ -5606,6 +5811,7 @@ const std::string_view COUNTRY_CODE_REGIONS_974[] = {"QA"};
 const std::string_view COUNTRY_CODE_REGIONS_975[] = {"BT"};
 const std::string_view COUNTRY_CODE_REGIONS_976[] = {"MN"};
 const std::string_view COUNTRY_CODE_REGIONS_977[] = {"NP"};
+const std::string_view COUNTRY_CODE_REGIONS_979[] = {"001"};
 const std::string_view COUNTRY_CODE_REGIONS_992[] = {"TJ"};
 const std::string_view COUNTRY_CODE_REGIONS_993[] = {"TM"};
 const std::string_view COUNTRY_CODE_REGIONS_994[] = {"AZ"};
@@ -5614,7 +5820,7 @@ const std::string_view COUNTRY_CODE_REGIONS_996[] = {"KG"};
 const std::string_view COUNTRY_CODE_REGIONS_998[] = {"UZ"};
 } // namespace
 
-constexpr size_t COUNTRY_CODE_COUNT = 206;
+constexpr size_t COUNTRY_CODE_COUNT = 215;
 
 // Sorted by country code; the first region of each entry is the main region
 const CountryCodeRegions COUNTRY_CODE_TABLE[COUNTRY_CODE_COUNT] = {
@@ -5794,13 +6000,21 @@ const CountryCodeRegions COUNTRY_CODE_TABLE[COUNTRY_CODE_COUNT] = {
 	{690, COUNTRY_CODE_REGIONS_690, 1},
 	{691, COUNTRY_CODE_REGIONS_691, 1},
 	{692, COUNTRY_CODE_REGIONS_692, 1},
+	{800, COUNTRY_CODE_REGIONS_800, 1},
+	{808, COUNTRY_CODE_REGIONS_808, 1},
 	{850, COUNTRY_CODE_REGIONS_850, 1},
 	{852, COUNTRY_CODE_REGIONS_852, 1},
 	{853, COUNTRY_CODE_REGIONS_853, 1},
 	{855, COUNTRY_CODE_REGIONS_855, 1},
 	{856, COUNTRY_CODE_REGIONS_856, 1},
+	{870, COUNTRY_CODE_REGIONS_870, 1},
+	{878, COUNTRY_CODE_REGIONS_878, 1},
 	{880, COUNTRY_CODE_REGIONS_880, 1},
+	{881, COUNTRY_CODE_REGIONS_881, 1},
+	{882, COUNTRY_CODE_REGIONS_882, 1},
+	{883, COUNTRY_CODE_REGIONS_883, 1},
 	{886, COUNTRY_CODE_REGIONS_886, 1},
+	{888, COUNTRY_CODE_REGIONS_888, 1},
 	{960, COUNTRY_CODE_REGIONS_960, 1},
 	{961, COUNTRY_CODE_REGIONS_961, 1},
 	{962, COUNTRY_CODE_REGIONS_962, 1},
@@ -5818,6 +6032,7 @@ const CountryCodeRegions COUNTRY_CODE_TABLE[COUNTRY_CODE_COUNT] = {
 	{975, COUNTRY_CODE_REGIONS_975, 1},
 	{976, COUNTRY_CODE_REGIONS_976, 1},
 	{977, COUNTRY_CODE_REGIONS_977, 1},
+	{979, COUNTRY_CODE_REGIONS_979, 1},
 	{992, COUNTRY_CODE_REGIONS_992, 1},
 	{993, COUNTRY_CODE_REGIONS_993, 1},
 	{994, COUNTRY_CODE_REGIONS_994, 1},
