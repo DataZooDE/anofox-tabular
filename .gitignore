@@ -17,3 +17,7 @@ third_party/
 
 # agent-crew runs
 .crew/
+
+# Python bytecode
+__pycache__/
+*.pyc
