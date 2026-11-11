@@ -129,7 +129,7 @@ print(out.to_string(index=False))
 ```text
          phone country    phone_format
     030 901820      DE   +49 30 901820
-(650) 253-0000      US +1 650 253 0000
+(650) 253-0000      US +1 650-253-0000
             12      DE             NaN
 ```
 

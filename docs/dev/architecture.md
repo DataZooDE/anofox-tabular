@@ -33,7 +33,7 @@
 |--------|--------|--------------------|----------|
 | Email | `anofox_email.cpp`, `anofox_email_dns.cpp`, `anofox_email_smtp.cpp` | c-ares (DNS); sockets for SMTP | [01-email](../api/01-email.md) |
 | Postal | `anofox_postal.cpp` | libpostal, curl (data download) | [02-postal](../api/02-postal.md) |
-| Phone | `anofox_phonenumber.cpp`, `anofox_phonenumber_metadata.cpp` | none: own implementation with metadata for 21 regions | [03-phone](../api/03-phone.md) |
+| Phone | `anofox_phonenumber.cpp`, `anofox_phonenumber_metadata.cpp`, `anofox_phonenumber_metadata_data.inc` | none: own port of the libphonenumber rules; metadata of all regions generated from `phonenumbers` into `anofox_phonenumber_metadata_data.inc` (`scripts/generate_phone_metadata.py`) | [03-phone](../api/03-phone.md) |
 | Money | `anofox_money.cpp`, `anofox_money_currency.cpp` | none | [04-money](../api/04-money.md) |
 | VAT | `anofox_vat.cpp`, `anofox_vat_country.cpp`, `anofox_vat_checksum.cpp` | none | [05-vat](../api/05-vat.md) |
 | PII | `anofox_pii.cpp`, `anofox_ner.cpp` | OpenSSL (hash masking), OpenVINO (NER, optional), curl (model download) | [06-pii](../api/06-pii.md) |

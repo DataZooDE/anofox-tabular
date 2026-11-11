@@ -111,3 +111,23 @@ jobs:
         run: |
           $ext = Join-Path $PWD "extension_artifact\${{ inputs.extension_name }}.duckdb_extension"
           python scripts/smoke_test.py "$ext" "${{ inputs.duckdb_version }}" "${{ matrix.arch }}"
+
+      # The phone module ports libphonenumber's rules over generated metadata
+      # (scripts/generate_phone_metadata.py). Compare the shipped artifact with
+      # libphonenumber itself on every platform and DuckDB line, so a regex
+      # engine or compiler difference cannot silently change phone validity.
+      - uses: astral-sh/setup-uv@v4
+        if: steps.gate.outputs.skip != 'true'
+
+      - name: Phone parity with libphonenumber
+        if: steps.gate.outputs.skip != 'true'
+        shell: bash
+        env:
+          ANOFOX_EXT_PATH: ${{ github.workspace }}/extension_artifact/${{ inputs.extension_name }}.duckdb_extension
+          ANOFOX_REQUIRE_EXT: "1"
+          DATAZOO_DISABLE_TELEMETRY: "1"
+          DUCKDB_VERSION: ${{ inputs.duckdb_version }}
+        run: |
+          uv run --no-project --python 3.11 --with "duckdb==${DUCKDB_VERSION#v}" \
+            --with phonenumbers==9.0.43 --with pytest \
+            -- python -m pytest python/tests/test_phone_parity.py -v -p no:cacheprovider

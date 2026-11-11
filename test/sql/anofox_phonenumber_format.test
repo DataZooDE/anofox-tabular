@@ -10,7 +10,8 @@ LOAD anofox_tabular;
 statement ok
 SET anofox_tab_phonenumber_default_region='US';
 
-# Every region's example number formats with the region's own grouping, as libphonenumber does
+# Every region's example number formats with the region's own grouping; the expected values
+# are libphonenumber's (phonenumbers 9.0.43)
 query TTT
 SELECT r,
        phonenumber_format(phonenumber_example(r), r, 'NATIONAL'),
@@ -20,26 +21,26 @@ FROM (VALUES ('AR'),('AU'),('BR'),('CA'),('CH'),('CN'),('DE'),('DK'),('ES'),('FI
 ORDER BY r;
 ----
 AR	011 2345-6789	+54 11 2345-6789
-AU	02 1234 5678	+61 2 1234 5678
+AU	(02) 1234 5678	+61 2 1234 5678
 BR	(11) 2345-6789	+55 11 2345-6789
-CA	(506) 234-5678	+1 506 234 5678
+CA	(506) 234-5678	+1 506-234-5678
 CH	021 234 56 78	+41 21 234 56 78
 CN	010 1234 5678	+86 10 1234 5678
-DE	030 12345678	+49 30 12345678
+DE	030 123456	+49 30 123456
 DK	32 12 34 56	+45 32 12 34 56
-ES	912 34 56 78	+34 912 34 56 78
-FI	09 12345678	+358 9 12345678
+ES	810 12 34 56	+34 810 12 34 56
+FI	013 1234567	+358 13 1234567
 FR	01 23 45 67 89	+33 1 23 45 67 89
 GB	0121 234 5678	+44 121 234 5678
-IN	022 1234 5678	+91 22 1234 5678
+IN	074104 10123	+91 74104 10123
 IT	02 1234 5678	+39 02 1234 5678
 JP	03-1234-5678	+81 3-1234-5678
-MX	55 1234 5678	+52 55 1234 5678
-NL	020 123 4567	+31 20 123 4567
+MX	200 123 4567	+52 200 123 4567
+NL	010 123 4567	+31 10 123 4567
 NO	21 23 45 67	+47 21 23 45 67
-RU	8 (495) 123-45-67	+7 495 123-45-67
-SE	08-123 456 78	+46 8 123 456 78
-US	(201) 555-0123	+1 201 555 0123
+RU	8 (301) 123-45-67	+7 301 123-45-67
+SE	08-12 34 56	+46 8 12 34 56
+US	(201) 555-0123	+1 201-555-0123
 
 # RFC3966 uses the international grouping with '-' separators
 query TT
@@ -47,12 +48,12 @@ SELECT r, phonenumber_format(phonenumber_example(r), r, 'RFC3966')
 FROM (VALUES ('DE'),('FR'),('GB'),('JP'),('RU'),('SE'),('US')) v(r)
 ORDER BY r;
 ----
-DE	tel:+49-30-12345678
+DE	tel:+49-30-123456
 FR	tel:+33-1-23-45-67-89
 GB	tel:+44-121-234-5678
 JP	tel:+81-3-1234-5678
-RU	tel:+7-495-123-45-67
-SE	tel:+46-8-123-456-78
+RU	tel:+7-301-123-45-67
+SE	tel:+46-8-12-34-56
 US	tel:+1-201-555-0123
 
 # Common fixed-line and mobile layouts
@@ -104,7 +105,7 @@ ORDER BY id;
 312 345 6789	IT	312 345 6789	+39 312 345 6789
 612 34 56 78	ES	612 34 56 78	+34 612 34 56 78
 070-123 45 67	SE	070-123 45 67	+46 70 123 45 67
-412 34 567	NO	412 34 567	+47 412 34 567
+412 34 567	NO	41 23 45 67	+47 41 23 45 67
 040 1234567	FI	040 1234567	+358 40 1234567
 
 query T
@@ -125,7 +126,7 @@ SELECT phonenumber_format('6502530000', 'US', 'NATIONAL'),
        phonenumber_format('6502530000', 'US', 'RFC3966'),
        phonenumber_format('+1 506 234 5678', 'CA', 'NATIONAL');
 ----
-(650) 253-0000	+1 650 253 0000	tel:+1-650-253-0000	(506) 234-5678
+(650) 253-0000	+1 650-253-0000	tel:+1-650-253-0000	(506) 234-5678
 
 # Round trip: parsing the NATIONAL (with the region) and INTERNATIONAL (without a region)
 # output of every region's example number gives back the same E164 number

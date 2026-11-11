@@ -70,11 +70,25 @@ SELECT id, pii_mask(note) FROM crm_notes ORDER BY id;
 7	Hotline [PHONE]
 8	Kaputt: +1 415 555 2671 99
 
-# A number in the region's own national format with an impossible length is rejected
+# A number with an impossible length is rejected (French numbers have 9 digits)
+query I
+SELECT pii_mask('Fax +33 6 12 34 56 78 90');
+----
+Fax +33 6 12 34 56 78 90
+
+# German numbers have 4 to 15 digits, so a mobile number with an extra digit group still has
+# a possible length and stays masked: deep validation errs on the side of masking
 query I
 SELECT pii_mask('Fax 0171 1234567 8901');
 ----
-Fax 0171 1234567 8901
+Fax [PHONE]
+
+# A possible length is enough also outside the known number ranges (Ofcom's drama range, a
+# NANP exchange starting with 1): such a number may be newly allocated, so it is masked
+query II
+SELECT pii_mask('call +44 7700 900123'), pii_mask('call +1-415-123-4567');
+----
+call [PHONE]	call [PHONE]
 
 statement ok
 SET anofox_tab_phonenumber_default_region = 'US';

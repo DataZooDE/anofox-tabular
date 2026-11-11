@@ -81,15 +81,12 @@ See [Email](../api/01-email.md) for all reason codes.
 
 Pass each customer's country as the region, so local numbers like `030 12345678` are read
 correctly. The region is an ISO 3166 alpha-2 code (`'DE'`, `'GB'`; `'UK'` is accepted as `'GB'`).
-The phone module knows 21 regions: US, CA, GB, DE, FR, IT, ES, AU, JP, CN, IN, BR, MX, AR, RU,
-NL, SE, NO, DK, FI and CH. A number of any other country, for example Austria (AT), Belgium
-(BE), the Czech Republic (CZ) or Poland (PL), is invalid with reason `unsupported_country_code`
-when it is written with `+`, or `unsupported_region` when it is written locally with that
-country as the region. A leading label such as `Tel.` is dropped and a trailing extension (`ext. 12`, `x12`,
-`Durchwahl 12`) is returned in `extension` instead of being read as part of the number. Any
-other letter makes a number invalid: the Swiss number has a letter `O` typed for a zero. `reason`
-says why a number is rejected; Austria is not one of the supported regions (`+43` is written
-with its country code, so the reason is `unsupported_country_code`):
+The phone module carries libphonenumber's metadata for every country. A country code it does not
+know (`'XX'` as the region, `+999`) leaves the number unjudged: `valid` is `NULL` with the reason
+`unsupported_region` or `unsupported_country_code`. A leading label such as `Tel.` is dropped
+and a trailing extension (`ext. 12`, `x12`, `Durchwahl 12`) is returned in `extension` instead
+of being read as part of the number. Any other letter makes a number invalid: the Swiss number
+has a letter `O` typed for a zero. `reason` says why a number is rejected:
 
 ```sql
 SELECT id, country,
@@ -104,23 +101,22 @@ ORDER BY id;
 
 ```text
 ┌───────┬─────────┬─────────┬──────────────────────────┬─────────┬───────────────┬───────────────────┐
-│  id   │ country │  valid  │          reason          │   ext   │     e164      │   international   │
-│ int32 │ varchar │ boolean │         varchar          │ varchar │    varchar    │      varchar      │
-├───────┼─────────┼─────────┼──────────────────────────┼─────────┼───────────────┼───────────────────┤
-│     1 │ DE      │ true    │ NULL                     │ 12      │ +493012345678 │ +49 30 12345678   │
-│     2 │ GB      │ true    │ NULL                     │ NULL    │ +447400123456 │ +44 7400 123456   │
-│     3 │ FR      │ true    │ NULL                     │ NULL    │ +33123456789  │ +33 1 23 45 67 89 │
-│     4 │ CH      │ false   │ invalid_characters       │ NULL    │ NULL          │ NULL              │
-│     5 │ NL      │ true    │ NULL                     │ NULL    │ +31201234567  │ +31 20 123 4567   │
-│     6 │ AT      │ false   │ unsupported_country_code │ NULL    │ NULL          │ NULL              │
-└───────┴─────────┴─────────┴──────────────────────────┴─────────┴───────────────┴───────────────────┘
+│  id   │ country │  valid  │       reason       │   ext   │     e164      │   international   │
+│ int32 │ varchar │ boolean │      varchar       │ varchar │    varchar    │      varchar      │
+├───────┼─────────┼─────────┼────────────────────┼─────────┼───────────────┼───────────────────┤
+│     1 │ DE      │ true    │ NULL               │ 12      │ +493012345678 │ +49 30 12345678   │
+│     2 │ GB      │ true    │ NULL               │ NULL    │ +447400123456 │ +44 7400 123456   │
+│     3 │ FR      │ true    │ NULL               │ NULL    │ +33123456789  │ +33 1 23 45 67 89 │
+│     4 │ CH      │ false   │ invalid_characters │ NULL    │ NULL          │ NULL              │
+│     5 │ NL      │ true    │ NULL               │ NULL    │ +31201234567  │ +31 20 123 4567   │
+│     6 │ AT      │ true    │ NULL               │ NULL    │ +43158800     │ +43 1 58800       │
+└───────┴─────────┴─────────┴────────────────────┴─────────┴───────────────┴───────────────────┘
 ```
 
 Store the `E164` form; it is unique per number and the other formats can be derived from it.
 `phonenumber_format` returns `NULL` for every number that `phonenumber_is_valid` rejects, also
 for numbers of a possible length outside an assigned range, so the stored column holds only valid
-numbers and `reason` explains the gaps. See [Phone numbers](../api/03-phone.md) for the supported
-regions.
+numbers and `reason` explains the gaps. See [Phone numbers](../api/03-phone.md).
 
 Without a region (a `NULL` country), a local number is read in the default region, `US` unless
 `anofox_tab_phonenumber_default_region` is set. It then fails with reason `region_missing`, and
@@ -265,7 +261,7 @@ ORDER BY field;
 ├──────────┼─────────────────┤
 │ currency │           0.833 │
 │ email    │           0.833 │
-│ phone    │           0.667 │
+│ phone    │           0.833 │
 └──────────┴─────────────────┘
 ```
 
@@ -418,7 +414,7 @@ SELECT customer_ref,
        p.reason AS phone_reason,
        v.reason AS vat_reason,
        amount_money,
-       CASE WHEN e.valid IS NULL OR p.valid IS NULL OR v.valid IS NULL OR amount IS NULL
+       CASE WHEN e.valid IS NULL OR (p.valid IS NULL AND p.reason IS NULL) OR v.valid IS NULL OR amount IS NULL
                  OR 'empty' IN (e.reason, p.reason, v.reason) THEN 'missing'
             WHEN e.valid AND p.valid AND v.valid AND amount_money IS NOT NULL THEN 'clean'
             ELSE 'review' END AS route
@@ -428,17 +424,17 @@ ORDER BY customer_ref;
 
 ```text
 ┌──────────────┬────────────────┬───────────────┬────────────────────┬───────────────────┬────────────────────────────────────────────────┬─────────┐
-│ customer_ref │  email_reason  │  phone_e164   │    phone_reason    │    vat_reason     │                  amount_money                  │  route  │
-│   varchar    │    varchar     │    varchar    │      varchar       │      varchar      │ struct(amount decimal(18,3), currency varchar) │ varchar │
-├──────────────┼────────────────┼───────────────┼────────────────────┼───────────────────┼────────────────────────────────────────────────┼─────────┤
-│ C-1001       │ NULL           │ +49301234567  │ NULL               │ NULL              │ {'amount': 1250.000, 'currency': EUR}          │ clean   │
-│ C-1002       │ NULL           │ +447400123456 │ NULL               │ NULL              │ {'amount': 880.500, 'currency': GBP}           │ clean   │
-│ C-1003       │ NULL           │ NULL          │ region_missing     │ NULL              │ {'amount': 410.000, 'currency': EUR}           │ review  │
-│ C-1004       │ invalid_format │ NULL          │ unsupported_region │ checksum_mismatch │ NULL                                           │ review  │
-│ C-1005       │ NULL           │ +31201234567  │ NULL               │ missing_prefix    │ {'amount': 1250.000, 'currency': EUR}          │ review  │
-│ C-1006       │ NULL           │ NULL          │ NULL               │ NULL              │ {'amount': 75.000, 'currency': EUR}            │ missing │
-│ C-1007       │ empty          │ NULL          │ empty              │ empty             │ {'amount': 320.000, 'currency': EUR}           │ missing │
-└──────────────┴────────────────┴───────────────┴────────────────────┴───────────────────┴────────────────────────────────────────────────┴─────────┘
+│ customer_ref │  email_reason  │  phone_e164   │  phone_reason  │    vat_reason     │                  amount_money                  │  route  │
+│   varchar    │    varchar     │    varchar    │    varchar     │      varchar      │ struct(amount decimal(18,3), currency varchar) │ varchar │
+├──────────────┼────────────────┼───────────────┼────────────────┼───────────────────┼────────────────────────────────────────────────┼─────────┤
+│ C-1001       │ NULL           │ +49301234567  │ NULL           │ NULL              │ {'amount': 1250.000, 'currency': EUR}          │ clean   │
+│ C-1002       │ NULL           │ +447400123456 │ NULL           │ NULL              │ {'amount': 880.500, 'currency': GBP}           │ clean   │
+│ C-1003       │ NULL           │ NULL          │ region_missing │ NULL              │ {'amount': 410.000, 'currency': EUR}           │ review  │
+│ C-1004       │ invalid_format │ +4315321234   │ NULL           │ checksum_mismatch │ NULL                                           │ review  │
+│ C-1005       │ NULL           │ +31201234567  │ NULL           │ missing_prefix    │ {'amount': 1250.000, 'currency': EUR}          │ review  │
+│ C-1006       │ NULL           │ NULL          │ NULL           │ NULL              │ {'amount': 75.000, 'currency': EUR}            │ missing │
+│ C-1007       │ empty          │ NULL          │ empty          │ empty             │ {'amount': 320.000, 'currency': EUR}           │ missing │
+└──────────────┴────────────────┴───────────────┴────────────────┴───────────────────┴────────────────────────────────────────────────┴─────────┘
 ```
 
 How each field is checked, and how the route is chosen:
@@ -458,8 +454,9 @@ How each field is checked, and how the route is chosen:
 - **Phone**: the per-row `country` column is the region. A row whose country is `NULL` falls
   back to `anofox_tab_phonenumber_default_region` (`US` unless set), and a local number then
   fails with `region_missing` (`C-1003`), which tells a missing country from a bad number. A
-  country the module does not support gives `unsupported_region` for a local number (`C-1004`,
-  Austria) and `unsupported_country_code` for one written with `+43`.
+  number the module cannot judge, with an unknown country code (`'XX'`, `+999`), has `valid`
+  `NULL` and the reason `unsupported_region` or `unsupported_country_code`; the query sends it
+  to `review` (`p.valid IS NULL AND p.reason IS NULL` is only a missing phone).
 - **VAT**: `(vat_validate(vat_id)).reason` says why a number fails: `checksum_mismatch`,
   `invalid_format`, `missing_prefix` (`C-1005`, add the country as in [section 4](#4-vat-numbers))
   or `unsupported_country`.

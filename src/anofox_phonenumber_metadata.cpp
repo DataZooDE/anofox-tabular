@@ -1,483 +1,199 @@
 #include "anofox_phonenumber_metadata.hpp"
 
+#include "anofox_trace.hpp"
+#include "duckdb/common/assert.hpp"
+#include "re2/re2.h"
+
+#include <algorithm>
+#include <mutex>
+
 namespace duckdb {
 namespace anofox {
 namespace phonenumber {
 
-// Country code to regions mapping
-// Each country code can map to multiple regions (e.g., 1 -> US, CA, etc.)
-const std::unordered_map<int, std::vector<std::string>> COUNTRY_CODE_TO_REGIONS = {
-	{1, {"US", "CA"}},    // North American Numbering Plan
-	{44, {"GB"}},         // United Kingdom
-	{49, {"DE"}},         // Germany
-	{33, {"FR"}},         // France
-	{39, {"IT"}},         // Italy
-	{34, {"ES"}},         // Spain
-	{61, {"AU"}},         // Australia
-	{81, {"JP"}},         // Japan
-	{86, {"CN"}},         // China
-	{91, {"IN"}},         // India
-	{55, {"BR"}},         // Brazil
-	{52, {"MX"}},         // Mexico
-	{54, {"AR"}},         // Argentina
-	{7, {"RU"}},          // Russia
-	{31, {"NL"}},         // Netherlands
-	{46, {"SE"}},         // Sweden
-	{47, {"NO"}},         // Norway
-	{45, {"DK"}},         // Denmark
-	{358, {"FI"}},        // Finland
-	{41, {"CH"}},         // Switzerland
-};
+#include "anofox_phonenumber_metadata_data.inc"
 
-// North American Numbering Plan (NANPA) country codes
-const std::unordered_set<int> NANPA_CODES = {1};
-
-// Region metadata
-const std::unordered_map<std::string, CountryMetadata> REGION_METADATA = {
-	// United States (US)
-	{"US", {
-		1,                                    // country_code
-		"US",                                 // region_code
-		{10},                                 // valid_lengths (10-digit national numbers)
-		"1",                                  // national_prefix (NANP trunk prefix: 1-212-555-0123)
-		"011",                                // international_prefix
-		"2015550123",                         // example_number
-		// Pattern for US phone numbers: Area code 2-9, next digit 0-8, then 7 more digits
-		"[2-9]\\d{2}[2-9]\\d{6}",            // fixed_line_pattern
-		"[2-9]\\d{2}[2-9]\\d{6}",            // mobile_pattern (same as fixed_line in US)
-		"8[0-8]\\d{8}",                      // toll_free_pattern (800, 888, etc.)
-		{  // number_formats: {leading_digits, pattern, national_format, international_format}
-			{"", "(\\d{3})(\\d{3})(\\d{4})", "($1) $2-$3", "$1 $2 $3"},
-		},
-	}},
-
-	// Canada (CA) - Same as US for NANPA
-	{"CA", {
-		1,                                    // country_code
-		"CA",                                 // region_code
-		{10},                                 // valid_lengths
-		"1",                                  // national_prefix (NANP trunk prefix: 1-416-555-0199)
-		"011",                                // international_prefix
-		"5062345678",                         // example_number
-		"[2-9]\\d{2}[2-9]\\d{6}",            // fixed_line_pattern
-		"[2-9]\\d{2}[2-9]\\d{6}",            // mobile_pattern
-		"8[0-8]\\d{8}",                      // toll_free_pattern
-		{  // number_formats: {leading_digits, pattern, national_format, international_format}
-			{"", "(\\d{3})(\\d{3})(\\d{4})", "($1) $2-$3", "$1 $2 $3"},
-		},
-	}},
-
-	// United Kingdom (GB)
-	{"GB", {
-		44,                                   // country_code
-		"GB",                                 // region_code
-		{10},                                 // valid_lengths
-		"0",                                  // national_prefix
-		"00",                                 // international_prefix
-		"1212345678",                         // example_number
-		"[1-3]\\d{9}|[58]\\d{9}",             // fixed_line_pattern (01, 02, 03, 05, 08)
-		"7\\d{9}",                            // mobile_pattern (07xxx)
-		"80\\d{8}",                           // toll_free_pattern (0800)
-		{  // number_formats: {leading_digits, pattern, national_format, international_format}
-			{"2|5[56]|7(?:0|6[013-9])", "(\\d{2})(\\d{4})(\\d{4})", "0$1 $2 $3", "$1 $2 $3"},
-			{"1(?:[02-69]1|1)|3|8|9", "(\\d{3})(\\d{3})(\\d{4})", "0$1 $2 $3", "$1 $2 $3"},
-			{"[157]", "(\\d{4})(\\d{6})", "0$1 $2", "$1 $2"},
-		},
-	}},
-
-	// Germany (DE)
-	{"DE", {
-		49,                                   // country_code
-		"DE",                                 // region_code
-		{5, 6, 7, 8, 9, 10, 11},              // valid_lengths (area code + subscriber number vary in length)
-		"0",                                  // national_prefix
-		"00",                                 // international_prefix
-		"3012345678",                         // example_number (030 1234 5678, Berlin)
-		// fixed_line_pattern: Berlin/Hamburg/Frankfurt/Munich (2-digit area code) take a
-		// 5-8 digit subscriber number, other areas (3-5 digit area code) 6-11 digits in total
-		"(?:30|40|69|89)\\d{5,8}|(?!30|40|69|89)[2-9]\\d{5,10}",
-		"1(?:5\\d{9}|[67]\\d{8,9})",            // mobile_pattern (015x: 11 digits, 016x/017x: 10-11)
-		"800\\d{7}",                         // toll_free_pattern (0800)
-		{  // number_formats: {leading_digits, pattern, national_format, international_format}
-			{"1[67]", "(\\d{3})(\\d{7,8})", "0$1 $2", "$1 $2"},
-			{"15", "(\\d{4})(\\d{7})", "0$1 $2", "$1 $2"},
-			{"800", "(\\d{3})(\\d{7})", "0$1 $2", "$1 $2"},
-			{"30|40|69|89", "(\\d{2})(\\d{5,8})", "0$1 $2", "$1 $2"},
-			{"[2-9][1-9]1|20[1-389]|228|234|345", "(\\d{3})(\\d{3,8})", "0$1 $2", "$1 $2"},
-			{"[2-9]", "(\\d{4})(\\d{2,7})", "0$1 $2", "$1 $2"},
-		},
-	}},
-
-	// France (FR)
-	{"FR", {
-		33,                                   // country_code
-		"FR",                                 // region_code
-		{9},                                  // valid_lengths (9-digit national numbers)
-		"0",                                  // national_prefix
-		"00",                                 // international_prefix
-		"123456789",                          // example_number
-		"[1-5]\\d{8}",                        // fixed_line_pattern (01-05)
-		"[67]\\d{8}",                         // mobile_pattern (06, 07)
-		"80\\d{7}",                           // toll_free_pattern (0800)
-		{  // number_formats: {leading_digits, pattern, national_format, international_format}
-			{"8", "(\\d{3})(\\d{2})(\\d{2})(\\d{2})", "0 $1 $2 $3 $4", "$1 $2 $3 $4"},
-			{"[1-79]", "(\\d)(\\d{2})(\\d{2})(\\d{2})(\\d{2})", "0$1 $2 $3 $4 $5", "$1 $2 $3 $4 $5"},
-		},
-	}},
-
-	// Italy (IT)
-	{"IT", {
-		39,                                   // country_code
-		"IT",                                 // region_code
-		{9, 10, 11},                          // valid_lengths
-		"",                                   // national_prefix (Italy doesn't use a national prefix)
-		"00",                                 // international_prefix
-		"0212345678",                         // example_number
-		"0\\d{9,10}",                         // fixed_line_pattern
-		"3\\d{8,9}",                          // mobile_pattern
-		"80\\d{7,9}",                         // toll_free_pattern
-		{  // number_formats: {leading_digits, pattern, national_format, international_format}
-			{"0[26]", "(\\d{2})(\\d{3,4})(\\d{4})", "$1 $2 $3", "$1 $2 $3"},
-			{"0[13-57-9][0159]", "(\\d{3})(\\d{3,4})(\\d{4})", "$1 $2 $3", "$1 $2 $3"},
-			{"0", "(\\d{4})(\\d{5,7})", "$1 $2", "$1 $2"},
-			{"3", "(\\d{3})(\\d{3})(\\d{3,4})", "$1 $2 $3", "$1 $2 $3"},
-			{"8", "(\\d{3})(\\d{3,6})", "$1 $2", "$1 $2"},
-		},
-	}},
-
-	// Spain (ES)
-	{"ES", {
-		34,                                   // country_code
-		"ES",                                 // region_code
-		{9},                                  // valid_lengths
-		"",                                   // national_prefix
-		"00",                                 // international_prefix
-		"912345678",                          // example_number
-		"[89]\\d{8}",                         // fixed_line_pattern
-		"[67]\\d{8}",                         // mobile_pattern
-		"[89]00\\d{6}",                       // toll_free_pattern
-		{  // number_formats: {leading_digits, pattern, national_format, international_format}
-			{"[89]00", "(\\d{3})(\\d{3})(\\d{3})", "$1 $2 $3", "$1 $2 $3"},
-			{"[5-9]", "(\\d{3})(\\d{2})(\\d{2})(\\d{2})", "$1 $2 $3 $4", "$1 $2 $3 $4"},
-		},
-	}},
-
-	// Australia (AU)
-	{"AU", {
-		61,                                   // country_code
-		"AU",                                 // region_code
-		{9},                                  // valid_lengths
-		"0",                                  // national_prefix
-		"0011",                               // international_prefix
-		"212345678",                          // example_number
-		"[2378]\\d{8}",                       // fixed_line_pattern
-		"4\\d{8}",                            // mobile_pattern
-		"180[02]\\d{6}",                      // toll_free_pattern
-		{  // number_formats: {leading_digits, pattern, national_format, international_format}
-			{"[2378]", "(\\d)(\\d{4})(\\d{4})", "0$1 $2 $3", "$1 $2 $3"},
-			{"4", "(\\d{3})(\\d{3})(\\d{3})", "0$1 $2 $3", "$1 $2 $3"},
-		},
-	}},
-
-	// Japan (JP)
-	{"JP", {
-		81,                                   // country_code
-		"JP",                                 // region_code
-		{9, 10},                              // valid_lengths
-		"0",                                  // national_prefix
-		"010",                                // international_prefix
-		"312345678",                          // example_number
-		"[3-5]\\d{8,9}",                      // fixed_line_pattern
-		"[789]0\\d{8}",                       // mobile_pattern
-		"120\\d{6}",                          // toll_free_pattern
-		{  // number_formats: {leading_digits, pattern, national_format, international_format}
-			{"120", "(\\d{3})(\\d{3})(\\d{3})", "0$1-$2-$3", "$1-$2-$3"},
-			{"[36]", "(\\d)(\\d{4})(\\d{4})", "0$1-$2-$3", "$1-$2-$3"},
-			{"[45]", "(\\d{2})(\\d{3})(\\d{4})", "0$1-$2-$3", "$1-$2-$3"},
-			{"[3-9]", "(\\d{2})(\\d{4})(\\d{4})", "0$1-$2-$3", "$1-$2-$3"},
-		},
-	}},
-
-	// China (CN)
-	{"CN", {
-		86,                                   // country_code
-		"CN",                                 // region_code
-		{10, 11, 12},                         // valid_lengths
-		"0",                                  // national_prefix
-		"00",                                 // international_prefix
-		"1012345678",                         // example_number
-		"10\\d{8}|[2-8]\\d{9,11}",             // fixed_line_pattern (010 Beijing, 02x-08xx)
-		"1[3-9]\\d{9}",                       // mobile_pattern
-		"800\\d{7}",                          // toll_free_pattern
-		{  // number_formats: {leading_digits, pattern, national_format, international_format}
-			{"1[3-9]", "(\\d{3})(\\d{4})(\\d{4})", "$1 $2 $3", "$1 $2 $3"},
-			{"[48]00", "(\\d{3})(\\d{3})(\\d{4})", "$1 $2 $3", "$1 $2 $3"},
-			{"10|2", "(\\d{2})(\\d{4})(\\d{4})", "0$1 $2 $3", "$1 $2 $3"},
-			{"[3-9]", "(\\d{3})(\\d{3,4})(\\d{4})", "0$1 $2 $3", "$1 $2 $3"},
-		},
-	}},
-
-	// India (IN)
-	{"IN", {
-		91,                                   // country_code
-		"IN",                                 // region_code
-		{10},                                 // valid_lengths
-		"0",                                  // national_prefix
-		"00",                                 // international_prefix
-		"2212345678",                         // example_number
-		"[2-7]\\d{9}",                        // fixed_line_pattern
-		"[89]\\d{9}",                         // mobile_pattern
-		"1800\\d{6,7}",                       // toll_free_pattern
-		{  // number_formats: {leading_digits, pattern, national_format, international_format}
-			{"1", "(\\d{4})(\\d{3})(\\d{3,4})", "$1 $2 $3", "$1 $2 $3"},
-			{"[89]", "(\\d{5})(\\d{5})", "0$1 $2", "$1 $2"},
-			{"11|2[02]|33|4[04]|79", "(\\d{2})(\\d{4})(\\d{4})", "0$1 $2 $3", "$1 $2 $3"},
-			{"[2-7]", "(\\d{3})(\\d{3})(\\d{4})", "0$1 $2 $3", "$1 $2 $3"},
-		},
-	}},
-
-	// Brazil (BR)
-	{"BR", {
-		55,                                   // country_code
-		"BR",                                 // region_code
-		{10, 11},                             // valid_lengths
-		"0",                                  // national_prefix
-		"00",                                 // international_prefix
-		"1123456789",                         // example_number
-		"[1-9][1-9]\\d{8}",                   // fixed_line_pattern
-		"[1-9][1-9]9\\d{8}|[1-9][6-9]\\d{8}",  // mobile_pattern (area code + 9 + 8 digits; legacy 8-digit)
-		"800\\d{7}",                          // toll_free_pattern
-		{  // number_formats: {leading_digits, pattern, national_format, international_format}
-			{"800", "(\\d{3})(\\d{3})(\\d{4})", "0$1 $2 $3", "$1 $2 $3"},
-			{"[1-9][1-9]", "(\\d{2})(\\d{4,5})(\\d{4})", "($1) $2-$3", "$1 $2-$3"},
-		},
-	}},
-
-	// Mexico (MX). Since the 2019 numbering reform every number has 10 digits and
-	// there is no national prefix (libphonenumber v8.10.17+; the "01" national
-	// prefix was removed from its metadata in v8.13.38). Fixed-line and mobile
-	// ranges are the same apart from the 200/201 satellite ranges.
-	{"MX", {
-		52,                                   // country_code
-		"MX",                                 // region_code
-		{10},                                 // valid_lengths
-		"",                                   // national_prefix
-		"00",                                 // international_prefix
-		"5512345678",                         // example_number
-		"(?:2(?:0[01]|2\\d|3[1-35-8]|4[13-9]|7[1-689]|8[1-578]|9[467])|3(?:1[1-79]|[2458][1-9]|3\\d|7[1-8]|9[1-5])|4(?:1[1-57-9]|[267][1-9]|3[1-8]|[45]\\d|8[1-35-9]|9[2-689])|5(?:[56]\\d|88|9[1-79])|6(?:1[2-68]|[2-4][1-9]|5[1-36-9]|6[0-57-9]|7[1-7]|8[67]|9[4-8])|7(?:[1346][1-9]|[27]\\d|5[13-9]|8[1-69]|9[17])|8(?:1\\d|2[13-689]|3[1-6]|4[124-6]|6[1246-9]|7[0-378]|9[12479])|9(?:1[346-9]|2[1-4]|3[2-46-8]|5[1348]|[69]\\d|7[12]|8[1-8]))\\d{7}",  // fixed_line_pattern
-		"(?:2(?:2\\d|3[1-35-8]|4[13-9]|7[1-689]|8[1-578]|9[467])|3(?:1[1-79]|[2458][1-9]|3\\d|7[1-8]|9[1-5])|4(?:1[1-57-9]|[267][1-9]|3[1-8]|[45]\\d|8[1-35-9]|9[2-689])|5(?:[56]\\d|88|9[1-79])|6(?:1[2-68]|[2-4][1-9]|5[1-36-9]|6[0-57-9]|7[1-7]|8[67]|9[4-8])|7(?:[1346][1-9]|[27]\\d|5[13-9]|8[1-69]|9[17])|8(?:1\\d|2[13-689]|3[1-6]|4[124-6]|6[1246-9]|7[0-378]|9[12479])|9(?:1[346-9]|2[1-4]|3[2-46-8]|5[1348]|[69]\\d|7[12]|8[1-8]))\\d{7}",  // mobile_pattern
-		"8(?:00|88)\\d{7}",                   // toll_free_pattern
-		{  // number_formats: {leading_digits, pattern, national_format, international_format}
-			{"33|5[56]|81", "(\\d{2})(\\d{4})(\\d{4})", "$1 $2 $3", "$1 $2 $3"},
-			{"[2-9]", "(\\d{3})(\\d{3})(\\d{4})", "$1 $2 $3", "$1 $2 $3"},
-		},
-		// The abolished prefixes are still dropped when parsing old data, as
-		// libphonenumber did from v8.10.17 to v8.13.37: 01/02 (national trunk),
-		// 044/045 (domestic mobile) and the mobile token 1 ("+52 1 55 ...")
-		"0(?:[12]|4[45])|1",                  // national_prefix_for_parsing
-	}},
-
-	// Argentina (AR)
-	{"AR", {
-		54,                                   // country_code
-		"AR",                                 // region_code
-		{10},                                 // valid_lengths
-		"0",                                  // national_prefix
-		"00",                                 // international_prefix
-		"1123456789",                         // example_number
-		"[1-9]\\d{9}",                        // fixed_line_pattern (011 Buenos Aires, 02xx, 03xx)
-		"9\\d{10}",                           // mobile_pattern
-		"800\\d{7}",                          // toll_free_pattern
-		{  // number_formats: {leading_digits, pattern, national_format, international_format}
-			{"11", "(\\d{2})(\\d{4})(\\d{4})", "0$1 $2-$3", "$1 $2-$3"},
-			{"[2-9]", "(\\d{3})(\\d{3})(\\d{4})", "0$1 $2-$3", "$1 $2-$3"},
-		},
-	}},
-
-	// Russia (RU)
-	{"RU", {
-		7,                                    // country_code
-		"RU",                                 // region_code
-		{10},                                 // valid_lengths
-		"8",                                  // national_prefix
-		"810",                                // international_prefix
-		"4951234567",                         // example_number
-		"[3489]\\d{9}",                       // fixed_line_pattern
-		"9\\d{9}",                            // mobile_pattern
-		"800\\d{7}",                          // toll_free_pattern
-		{  // number_formats: {leading_digits, pattern, national_format, international_format}
-			{"", "(\\d{3})(\\d{3})(\\d{2})(\\d{2})", "8 ($1) $2-$3-$4", "$1 $2-$3-$4"},
-		},
-	}},
-
-	// Netherlands (NL)
-	{"NL", {
-		31,                                   // country_code
-		"NL",                                 // region_code
-		{9},                                  // valid_lengths
-		"0",                                  // national_prefix
-		"00",                                 // international_prefix
-		"201234567",                          // example_number
-		"[1-58]\\d{8}",                       // fixed_line_pattern
-		"6\\d{8}",                            // mobile_pattern
-		"800\\d{6}",                          // toll_free_pattern
-		{  // number_formats: {leading_digits, pattern, national_format, international_format}
-			{"6", "(\\d)(\\d{8})", "0$1 $2", "$1 $2"},
-			{"80|9", "(\\d{3})(\\d{4,7})", "0$1 $2", "$1 $2"},
-			{"1[035]|2[0346]|3[03568]|4[0356]|5[0358]|7|8[458]", "(\\d{2})(\\d{3})(\\d{4})", "0$1 $2 $3", "$1 $2 $3"},
-			{"[1-58]", "(\\d{3})(\\d{3})(\\d{3})", "0$1 $2 $3", "$1 $2 $3"},
-		},
-	}},
-
-	// Sweden (SE)
-	{"SE", {
-		46,                                   // country_code
-		"SE",                                 // region_code
-		{9},                                  // valid_lengths
-		"0",                                  // national_prefix
-		"00",                                 // international_prefix
-		"812345678",                          // example_number
-		"[1-9]\\d{8}",                        // fixed_line_pattern
-		"7[0236]\\d{7}",                      // mobile_pattern
-		"20\\d{7}",                           // toll_free_pattern
-		{  // number_formats: {leading_digits, pattern, national_format, international_format}
-			{"8", "(\\d)(\\d{3})(\\d{3})(\\d{2})", "0$1-$2 $3 $4", "$1 $2 $3 $4"},
-			{"1[013689]|2[0136]|3[1356]|4[0246]|54|6[03]|7|90", "(\\d{2})(\\d{3})(\\d{2})(\\d{2})", "0$1-$2 $3 $4", "$1 $2 $3 $4"},
-			{"[1-9]", "(\\d{3})(\\d{2})(\\d{2})(\\d{2})", "0$1-$2 $3 $4", "$1 $2 $3 $4"},
-		},
-	}},
-
-	// Norway (NO)
-	{"NO", {
-		47,                                   // country_code
-		"NO",                                 // region_code
-		{8},                                  // valid_lengths
-		"",                                   // national_prefix
-		"00",                                 // international_prefix
-		"21234567",                           // example_number
-		"[2-79]\\d{7}",                       // fixed_line_pattern
-		"[49]\\d{7}",                         // mobile_pattern
-		"80[01]\\d{5}",                       // toll_free_pattern
-		{  // number_formats: {leading_digits, pattern, national_format, international_format}
-			{"[489]|59", "(\\d{3})(\\d{2})(\\d{3})", "$1 $2 $3", "$1 $2 $3"},
-			{"[2-79]", "(\\d{2})(\\d{2})(\\d{2})(\\d{2})", "$1 $2 $3 $4", "$1 $2 $3 $4"},
-		},
-	}},
-
-	// Denmark (DK)
-	{"DK", {
-		45,                                   // country_code
-		"DK",                                 // region_code
-		{8},                                  // valid_lengths
-		"",                                   // national_prefix
-		"00",                                 // international_prefix
-		"32123456",                           // example_number
-		"[2-9]\\d{7}",                        // fixed_line_pattern
-		"[2-9]\\d{7}",                        // mobile_pattern (same as fixed_line in Denmark)
-		"80\\d{6}",                           // toll_free_pattern
-		{  // number_formats: {leading_digits, pattern, national_format, international_format}
-			{"", "(\\d{2})(\\d{2})(\\d{2})(\\d{2})", "$1 $2 $3 $4", "$1 $2 $3 $4"},
-		},
-	}},
-
-	// Finland (FI)
-	{"FI", {
-		358,                                  // country_code
-		"FI",                                 // region_code
-		{9},                                  // valid_lengths
-		"0",                                  // national_prefix
-		"00",                                 // international_prefix
-		"912345678",                          // example_number
-		"[1-359]\\d{8}",                      // fixed_line_pattern (09 Helsinki)
-		"4\\d{8}",                            // mobile_pattern
-		"800\\d{6}",                          // toll_free_pattern
-		{  // number_formats: {leading_digits, pattern, national_format, international_format}
-			{"4|50", "(\\d{2})(\\d{4,8})", "0$1 $2", "$1 $2"},
-			{"[2568][1-8]|3[1-9]|9", "(\\d)(\\d{4,9})", "0$1 $2", "$1 $2"},
-			{"", "(\\d{2})(\\d{4,8})", "0$1 $2", "$1 $2"},
-		},
-	}},
-
-	// Switzerland (CH)
-	{"CH", {
-		41,                                   // country_code
-		"CH",                                 // region_code
-		{9},                                  // valid_lengths
-		"0",                                  // national_prefix
-		"00",                                 // international_prefix
-		"212345678",                          // example_number
-		"[2-9]\\d{8}",                        // fixed_line_pattern
-		"7[5-9]\\d{7}",                       // mobile_pattern
-		"800\\d{6}",                          // toll_free_pattern
-		{  // number_formats: {leading_digits, pattern, national_format, international_format}
-			{"8[047]|90", "(\\d{3})(\\d{3})(\\d{3})", "0$1 $2 $3", "$1 $2 $3"},
-			{"[2-79]|81", "(\\d{2})(\\d{3})(\\d{2})(\\d{2})", "0$1 $2 $3 $4", "$1 $2 $3 $4"},
-		},
-	}},
-};
+CompiledRegionPatterns::CompiledRegionPatterns() = default;
+CompiledRegionPatterns::~CompiledRegionPatterns() = default;
+CompiledRegionPatterns::CompiledRegionPatterns(CompiledRegionPatterns &&) noexcept = default;
 
 namespace {
 
-std::optional<std::regex> CompilePattern(const std::string &pattern) {
+using duckdb_re2::RE2;
+using duckdb_re2::StringPiece;
+
+std::unique_ptr<RE2> CompilePattern(std::string_view pattern, const CountryMetadata &metadata) {
 	if (pattern.empty()) {
-		return std::nullopt;
+		return nullptr;
 	}
-	try {
-		return std::regex(pattern, std::regex::optimize);
-	} catch (const std::regex_error &) {
-		// Invalid metadata pattern: treat as absent rather than failing per row.
-		return std::nullopt;
+	RE2::Options options;
+	options.set_log_errors(false);
+	auto regex = std::make_unique<RE2>(StringPiece(pattern.data(), pattern.size()), options);
+	if (!regex->ok()) {
+		// Invalid metadata pattern: treat as absent rather than failing per row
+		AnofoxTrace(AnofoxLogLevel::Warn, "PhoneNumber metadata: pattern of region " +
+		                                      std::string(metadata.region_code) + " does not compile: " +
+		                                      regex->error());
+		return nullptr;
 	}
+	return regex;
+}
+
+std::vector<CompiledNumberFormat> CompileFormats(const NumberFormat *formats, size_t count,
+                                                 const CountryMetadata &metadata) {
+	std::vector<CompiledNumberFormat> compiled;
+	compiled.reserve(count);
+	for (size_t i = 0; i < count; i++) {
+		auto pattern = CompilePattern(formats[i].pattern, metadata);
+		if (!pattern) {
+			continue;
+		}
+		compiled.push_back({CompilePattern(formats[i].leading_digits, metadata), std::move(pattern), &formats[i]});
+	}
+	return compiled;
+}
+
+CompiledRegionPatterns CompileRegion(const CountryMetadata &metadata) {
+	CompiledRegionPatterns patterns;
+	patterns.international_prefix = CompilePattern(metadata.international_prefix, metadata);
+	patterns.national_prefix_for_parsing = CompilePattern(metadata.national_prefix_for_parsing, metadata);
+	patterns.leading_digits = CompilePattern(metadata.leading_digits, metadata);
+	for (size_t i = 0; i < NUMBER_DESC_COUNT; i++) {
+		patterns.descs[i] = CompilePattern(metadata.descs[i].pattern, metadata);
+	}
+	patterns.national_formats = CompileFormats(metadata.national_formats, metadata.national_format_count, metadata);
+	patterns.intl_formats = CompileFormats(metadata.intl_formats, metadata.intl_format_count, metadata);
+	AnofoxTrace(AnofoxLogLevel::Debug, "PhoneNumber metadata: compiled patterns of region " +
+	                                       std::string(metadata.region_code));
+	return patterns;
+}
+
+//! One lazily compiled slot per region; std::call_once makes the first use
+//! thread-safe and later reads lock-free.
+struct CompiledSlot {
+	std::once_flag once;
+	std::unique_ptr<CompiledRegionPatterns> patterns;
+};
+
+CompiledSlot *CompiledSlots() {
+	static CompiledSlot slots[REGION_COUNT + NONGEO_COUNT];
+	return slots;
+}
+
+bool AnchoredMatch(const RE2 &regex, const std::string &text, RE2::Anchor anchor, StringPiece *groups = nullptr,
+                   int group_count = 0) {
+	return regex.Match(StringPiece(text.data(), text.size()), 0, text.size(), anchor, groups, group_count);
 }
 
 } // namespace
 
-const CompiledRegionPatterns *GetCompiledPatternsForRegion(const std::string &region_code) {
-	// Built exactly once on first use; magic statics make this thread-safe.
-	static const auto compiled_patterns = [] {
-		std::unordered_map<std::string, CompiledRegionPatterns> result;
-		result.reserve(REGION_METADATA.size());
-		for (const auto &entry : REGION_METADATA) {
-			CompiledRegionPatterns patterns;
-			patterns.fixed_line = CompilePattern(entry.second.fixed_line_pattern);
-			patterns.mobile = CompilePattern(entry.second.mobile_pattern);
-			patterns.toll_free = CompilePattern(entry.second.toll_free_pattern);
-			patterns.national_prefix_for_parsing = CompilePattern(entry.second.national_prefix_for_parsing);
-			for (const auto &format : entry.second.number_formats) {
-				auto pattern = CompilePattern(format.pattern);
-				if (!pattern) {
-					continue;
-				}
-				CompiledNumberFormat compiled {CompilePattern(format.leading_digits), std::move(*pattern), &format};
-				patterns.number_formats.push_back(std::move(compiled));
+std::string ExpandGroups(std::string_view rule, const StringPiece *groups, int group_count) {
+	std::string expanded;
+	for (size_t i = 0; i < rule.size(); i++) {
+		if (rule[i] == '$' && i + 1 < rule.size() && rule[i + 1] >= '0' && rule[i + 1] <= '9') {
+			const int group = rule[i + 1] - '0';
+			if (group < group_count && groups[group].data()) {
+				expanded.append(groups[group].data(), groups[group].size());
 			}
-			result.emplace(entry.first, std::move(patterns));
+			i++;
+		} else {
+			expanded += rule[i];
 		}
-		return result;
-	}();
+	}
+	return expanded;
+}
 
-	auto it = compiled_patterns.find(region_code);
-	if (it != compiled_patterns.end()) {
-		return &it->second;
+const char *MetadataVersion() {
+	return PHONE_METADATA_VERSION;
+}
+
+const CountryMetadata *GetMetadataForRegion(std::string_view region_code) {
+	const auto *begin = REGION_METADATA_TABLE;
+	const auto *end = REGION_METADATA_TABLE + REGION_COUNT;
+	const auto *it = std::lower_bound(begin, end, region_code, [](const CountryMetadata &metadata,
+	                                                              std::string_view code) {
+		return metadata.region_code < code;
+	});
+	if (it != end && it->region_code == region_code) {
+		return it;
 	}
 	return nullptr;
 }
 
-const NumberFormat *FindNumberFormat(const std::string &region_code, const std::string &national_number,
-                                     std::smatch &match) {
-	const CompiledRegionPatterns *patterns = GetCompiledPatternsForRegion(region_code);
-	if (!patterns) {
-		return nullptr;
+const CountryMetadata *GetMetadataForCountryCodeRegion(int country_code, std::string_view region_code) {
+	if (region_code != NON_GEO_REGION) {
+		return GetMetadataForRegion(region_code);
 	}
-	for (const auto &candidate : patterns->number_formats) {
+	const auto *begin = REGION_METADATA_TABLE + REGION_COUNT;
+	const auto *end = begin + NONGEO_COUNT;
+	const auto *it = std::lower_bound(begin, end, country_code, [](const CountryMetadata &metadata, int code) {
+		return metadata.country_code < code;
+	});
+	if (it != end && it->country_code == country_code) {
+		return it;
+	}
+	return nullptr;
+}
+
+const CountryCodeRegions *GetRegionsForCountryCode(int country_code) {
+	const auto *begin = COUNTRY_CODE_TABLE;
+	const auto *end = COUNTRY_CODE_TABLE + COUNTRY_CODE_COUNT;
+	const auto *it = std::lower_bound(begin, end, country_code, [](const CountryCodeRegions &entry, int code) {
+		return entry.country_code < code;
+	});
+	if (it != end && it->country_code == country_code && it->region_count > 0) {
+		return it;
+	}
+	return nullptr;
+}
+
+std::string GetMainRegionForCountryCode(int country_code) {
+	const auto *entry = GetRegionsForCountryCode(country_code);
+	return entry ? std::string(entry->regions[0]) : std::string();
+}
+
+const CompiledRegionPatterns &GetCompiledPatterns(const CountryMetadata &metadata) {
+	const auto index = static_cast<size_t>(&metadata - REGION_METADATA_TABLE);
+	D_ASSERT(index < REGION_COUNT + NONGEO_COUNT);
+	auto &slot = CompiledSlots()[index];
+	std::call_once(slot.once,
+	               [&]() { slot.patterns = std::make_unique<CompiledRegionPatterns>(CompileRegion(metadata)); });
+	return *slot.patterns;
+}
+
+bool IsNumberMatchingDesc(const std::string &national_number, const CountryMetadata &metadata, NumberDescIndex desc) {
+	const auto &number_desc = metadata.descs[desc];
+	if (number_desc.possible_lengths != 0 && !number_desc.HasLength(national_number.size())) {
+		return false;
+	}
+	const auto &regex = GetCompiledPatterns(metadata).descs[desc];
+	return regex && AnchoredMatch(*regex, national_number, RE2::ANCHOR_BOTH);
+}
+
+size_t InternationalPrefixLength(const std::string &digits, const CountryMetadata &metadata) {
+	const auto &regex = GetCompiledPatterns(metadata).international_prefix;
+	StringPiece match;
+	if (!regex || !AnchoredMatch(*regex, digits, RE2::ANCHOR_START, &match, 1)) {
+		return 0;
+	}
+	return match.size();
+}
+
+const NumberFormat *ApplyNumberFormat(const std::vector<CompiledNumberFormat> &formats,
+                                      const std::string &national_number, std::string &formatted) {
+	for (const auto &candidate : formats) {
 		// leading_digits only has to match a prefix of the national number
-		if (candidate.leading_digits &&
-		    !std::regex_search(national_number, *candidate.leading_digits, std::regex_constants::match_continuous)) {
+		if (candidate.leading_digits && !AnchoredMatch(*candidate.leading_digits, national_number, RE2::ANCHOR_START)) {
 			continue;
 		}
-		if (std::regex_match(national_number, match, candidate.pattern)) {
-			return candidate.format;
+		const int group_count = std::min(candidate.pattern->NumberOfCapturingGroups() + 1, MAX_PATTERN_GROUPS);
+		StringPiece groups[MAX_PATTERN_GROUPS];
+		if (!AnchoredMatch(*candidate.pattern, national_number, RE2::ANCHOR_BOTH, groups, group_count)) {
+			continue;
 		}
+		// The pattern matches the whole NSN, so this is Java's Matcher.replaceAll(format)
+		formatted = ExpandGroups(candidate.format->format, groups, group_count);
+		return candidate.format;
 	}
 	return nullptr;
 }

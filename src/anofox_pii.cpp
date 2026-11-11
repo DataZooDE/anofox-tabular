@@ -370,7 +370,7 @@ std::string ActivePhoneDefaultRegion();
 std::string PhoneToE164(const std::string &text) {
     try {
         const auto parts = phonenumber::PhoneNumberManager::Instance().Parse(text, "", ActivePhoneDefaultRegion());
-        if (parts.valid && parts.matches_valid_pattern && parts.country_code > 0 &&
+        if (parts.IsValidNumber() && parts.country_code > 0 &&
             !parts.national_number.empty()) {
             return "+" + std::to_string(parts.country_code) + parts.national_number;
         }
@@ -2430,6 +2430,8 @@ bool PhoneRecognizer::PassesDeepValidation(const std::string &text) {
     auto &manager = phonenumber::PhoneNumberManager::Instance();
     const auto default_region = ActivePhoneDefaultRegion();
     const auto parts = manager.Parse(text, "", default_region);
+    // A possible length is enough: a number outside every known range may be
+    // newly allocated, and masking errs on the side of masking
     if (parts.valid) {
         return true;
     }
@@ -2448,8 +2450,7 @@ bool PhoneRecognizer::PassesDeepValidation(const std::string &text) {
     if (!international) {
         const auto region = manager.EffectiveDefaultRegion(default_region);
         const auto *metadata = phonenumber::GetMetadataForRegion(region);
-        const bool region_idd = metadata && !metadata->international_prefix.empty() &&
-                                digits.compare(0, metadata->international_prefix.size(), metadata->international_prefix) == 0;
+        const bool region_idd = metadata && phonenumber::InternationalPrefixLength(digits, *metadata) > 0;
         const bool region_trunk = metadata && !metadata->national_prefix.empty() &&
                                   digits.compare(0, metadata->national_prefix.size(), metadata->national_prefix) == 0;
         if (!region_idd && !region_trunk && !digits.empty() && digits[0] == '0') {
@@ -2458,7 +2459,7 @@ bool PhoneRecognizer::PassesDeepValidation(const std::string &text) {
             return true;
         }
     }
-    AnofoxTrace(AnofoxLogLevel::Trace, "pii: phone deep validation rejects " + text + " (invalid length)");
+    AnofoxTrace(AnofoxLogLevel::Trace, "pii: phone deep validation rejects " + text + " (" + parts.reason + ")");
     return false;
 }
 

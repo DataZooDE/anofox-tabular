@@ -42,7 +42,7 @@ ORDER BY contact_id;
 2007	true	1	4165550199	CA	NULL
 2008	true	1	4165550199	CA	NULL
 2009	true	1	8005550175	US	NULL
-2010	false	NULL	NULL	US	invalid_length
+2010	false	NULL	NULL	US	invalid_pattern
 2011	false	NULL	NULL	US	invalid_length
 2012	true	1	2125550123	US	NULL
 2013	true	1	2125550123	US	NULL
@@ -57,10 +57,10 @@ SELECT contact_id,
 FROM na_contacts WHERE contact_id IN (2001, 2003, 2007, 2009, 2010)
 ORDER BY contact_id;
 ----
-2001	+12125550123	+1 212 555 0123	(212) 555-0123	tel:+1-212-555-0123
-2003	+12125550123	+1 212 555 0123	(212) 555-0123	tel:+1-212-555-0123
-2007	+14165550199	+1 416 555 0199	(416) 555-0199	tel:+1-416-555-0199
-2009	+18005550175	+1 800 555 0175	(800) 555-0175	tel:+1-800-555-0175
+2001	+12125550123	+1 212-555-0123	(212) 555-0123	tel:+1-212-555-0123
+2003	+12125550123	+1 212-555-0123	(212) 555-0123	tel:+1-212-555-0123
+2007	+14165550199	+1 416-555-0199	(416) 555-0199	tel:+1-416-555-0199
+2009	+18005550175	+1 800-555-0175	(800) 555-0175	tel:+1-800-555-0175
 2010	NULL	NULL	NULL	NULL
 
 # Dedup: all New York spellings collapse to one E.164 key, Toronto to another
@@ -100,7 +100,7 @@ true	2125550123
 query TT
 SELECT phonenumber_is_valid('1125550123', 'US'), (phonenumber_parse('1125550123', 'US')).reason;
 ----
-false	invalid_length
+false	invalid_pattern
 
 # Other regions keep their own trunk prefix: a German number is unaffected
 query T

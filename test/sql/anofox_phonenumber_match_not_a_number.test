@@ -32,7 +32,7 @@ NOT_A_NUMBER	NOT_A_NUMBER	NOT_A_NUMBER
 # An unknown country code or an unsupported region hint: the number cannot be read
 query TT
 SELECT phonenumber_match('+999 1234 5678', '+999 1234 5678', NULL),
-       phonenumber_match('0664 1234567', '0664 1234567', 'AT');
+       phonenumber_match('0664 1234567', '0664 1234567', 'XX');
 ----
 NOT_A_NUMBER	NOT_A_NUMBER
 

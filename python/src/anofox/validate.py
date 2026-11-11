@@ -169,6 +169,10 @@ def phone_is_valid(
     """
     Return True if *phone_or_df* is a valid phone number for *region*.
 
+    ``None`` (``NULL`` in a DataFrame) when the number cannot be judged: the
+    region code is unknown (``"XX"``) or the country code has no metadata
+    (``+999``, unassigned), like SQL ``phonenumber_is_valid``.
+
     Parameters
     ----------
     conn:
@@ -190,7 +194,8 @@ def phone_is_valid(
     if is_missing(phone_or_df):
         return None
     if isinstance(phone_or_df, str):
-        return bool(fetch_one(conn, "SELECT anofox_tab_phonenumber_is_valid(?, ?)", [phone_or_df, *region_params]))
+        valid = fetch_one(conn, "SELECT anofox_tab_phonenumber_is_valid(?, ?)", [phone_or_df, *region_params])
+        return None if valid is None else bool(valid)
 
     df_type = _phone_row_input(phone_or_df, column)
 

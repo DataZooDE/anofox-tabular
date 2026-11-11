@@ -100,4 +100,4 @@ WHERE phonenumber_is_valid(telefono, pais)
 query TT
 SELECT phonenumber_example('MX'), phonenumber_is_valid(phonenumber_example('MX'), 'MX');
 ----
-+525512345678	true
++522001234567	true
