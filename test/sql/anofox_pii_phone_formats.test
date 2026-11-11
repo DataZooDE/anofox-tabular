@@ -36,7 +36,10 @@ Zentrale 0049 (0)30 1234567	['0049 (0)30 1234567']
 Hotline +49(0)171-2345678	['+49(0)171-2345678']
 
 # Not phone numbers: order and account numbers with a 00 prefix, dates, an IBAN written in
-# groups or compact, a quantity with a slash, a version string
+# groups or compact, a quantity with a slash, a version string. A compact 00 number is a
+# phone number when its digits have a possible length for that country, so two of the order
+# and account numbers read as +1 234 5678 (a local US number) and +44 053201300 are masked:
+# masking errs on the side of masking
 query TI
 SELECT note, len(pii_detect(note))
 FROM (VALUES
@@ -50,13 +53,13 @@ FROM (VALUES
     ('Menge 12 / 24 Stück, Version 1.0.2026')
 ) t(note);
 ----
-Bestellnummer 0012345678 vom 03.10.2026	0
+Bestellnummer 0012345678 vom 03.10.2026	1
 Auftrag 00100200300 storniert	0
 Kundennummer 0099887766	0
 Lieferung am 2026-10-27 / 14:30 Uhr	0
 IBAN DE89 3704 0044 0532 0130 00	0
 IBAN DE89370400440532013000	0
-Konto 0044053201300 bei der Sparkasse	0
+Konto 0044053201300 bei der Sparkasse	1
 Menge 12 / 24 Stück, Version 1.0.2026	0
 
 # Masking works on the new formats like on any other

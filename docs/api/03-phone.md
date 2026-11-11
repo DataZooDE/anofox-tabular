@@ -228,7 +228,8 @@ phonenumber_parse(phone VARCHAR, region VARCHAR) -> STRUCT(
 | `invalid_characters` | The number contains letters, other than a leading label or a trailing extension marker |
 | `unsupported_region` | A number without `+` and a `region` that is no region code of the metadata, e.g. `'XX'`. The number is not judged: `valid` is `NULL` |
 | `unsupported_country_code` | The country code after `+` (or the international prefix) is used by no country (`+999`) or is non-geographic (`+800`). The number is not judged: `valid` is `NULL` |
-| `invalid_length` | The national number has a length that the region does not use |
+| `invalid_country_code` | No country code can follow the `+`: the digits after it start with `0` (`+0 30 123456`) or there are none. A typo, so the number is invalid (`valid` is `false`) |
+| `invalid_length` | The national number has a length that the region does not use, or the input has more than 32 digits |
 | `invalid_pattern` | The length fits, but the digits are in no number range of the region |
 | `region_missing` | A number without `+` or international prefix, `region` is `NULL` or empty, and the number is invalid (length or range) in the default region. Pass the customer's country as `region`, or store the number with `+` |
 
@@ -650,8 +651,9 @@ running.
 The number metadata is generated from the [`phonenumbers`](https://pypi.org/project/phonenumbers/)
 package, the Python port of libphonenumber, by `scripts/generate_phone_metadata.py` into
 `src/anofox_phonenumber_metadata_data.inc`. To pick up new number ranges, bump the version pin in
-the script and in `python/pyproject.toml` (the parity test `python/tests/test_phone_parity.py`
-compares every example number of every region with the same version), then run
+the script, in `python/pyproject.toml` and in `.github/workflows/_extension_smoke_test.yml` (the
+parity test `python/tests/test_phone_parity.py`, which CI runs against every built artifact,
+compares the example numbers of every region with the same version), then run
 `uv run scripts/generate_phone_metadata.py` and rebuild. The metadata of a region is compiled on
 its first use.
 

@@ -7,8 +7,9 @@
 The phone module (src/anofox_phonenumber*.cpp) implements libphonenumber's parsing,
 validation and formatting rules in C++; the per-region data comes from the metadata
 that the `phonenumbers` package (the Python port of libphonenumber) ships. To update
-the data, bump the version pin above and in python/pyproject.toml (the parity test
-compares against the same version), then run from the repository root:
+the data, bump the version pin above, in python/pyproject.toml and in
+.github/workflows/_extension_smoke_test.yml (the parity test compares against the same
+version), then run from the repository root:
 
     uv run scripts/generate_phone_metadata.py
 
@@ -21,6 +22,7 @@ with those country codes are reported as unsupported_country_code.
 
 from __future__ import annotations
 
+import os
 import re
 import sys
 from pathlib import Path
@@ -28,7 +30,12 @@ from pathlib import Path
 import phonenumbers
 from phonenumbers import PhoneMetadata
 
-OUTPUT = Path(__file__).resolve().parent.parent / "src" / "anofox_phonenumber_metadata_data.inc"
+OUTPUT = Path(
+    os.environ.get(
+        "ANOFOX_PHONE_METADATA_OUT",
+        Path(__file__).resolve().parent.parent / "src" / "anofox_phonenumber_metadata_data.inc",
+    )
+)
 
 # Number types in the order of CountryMetadata's NumberDesc members
 DESC_FIELDS = [
@@ -53,6 +60,12 @@ OVERRIDES: dict[str, dict[str, str]] = {
     # libphonenumber did from v8.10.17 to v8.13.37 (test/sql/anofox_phonenumber_mx.test).
     "MX": {"national_prefix_for_parsing": "0(?:[12]|4[45])|1"},
 }
+
+
+def check_groups(pattern: str | None, where: str) -> None:
+    """The C++ code reads at most $0..$9 (MAX_PATTERN_GROUPS)."""
+    if pattern and re.compile(pattern).groups > 9:
+        sys.exit(f"{where}: pattern {pattern!r} has more than 9 capture groups")
 
 
 def cpp_string(value: str | None) -> str:
@@ -112,6 +125,7 @@ def leading_digits(fmt) -> str:
 
 
 def format_entry(fmt, layout: str) -> str:
+    check_groups(fmt.pattern, "number format")
     return f"\t{{{cpp_string(leading_digits(fmt))}, {cpp_string(fmt.pattern)}, {cpp_string(layout)}}},"
 
 
@@ -136,6 +150,7 @@ def main() -> None:
             "national_prefix_for_parsing", meta.national_prefix_for_parsing or national_prefix
         )
         transform = java_rule(meta.national_prefix_transform_rule or "")
+        check_groups(npfp, f"{region} national_prefix_for_parsing")
 
         national = [format_entry(f, national_format(f, national_prefix)) for f in meta.number_format]
         if meta.intl_number_format:

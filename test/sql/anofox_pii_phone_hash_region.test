@@ -58,14 +58,14 @@ SELECT pii_mask('Rückruf 030 1234567', 'hash') = 'Rückruf ' || left(sha256('+4
 ----
 true
 
-# Deep validation judges a national number with the region of its statement: the mobile
-# number with an extra digit group is too long for DE, but a DE-format number cannot be
+# Deep validation judges a national number with the region of its statement: the French
+# mobile number with an extra digit group is too long, but a DE-format number cannot be
 # judged with the region US and is kept
 statement ok
 SET anofox_pii_deep_validation = true;
 
 query I
-SELECT len(pii_detect_phones('Fax 0171 1234567 8901'));
+SELECT len(pii_detect_phones('Fax +33 6 12 34 56 78 90'));
 ----
 0
 

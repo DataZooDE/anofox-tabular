@@ -21,7 +21,9 @@ CREATE TABLE contacts AS SELECT * FROM (VALUES
     (5, '+800 1234 5678',    NULL),  -- international freephone: non-geographic, no metadata
     (6, '+999 1234 5678',    NULL),  -- no country uses +999
     (7, '00999 1234 5678',   'DE'),  -- the same, dialled with the German international prefix
-    (8, '+43 664 123456',    'XX')   -- the country code decides, the unknown hint is ignored
+    (8, '+43 664 123456',    'XX'),  -- the country code decides, the unknown hint is ignored
+    (9, '+0 30 123456',      NULL),  -- no country code starts with 0: a typo, judged invalid
+    (10, '+ 30 123456',      NULL)   -- a blank after '+' is a separator: +30 (Greece), too short
 ) t(id, phone, region);
 
 # is_valid_for_region checks the region argument, or the default region US when it is NULL
@@ -39,6 +41,8 @@ FROM contacts ORDER BY id;
 6	NULL	NULL	NULL	NULL	unsupported_country_code	NULL
 7	NULL	NULL	NULL	NULL	unsupported_country_code	NULL
 8	true	true	NULL	true	NULL	AT
+9	false	false	false	false	invalid_country_code	NULL
+10	false	false	false	false	invalid_length	NULL
 
 # A data-quality check counts only the numbers it can judge as invalid; the rest is visible
 # as NULL instead of being reported as broken
@@ -48,7 +52,7 @@ SELECT count(*) FILTER (WHERE NOT phonenumber_is_valid(phone, region)) AS invali
        count(*) FILTER (WHERE phonenumber_is_valid(phone, region)) AS valid
 FROM contacts;
 ----
-1	5	2
+3	5	2
 
 # is_valid_for_region: NULL for an unknown requested region, false for a number of another
 # country, true for a number of that region
@@ -59,6 +63,14 @@ SELECT phonenumber_is_valid_for_region('+43 664 123456', 'XX'),
        phonenumber_is_valid_for_region('+44 7781 123456', 'GB');
 ----
 NULL	false	true	false
+
+# A column of junk with far more digits than any phone number is rejected before any
+# pattern matching
+query TTT
+SELECT phonenumber_is_valid(repeat('1', 100000), 'DE'), (phonenumber_parse('+' || repeat('4', 100000), NULL)).reason,
+       phonenumber_is_possible(repeat('9', 33), 'US');
+----
+false	invalid_length	false
 
 # Formatting and the example number stay NULL as before
 query TTT

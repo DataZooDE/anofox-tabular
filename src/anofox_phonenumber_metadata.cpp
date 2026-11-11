@@ -87,6 +87,22 @@ bool AnchoredMatch(const RE2 &regex, const std::string &text, RE2::Anchor anchor
 
 } // namespace
 
+std::string ExpandGroups(std::string_view rule, const StringPiece *groups, int group_count) {
+	std::string expanded;
+	for (size_t i = 0; i < rule.size(); i++) {
+		if (rule[i] == '$' && i + 1 < rule.size() && rule[i + 1] >= '0' && rule[i + 1] <= '9') {
+			const int group = rule[i + 1] - '0';
+			if (group < group_count && groups[group].data()) {
+				expanded.append(groups[group].data(), groups[group].size());
+			}
+			i++;
+		} else {
+			expanded += rule[i];
+		}
+	}
+	return expanded;
+}
+
 const char *MetadataVersion() {
 	return PHONE_METADATA_VERSION;
 }
@@ -150,32 +166,18 @@ size_t InternationalPrefixLength(const std::string &digits, const CountryMetadat
 
 const NumberFormat *ApplyNumberFormat(const std::vector<CompiledNumberFormat> &formats,
                                       const std::string &national_number, std::string &formatted) {
-	constexpr int MAX_GROUPS = 10;
 	for (const auto &candidate : formats) {
 		// leading_digits only has to match a prefix of the national number
 		if (candidate.leading_digits && !AnchoredMatch(*candidate.leading_digits, national_number, RE2::ANCHOR_START)) {
 			continue;
 		}
-		const int group_count = std::min(candidate.pattern->NumberOfCapturingGroups() + 1, MAX_GROUPS);
-		StringPiece groups[MAX_GROUPS];
+		const int group_count = std::min(candidate.pattern->NumberOfCapturingGroups() + 1, MAX_PATTERN_GROUPS);
+		StringPiece groups[MAX_PATTERN_GROUPS];
 		if (!AnchoredMatch(*candidate.pattern, national_number, RE2::ANCHOR_BOTH, groups, group_count)) {
 			continue;
 		}
-		// Expand $0..$9 in the layout (the pattern matches the whole NSN, so this
-		// is Java's Matcher.replaceAll(format))
-		const auto layout = candidate.format->format;
-		formatted.clear();
-		for (size_t i = 0; i < layout.size(); i++) {
-			if (layout[i] == '$' && i + 1 < layout.size() && layout[i + 1] >= '0' && layout[i + 1] <= '9') {
-				const int group = layout[i + 1] - '0';
-				if (group < group_count && groups[group].data()) {
-					formatted.append(groups[group].data(), groups[group].size());
-				}
-				i++;
-			} else {
-				formatted += layout[i];
-			}
-		}
+		// The pattern matches the whole NSN, so this is Java's Matcher.replaceAll(format)
+		formatted = ExpandGroups(candidate.format->format, groups, group_count);
 		return candidate.format;
 	}
 	return nullptr;

@@ -17,6 +17,8 @@ void RegisterPhonenumberFunctions(ExtensionLoader &loader);
 namespace phonenumber {
 
 struct PhoneNumberParts {
+	//! The number has a possible length (libphonenumber's isPossibleNumber);
+	//! IsValidNumber() is the full validity check
 	bool valid = false;
 	int country_code = 0;
 	//! The national significant number; set for a valid number and also for one
@@ -52,6 +54,12 @@ struct PhoneNumberParts {
 	//! argument or an unknown country calling code. The validity functions
 	//! return NULL then.
 	bool CannotJudge() const;
+
+	//! A possible length and a number range of the region (libphonenumber's
+	//! isValidNumber, phonenumber_is_valid)
+	bool IsValidNumber() const {
+		return valid && matches_valid_pattern;
+	}
 };
 
 //! Values of the `reason` field of phonenumber_parse
@@ -63,8 +71,10 @@ struct PhoneNumberInvalidReason {
 	static constexpr const char *INVALID_CHARACTERS = "invalid_characters";
 	//! The region argument (or default region) is not a region of the metadata
 	static constexpr const char *UNSUPPORTED_REGION = "unsupported_region";
-	//! The country calling code is unknown (unassigned, or a non-geographic code such as +800)
-	static constexpr const char *INVALID_COUNTRY_CODE = "unsupported_country_code";
+	//! The country calling code has no metadata: unassigned (+999) or non-geographic (+800)
+	static constexpr const char *UNSUPPORTED_COUNTRY_CODE = "unsupported_country_code";
+	//! No country calling code can follow the '+': it starts with 0 or is missing
+	static constexpr const char *INVALID_COUNTRY_CODE = "invalid_country_code";
 	static constexpr const char *INVALID_LENGTH = "invalid_length";
 	static constexpr const char *INVALID_PATTERN = "invalid_pattern";
 	//! A national number (no '+', no international prefix) given without a region

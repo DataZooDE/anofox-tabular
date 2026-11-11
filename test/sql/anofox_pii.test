@@ -1753,7 +1753,7 @@ true
 
 # Phone detection with deep validation - valid US number
 query I
-SELECT len(pii_detect('+1-415-555-2671')) > 0;
+SELECT len(pii_detect('+1-415-123-4567')) > 0;
 ----
 true
 

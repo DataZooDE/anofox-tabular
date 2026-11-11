@@ -8,6 +8,8 @@
 #include <string_view>
 #include <vector>
 
+#include "re2/stringpiece.h"
+
 namespace duckdb_re2 {
 class RE2;
 }
@@ -137,6 +139,14 @@ struct CompiledRegionPatterns {
 	std::vector<CompiledNumberFormat> national_formats;
 	std::vector<CompiledNumberFormat> intl_formats;
 };
+
+//! Capture groups (incl. group 0) read from a metadata pattern; the generator
+//! rejects patterns with more
+constexpr int MAX_PATTERN_GROUPS = 10;
+
+//! Expands $0..$9 in a libphonenumber rule ("$1 $2", "9$1") with the groups
+//! of a match; an unmatched group expands to nothing
+std::string ExpandGroups(std::string_view rule, const duckdb_re2::StringPiece *groups, int group_count);
 
 //! Version of the phonenumbers package the metadata was generated from
 const char *MetadataVersion();
