@@ -54,7 +54,7 @@ SELECT email_is_valid('user@example.com') AS email_ok,
 │ email_ok │ vat_ok  │      phone      │            masked            │
 │ boolean  │ boolean │     varchar     │           varchar            │
 ├──────────┼─────────┼─────────────────┼──────────────────────────────┤
-│ true     │ true    │ +1 650 253 0000 │ Call [PHONE] or mail [EMAIL] │
+│ true     │ true    │ +1 650-253-0000 │ Call [PHONE] or mail [EMAIL] │
 └──────────┴─────────┴─────────────────┴──────────────────────────────┘
 ```
 

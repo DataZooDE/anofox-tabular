@@ -7,11 +7,19 @@
 - Format numbers as E.164, international, national or RFC 3966
 - Find the region of a number, or compare two numbers
 
-The phone module is a built-in implementation modeled on Google's libphonenumber. It does not
-link libphonenumber. It carries number metadata for 21 regions: US, CA, GB, DE, FR, IT, ES, AU,
-JP, CN, IN, BR, MX, AR, RU, NL, SE, NO, DK, FI and CH. Numbers of other regions are not valid,
-including most of the EU, for example AT, BE, CZ, PL and PT: `+43 1 58800` is invalid with reason
-`unsupported_country_code`.
+The phone module is a built-in C++ implementation of Google's libphonenumber rules for parsing,
+validating and formatting. It does not link libphonenumber, but carries libphonenumber's number
+metadata for all 245 regions it knows (generated from the `phonenumbers` package, version
+9.0.43, see [Metadata](#metadata)): every number range (fixed line, mobile, toll-free,
+premium rate, shared cost, VoIP, personal, pager, UAN, voicemail), the possible lengths and the
+national layouts of every country.
+
+A number the module has no metadata for cannot be judged: a `region` that is no region code
+(`'XX'`, `'DEU'`) or a country code that no country uses (`+999`) or that is non-geographic
+(`+800` international freephone, `+882` networks). The validity functions return `NULL` for it,
+not `false`, and `phonenumber_parse(...).reason` is `unsupported_region` or
+`unsupported_country_code`. A data-quality check on `phonenumber_is_valid(...) = false` thus
+reports only numbers that are known to be invalid; count the `NULL`s separately.
 
 ## Functions
 
@@ -31,18 +39,19 @@ including most of the EU, for example AT, BE, CZ, PL and PT: `+43 1 58800` is in
 
 Most functions take a `region` argument: an ISO 3166-1 alpha-2 country code such as `'US'` or
 `'DE'`. Three-letter codes (`'DEU'`) and country names are not accepted; they count as an
-unsupported region.
+unsupported region, and the number is not judged.
 It tells the parser how to read a number without a leading `+` and country code. A number that
 starts with `+` carries its own country code. When `region` is `NULL`, the setting
 `anofox_tab_phonenumber_default_region` applies (default `US`). The code is case-insensitive and
 surrounding spaces, including the no-break spaces U+00A0, U+2007 and U+202F of spreadsheet
 exports, are ignored (`' gb '` is `GB`); a `region` of only spaces counts as `NULL`.
 `'UK'` is accepted as an alias of `'GB'`, both as `region` and in the default-region setting. A
-`region` that is not one of the 21 supported codes (for example `'AT'`) makes a number without
-`+` invalid; `phonenumber_parse` reports it as `unsupported_region`. This is deliberate: a
-`region` argument is data, often a column, so one row with an unknown country makes that row
-invalid but does not stop the query. The [default-region setting](#default-region) is
-configuration instead and rejects an unsupported code with an error when it is set.
+`region` that is no region code of the metadata (for example `'XX'`) makes the validity of a
+number without `+` `NULL`; `phonenumber_parse` reports it as `unsupported_region`. This is
+deliberate: a `region` argument is data, often a column, so one row with an unknown country
+leaves that row unjudged but does not stop the query. The
+[default-region setting](#default-region) is configuration instead and rejects an unknown code
+with an error when it is set.
 
 A number without `+` read in the default region only because `region` is `NULL` (or empty) can
 fail just because it is from another country: `030 12345678` is a Berlin number but not a US
@@ -86,7 +95,10 @@ A number without `+` may start with the region's national (trunk) prefix, which 
 drops: `030 12345678` in `DE`, `020 7946 0018` in `GB`, and `1-212-555-0123`,
 `1 (212) 555-0123` or `12125550123` in `US` and `CA` (the NANP trunk digit `1`; the bare
 10-digit form `212-555-0123` works as well). The national prefix is `0` in most regions, `1` in
-US and CA and `8` in RU; IT, ES, NO and DK have none (an Italian number keeps its leading `0`).
+the NANP regions (US, CA and the Caribbean), `8` in RU, KZ and LT and `06` in HU; IT, ES, PL,
+PT, GR, NO, DK and others have none (an Italian number keeps its leading `0`). Some regions
+rewrite the prefix as libphonenumber does: an Argentinian mobile written domestically,
+`011 15 2345 6789`, is `+54 9 11 2345 6789`.
 
 The parser also understands two common ways of writing international numbers:
 
@@ -95,8 +107,8 @@ The parser also understands two common ways of writing international numbers:
   `011 49 30 12345678` with region `'US'`. The prefixes are `00` in most regions, `011` in US
   and CA, `0011` in AU, `010` in JP and `810` in RU.
 - **Trunk digit after the country code.** `+49 (0)30 12345678` and `+44 020 7946 0018` keep
-  the national prefix after the country code. It is dropped when the number is only valid
-  without it.
+  the national prefix after the country code. It is dropped unless the number fits the
+  region's numbering plan only with it (libphonenumber's rule).
 
 ```sql
 SELECT phonenumber_format('0049 30 12345678', 'DE', 'E164') AS idd,
@@ -201,11 +213,11 @@ phonenumber_parse(phone VARCHAR, region VARCHAR) -> STRUCT(
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `valid` | `BOOLEAN` | `true` when the number is valid, the same as `phonenumber_is_valid`; the other fields except `region` and `reason` are `NULL` when it is not |
+| `valid` | `BOOLEAN` | `true` when the number is valid, the same as `phonenumber_is_valid` (`NULL` when it cannot be judged: reason `unsupported_region` or `unsupported_country_code`); the other fields except `region` and `reason` are `NULL` when it is not valid |
 | `country_code` | `INTEGER` | Country calling code, e.g. `1`, `44`, `49` |
 | `national_number` | `VARCHAR` | The number without country code and formatting |
-| `region` | `VARCHAR` | Region code, e.g. `US`, `GB`: the region the number was read in. For a number without `+` that is the `region` argument, or the default region when it is `NULL`; for a number with `+` the region of its country code. Also set for an invalid number once the region is known; `NULL` for `empty`, `not_a_number`, `invalid_characters`, `unsupported_region` and `unsupported_country_code` |
-| `type` | `VARCHAR` | `fixed_line`, `mobile`, `fixed_line_or_mobile` or `toll_free` |
+| `region` | `VARCHAR` | Region code, e.g. `US`, `GB`: the region of the number. For a country code that several regions share, the region whose number ranges the number is in, as libphonenumber decides: `+1 416 ...` is `CA`, `+44 1481 ...` is `GG` (Guernsey), `+7 701 ...` is `KZ`, also when `region` names another of them. For an invalid number the region it was read in: the `region` argument or the default region for a number without `+`, the main region of the country code otherwise. `NULL` for `empty`, `not_a_number`, `invalid_characters`, `unsupported_region` and `unsupported_country_code` |
+| `type` | `VARCHAR` | `fixed_line`, `mobile`, `fixed_line_or_mobile` (the ranges overlap, as in US), `toll_free`, `premium_rate`, `shared_cost`, `voip`, `personal_number`, `pager`, `uan` or `voicemail` |
 | `reason` | `VARCHAR` | `NULL` when the number is valid, else why it is not (see below) |
 | `extension` | `VARCHAR` | Digits of a trailing extension (`ext. 123`, `x123`, `Durchwahl 123`), see [Labels, extensions and letters](#labels-extensions-and-letters); `NULL` when there is none or the number is not valid |
 
@@ -214,10 +226,10 @@ phonenumber_parse(phone VARCHAR, region VARCHAR) -> STRUCT(
 | `empty` | The value is blank: an empty string or whitespace only (a quoted `''` CSV cell) |
 | `not_a_number` | The input has no digits |
 | `invalid_characters` | The number contains letters, other than a leading label or a trailing extension marker |
-| `unsupported_region` | A number without `+` and a `region` that is not one of the 21 supported regions |
-| `unsupported_country_code` | The country code after `+` (or the international prefix) is not one of the supported regions, e.g. `+43` (Austria) |
+| `unsupported_region` | A number without `+` and a `region` that is no region code of the metadata, e.g. `'XX'`. The number is not judged: `valid` is `NULL` |
+| `unsupported_country_code` | The country code after `+` (or the international prefix) is used by no country (`+999`) or is non-geographic (`+800`). The number is not judged: `valid` is `NULL` |
 | `invalid_length` | The national number has a length that the region does not use |
-| `invalid_pattern` | The length fits, but the digits are not in a fixed-line, mobile or toll-free range of the region |
+| `invalid_pattern` | The length fits, but the digits are in no number range of the region |
 | `region_missing` | A number without `+` or international prefix, `region` is `NULL` or empty, and the number is invalid (length or range) in the default region. Pass the customer's country as `region`, or store the number with `+` |
 
 ```sql
@@ -244,24 +256,27 @@ FROM contacts ORDER BY id;
 └───────┴──────────────────┴─────────┴───────┴────────────┴──────────────────────┴────────────────┘
 ```
 
-A number of an unsupported country fails with one of two reasons, depending on how it is
-written. With `+43` the country code itself is unknown (`unsupported_country_code`); written
-nationally with `region := 'AT'` the region argument is unknown (`unsupported_region`). Check
-for both when you count the numbers this module cannot judge:
+A number the module has no metadata for is not judged: `valid` is `NULL` and the reason says
+why, `unsupported_country_code` for the country code of a number with `+`,
+`unsupported_region` for the `region` argument of a number without:
 
 ```sql
-SELECT phone, region, (phonenumber_parse(phone, region)).reason AS reason
-FROM (VALUES ('+43 1 5321234', NULL), ('01 5321234', 'AT')) t(phone, region);
+SELECT phone, region, (phonenumber_parse(phone, region)).valid AS valid,
+       phonenumber_is_valid(phone, region) AS is_valid, (phonenumber_parse(phone, region)).reason AS reason
+FROM (VALUES ('+43 1 5321234', NULL), ('01 5321234', 'AT'), ('01 5321234', 'XX'),
+             ('+800 1234 5678', NULL)) t(phone, region);
 ```
 
 ```text
-┌───────────────┬─────────┬──────────────────────────┐
-│     phone     │ region  │          reason          │
-│    varchar    │ varchar │         varchar          │
-├───────────────┼─────────┼──────────────────────────┤
-│ +43 1 5321234 │ NULL    │ unsupported_country_code │
-│ 01 5321234    │ AT      │ unsupported_region       │
-└───────────────┴─────────┴──────────────────────────┘
+┌────────────────┬─────────┬─────────┬──────────┬──────────────────────────┐
+│     phone      │ region  │  valid  │ is_valid │          reason          │
+│    varchar     │ varchar │ boolean │ boolean  │         varchar          │
+├────────────────┼─────────┼─────────┼──────────┼──────────────────────────┤
+│ +43 1 5321234  │ NULL    │ true    │ true     │ NULL                     │
+│ 01 5321234     │ AT      │ true    │ true     │ NULL                     │
+│ 01 5321234     │ XX      │ NULL    │ NULL     │ unsupported_region       │
+│ +800 1234 5678 │ NULL    │ NULL    │ NULL     │ unsupported_country_code │
+└────────────────┴─────────┴─────────┴──────────┴──────────────────────────┘
 ```
 
 ---
@@ -270,8 +285,10 @@ FROM (VALUES ('+43 1 5321234', NULL), ('01 5321234', 'AT')) t(phone, region);
 
 Canonical name: `anofox_tab_phonenumber_is_valid`. Scalar function.
 
-Returns `true` when the number has a valid length and is in a fixed-line, mobile or toll-free
-range of its region.
+Returns `true` when the number has a possible length and is in a number range of its region
+(any type: fixed line, mobile, toll-free, premium rate, ...), `false` when it is not, and `NULL`
+when it cannot be judged (an unknown `region` or country code, see
+[the region argument](#the-region-argument)). This is libphonenumber's `isValidNumber`.
 
 ```text
 phonenumber_is_valid(phone VARCHAR, region VARCHAR) -> BOOLEAN
@@ -281,7 +298,9 @@ phonenumber_is_valid(phone VARCHAR, region VARCHAR) -> BOOLEAN
 
 Canonical name: `anofox_tab_phonenumber_is_possible`. Scalar function.
 
-A quicker check that looks at the length only. A possible number need not be valid.
+A quicker check that looks at the length only (libphonenumber's `isPossibleNumber`; a length
+that is only diallable locally, such as a German number without its area code, counts as
+possible). A possible number need not be valid. `NULL` when the number cannot be judged.
 
 ```text
 phonenumber_is_possible(phone VARCHAR, region VARCHAR) -> BOOLEAN
@@ -291,7 +310,10 @@ phonenumber_is_possible(phone VARCHAR, region VARCHAR) -> BOOLEAN
 
 Canonical name: `anofox_tab_phonenumber_is_valid_for_region`. Scalar function.
 
-Returns `true` when the number is valid and belongs to the given region.
+Returns `true` when the number has the country code of the given region and is in one of its
+number ranges (libphonenumber's `isValidNumberForRegion`), `false` otherwise. `NULL` when the
+region is unknown or the number cannot be judged. A Guernsey number is valid for `GG`, not for
+`GB`, although both use `+44`.
 
 ```text
 phonenumber_is_valid_for_region(phone VARCHAR, region VARCHAR) -> BOOLEAN
@@ -351,12 +373,12 @@ error.
 | `NATIONAL` | The region's national grouping, with the national prefix where the region dials one: `030 12345678` |
 | `RFC3966` | `tel:` URI: the international grouping with `-` between all blocks: `tel:+49-30-12345678`. An extension of the input is appended as `;ext=`: `tel:+49-30-1234567;ext=123`, which parses back to the same number and extension |
 
-The grouping follows per-region layout rules modelled on libphonenumber's number formats. Each
-rule names the leading digits it applies to and how the digits are split into blocks, so a
-Berlin number is `030 12345678`, a German mobile `0171 1234567` and a London number
-`020 7946 0018`. The rules cover the common fixed-line, mobile and toll-free layouts of the 21
-regions; a number that no rule covers is written as one block. US and CA numbers use the
-`(650) 253-0000` / `+1 650 253 0000` layout.
+The grouping follows libphonenumber's number formats. Each rule names the leading digits it
+applies to and how the digits are split into blocks, so a Berlin number is `030 12345678`, a
+German mobile `0171 1234567` and a London number `020 7946 0018`. As in libphonenumber, the
+rules of the country code's main region apply to all regions sharing it (a Guernsey number is
+written like a British one), and a number that no rule covers is written as one block. NANP
+numbers (US, CA, ...) use the `(650) 253-0000` / `+1 650-253-0000` layout.
 
 ```sql
 SELECT f AS format, phonenumber_format('6502530000', 'US', f) AS formatted
@@ -369,7 +391,7 @@ FROM (VALUES ('E164'), ('INTERNATIONAL'), ('national'), ('RFC3966')) t(f);
 │    varchar    │       varchar       │
 ├───────────────┼─────────────────────┤
 │ E164          │ +16502530000        │
-│ INTERNATIONAL │ +1 650 253 0000     │
+│ INTERNATIONAL │ +1 650-253-0000     │
 │ national      │ (650) 253-0000      │
 │ RFC3966       │ tel:+1-650-253-0000 │
 └───────────────┴─────────────────────┘
@@ -398,8 +420,8 @@ national prefix, so `NATIONAL` is `55 1234 5678`. The abolished prefixes that ol
 books still contain are dropped when parsing: `01` and `02` (long distance), `044` and `045`
 (calls to mobiles) and the mobile token `1` after `+52` (`+52 1 55 1234 5678`). libphonenumber
 parsed them the same way from v8.10.17 (2019) to v8.13.37; since v8.13.38 (2024) it rejects them
-as too long. Mexican fixed-line and mobile ranges are the same, so the type is
-`fixed_line_or_mobile`.
+as too long. This is the one deliberate deviation from libphonenumber's current metadata. Mexican
+fixed-line and mobile ranges are the same, so the type is `fixed_line_or_mobile`.
 
 ```sql
 SELECT phone, phonenumber_format(phone, 'MX', 'E164') AS e164,
@@ -426,20 +448,21 @@ SELECT phone, region,
        phonenumber_is_possible(phone, region) AS possible,
        phonenumber_format(phone, region, 'E164') AS e164,
        (phonenumber_parse(phone, region)).reason AS reason
-FROM (VALUES ('030 12345678', 'DE'), ('030 1234', 'DE'), ('+49 0180 1234567', NULL),
-             ('+31 20 123', NULL)) t(phone, region);
+FROM (VALUES ('030 12345678', 'DE'), ('030 12', 'DE'), ('+49 0123 4567890', NULL),
+             ('+31 20 123', NULL), ('+31 20 1234567890', NULL)) t(phone, region);
 ```
 
 ```text
-┌──────────────────┬─────────┬──────────┬───────────────┬─────────────────┐
-│      phone       │ region  │ possible │     e164      │     reason      │
-│     varchar      │ varchar │ boolean  │    varchar    │     varchar     │
-├──────────────────┼─────────┼──────────┼───────────────┼─────────────────┤
-│ 030 12345678     │ DE      │ true     │ +493012345678 │ NULL            │
-│ 030 1234         │ DE      │ true     │ NULL          │ invalid_pattern │
-│ +49 0180 1234567 │ NULL    │ true     │ NULL          │ invalid_pattern │
-│ +31 20 123       │ NULL    │ false    │ NULL          │ invalid_length  │
-└──────────────────┴─────────┴──────────┴───────────────┴─────────────────┘
+┌───────────────────┬─────────┬──────────┬───────────────┬─────────────────┐
+│       phone       │ region  │ possible │     e164      │     reason      │
+│      varchar      │ varchar │ boolean  │    varchar    │     varchar     │
+├───────────────────┼─────────┼──────────┼───────────────┼─────────────────┤
+│ 030 12345678      │ DE      │ true     │ +493012345678 │ NULL            │
+│ 030 12            │ DE      │ true     │ NULL          │ invalid_pattern │
+│ +49 0123 4567890  │ NULL    │ true     │ NULL          │ invalid_pattern │
+│ +31 20 123        │ NULL    │ true     │ NULL          │ invalid_pattern │
+│ +31 20 1234567890 │ NULL    │ false    │ NULL          │ invalid_length  │
+└───────────────────┴─────────┴──────────┴───────────────┴─────────────────┘
 ```
 
 ```sql
@@ -456,7 +479,8 @@ SELECT phone, region,
        phonenumber_format(phone, region, 'INTERNATIONAL') AS international
 FROM (VALUES ('030 12345678', 'DE'), ('0171 1234567', 'DE'), ('07400 123456', 'GB'),
              ('+44 20 7946 0018', NULL), ('01 23 45 67 89', 'FR'), ('044 668 18 00', 'CH'),
-             ('020 123 4567', 'NL'), ('+81 3 1234 5678', NULL)) t(phone, region);
+             ('020 123 4567', 'NL'), ('+81 3 1234 5678', NULL), ('01 5321234', 'AT'),
+             ('0470 12 34 56', 'BE'), ('512 345 678', 'PL')) t(phone, region);
 ```
 
 ```text
@@ -472,6 +496,9 @@ FROM (VALUES ('030 12345678', 'DE'), ('0171 1234567', 'DE'), ('07400 123456', 'G
 │ 044 668 18 00    │ CH      │ 044 668 18 00  │ +41 44 668 18 00  │
 │ 020 123 4567     │ NL      │ 020 123 4567   │ +31 20 123 4567   │
 │ +81 3 1234 5678  │ NULL    │ 03-1234-5678   │ +81 3-1234-5678   │
+│ 01 5321234       │ AT      │ 01 5321234     │ +43 1 5321234     │
+│ 0470 12 34 56    │ BE      │ 0470 12 34 56  │ +32 470 12 34 56  │
+│ 512 345 678      │ PL      │ 512 345 678    │ +48 512 345 678   │
 └──────────────────┴─────────┴────────────────┴───────────────────┘
 ```
 
@@ -482,8 +509,9 @@ FROM (VALUES ('030 12345678', 'DE'), ('0171 1234567', 'DE'), ('07400 123456', 'G
 Canonical name: `anofox_tab_phonenumber_region`. Scalar function.
 
 Returns the region code of a valid number (as [`phonenumber_is_valid`](#phonenumber_is_valid)
-decides), or `NULL` for a number that is not valid: `phonenumber_region('030 1234', 'DE')` is
-`NULL` although the number has a German prefix. The `region` argument is required, also for
+decides), or `NULL` for a number that is not valid: `phonenumber_region('030 12', 'DE')` is
+`NULL` although the number has a German prefix. For a country code shared by several regions it
+is the region of the number's range (`+1 416 555 0199` is `CA`). The `region` argument is required, also for
 numbers with `+`; pass `NULL` to use the default region (`phonenumber_region(phone)` with one
 argument is a binder error).
 
@@ -552,8 +580,8 @@ SELECT phonenumber_match('+1 650-253-0000', '(650) 253-0000', 'US') AS same,
 
 Canonical name: `anofox_tab_phonenumber_example`. Scalar function.
 
-Returns an example number for a region from the built-in metadata, or `NULL` for an unknown
-region.
+Returns libphonenumber's example number for a region (its fixed-line example) in E.164, or
+`NULL` for an unknown region.
 
 ```text
 phonenumber_example(region VARCHAR) -> VARCHAR
@@ -599,10 +627,10 @@ SELECT * FROM phonenumber_status();
 ## Default region
 
 `SET anofox_tab_phonenumber_default_region = 'DE';` changes the region used when the `region`
-argument is `NULL`. Only the 21 supported region codes are accepted; unlike an unsupported
-`region` argument, which only makes the numbers of that row invalid (`unsupported_region`), an
-unsupported setting is an error, so a typo in the configuration does not silently invalidate
-every national number:
+argument is `NULL`. Only region codes of the metadata are accepted; unlike an unknown `region`
+argument, which only leaves the numbers of that row unjudged (`unsupported_region`), an unknown
+setting is an error, so a typo in the configuration does not silently leave every national
+number unjudged:
 
 ```sql
 SET anofox_tab_phonenumber_default_region = 'XX';
@@ -616,6 +644,21 @@ The value is read once per statement, when the statement is bound (a prepared st
 bound again when it is executed), so every row of a statement is read in the same region, a
 change takes effect with the next statement, and it does not affect a query that is already
 running.
+
+## Metadata
+
+The number metadata is generated from the [`phonenumbers`](https://pypi.org/project/phonenumbers/)
+package, the Python port of libphonenumber, by `scripts/generate_phone_metadata.py` into
+`src/anofox_phonenumber_metadata_data.inc`. To pick up new number ranges, bump the version pin in
+the script and in `python/pyproject.toml` (the parity test `python/tests/test_phone_parity.py`
+compares every example number of every region with the same version), then run
+`uv run scripts/generate_phone_metadata.py` and rebuild. The metadata of a region is compiled on
+its first use.
+
+The only deliberate deviation from upstream is the parsing of Mexico's abolished prefixes (see
+[`phonenumber_format`](#phonenumber_format)). Not included are the non-geographic entities of
+libphonenumber (region `001`: `+800`, `+808`, `+870`, `+878`, `+881`, `+882`, `+883`, `+888`,
+`+979`); such numbers are not judged.
 
 ## See also
 
