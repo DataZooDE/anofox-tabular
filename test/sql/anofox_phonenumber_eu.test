@@ -1,0 +1,237 @@
+# name: test/sql/anofox_phonenumber_eu.test
+# description: Issue #133 - numbers of every EU and EEA country are judged with libphonenumber's
+#              metadata. Expected values are libphonenumber's (phonenumbers 9.0.43).
+# group: [phonenumber]
+
+require anofox_tabular
+
+statement ok
+LOAD anofox_tabular;
+
+statement ok
+SET anofox_tab_trace_level='warn';
+
+# The query of the issue report: Austrian and Belgian numbers were all invalid
+query TTTTT
+SELECT p, r, phonenumber_is_valid(p, r), phonenumber_is_possible(p, r), phonenumber_region(p, r)
+FROM (VALUES ('+43 1 234567890', 'AT'), ('+43 664 123456', 'AT'),
+             ('+32 12 34 56 78', 'BE'), ('+32 470 12 34 56', 'BE'),
+             ('+49 30 123456',   'DE')) t(p, r);
+----
++43 1 234567890	AT	true	true	AT
++43 664 123456	AT	true	true	AT
++32 12 34 56 78	BE	true	true	BE
++32 470 12 34 56	BE	true	true	BE
++49 30 123456	DE	true	true	DE
+
+# ... and its check which regions have metadata: all of them now
+query TI
+SELECT string_agg(r, ' ' ORDER BY r) FILTER (WHERE phonenumber_example(r) IS NULL) AS missing,
+       count(*) FILTER (WHERE phonenumber_example(r) IS NOT NULL) AS present
+FROM (SELECT unnest(['AT','BE','BG','CY','CZ','DE','DK','EE','ES','FI','FR','GR','HR','HU','IE','IT','LT','LU',
+                     'LV','MT','NL','PL','PT','RO','SE','SI','SK','GB','CH','NO','US','CA','AU','JP','IN','BR','CN']) AS r);
+----
+NULL	37
+
+# A customer list from all EU and EEA countries: one fixed-line and one mobile number each,
+# written nationally as the customers typed them, with the country in its own column
+statement ok
+CREATE TABLE eu_customers AS SELECT * FROM (VALUES
+    ('AT', '01 234567890'),
+    ('AT', '0664 123456'),
+    ('BE', '012 34 56 78'),
+    ('BE', '0450 00 12 34'),
+    ('BG', '02 123 456'),
+    ('BG', '043 012 345'),
+    ('CY', '22 345678'),
+    ('CY', '96 123456'),
+    ('CZ', '212 345 678'),
+    ('CZ', '601 123 456'),
+    ('DE', '030 123456'),
+    ('DE', '01512 3456789'),
+    ('DK', '32 12 34 56'),
+    ('DK', '34 41 23 45'),
+    ('EE', '321 2345'),
+    ('EE', '5123 4567'),
+    ('ES', '810 12 34 56'),
+    ('ES', '612 34 56 78'),
+    ('FI', '013 1234567'),
+    ('FI', '041 2345678'),
+    ('FR', '01 23 45 67 89'),
+    ('FR', '06 12 34 56 78'),
+    ('GR', '21 2345 6789'),
+    ('GR', '691 234 5678'),
+    ('HR', '01 2345 678'),
+    ('HR', '092 123 4567'),
+    ('HU', '(06 1) 234 5678'),
+    ('HU', '06 20 123 4567'),
+    ('IE', '(022) 12345'),
+    ('IE', '085 012 3456'),
+    ('IT', '02 1234 5678'),
+    ('IT', '312 345 6789'),
+    ('LT', '(0-312) 34567'),
+    ('LT', '(0-612) 34567'),
+    ('LU', '27 12 34 56'),
+    ('LU', '628 123 456'),
+    ('LV', '63 123 456'),
+    ('LV', '21 234 567'),
+    ('MT', '2100 1234'),
+    ('MT', '9696 1234'),
+    ('NL', '010 123 4567'),
+    ('NL', '06 12345678'),
+    ('PL', '12 345 67 89'),
+    ('PL', '512 345 678'),
+    ('PT', '21 234 5678'),
+    ('PT', '912 345 678'),
+    ('RO', '021 123 4567'),
+    ('RO', '0712 034 567'),
+    ('SE', '08-12 34 56'),
+    ('SE', '070-123 45 67'),
+    ('SI', '(01) 234 56 78'),
+    ('SI', '031 234 567'),
+    ('SK', '02 212 345 67'),
+    ('SK', '0912 123 456'),
+    ('IS', '410 1234'),
+    ('IS', '611 1234'),
+    ('LI', '234 56 78'),
+    ('LI', '660 234 567'),
+    ('NO', '21 23 45 67'),
+    ('NO', '40 61 23 45')
+) t(country, phone);
+
+query TTTTTTTT
+SELECT country, phone, phonenumber_is_valid(phone, country), phonenumber_region(phone, country),
+       (phonenumber_parse(phone, country)).type, phonenumber_format(phone, country, 'E164'),
+       phonenumber_format(phone, country, 'INTERNATIONAL'), phonenumber_format(phone, country, 'NATIONAL')
+FROM eu_customers ORDER BY rowid;
+----
+AT	01 234567890	true	AT	fixed_line	+431234567890	+43 1 234567890	01 234567890
+AT	0664 123456	true	AT	mobile	+43664123456	+43 664 123456	0664 123456
+BE	012 34 56 78	true	BE	fixed_line	+3212345678	+32 12 34 56 78	012 34 56 78
+BE	0450 00 12 34	true	BE	mobile	+32450001234	+32 450 00 12 34	0450 00 12 34
+BG	02 123 456	true	BG	fixed_line	+3592123456	+359 2 123 456	02 123 456
+BG	043 012 345	true	BG	mobile	+35943012345	+359 43 012 345	043 012 345
+CY	22 345678	true	CY	fixed_line	+35722345678	+357 22 345678	22 345678
+CY	96 123456	true	CY	mobile	+35796123456	+357 96 123456	96 123456
+CZ	212 345 678	true	CZ	fixed_line	+420212345678	+420 212 345 678	212 345 678
+CZ	601 123 456	true	CZ	mobile	+420601123456	+420 601 123 456	601 123 456
+DE	030 123456	true	DE	fixed_line	+4930123456	+49 30 123456	030 123456
+DE	01512 3456789	true	DE	mobile	+4915123456789	+49 1512 3456789	01512 3456789
+DK	32 12 34 56	true	DK	fixed_line_or_mobile	+4532123456	+45 32 12 34 56	32 12 34 56
+DK	34 41 23 45	true	DK	mobile	+4534412345	+45 34 41 23 45	34 41 23 45
+EE	321 2345	true	EE	fixed_line	+3723212345	+372 321 2345	321 2345
+EE	5123 4567	true	EE	mobile	+37251234567	+372 5123 4567	5123 4567
+ES	810 12 34 56	true	ES	fixed_line	+34810123456	+34 810 12 34 56	810 12 34 56
+ES	612 34 56 78	true	ES	mobile	+34612345678	+34 612 34 56 78	612 34 56 78
+FI	013 1234567	true	FI	fixed_line	+358131234567	+358 13 1234567	013 1234567
+FI	041 2345678	true	FI	mobile	+358412345678	+358 41 2345678	041 2345678
+FR	01 23 45 67 89	true	FR	fixed_line	+33123456789	+33 1 23 45 67 89	01 23 45 67 89
+FR	06 12 34 56 78	true	FR	mobile	+33612345678	+33 6 12 34 56 78	06 12 34 56 78
+GR	21 2345 6789	true	GR	fixed_line	+302123456789	+30 21 2345 6789	21 2345 6789
+GR	691 234 5678	true	GR	mobile	+306912345678	+30 691 234 5678	691 234 5678
+HR	01 2345 678	true	HR	fixed_line	+38512345678	+385 1 2345 678	01 2345 678
+HR	092 123 4567	true	HR	mobile	+385921234567	+385 92 123 4567	092 123 4567
+HU	(06 1) 234 5678	true	HU	fixed_line	+3612345678	+36 1 234 5678	(06 1) 234 5678
+HU	06 20 123 4567	true	HU	mobile	+36201234567	+36 20 123 4567	06 20 123 4567
+IE	(022) 12345	true	IE	fixed_line	+3532212345	+353 22 12345	(022) 12345
+IE	085 012 3456	true	IE	mobile	+353850123456	+353 85 012 3456	085 012 3456
+IT	02 1234 5678	true	IT	fixed_line	+390212345678	+39 02 1234 5678	02 1234 5678
+IT	312 345 6789	true	IT	mobile	+393123456789	+39 312 345 6789	312 345 6789
+LT	(0-312) 34567	true	LT	fixed_line	+37031234567	+370 312 34567	(0-312) 34567
+LT	(0-612) 34567	true	LT	mobile	+37061234567	+370 612 34567	(0-612) 34567
+LU	27 12 34 56	true	LU	fixed_line	+35227123456	+352 27 12 34 56	27 12 34 56
+LU	628 123 456	true	LU	mobile	+352628123456	+352 628 123 456	628 123 456
+LV	63 123 456	true	LV	fixed_line	+37163123456	+371 63 123 456	63 123 456
+LV	21 234 567	true	LV	mobile	+37121234567	+371 21 234 567	21 234 567
+MT	2100 1234	true	MT	fixed_line	+35621001234	+356 2100 1234	2100 1234
+MT	9696 1234	true	MT	mobile	+35696961234	+356 9696 1234	9696 1234
+NL	010 123 4567	true	NL	fixed_line	+31101234567	+31 10 123 4567	010 123 4567
+NL	06 12345678	true	NL	mobile	+31612345678	+31 6 12345678	06 12345678
+PL	12 345 67 89	true	PL	fixed_line	+48123456789	+48 12 345 67 89	12 345 67 89
+PL	512 345 678	true	PL	mobile	+48512345678	+48 512 345 678	512 345 678
+PT	21 234 5678	true	PT	fixed_line	+351212345678	+351 21 234 5678	21 234 5678
+PT	912 345 678	true	PT	mobile	+351912345678	+351 912 345 678	912 345 678
+RO	021 123 4567	true	RO	fixed_line	+40211234567	+40 21 123 4567	021 123 4567
+RO	0712 034 567	true	RO	mobile	+40712034567	+40 712 034 567	0712 034 567
+SE	08-12 34 56	true	SE	fixed_line	+468123456	+46 8 12 34 56	08-12 34 56
+SE	070-123 45 67	true	SE	mobile	+46701234567	+46 70 123 45 67	070-123 45 67
+SI	(01) 234 56 78	true	SI	fixed_line	+38612345678	+386 1 234 56 78	(01) 234 56 78
+SI	031 234 567	true	SI	mobile	+38631234567	+386 31 234 567	031 234 567
+SK	02 212 345 67	true	SK	fixed_line	+421221234567	+421 2 212 345 67	02 212 345 67
+SK	0912 123 456	true	SK	mobile	+421912123456	+421 912 123 456	0912 123 456
+IS	410 1234	true	IS	fixed_line	+3544101234	+354 410 1234	410 1234
+IS	611 1234	true	IS	mobile	+3546111234	+354 611 1234	611 1234
+LI	234 56 78	true	LI	fixed_line	+4232345678	+423 234 56 78	234 56 78
+LI	660 234 567	true	LI	mobile	+423660234567	+423 660 234 567	660 234 567
+NO	21 23 45 67	true	NO	fixed_line	+4721234567	+47 21 23 45 67	21 23 45 67
+NO	40 61 23 45	true	NO	mobile	+4740612345	+47 40 61 23 45	40 61 23 45
+
+# The stored E164 form reads back without a country: same validity and region
+query II
+SELECT count(*), count(*) FILTER (WHERE phonenumber_is_valid(e164, NULL)
+                                    AND phonenumber_region(e164, NULL) = country
+                                    AND phonenumber_format(e164, NULL, 'E164') = e164)
+FROM (SELECT country, phonenumber_format(phone, country, 'E164') AS e164 FROM eu_customers);
+----
+60	60
+
+# A data-quality check over the list flags nothing
+query I
+SELECT count(*) FILTER (WHERE NOT phonenumber_is_valid(phone, country)) FROM eu_customers;
+----
+0
+
+# Typos: eight digits too many are never valid. With the last digit dropped, a number of a
+# region with variable-length numbers (AT, DE, FI, IT, ...) can still be valid; libphonenumber
+# agrees on exactly these nine
+query TI
+SELECT string_agg(country || ' ' || phone, ', ' ORDER BY rowid) FILTER (WHERE phonenumber_is_valid(left(phone, -1), country)),
+       count(*) FILTER (WHERE phonenumber_is_valid(phone || '99999999', country))
+FROM eu_customers;
+----
+AT 01 234567890, AT 0664 123456, BG 02 123 456, DE 030 123456, EE 5123 4567, FI 013 1234567, FI 041 2345678, IT 02 1234 5678, LU 27 12 34 56	0
+
+# Regions sharing a country code: the region follows the number (libphonenumber's leading
+# digits and number ranges), a region hint decides only among regions where it is valid
+query TTTT
+SELECT p, r, phonenumber_region(p, r), phonenumber_format(p, r, 'NATIONAL')
+FROM (VALUES (1, '+358 18 12345', NULL),     -- Åland shares +358 with Finland
+             (2, '+44 1481 256789', NULL),   -- Guernsey shares +44 with the United Kingdom
+             (3, '+44 7781 123456', 'GB'),   -- a Guernsey mobile, whatever the hint
+             (4, '+7 701 234 5678', NULL),   -- Kazakhstan shares +7 with Russia
+             (5, '+7 495 123 4567', NULL),
+             (6, '+1 416 555 0199', 'US'),   -- a Toronto number is Canadian
+             (7, '+1 242 359 1234', NULL),   -- the Bahamas are in the NANP
+             (8, '+262 269 61 12 34', NULL), -- Mayotte shares +262 with Réunion
+             (9, '+39 06 698 12345', NULL)   -- the Vatican shares +39 with Italy
+) t(id, p, r) ORDER BY id;
+----
++358 18 12345	NULL	AX	018 12345
++44 1481 256789	NULL	GG	01481 256789
++44 7781 123456	GB	GG	07781 123456
++7 701 234 5678	NULL	KZ	8 (701) 234 5678
++7 495 123 4567	NULL	RU	8 (495) 123-45-67
++1 416 555 0199	US	CA	(416) 555-0199
++1 242 359 1234	NULL	BS	(242) 359-1234
++262 269 61 12 34	NULL	YT	0269 61 12 34
++39 06 698 12345	NULL	VA	06 6981 2345
+
+# National prefix transform: an Argentinian mobile written with the area code and the 15 of a
+# domestic mobile call is the +54 9 number
+query TTT
+SELECT phonenumber_format('011 15 2345 6789', 'AR', 'E164'), phonenumber_format('011 15 2345 6789', 'AR', 'INTERNATIONAL'),
+       (phonenumber_parse('011 15 2345 6789', 'AR')).type;
+----
++5491123456789	+54 9 11 2345-6789	mobile
+
+# Number types beyond fixed line and mobile are valid numbers with their own type
+query TTT
+SELECT (phonenumber_parse(p, r)).type, phonenumber_is_valid(p, r), phonenumber_format(p, r, 'INTERNATIONAL')
+FROM (VALUES (1, '0900 123456', 'AT'), (2, '0810 123456', 'AT'), (3, '0780 123456', 'AT'),
+             (4, '0800 123456', 'AT'), (5, '0180 1 234567', 'DE')) t(id, p, r) ORDER BY id;
+----
+premium_rate	true	+43 900 123456
+shared_cost	true	+43 810 123456
+voip	true	+43 780 123456
+toll_free	true	+43 800 123456
+shared_cost	true	+49 180 1 234567

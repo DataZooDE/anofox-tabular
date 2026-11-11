@@ -25,7 +25,10 @@
 #include <regex>
 #include <cctype>
 #include <algorithm>
+#include <optional>
 #include <tuple>
+
+#include "re2/re2.h"
 
 namespace duckdb {
 namespace anofox {
@@ -157,173 +160,182 @@ std::string NormalizePhoneNumber(const std::string& input) {
 	return normalized;
 }
 
-// Extract country code from explicit international (E.164) format.
-// Only numbers starting with '+' carry a country code; plain national input is
-// interpreted via the region hint / default region instead.
-// Returns {country_code, remaining_national_number}; {0, ""} if no known code.
-std::pair<int, std::string> ExtractCountryCode(const std::string& normalized) {
-	if (normalized.empty() || normalized[0] != '+') {
+// Smallest and largest national significant number (libphonenumber's
+// MIN_LENGTH_FOR_NSN / MAX_LENGTH_FOR_NSN)
+constexpr size_t MIN_NSN_LENGTH = 2;
+constexpr size_t MAX_NSN_LENGTH = 17;
+
+// Splits the digits after '+' into a known country calling code and the rest.
+// Country codes are prefix-free, so the first 1-3 digit prefix that is a code
+// is the code (libphonenumber's extractCountryCode). {0, ""} if there is none.
+std::pair<int, std::string> ExtractCountryCode(const std::string& digits) {
+	if (digits.empty() || digits[0] == '0') {
 		return {0, ""};
 	}
-
-	const size_t start_pos = 1;
-
-	// Try to match country codes (1-3 digits)
-	// Try 3 digits first, then 2, then 1
-	for (int len = 3; len >= 1; len--) {
-		if (normalized.size() < start_pos + len) {
-			continue;
-		}
-
-		std::string code_str = normalized.substr(start_pos, len);
-		try {
-			int code = std::stoi(code_str);
-
-			// Check if this country code exists in our metadata
-			if (COUNTRY_CODE_TO_REGIONS.find(code) != COUNTRY_CODE_TO_REGIONS.end()) {
-				std::string national_number = normalized.substr(start_pos + len);
-				return {code, national_number};
-			}
-		} catch (...) {
-			continue;
+	for (size_t len = 1; len <= 3 && len <= digits.size(); len++) {
+		const int code = std::stoi(digits.substr(0, len));
+		if (GetRegionsForCountryCode(code)) {
+			return {code, digits.substr(len)};
 		}
 	}
-
-	// No known country code found
 	return {0, ""};
 }
 
-// Result of matching a national number against a region's precompiled patterns.
-struct PatternClassification {
-	bool matches_fixed_line = false;
-	bool matches_mobile = false;
-	bool matches_toll_free = false;
+// libphonenumber's ValidationResult of testNumberLength
+enum class LengthResult { IS_POSSIBLE, IS_POSSIBLE_LOCAL_ONLY, TOO_SHORT, INVALID_LENGTH, TOO_LONG };
 
-	//! Toll-free numbers are valid numbers too (e.g. FR 0800, which matches
-	//! neither the fixed-line nor the mobile range)
-	bool MatchesValidPattern() const {
-		return matches_fixed_line || matches_mobile || matches_toll_free;
+LengthResult TestNumberLength(const std::string& national_number, const CountryMetadata& metadata) {
+	const auto& general = metadata.GeneralDesc();
+	if (general.possible_lengths == 0) {
+		return LengthResult::INVALID_LENGTH;
 	}
-	bool MatchesAnyPattern() const {
-		return matches_fixed_line || matches_mobile || matches_toll_free;
+	const size_t length = national_number.size();
+	if (general.HasLocalOnlyLength(length)) {
+		return LengthResult::IS_POSSIBLE_LOCAL_ONLY;
 	}
-};
-
-PatternClassification ClassifyNationalNumber(const std::string& national_number, const std::string& region_code) {
-	PatternClassification classification;
-	const CompiledRegionPatterns* patterns = GetCompiledPatternsForRegion(region_code);
-	if (!patterns) {
-		return classification;
+	size_t min_length = 0;
+	while (!general.HasLength(min_length)) {
+		min_length++;
 	}
-	classification.matches_toll_free = patterns->toll_free && std::regex_match(national_number, *patterns->toll_free);
-	classification.matches_fixed_line =
-	    patterns->fixed_line && std::regex_match(national_number, *patterns->fixed_line);
-	classification.matches_mobile = patterns->mobile && std::regex_match(national_number, *patterns->mobile);
-	return classification;
+	size_t max_length = 31;
+	while (!general.HasLength(max_length)) {
+		max_length--;
+	}
+	if (length < min_length) {
+		return LengthResult::TOO_SHORT;
+	}
+	if (length > max_length) {
+		return LengthResult::TOO_LONG;
+	}
+	return general.HasLength(length) ? LengthResult::IS_POSSIBLE : LengthResult::INVALID_LENGTH;
 }
 
-// Determine phone number type from a pattern classification
-std::string DeterminePhoneNumberType(const PatternClassification& classification) {
-	// Toll-free takes precedence
-	if (classification.matches_toll_free) {
-		return PhoneNumberType::TOLL_FREE;
-	}
+bool MatchesGeneralPattern(const std::string& national_number, const CountryMetadata& metadata) {
+	const auto& regex = GetCompiledPatterns(metadata).descs[GENERAL_DESC];
+	return regex && duckdb_re2::RE2::FullMatch(duckdb_re2::StringPiece(national_number.data(), national_number.size()),
+	                                            *regex);
+}
 
-	// If matches both, return FIXED_LINE_OR_MOBILE (e.g., US/NANPA numbers)
-	if (classification.matches_mobile && classification.matches_fixed_line) {
-		return PhoneNumberType::FIXED_LINE_OR_MOBILE;
+// libphonenumber's maybeStripNationalPrefixAndCarrierCode: drops the region's
+// national prefix for parsing (e.g. the trunk 0 of "030 ...", the NANP 1 of
+// "1-212-...", MX 044) or replaces it by the transform rule (AR "011 15 ..." ->
+// "9 11 ..."), unless the number fits the region's general pattern only with it.
+// Returns true when the number changed.
+bool MaybeStripNationalPrefix(std::string& national_number, const CountryMetadata& metadata) {
+	const auto& regex = GetCompiledPatterns(metadata).national_prefix_for_parsing;
+	if (national_number.empty() || !regex) {
+		return false;
 	}
-
-	if (classification.matches_mobile) {
-		return PhoneNumberType::MOBILE;
+	constexpr int MAX_GROUPS = 10;
+	const int group_count = std::min(regex->NumberOfCapturingGroups() + 1, MAX_GROUPS);
+	duckdb_re2::StringPiece groups[MAX_GROUPS];
+	if (!regex->Match(duckdb_re2::StringPiece(national_number.data(), national_number.size()), 0,
+	                  national_number.size(), duckdb_re2::RE2::ANCHOR_START, groups, group_count)) {
+		return false;
 	}
+	const size_t prefix_end = groups[0].size();
+	const bool viable_original = MatchesGeneralPattern(national_number, metadata);
+	const auto& transform_rule = metadata.national_prefix_transform_rule;
+	const bool last_group_matched = group_count > 1 && groups[group_count - 1].data() != nullptr;
 
-	if (classification.matches_fixed_line) {
+	std::string candidate;
+	if (transform_rule.empty() || !last_group_matched) {
+		candidate = national_number.substr(prefix_end);
+	} else {
+		for (size_t i = 0; i < transform_rule.size(); i++) {
+			if (transform_rule[i] == '$' && i + 1 < transform_rule.size() && transform_rule[i + 1] >= '0' &&
+			    transform_rule[i + 1] <= '9') {
+				const int group = transform_rule[i + 1] - '0';
+				if (group < group_count && groups[group].data()) {
+					candidate.append(groups[group].data(), groups[group].size());
+				}
+				i++;
+			} else {
+				candidate += transform_rule[i];
+			}
+		}
+		candidate += national_number.substr(prefix_end);
+	}
+	if (viable_original && !MatchesGeneralPattern(candidate, metadata)) {
+		return false;
+	}
+	AnofoxTrace(AnofoxLogLevel::Debug, "PhoneNumber parse: national prefix of " + national_number + " -> " + candidate +
+	                                       ", region=" + std::string(metadata.region_code));
+	national_number = std::move(candidate);
+	return true;
+}
+
+// libphonenumber's getNumberTypeHelper
+const char* NumberTypeOf(const std::string& national_number, const CountryMetadata& metadata) {
+	if (!IsNumberMatchingDesc(national_number, metadata, GENERAL_DESC)) {
+		return PhoneNumberType::UNKNOWN;
+	}
+	static constexpr std::pair<NumberDescIndex, const char*> SPECIAL_TYPES[] = {
+	    {PREMIUM_RATE_DESC, PhoneNumberType::PREMIUM_RATE},
+	    {TOLL_FREE_DESC, PhoneNumberType::TOLL_FREE},
+	    {SHARED_COST_DESC, PhoneNumberType::SHARED_COST},
+	    {VOIP_DESC, PhoneNumberType::VOIP},
+	    {PERSONAL_NUMBER_DESC, PhoneNumberType::PERSONAL_NUMBER},
+	    {PAGER_DESC, PhoneNumberType::PAGER},
+	    {UAN_DESC, PhoneNumberType::UAN},
+	    {VOICEMAIL_DESC, PhoneNumberType::VOICEMAIL},
+	};
+	for (const auto& entry : SPECIAL_TYPES) {
+		if (IsNumberMatchingDesc(national_number, metadata, entry.first)) {
+			return entry.second;
+		}
+	}
+	if (IsNumberMatchingDesc(national_number, metadata, FIXED_LINE_DESC)) {
+		if (metadata.same_mobile_and_fixed_line_pattern ||
+		    IsNumberMatchingDesc(national_number, metadata, MOBILE_DESC)) {
+			return PhoneNumberType::FIXED_LINE_OR_MOBILE;
+		}
 		return PhoneNumberType::FIXED_LINE;
 	}
-
+	if (!metadata.same_mobile_and_fixed_line_pattern && IsNumberMatchingDesc(national_number, metadata, MOBILE_DESC)) {
+		return PhoneNumberType::MOBILE;
+	}
 	return PhoneNumberType::UNKNOWN;
 }
 
-// Resolve the region for a country code extracted from international input.
-// For shared country codes (e.g. +1 NANPA) a region hint belonging to the
-// code's region list wins; otherwise the candidates' validation patterns are
-// tried, falling back to the main (first) region.
-std::string ResolveRegionForCountryCode(int country_code, const std::string& region_hint_upper,
-                                        const std::string& national_number) {
-	auto it = COUNTRY_CODE_TO_REGIONS.find(country_code);
-	if (it == COUNTRY_CODE_TO_REGIONS.end() || it->second.empty()) {
+// The region of a number of a country calling code, libphonenumber's
+// getRegionCodeForNumberFromRegionList: in the code's region order (main region
+// first), the first region whose leading digits match or, for a region without
+// leading digits, in which the number has a known type. The region argument
+// plays no part: a GB-wide 0800 number is GB also for a customer in Guernsey.
+// Empty when the number is valid in none of the regions.
+std::string ResolveRegionForCountryCode(int country_code, const std::string& national_number) {
+	const auto* entry = GetRegionsForCountryCode(country_code);
+	if (!entry) {
 		return "";
 	}
-	const auto& candidates = it->second;
-	if (candidates.size() == 1) {
-		return candidates[0];
+	if (entry->region_count == 1) {
+		return std::string(entry->regions[0]);
 	}
-
-	if (!region_hint_upper.empty() &&
-	    std::find(candidates.begin(), candidates.end(), region_hint_upper) != candidates.end()) {
-		return region_hint_upper;
-	}
-
-	for (const auto& candidate : candidates) {
+	for (size_t i = 0; i < entry->region_count; i++) {
+		const auto& candidate = entry->regions[i];
 		const CountryMetadata* metadata = GetMetadataForRegion(candidate);
-		if (!metadata || !metadata->IsValidLength(national_number.size())) {
+		if (!metadata) {
 			continue;
 		}
-		if (ClassifyNationalNumber(national_number, candidate).MatchesAnyPattern()) {
-			return candidate;
+		const auto& leading_digits = GetCompiledPatterns(*metadata).leading_digits;
+		const bool matches =
+		    leading_digits ? leading_digits->Match(duckdb_re2::StringPiece(national_number.data(), national_number.size()),
+		                                           0, national_number.size(), duckdb_re2::RE2::ANCHOR_START, nullptr, 0)
+		                   : NumberTypeOf(national_number, *metadata) != PhoneNumberType::UNKNOWN;
+		if (matches) {
+			AnofoxTrace(AnofoxLogLevel::Debug, "PhoneNumber parse: +" + std::to_string(country_code) + " " +
+			                                       national_number + " is in region " + std::string(candidate));
+			return std::string(candidate);
 		}
 	}
-
-	// Fall back to the main region
-	return candidates[0];
+	return "";
 }
 
-// Length of the prefix at the start of `national_number` that parsing may drop:
-// the region's national_prefix_for_parsing (e.g. MX 01/044/045/1) when it has
-// one, otherwise its national (trunk) prefix. 0 when there is none.
-size_t NationalPrefixForParsingLength(const std::string& national_number, const std::string& region_code,
-                                      const CountryMetadata& metadata) {
-	const CompiledRegionPatterns* patterns = GetCompiledPatternsForRegion(region_code);
-	if (patterns && patterns->national_prefix_for_parsing) {
-		std::smatch match;
-		if (std::regex_search(national_number, match, *patterns->national_prefix_for_parsing,
-		                      std::regex_constants::match_continuous)) {
-			return static_cast<size_t>(match.length(0));
-		}
-		return 0;
-	}
-	if (!metadata.national_prefix.empty() &&
-	    national_number.compare(0, metadata.national_prefix.size(), metadata.national_prefix) == 0) {
-		return metadata.national_prefix.size();
-	}
-	return 0;
-}
-
-// Numbers written as "+49 (0)30 1234567" or "+44 020 7946 0018" carry the
-// national (trunk) prefix after the country code, Mexican numbers the abolished
-// mobile token ("+52 1 55 ...") or dialling prefix ("044 55 ..."). Drop it when
-// the number is only valid without it, as libphonenumber does.
-std::string StripNationalPrefixIfInvalid(const std::string& national_number, const std::string& region_code) {
-	const CountryMetadata* metadata = GetMetadataForRegion(region_code);
-	if (!metadata) {
-		return national_number;
-	}
-	const size_t prefix_length = NationalPrefixForParsingLength(national_number, region_code, *metadata);
-	if (prefix_length == 0) {
-		return national_number;
-	}
-	auto is_valid = [&](const std::string& candidate) {
-		return metadata->IsValidLength(candidate.size()) &&
-		       ClassifyNationalNumber(candidate, region_code).MatchesValidPattern();
-	};
-	std::string stripped = national_number.substr(prefix_length);
-	if (!is_valid(national_number) && is_valid(stripped)) {
-		AnofoxTrace(AnofoxLogLevel::Debug, "PhoneNumber parse: dropped prefix " + national_number.substr(0, prefix_length) +
-		                                       " of " + national_number + ", region=" + region_code);
-		return stripped;
-	}
-	return national_number;
+// Whether the reason means that the module has no metadata to judge the number
+bool IsUnsupportedReason(const std::string& reason) {
+	return reason == PhoneNumberInvalidReason::UNSUPPORTED_REGION ||
+	       reason == PhoneNumberInvalidReason::INVALID_COUNTRY_CODE;
 }
 
 std::mutex& RegionMutex() {
@@ -332,6 +344,10 @@ std::mutex& RegionMutex() {
 }
 
 } // namespace
+
+bool PhoneNumberParts::CannotJudge() const {
+	return IsUnsupportedReason(reason);
+}
 
 PhoneNumberManager& PhoneNumberManager::Instance() {
 	static PhoneNumberManager instance;
@@ -391,65 +407,90 @@ PhoneNumberParts PhoneNumberManager::Parse(const std::string& raw_number, const 
 	}
 	parts.extension = input.extension;
 
-	std::string hint_upper = NormalizeRegionCode(region_hint);
+	const std::string hint_upper = NormalizeRegionCode(region_hint);
 
 	int country_code = 0;
 	std::string national_number;
-	std::string region_code;
+	// Metadata the national prefix is stripped with: the region the number was
+	// read in for a national number, the country code's main region otherwise
+	const CountryMetadata* parse_metadata = nullptr;
+	std::string read_region;
 
 	if (normalized[0] != '+') {
 		// National format, or international format dialled with the region's
 		// international prefix (e.g. "0049 ..." from DE, "011 49 ..." from US).
 		// The region comes from the hint, falling back to the (session-snapshotted)
-		// default region when there is no hint. An unsupported hint (e.g. 'AT',
-		// or 'UK' instead of 'GB') is an error rather than silently using the default.
-		region_code = !hint_upper.empty() ? hint_upper : EffectiveDefaultRegion(default_region);
-		const CountryMetadata* hint_metadata = GetMetadataForRegion(region_code);
+		// default region when there is no hint. An unknown hint (e.g. 'XX') makes
+		// the number unjudgeable rather than silently using the default.
+		read_region = !hint_upper.empty() ? hint_upper : EffectiveDefaultRegion(default_region);
+		const CountryMetadata* hint_metadata = GetMetadataForRegion(read_region);
 		if (!hint_metadata) {
-			AnofoxTrace(AnofoxLogLevel::Debug, "PhoneNumber parse failed: unsupported region=" + region_code);
+			AnofoxTrace(AnofoxLogLevel::Debug, "PhoneNumber parse failed: unsupported region=" + read_region);
 			parts.reason = PhoneNumberInvalidReason::UNSUPPORTED_REGION;
 			return parts;
 		}
-		const auto& idd = hint_metadata->international_prefix;
-		if (!idd.empty() && normalized.size() > idd.size() && normalized.compare(0, idd.size(), idd) == 0) {
-			AnofoxTrace(AnofoxLogLevel::Debug,
-			           "PhoneNumber parse: international prefix " + idd + " of region " + region_code + " in " + normalized);
-			normalized = "+" + normalized.substr(idd.size());
+		// libphonenumber's parsePrefixAsIdd: a country code never starts with 0
+		const size_t idd_length = InternationalPrefixLength(normalized, *hint_metadata);
+		if (idd_length > 0 && idd_length < normalized.size() && normalized[idd_length] != '0') {
+			AnofoxTrace(AnofoxLogLevel::Debug, "PhoneNumber parse: international prefix " +
+			                                       normalized.substr(0, idd_length) + " of region " + read_region +
+			                                       " in " + normalized);
+			normalized = "+" + normalized.substr(idd_length);
 		} else {
 			parts.read_in_default_region = hint_upper.empty();
+			parse_metadata = hint_metadata;
 			country_code = hint_metadata->country_code;
 			national_number = normalized;
-			// Remove national prefix if present
-			if (!hint_metadata->national_prefix.empty() &&
-			    national_number.find(hint_metadata->national_prefix) == 0) {
-				national_number = national_number.substr(hint_metadata->national_prefix.size());
-			} else if (!hint_metadata->national_prefix_for_parsing.empty()) {
-				// Prefixes that are no longer dialled (MX 01/044/045) are dropped
-				// only when the number is valid without them
-				national_number = StripNationalPrefixIfInvalid(national_number, region_code);
+			// A national number written with the region's own country code but
+			// without '+' ("49 30 1234567" in DE), libphonenumber's maybeExtractCountryCode
+			const std::string code = std::to_string(country_code);
+			if (national_number.compare(0, code.size(), code) == 0) {
+				std::string without_code = national_number.substr(code.size());
+				MaybeStripNationalPrefix(without_code, *hint_metadata);
+				if ((!MatchesGeneralPattern(national_number, *hint_metadata) &&
+				     MatchesGeneralPattern(without_code, *hint_metadata)) ||
+				    TestNumberLength(national_number, *hint_metadata) == LengthResult::TOO_LONG) {
+					AnofoxTrace(AnofoxLogLevel::Debug, "PhoneNumber parse: country code " + code + " without + in " +
+					                                       national_number);
+					national_number = std::move(without_code);
+					parts.read_in_default_region = false;
+				}
 			}
 		}
 	}
 
 	if (normalized[0] == '+') {
-		// Explicit international format: derive the region from the country code,
-		// using the hint only to disambiguate shared country codes (e.g. +1).
-		std::tie(country_code, national_number) = ExtractCountryCode(normalized);
+		// Explicit international format: the country code decides, the region
+		// argument is not used
+		std::tie(country_code, national_number) = ExtractCountryCode(normalized.substr(1));
 		if (country_code == 0) {
 			AnofoxTrace(AnofoxLogLevel::Debug, "PhoneNumber parse failed: unknown country code in " + normalized);
 			parts.reason = PhoneNumberInvalidReason::INVALID_COUNTRY_CODE;
 			return parts;
 		}
-		region_code = ResolveRegionForCountryCode(country_code, hint_upper, national_number);
-		if (region_code.empty()) {
-			AnofoxTrace(AnofoxLogLevel::Debug,
-			           "PhoneNumber parse failed: no region found for country_code=" + std::to_string(country_code));
-			parts.reason = PhoneNumberInvalidReason::INVALID_COUNTRY_CODE;
-			return parts;
+		parse_metadata = GetMetadataForRegion(GetMainRegionForCountryCode(country_code));
+	}
+	D_ASSERT(parse_metadata);
+
+	// The national (trunk) prefix, "+49 (0)30 ...", "1-212-...", MX "044 55 ...":
+	// keep the stripped number unless that makes its length impossible
+	std::string stripped = national_number;
+	if (MaybeStripNationalPrefix(stripped, *parse_metadata)) {
+		const auto length_result = TestNumberLength(stripped, *parse_metadata);
+		if (length_result != LengthResult::TOO_SHORT && length_result != LengthResult::IS_POSSIBLE_LOCAL_ONLY &&
+		    length_result != LengthResult::INVALID_LENGTH) {
+			national_number = std::move(stripped);
 		}
-		national_number = StripNationalPrefixIfInvalid(national_number, region_code);
 	}
 
+	const std::string main_region = GetMainRegionForCountryCode(country_code);
+	std::string region_code = ResolveRegionForCountryCode(country_code, national_number);
+	if (region_code.empty()) {
+		// Valid in none of the code's regions: report the region it was read in
+		region_code = !read_region.empty() && GetMetadataForRegion(read_region)->country_code == country_code
+		                  ? read_region
+		                  : main_region;
+	}
 	const CountryMetadata* metadata = GetMetadataForRegion(region_code);
 	if (!metadata) {
 		AnofoxTrace(AnofoxLogLevel::Debug, "PhoneNumber parse failed: no metadata for region=" + region_code);
@@ -457,9 +498,13 @@ PhoneNumberParts PhoneNumberManager::Parse(const std::string& raw_number, const 
 		return parts;
 	}
 	parts.region_code = region_code;
+	parts.country_code = country_code;
 
-	// Validate length
-	if (!metadata->IsValidLength(national_number.size())) {
+	// Possible: libphonenumber's isPossibleNumber, judged with the code's main region
+	const auto length_result = national_number.size() < MIN_NSN_LENGTH || national_number.size() > MAX_NSN_LENGTH
+	                               ? LengthResult::INVALID_LENGTH
+	                               : TestNumberLength(national_number, *GetMetadataForRegion(main_region));
+	if (length_result != LengthResult::IS_POSSIBLE && length_result != LengthResult::IS_POSSIBLE_LOCAL_ONLY) {
 		AnofoxTrace(AnofoxLogLevel::Debug,
 		           "PhoneNumber parse failed: invalid length=" + std::to_string(national_number.size()) +
 		           " for region=" + region_code);
@@ -468,16 +513,12 @@ PhoneNumberParts PhoneNumberManager::Parse(const std::string& raw_number, const 
 		return parts;
 	}
 
-	// Successful parse
-	auto classification = ClassifyNationalNumber(national_number, region_code);
 	parts.valid = true;
-	parts.country_code = country_code;
 	parts.national_number = national_number;
-	parts.region_code = region_code;
-	parts.type = DeterminePhoneNumberType(classification);
-	parts.matches_valid_pattern = classification.MatchesValidPattern();
+	parts.type = NumberTypeOf(national_number, *metadata);
+	parts.matches_valid_pattern = parts.type != PhoneNumberType::UNKNOWN;
 	if (!parts.matches_valid_pattern) {
-		// Possible (length fits) but not in a fixed-line, mobile or toll-free range
+		// Possible (length fits) but in no number range of the region
 		parts.reason = PhoneNumberInvalidReason::INVALID_PATTERN;
 	}
 	if (parts.read_in_default_region && !parts.reason.empty()) {
@@ -494,7 +535,6 @@ std::string PhoneNumberManager::Format(const std::string& raw_number, const std:
                                        PhoneNumberFormatOption format_option, const std::string& default_region) {
 	EnsureInitialized();
 
-	// Parse the number first
 	// Only a valid number (the phonenumber_is_valid check: a possible length
 	// and a number in an assigned range) is formatted, so a stored E164 value
 	// is always a valid number; phonenumber_parse().reason says why not.
@@ -506,51 +546,48 @@ std::string PhoneNumberManager::Format(const std::string& raw_number, const std:
 		throw InvalidInputException("Invalid phone number: %s", raw_number);
 	}
 
-	const CountryMetadata* metadata = GetMetadataForRegion(parts.region_code);
-	if (!metadata) {
-		throw InvalidInputException("No metadata for region: %s", parts.region_code);
+	const std::string country_prefix = "+" + std::to_string(parts.country_code);
+	if (format_option == PhoneNumberFormatOption::E164) {
+		return country_prefix + parts.national_number;
 	}
 
-	const std::string country_prefix = "+" + std::to_string(parts.country_code);
-	// The region's layout rule for this number (nullptr: emit the NSN ungrouped)
-	std::smatch match;
-	const NumberFormat *number_format = FindNumberFormat(parts.region_code, parts.national_number, match);
-	auto international_body = [&]() {
-		return number_format ? match.format(number_format->international_format) : parts.national_number;
-	};
+	// As libphonenumber, the layout rules are those of the country code's main
+	// region (a GG number is laid out like a GB one)
+	const CountryMetadata* metadata = GetMetadataForRegion(GetMainRegionForCountryCode(parts.country_code));
+	if (!metadata) {
+		throw InvalidInputException("No metadata for country code: %d", parts.country_code);
+	}
+	const auto& patterns = GetCompiledPatterns(*metadata);
+	const bool national = format_option == PhoneNumberFormatOption::NATIONAL;
+	std::string body;
+	const NumberFormat* number_format =
+	    ApplyNumberFormat(national ? patterns.national_formats : patterns.intl_formats, parts.national_number, body);
+	if (!number_format) {
+		body = parts.national_number;
+	}
+	AnofoxTrace(AnofoxLogLevel::Debug, "PhoneNumber format rule for region=" + std::string(metadata->region_code) +
+	                                       ": " + (number_format ? std::string(number_format->pattern) : "none"));
 
 	std::string formatted;
-	std::string format_label;
-
 	switch (format_option) {
-	case PhoneNumberFormatOption::E164:
-		formatted = country_prefix + parts.national_number;
-		format_label = "E164";
-		break;
-
 	case PhoneNumberFormatOption::INTERNATIONAL:
-		formatted = country_prefix + " " + international_body();
-		format_label = "INTERNATIONAL";
+		formatted = country_prefix + " " + body;
 		break;
-
 	case PhoneNumberFormatOption::NATIONAL:
-		formatted = number_format ? match.format(number_format->national_format)
-		                          : metadata->national_prefix + parts.national_number;
-		format_label = "NATIONAL";
+		formatted = body;
 		break;
-
 	case PhoneNumberFormatOption::RFC3966: {
 		// RFC 3966: the international layout with every separator run replaced by '-'
 		formatted = "tel:" + country_prefix + "-";
 		bool pending_separator = false;
-		for (char c : international_body()) {
+		for (char c : body) {
 			if (c >= '0' && c <= '9') {
 				if (pending_separator) {
 					formatted += '-';
 					pending_separator = false;
 				}
 				formatted += c;
-			} else {
+			} else if (formatted.back() != '-') {
 				pending_separator = true;
 			}
 		}
@@ -558,15 +595,13 @@ std::string PhoneNumberManager::Format(const std::string& raw_number, const std:
 		if (!parts.extension.empty()) {
 			formatted += ";ext=" + parts.extension;
 		}
-		format_label = "RFC3966";
 		break;
 	}
+	case PhoneNumberFormatOption::E164:
+		break;
 	}
 
-	AnofoxTrace(AnofoxLogLevel::Debug, "PhoneNumber format rule for region=" + parts.region_code + ": " +
-	                                       (number_format ? number_format->pattern : std::string("none")));
-	AnofoxTrace(AnofoxLogLevel::Debug,
-	           "PhoneNumber format success number=" + raw_number + " format=" + format_label + " output=" + formatted);
+	AnofoxTrace(AnofoxLogLevel::Debug, "PhoneNumber format success number=" + raw_number + " output=" + formatted);
 	return formatted;
 }
 
@@ -584,65 +619,65 @@ std::string PhoneNumberManager::GetRegion(const std::string& raw_number, const s
 	return parts.region_code;
 }
 
-bool PhoneNumberManager::IsValid(const std::string& raw_number, const std::string& region_hint,
-                                 const std::string& default_region) {
+std::optional<bool> PhoneNumberManager::IsValid(const std::string& raw_number, const std::string& region_hint,
+                                                const std::string& default_region) {
 	EnsureInitialized();
 
 	auto parts = Parse(raw_number, region_hint, default_region);
-	if (!parts.valid) {
-		AnofoxTrace(AnofoxLogLevel::Debug,
-		           "PhoneNumber IsValid parse failed number=" + raw_number);
-		return false;
+	if (parts.CannotJudge()) {
+		AnofoxTrace(AnofoxLogLevel::Debug, "PhoneNumber IsValid cannot judge number=" + raw_number +
+		                                       " reason=" + parts.reason);
+		return std::nullopt;
 	}
-
-	// Pattern classification already happened during Parse
-	bool is_valid = parts.matches_valid_pattern;
+	const bool is_valid = parts.valid && parts.matches_valid_pattern;
 	AnofoxTrace(AnofoxLogLevel::Debug,
 	           "PhoneNumber IsValid result=" + std::string(is_valid ? "true" : "false") +
 	           " number=" + raw_number);
 	return is_valid;
 }
 
-bool PhoneNumberManager::IsPossible(const std::string& raw_number, const std::string& region_hint,
-                                    const std::string& default_region) {
+std::optional<bool> PhoneNumberManager::IsPossible(const std::string& raw_number, const std::string& region_hint,
+                                                   const std::string& default_region) {
 	EnsureInitialized();
 
 	auto parts = Parse(raw_number, region_hint, default_region);
-	if (!parts.valid) {
-		AnofoxTrace(AnofoxLogLevel::Debug,
-		           "PhoneNumber IsPossible parse failed number=" + raw_number);
-		return false;
+	if (parts.CannotJudge()) {
+		AnofoxTrace(AnofoxLogLevel::Debug, "PhoneNumber IsPossible cannot judge number=" + raw_number +
+		                                       " reason=" + parts.reason);
+		return std::nullopt;
 	}
-
-	// IsPossible only checks length, not patterns
-	bool is_possible = parts.valid;  // If parse succeeded, it's already length-checked
+	// Parse succeeds exactly for a possible length (isPossibleNumber)
 	AnofoxTrace(AnofoxLogLevel::Debug,
-	           "PhoneNumber IsPossible result=" + std::string(is_possible ? "true" : "false") +
+	           "PhoneNumber IsPossible result=" + std::string(parts.valid ? "true" : "false") +
 	           " number=" + raw_number);
-	return is_possible;
+	return parts.valid;
 }
 
-bool PhoneNumberManager::IsValidForRegion(const std::string& raw_number, const std::string& region_hint,
-                                          const std::string& default_region) {
+std::optional<bool> PhoneNumberManager::IsValidForRegion(const std::string& raw_number, const std::string& region_hint,
+                                                         const std::string& default_region) {
 	EnsureInitialized();
 
+	auto hint = NormalizeRegionCode(region_hint);
+	const std::string requested_region = hint.empty() ? EffectiveDefaultRegion(default_region) : hint;
+	const CountryMetadata* requested = GetMetadataForRegion(requested_region);
 	auto parts = Parse(raw_number, region_hint, default_region);
+	if (!requested || parts.CannotJudge()) {
+		AnofoxTrace(AnofoxLogLevel::Debug, "PhoneNumber IsValidForRegion cannot judge number=" + raw_number +
+		                                       " region=" + requested_region);
+		return std::nullopt;
+	}
 	if (!parts.valid) {
 		return false;
 	}
-
-	// Check if the parsed region matches the requested region
-	auto hint = NormalizeRegionCode(region_hint);
-	std::string requested_region = hint.empty() ? EffectiveDefaultRegion(default_region) : hint;
-	if (parts.region_code != requested_region) {
-		AnofoxTrace(AnofoxLogLevel::Debug,
-		           "PhoneNumber IsValidForRegion failed: parsed_region=" + parts.region_code +
-		           " != requested_region=" + requested_region);
+	// libphonenumber's isValidNumberForRegion: the region's country code, and a
+	// number range of that region
+	if (parts.country_code != requested->country_code) {
+		AnofoxTrace(AnofoxLogLevel::Debug, "PhoneNumber IsValidForRegion failed: country code " +
+		                                       std::to_string(parts.country_code) + " is not the one of " +
+		                                       requested_region);
 		return false;
 	}
-
-	// Also validate against patterns (classified during Parse)
-	return parts.matches_valid_pattern;
+	return NumberTypeOf(parts.national_number, *requested) != PhoneNumberType::UNKNOWN;
 }
 
 std::string PhoneNumberManager::Match(const std::string& number1, const std::string& number2,
@@ -721,8 +756,20 @@ std::string PhoneNumberManager::GetExampleNumber(const std::string& region_hint,
 		return "";
 	}
 
-	// Return E164 format of example number
-	std::string formatted = "+" + std::to_string(metadata->country_code) + metadata->example_number;
+	// libphonenumber's getExampleNumber is the fixed-line example; regions
+	// without fixed lines fall back to the first type that has one
+	std::string_view example;
+	for (const auto& desc : {FIXED_LINE_DESC, MOBILE_DESC, TOLL_FREE_DESC, PREMIUM_RATE_DESC, SHARED_COST_DESC,
+	                         PERSONAL_NUMBER_DESC, VOIP_DESC, PAGER_DESC, UAN_DESC, VOICEMAIL_DESC}) {
+		if (!metadata->descs[desc].example.empty()) {
+			example = metadata->descs[desc].example;
+			break;
+		}
+	}
+	if (example.empty()) {
+		return "";
+	}
+	std::string formatted = "+" + std::to_string(metadata->country_code) + std::string(example);
 	AnofoxTrace(AnofoxLogLevel::Debug,
 	           "PhoneNumber GetExampleNumber result=" + formatted + " region=" + region);
 	return formatted;
@@ -926,10 +973,11 @@ void PhoneParseFunction(DataChunk& args, ExpressionState& state, Vector& result)
 
 		auto parts = PhoneNumberManager::Instance().Parse(raw_number, region_hint, default_region);
 
-		// `valid` matches phonenumber_is_valid: a possible length and a valid range
+		// `valid` matches phonenumber_is_valid: a possible length and a valid range,
+		// NULL when there is no metadata to judge the number
 		const bool is_valid = parts.valid && parts.matches_valid_pattern;
 		FlatVector::SetNull(result, i, false);
-		FlatVector::SetNull(valid_vec, i, false);
+		FlatVector::SetNull(valid_vec, i, parts.CannotJudge());
 		valid_data[i] = is_valid;
 
 		if (is_valid) {
@@ -1083,8 +1131,10 @@ void PhoneIsValidFunction(DataChunk& args, ExpressionState& state, Vector& resul
 		                     ? UnifiedVectorFormat::GetData<string_t>(region_data)[reg_idx].GetString()
 		                     : std::string();
 
-		result_data[i] = PhoneNumberManager::Instance().IsValid(raw_number, region_hint, default_region);
-		FlatVector::SetNull(result, i, false);
+		// NULL: no metadata to judge the number (unknown region or country code)
+		const auto judgement = PhoneNumberManager::Instance().IsValid(raw_number, region_hint, default_region);
+		FlatVector::SetNull(result, i, !judgement.has_value());
+		result_data[i] = judgement.value_or(false);
 	}
 }
 
@@ -1117,8 +1167,10 @@ void PhoneIsPossibleFunction(DataChunk& args, ExpressionState& state, Vector& re
 		                     ? UnifiedVectorFormat::GetData<string_t>(region_data)[reg_idx].GetString()
 		                     : std::string();
 
-		result_data[i] = PhoneNumberManager::Instance().IsPossible(raw_number, region_hint, default_region);
-		FlatVector::SetNull(result, i, false);
+		// NULL: no metadata to judge the number (unknown region or country code)
+		const auto judgement = PhoneNumberManager::Instance().IsPossible(raw_number, region_hint, default_region);
+		FlatVector::SetNull(result, i, !judgement.has_value());
+		result_data[i] = judgement.value_or(false);
 	}
 }
 
@@ -1152,8 +1204,10 @@ void PhoneIsValidForRegionFunction(DataChunk& args, ExpressionState& state, Vect
 		                     ? UnifiedVectorFormat::GetData<string_t>(region_data)[reg_idx].GetString()
 		                     : std::string();
 
-		result_data[i] = PhoneNumberManager::Instance().IsValidForRegion(raw_number, region_hint, default_region);
-		FlatVector::SetNull(result, i, false);
+		// NULL: no metadata to judge the number (unknown region or country code)
+		const auto judgement = PhoneNumberManager::Instance().IsValidForRegion(raw_number, region_hint, default_region);
+		FlatVector::SetNull(result, i, !judgement.has_value());
+		result_data[i] = judgement.value_or(false);
 	}
 }
 

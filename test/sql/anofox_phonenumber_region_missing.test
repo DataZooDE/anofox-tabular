@@ -27,7 +27,8 @@ CREATE TABLE customer_phones AS SELECT * FROM (VALUES
     (510, 'Testkunde 2',        '12',                       'US'),
     (511, 'Unbekannt',          'n/a',                      NULL),
     (512, 'Wiener Kaffeehaus',  '01 58800',                 'AT'),
-    (513, 'Fake Inc',           '123 456 7890',             NULL)
+    (513, 'Fake Inc',           '123 456 7890',             NULL),
+    (514, 'Nowhere Ltd',        '01 58800',                 'XX')
 ) t(customer_id, customer_name, phone, region);
 
 # region: the region the number was read in, also for an invalid number; NULL
@@ -49,8 +50,9 @@ ORDER BY customer_id;
 509	false	US	region_missing	NULL
 510	false	US	invalid_length	NULL
 511	false	NULL	not_a_number	NULL
-512	false	NULL	unsupported_region	NULL
+512	true	AT	NULL	+43158800
 513	false	US	region_missing	NULL
+514	NULL	NULL	unsupported_region	NULL
 
 # With the default region set to DE the German national numbers are valid, and
 # a failing national number names DE as the region it was read in.
@@ -72,7 +74,7 @@ RESET anofox_tab_phonenumber_default_region;
 
 # An explicit region keeps the precise reason
 query TT
-SELECT (phonenumber_parse('030 1234', 'DE')).reason, (phonenumber_parse('030 1234', 'DE')).region;
+SELECT (phonenumber_parse('030 12', 'DE')).reason, (phonenumber_parse('030 12', 'DE')).region;
 ----
 invalid_pattern	DE
 

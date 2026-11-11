@@ -210,7 +210,7 @@ SELECT phonenumber_example('GB');
 query T
 SELECT phonenumber_example('DE');
 ----
-+493012345678
++4930123456
 
 # Get example number for FR
 query T
@@ -337,7 +337,7 @@ SELECT phonenumber_format('6502530000', 'US', 'NATIONAL');
 query T
 SELECT phonenumber_format('6502530000', 'US', 'INTERNATIONAL');
 ----
-+1 650 253 0000
++1 650-253-0000
 
 query T
 SELECT phonenumber_format('6502530000', 'US', 'RFC3966');
@@ -394,16 +394,22 @@ SELECT phonenumber_is_valid('089 123456', 'DE'),
 ----
 true	true	true	true	true
 
-# ... but garbage stays invalid
+# ... but garbage stays invalid (libphonenumber agrees on every case)
 query TTTTTT
-SELECT phonenumber_is_valid('030 1234', 'DE'),            -- Berlin subscriber too short
-       phonenumber_is_valid('0049 1234', 'DE'),           -- too short
-       phonenumber_is_valid('030 123456789012', 'DE'),    -- too long
-       phonenumber_is_valid('0123 4567890', 'DE'),        -- 01x is not a fixed/mobile range
-       phonenumber_is_valid('0171 123', 'DE'),            -- mobile too short
+SELECT phonenumber_is_valid('030 12', 'DE'),                  -- Berlin subscriber too short
+       phonenumber_is_valid('0049 1234', 'DE'),               -- too short
+       phonenumber_is_valid('030 1234567890123456', 'DE'),    -- too long (18 digits)
+       phonenumber_is_valid('0123 4567890', 'DE'),            -- 01x is no number range
+       phonenumber_is_valid('0171 123', 'DE'),                -- mobile too short
        phonenumber_is_valid('00 0', 'DE');
 ----
 false	false	false	false	false	false
+
+# Short Berlin subscriber numbers and long extensions of PBX numbers exist
+query TT
+SELECT phonenumber_is_valid('030 1234', 'DE'), phonenumber_is_valid('030 123456789012', 'DE');
+----
+true	true
 
 # 11-digit Brazilian mobile numbers are valid
 query T
@@ -419,19 +425,19 @@ query ITTTTTT
 SELECT id, (p).valid, (p).country_code, (p).national_number, (p).region, (p).type, (p).reason
 FROM (SELECT id, phonenumber_parse(n, r) AS p
       FROM (VALUES (1, '+49 30 12345678', NULL),
-                   (2, '0664 1234567', 'AT'),
+                   (2, '0664 1234567', 'XX'), -- no such region
                    (3, '020 7946 0018', 'UK'), -- 'UK' is an alias of 'GB'
-                   (4, '+43 664 1234567', NULL),
+                   (4, '+999 664 1234567', NULL), -- no such country code
                    (5, '12', 'US'),
-                   (6, '030 1234', 'DE'),
+                   (6, '0123 4567890', 'DE'),
                    (7, 'not a number', 'US'),
                    (8, '0049 30 12345678', 'DE')) v(id, n, r))
 ORDER BY id;
 ----
 1	true	49	3012345678	DE	fixed_line	NULL
-2	false	NULL	NULL	NULL	NULL	unsupported_region
+2	NULL	NULL	NULL	NULL	NULL	unsupported_region
 3	true	44	2079460018	GB	fixed_line	NULL
-4	false	NULL	NULL	NULL	NULL	unsupported_country_code
+4	NULL	NULL	NULL	NULL	NULL	unsupported_country_code
 5	false	NULL	NULL	US	NULL	invalid_length
 6	false	NULL	NULL	DE	NULL	invalid_pattern
 7	false	NULL	NULL	NULL	NULL	not_a_number
@@ -439,7 +445,7 @@ ORDER BY id;
 
 # An international number ignores an unsupported region hint
 query TT
-SELECT (phonenumber_parse('+44 20 7946 0018', 'AT')).region, (phonenumber_parse('+44 20 7946 0018', 'AT')).reason;
+SELECT (phonenumber_parse('+44 20 7946 0018', 'XX')).region, (phonenumber_parse('+44 20 7946 0018', 'XX')).reason;
 ----
 GB	NULL
 

@@ -2396,7 +2396,7 @@ bool PhoneRecognizer::Validate(const std::string &text) const {
     if (text.compare(0, 2, "00") == 0 && digit_count == text.size()) {
         try {
             const auto parts = phonenumber::PhoneNumberManager::Instance().Parse("+" + text.substr(2), "");
-            if (!parts.valid) {
+            if (!parts.valid || !parts.matches_valid_pattern) {
                 AnofoxTrace(AnofoxLogLevel::Trace, "pii: compact 00 number is no valid phone number: " + text +
                                                        " (" + parts.reason + ")");
                 return false;
@@ -2423,17 +2423,19 @@ bool PhoneRecognizer::PassesDeepValidation(const std::string &text) {
     // The phone module judges a number written with +CC (or the default
     // region's international prefix) for that country and a national number
     // for anofox_tab_phonenumber_default_region. A match is rejected only
-    // when the number has an impossible length there. A national number in
+    // when it is no valid number there: an impossible length, or a possible
+    // length outside every number range of the region. A national number in
     // another country's format (0171 1234567 with the default region US,
     // which has no trunk prefix 0) cannot be judged and is kept, so deep
     // validation never unmasks a number just because the region differs.
     auto &manager = phonenumber::PhoneNumberManager::Instance();
     const auto default_region = ActivePhoneDefaultRegion();
     const auto parts = manager.Parse(text, "", default_region);
-    if (parts.valid) {
+    if (parts.valid && parts.matches_valid_pattern) {
         return true;
     }
-    if (parts.reason != phonenumber::PhoneNumberInvalidReason::INVALID_LENGTH) {
+    if (parts.reason != phonenumber::PhoneNumberInvalidReason::INVALID_LENGTH &&
+        parts.reason != phonenumber::PhoneNumberInvalidReason::INVALID_PATTERN) {
         // Unknown country code or unsupported region: no judgement possible
         AnofoxTrace(AnofoxLogLevel::Trace, "pii: phone deep validation cannot judge " + text + " (" + parts.reason + ")");
         return true;
@@ -2448,8 +2450,7 @@ bool PhoneRecognizer::PassesDeepValidation(const std::string &text) {
     if (!international) {
         const auto region = manager.EffectiveDefaultRegion(default_region);
         const auto *metadata = phonenumber::GetMetadataForRegion(region);
-        const bool region_idd = metadata && !metadata->international_prefix.empty() &&
-                                digits.compare(0, metadata->international_prefix.size(), metadata->international_prefix) == 0;
+        const bool region_idd = metadata && phonenumber::InternationalPrefixLength(digits, *metadata) > 0;
         const bool region_trunk = metadata && !metadata->national_prefix.empty() &&
                                   digits.compare(0, metadata->national_prefix.size(), metadata->national_prefix) == 0;
         if (!region_idd && !region_trunk && !digits.empty() && digits[0] == '0') {
@@ -2458,7 +2459,7 @@ bool PhoneRecognizer::PassesDeepValidation(const std::string &text) {
             return true;
         }
     }
-    AnofoxTrace(AnofoxLogLevel::Trace, "pii: phone deep validation rejects " + text + " (invalid length)");
+    AnofoxTrace(AnofoxLogLevel::Trace, "pii: phone deep validation rejects " + text + " (" + parts.reason + ")");
     return false;
 }
 

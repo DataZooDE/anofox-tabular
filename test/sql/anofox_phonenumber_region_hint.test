@@ -20,7 +20,7 @@ statement ok
 CREATE TABLE contacts AS SELECT * FROM (VALUES
     (1, '020 7946 0958',   'UK'),
     (2, '020 7946 0958',   ' gb '),
-    (3, '07700 900123',    'uk '),
+    (3, '07400 123456',    'uk '),
     (4, '030 12345678',    ' DE'),
     (5, '(202) 555-0179',  'us'),
     (6, '0161 496 0000',   'GB')
@@ -36,7 +36,7 @@ FROM contacts ORDER BY id;
 ----
 1	true	+442079460958	GB	GB
 2	true	+442079460958	GB	GB
-3	true	+447700900123	GB	GB
+3	true	+447400123456	GB	GB
 4	true	+493012345678	DE	DE
 5	true	+12025550179	US	US
 6	true	+441614960000	GB	GB
@@ -85,7 +85,7 @@ SELECT current_setting('anofox_tab_phonenumber_default_region');
 GB
 
 query TT
-SELECT phonenumber_format('020 7946 0958', NULL, 'E164'), phonenumber_region('07700 900123', NULL);
+SELECT phonenumber_format('020 7946 0958', NULL, 'E164'), phonenumber_region('07400 123456', NULL);
 ----
 +442079460958	GB
 
@@ -106,7 +106,7 @@ Unknown region code 'XX'
 query TT
 SELECT (phonenumber_parse('020 7946 0958', 'ENG')).valid, (phonenumber_parse('020 7946 0958', 'ENG')).reason;
 ----
-false	unsupported_region
+NULL	unsupported_region
 
 statement ok
 SET anofox_tab_phonenumber_default_region='US';

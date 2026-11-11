@@ -4,6 +4,7 @@
 #include "duckdb/common/common.hpp"
 
 #include <atomic>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -27,8 +28,9 @@ struct PhoneNumberParts {
 	//! also for an invalid number once the region is known; empty before that.
 	std::string region_code;
 	std::string type;
-	//! True if the national number matches the region's fixed-line or mobile
-	//! validation pattern (computed once during Parse, reused by IsValid).
+	//! True if the national number is in a number range of its region, i.e. has
+	//! a type other than unknown (libphonenumber's isValidNumber; computed once
+	//! during Parse, reused by IsValid).
 	bool matches_valid_pattern = false;
 	//! Why the number is not valid (a PhoneNumberInvalidReason value); empty
 	//! when it is valid.
@@ -45,6 +47,11 @@ struct PhoneNumberParts {
 	//! region only because no region was given. `reason` keeps the precise
 	//! cause for internal callers (PII deep validation judges the length).
 	std::string ReportedReason() const;
+
+	//! True when there is no metadata to judge the number: an unknown region
+	//! argument or an unknown country calling code. The validity functions
+	//! return NULL then.
+	bool CannotJudge() const;
 };
 
 //! Values of the `reason` field of phonenumber_parse
@@ -54,7 +61,9 @@ struct PhoneNumberInvalidReason {
 	static constexpr const char *NOT_A_NUMBER = "not_a_number";
 	//! The number contains letters (other than a leading label or an extension marker)
 	static constexpr const char *INVALID_CHARACTERS = "invalid_characters";
+	//! The region argument (or default region) is not a region of the metadata
 	static constexpr const char *UNSUPPORTED_REGION = "unsupported_region";
+	//! The country calling code is unknown (unassigned, or a non-geographic code such as +800)
 	static constexpr const char *INVALID_COUNTRY_CODE = "unsupported_country_code";
 	static constexpr const char *INVALID_LENGTH = "invalid_length";
 	static constexpr const char *INVALID_PATTERN = "invalid_pattern";
@@ -90,12 +99,15 @@ public:
 	                   const std::string &default_region = "");
 	std::string GetRegion(const std::string &raw_number, const std::string &region_hint,
 	                      const std::string &default_region = "");
-	bool IsValid(const std::string &raw_number, const std::string &region_hint,
-	             const std::string &default_region = "");
-	bool IsPossible(const std::string &raw_number, const std::string &region_hint,
-	                const std::string &default_region = "");
-	bool IsValidForRegion(const std::string &raw_number, const std::string &region_hint,
-	                      const std::string &default_region = "");
+	//! IsValid, IsPossible and IsValidForRegion return nullopt when the number
+	//! cannot be judged (PhoneNumberParts::CannotJudge, or an unknown region
+	//! for IsValidForRegion)
+	std::optional<bool> IsValid(const std::string &raw_number, const std::string &region_hint,
+	                            const std::string &default_region = "");
+	std::optional<bool> IsPossible(const std::string &raw_number, const std::string &region_hint,
+	                               const std::string &default_region = "");
+	std::optional<bool> IsValidForRegion(const std::string &raw_number, const std::string &region_hint,
+	                                     const std::string &default_region = "");
 	std::string Match(const std::string &number1, const std::string &number2, const std::string &region_hint,
 	                  const std::string &default_region = "");
 	std::string GetExampleNumber(const std::string &region_hint, const std::string &default_region = "");

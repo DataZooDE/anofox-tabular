@@ -28,10 +28,11 @@ FROM anrufliste WHERE id % 2 = 0;
 ----
 5000	1	+493012345678
 
+# The London number is no valid German number (02079 is no German area code)
 query TT
 SELECT phonenumber_format('020 7946 0018', NULL, 'E164'), (phonenumber_parse('020 7946 0018', NULL)).region;
 ----
-+492079460018	DE
+NULL	DE
 
 statement ok
 SET anofox_tab_phonenumber_default_region = 'GB';
@@ -68,7 +69,7 @@ PREPARE to_e164 AS SELECT phonenumber_format(?, NULL, 'E164'), (phonenumber_pars
 query TT
 EXECUTE to_e164('020 7946 0018', '020 7946 0018');
 ----
-+492079460018	DE
+NULL	DE
 
 statement ok
 SET anofox_tab_phonenumber_default_region = 'GB';

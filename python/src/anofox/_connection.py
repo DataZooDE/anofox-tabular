@@ -230,6 +230,10 @@ class AnofoxConnection:
             and the row-wise helpers in :mod:`anofox.validate`. ``True``:
             report each missing value as a failure, with the rule name
             followed by ``" missing"`` (e.g. ``"email(regex) missing"``).
+            A value the check cannot judge, such as a phone number with an
+            unknown region code or country code (the SQL check returns NULL
+            for it), is always a failure, with the rule name followed by
+            ``" not judged"`` (e.g. ``"phone(DE) not judged"``).
         id_column:
             Optional column of *df* holding the business key (e.g.
             ``"customer_id"``). Its value of each failing row is added to the
@@ -310,6 +314,10 @@ class AnofoxConnection:
                         rule = f"{rule_name} missing"
                     elif valid:
                         continue
+                    elif valid is None:
+                        # NULL for a value: the check cannot judge it (a phone
+                        # number of an unknown region or country code)
+                        rule = f"{rule_name} not judged"
                     else:
                         rule = rule_name
                     failure = {

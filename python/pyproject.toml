@@ -27,7 +27,14 @@ dependencies = ["duckdb>=1.0.0", "rich>=13.0"]
 [project.optional-dependencies]
 pandas = ["pandas>=1.5"]
 polars = ["polars>=0.19", "pyarrow>=12.0"]
-dev = ["pytest>=7", "pytest-mock>=3", "pandas>=1.5", "polars>=0.19", "pyarrow>=12.0"]
+dev = [
+    "pytest>=7",
+    "pytest-mock>=3",
+    "pandas>=1.5",
+    "polars>=0.19",
+    "pyarrow>=12.0",
+    "phonenumbers==9.0.43",
+]
 
 [project.scripts]
 anofox = "anofox._cli:main"

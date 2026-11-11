@@ -1,0 +1,74 @@
+# name: test/sql/anofox_phonenumber_unsupported_null.test
+# description: Issue #133 - a number the module has no metadata for (unknown region argument,
+#              unknown or non-geographic country code) is not judged: the validity functions
+#              return NULL, not false, and phonenumber_parse names the reason
+# group: [phonenumber]
+
+require anofox_tabular
+
+statement ok
+LOAD anofox_tabular;
+
+statement ok
+SET anofox_tab_trace_level='warn';
+
+statement ok
+CREATE TABLE contacts AS SELECT * FROM (VALUES
+    (1, '+49 30 123456',     NULL),  -- valid
+    (2, '+49 30 12',         NULL),  -- invalid: too short for a Berlin number
+    (3, '0664 123456',       'XX'),  -- no region XX
+    (4, '0664 123456',       'ENG'), -- not an ISO region code
+    (5, '+800 1234 5678',    NULL),  -- international freephone: non-geographic, no metadata
+    (6, '+999 1234 5678',    NULL),  -- no country uses +999
+    (7, '00999 1234 5678',   'DE'),  -- the same, dialled with the German international prefix
+    (8, '+43 664 123456',    'XX')   -- the country code decides, the unknown hint is ignored
+) t(id, phone, region);
+
+# is_valid_for_region checks the region argument, or the default region US when it is NULL
+query IIIIITT
+SELECT id, phonenumber_is_valid(phone, region), phonenumber_is_possible(phone, region),
+       phonenumber_is_valid_for_region(phone, region), (phonenumber_parse(phone, region)).valid,
+       (phonenumber_parse(phone, region)).reason, phonenumber_region(phone, region)
+FROM contacts ORDER BY id;
+----
+1	true	true	false	true	NULL	DE
+2	false	true	false	false	invalid_pattern	NULL
+3	NULL	NULL	NULL	NULL	unsupported_region	NULL
+4	NULL	NULL	NULL	NULL	unsupported_region	NULL
+5	NULL	NULL	NULL	NULL	unsupported_country_code	NULL
+6	NULL	NULL	NULL	NULL	unsupported_country_code	NULL
+7	NULL	NULL	NULL	NULL	unsupported_country_code	NULL
+8	true	true	NULL	true	NULL	AT
+
+# A data-quality check counts only the numbers it can judge as invalid; the rest is visible
+# as NULL instead of being reported as broken
+query III
+SELECT count(*) FILTER (WHERE NOT phonenumber_is_valid(phone, region)) AS invalid,
+       count(*) FILTER (WHERE phonenumber_is_valid(phone, region) IS NULL) AS not_judged,
+       count(*) FILTER (WHERE phonenumber_is_valid(phone, region)) AS valid
+FROM contacts;
+----
+1	5	2
+
+# is_valid_for_region: NULL for an unknown requested region, false for a number of another
+# country, true for a number of that region
+query TTTT
+SELECT phonenumber_is_valid_for_region('+43 664 123456', 'XX'),
+       phonenumber_is_valid_for_region('+43 664 123456', 'DE'),
+       phonenumber_is_valid_for_region('+43 664 123456', 'AT'),
+       phonenumber_is_valid_for_region('+44 7781 123456', 'GB');
+----
+NULL	false	true	false
+
+# Formatting and the example number stay NULL as before
+query TTT
+SELECT phonenumber_format('+800 1234 5678', NULL, 'E164'), phonenumber_format('0664 123456', 'XX', 'E164'),
+       phonenumber_example('XX');
+----
+NULL	NULL	NULL
+
+# An unknown default region is still rejected when it is set
+statement error
+SET anofox_tab_phonenumber_default_region = 'XX';
+----
+Unknown region code 'XX'

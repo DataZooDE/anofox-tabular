@@ -301,6 +301,18 @@ class TestPhoneRuleRegionColumn:
                                {"phone": PhoneRule(region_column="country")})
         assert result.failures["row_id"].to_list() == [3]
 
+    def test_not_judged_is_a_failure_of_its_own(self, conn):
+        import pandas as pd
+        from anofox.validate import PhoneRule
+        customers = pd.DataFrame({
+            "country": ["AT", "XX", "BE"],
+            "phone": ["0664 123456", "0664 123456", "0470 12 34"],
+        })
+        result = conn.validate(customers, {"phone": PhoneRule(region_column="country")})
+        assert result.failures["row_id"].tolist() == [1, 2]
+        assert result.failures["rule"].tolist() == [
+            "phone(region_column=country) not judged", "phone(region_column=country)"]
+
     def test_region_and_region_column_are_exclusive(self):
         from anofox.validate import PhoneRule
         with pytest.raises(ValueError, match="region.*region_column"):

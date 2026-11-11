@@ -146,6 +146,30 @@ class TestPhoneIsValid:
         with pytest.raises(ValueError, match="'column' is required"):
             phone_is_valid(conn, df)
 
+    def test_eu_numbers_are_judged(self, conn):
+        # Issue #133: Austrian, Belgian and Polish numbers were all invalid
+        from anofox.validate import phone_is_valid
+        assert phone_is_valid(conn, "0664 123456", region="AT") is True
+        assert phone_is_valid(conn, "+32 470 12 34 56") is True
+        assert phone_is_valid(conn, "512 345 678", region="PL") is True
+        assert phone_is_valid(conn, "512 345", region="PL") is False
+
+    def test_none_when_the_number_cannot_be_judged(self, conn):
+        from anofox.validate import phone_is_valid
+        assert phone_is_valid(conn, "0664 123456", region="XX") is None
+        assert phone_is_valid(conn, "+999 1234 5678") is None
+
+    def test_dataframe_keeps_not_judged_as_null(self, conn):
+        import pandas as pd
+        from anofox.validate import phone_is_valid
+        df = pd.DataFrame({"phone": ["0664 123456", "0664 123456", "0664 12"],
+                           "country": ["AT", "XX", "AT"]})
+        result = phone_is_valid(conn, df, column="phone", region_column="country")
+        values = result["phone_is_valid"].tolist()
+        assert values[0] is True or values[0] == True  # noqa: E712
+        assert pd.isna(values[1])
+        assert values[2] == False  # noqa: E712
+
 
 class TestPhoneFormat:
     def test_returns_string(self, conn):
@@ -263,7 +287,7 @@ class TestPhoneFormatApi:
         df = _customers()
         out = phone_format(conn, df, format="INTERNATIONAL", column="phone", region_column="country")
         assert out.index.tolist() == [11, 7, 3, 5]
-        assert out["phone_format"].tolist()[:3] == ["+49 30 901820", "+1 650 253 0000", "+33 1 42 68 53 00"]
+        assert out["phone_format"].tolist()[:3] == ["+49 30 901820", "+1 650-253-0000", "+33 1 42 68 53 00"]
         assert out["phone_format"].isna().tolist() == [False, False, False, True]
         assert out["phone"].tolist() == df["phone"].tolist()
 
