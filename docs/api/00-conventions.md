@@ -95,8 +95,8 @@ A few parameters also accept the named form `name := value`:
 
 | Functions | Named parameters |
 |-----------|------------------|
-| [`diff_joindiff`](09-diffing.md#diff_joindiff) | every parameter: `source_table`, `target_table`, `primary_key`, `primary_keys`, `compare_columns`, `include_all` |
-| [`diff_hashdiff`](09-diffing.md#diff_hashdiff) | `source_table`, `target_table`, `primary_key`, `primary_keys`; `bisection_threshold` and `bisection_factor` are declared but raise a "not implemented" error |
+| [`diff_joindiff`](09-diffing.md#diff_joindiff) | every parameter: `source_table`, `target_table`, `primary_key`, `primary_keys`, `compare_columns`, `include_all`, and `float_tolerance` (only by name) |
+| [`diff_hashdiff`](09-diffing.md#diff_hashdiff) | `source_table`, `target_table`, `primary_key`, `primary_keys`, and `float_precision` (only by name); `bisection_threshold` and `bisection_factor` are declared but raise a "not implemented" error |
 | [`diff_schema`](09-diffing.md#diff_schema) | `source_table`, `target_table` |
 | [`rel_count_change`](07-data-quality.md#rel_count_change), [`metric_anomaly_iqr`](07-data-quality.md#metric_anomaly_iqr), [`rolling_values_in_set`](07-data-quality.md#rolling_values_in_set) and their `_events` companions | `start_date`, `end_date` (only by name) |
 | [`isolation_forest`](08-anomaly-detection.md#isolation_forest), [`isolation_forest_mv`](08-anomaly-detection.md#isolation_forest_mv), [`dbscan`](08-anomaly-detection.md#dbscan), [`dbscan_mv`](08-anomaly-detection.md#dbscan_mv), [`outlier_tree`](08-anomaly-detection.md#outlier_tree), [`pii_audit_table`](06-pii.md#pii_audit_table) | `id_column` (only by name) |
@@ -199,7 +199,9 @@ search path of your session (`SET schema`, `SET search_path`, `USE`) and its `Ti
 (`profile_table` shows `TIMESTAMP WITH TIME ZONE` values in UTC, see
 [Values shown as text](10-profiling.md#values-shown-as-text)). It cannot see TEMP
 tables of your session, so these functions reject a TEMP table when the query is bound, with
-`TEMP tables are not supported by <function>; use a regular table`:
+`TEMP tables are not supported by <function>; use a regular table (CREATE TABLE ... AS SELECT * FROM <name>)`.
+`pii_scan_table` and `pii_audit_table` raise an `Invalid Input Error` instead:
+`pii_scan_table: '<name>' is a TEMP table, which is not supported: ... Copy it into a regular table first (CREATE TABLE ... AS SELECT * FROM <name>)`:
 
 | Functions | Accept |
 |-----------|--------|
@@ -258,7 +260,9 @@ instant and bucketed by its UTC date, with or without the ICU extension and what
   `phonenumber_parse` and `vat_validate` return `valid = false` with the reason `empty`, and
   `email_is_valid`, `phonenumber_is_valid` and `vat_is_valid` return `false`.
 - The one-row checks (`volume`, `null_rate`, `regex_match`, ...) always return one row, also for
-  an empty table. Empty input passes, with a message that says so.
+  an empty table. Empty input passes, with a message that says so, except where the check
+  needs rows: `volume` with a minimum above 0 fails (`Row count 0 is below minimum 1`), and
+  `freshness` fails (`No timestamp values found (table is empty or column is all NULL)`).
 - Functions with an `output_mode` (`'summary'`, `'scores'`, `'clusters'`, `'outliers'`) return one
   summary row or one row per input row. The module pages list both shapes. `output_mode` and
   the other option strings (`agg`, `mode`) are case-insensitive: `'SCORES'` works like `'scores'`.

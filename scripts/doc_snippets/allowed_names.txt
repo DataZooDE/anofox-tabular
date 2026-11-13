@@ -1,0 +1,5 @@
+# anofox_* names that the docs mention but that are no registered function or setting:
+# extension names, source files, removed functions. name<TAB>reason
+anofox_tabular	the extension itself
+anofox_plot	function of anofox-visualization, a consumer of the integration contract
+anofox_sql_utils	source file src/anofox_sql_utils.cpp

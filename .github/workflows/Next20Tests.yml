@@ -5,7 +5,9 @@
 # DuckDB is built from source at the commit community-extensions uses (see
 # docs/UPDATING.md), so the extension loads and the tests run - the setup in
 # which community-extensions' osx_arm64 build caught macOS-only failures in
-# a sibling extension.
+# a sibling extension. After the tests it runs `make check-docs`, which
+# executes every ```sql fence of README.md, docs/ and the Claude Code skills
+# against this build (scripts/check_doc_snippets.py).
 #
 name: DuckDB 2.0 tests (macOS)
 on:
@@ -89,3 +91,10 @@ jobs:
             echo "::error::the extension did not load into unittest, tests were skipped"
             exit 1
           fi
+
+      - name: Docs and skills snippets
+        # every ```sql fence of README.md, docs/ and the Claude Code skills runs
+        # against this build (offline; postal is not built here)
+        env:
+          DATAZOO_DISABLE_TELEMETRY: 1
+        run: make check-docs

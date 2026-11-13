@@ -1296,7 +1296,7 @@ void RegisterOutlierTreeFunctions(ExtensionLoader &loader) {
     // (table_name, columns, mode, col3, col4, col5, col6, col7, col8) -- documented at
     // the front, placeholders at the back. Names and defaults are from the bind at
     // OutlierTreeBind (inputs[3..8]) and docs/API_REFERENCE.md.
-    ot_desc.parameter_names = {"table_name",        "columns",          "mode",
+    ot_desc.parameter_names = {"table_name",        "columns",          "output_mode",
                                "max_depth",         "max_perc_outliers", "min_size_numeric",
                                "min_size_categ",    "z_norm",            "z_outlier"};
     ot_desc.examples = {"SELECT * FROM outlier_tree('transactions', 'amount,balance', 'summary');"};
