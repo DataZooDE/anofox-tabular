@@ -113,6 +113,7 @@ POSTAL_RE = re.compile(r"\b(?:anofox_tab_)?postal_[a-z0-9_]+\s*\(", re.IGNORECAS
 # email validation in the 'dns' or 'smtp' mode (also inside a quoted check expression)
 EMAIL_NETWORK_RE = re.compile(r"\bemail_[a-z_]+\s*\(.*?'{1,2}(?:dns|smtp)'{1,2}", re.IGNORECASE | re.DOTALL)
 POSTAL_NAME_RE = re.compile(r"^(?:anofox_tab_)?postal_")
+POSTAL_SETTING_RE = re.compile(r"\banofox_tab_postal_[a-z0-9_]+\b(?!\s*\()", re.IGNORECASE)
 V2_ONLY_RE = re.compile(r"\A\s*--\s*DuckDB 2\.0\+")
 # A block's own LOAD of the extension by name: the extension is already loaded from
 # its file, and by name DuckDB would look in the (empty, temporary) extension dir.
@@ -588,6 +589,10 @@ def main():
             all_block_keys.add(key)
             is_placeholder = bool(PLACEHOLDER_ELLIPSIS_RE.search(block_text))
             skip = classify_skip(key, block_text, requires, synopsis_keys, duckdb_major, attrs)
+            if not skip and not postal_built and POSTAL_SETTING_RE.search(strip_sql_comments(block_text)):
+                # e.g. SET anofox_tab_postal_auto_download: the setting exists only in builds
+                # with the postal module (not Windows, not ANOFOX_TABULAR_NO_LIBPOSTAL=1)
+                skip = ("SKIP-ENV", "postal setting, this build has no postal module")
             row = [None, rel_path, str(start_line + 1), first_line[:100], ""]
             rows.append(row)
             if skip:
