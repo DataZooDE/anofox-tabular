@@ -6,12 +6,20 @@
   <a href="https://duckdb.org"><img src="https://img.shields.io/badge/DuckDB-1.5.6%20%7C%202.0-green.svg" alt="DuckDB 1.5.6 | 2.0"></a>
   <a href="https://pypi.org/project/anofox-tabular/"><img src="https://img.shields.io/pypi/v/anofox-tabular.svg" alt="PyPI"></a>
   <img src="https://img.shields.io/badge/modules-10-blue.svg" alt="10 modules">
+  <a href="#claude-code-skills"><img src="https://img.shields.io/badge/Claude_Code-skills_plugin-8A2BE2.svg" alt="Claude Code skills plugin"></a>
 </p>
 
 Anofox Tabular is a DuckDB extension with about 100 SQL functions for checking and cleaning
 tabular data. It validates emails, phone numbers, addresses, VAT numbers and money values, runs
 data quality checks, finds and masks personal data, scores anomalies, diffs tables and profiles
 columns. Everything runs inside DuckDB, on your tables, with SQL.
+
+> **Using an AI assistant?** The repository is also a [Claude Code plugin](#claude-code-skills):
+> six skills that give Claude the exact signatures, output columns and pitfalls of every
+> function, so it writes working SQL from a request such as *"check orders for nulls and
+> duplicates every night and keep the results"*. Install with
+> `/plugin marketplace add DataZooDE/anofox-tabular`, then
+> `/plugin install anofox-tabular@anofox-tabular`.
 
 ## Key Features
 
@@ -35,6 +43,7 @@ columns. Everything runs inside DuckDB, on your tables, with SQL.
 - [Conventions](#conventions)
 - [Network and Privacy](#network-and-privacy)
 - [Python](#python)
+- [Claude Code Skills](#claude-code-skills)
 - [Documentation](#documentation)
 - [Development](#development)
 - [Support and Feedback](#support-and-feedback)
@@ -246,6 +255,35 @@ print(scores[scores["is_anomaly"]][["sensor_id", "value"]])
 The extension also loads into any DuckDB client (R, Node.js, Java, Go, Rust, ...) with
 `INSTALL anofox_tabular FROM community`. See the [Python guide](docs/guides/06-python.md)
 and [python/README.md](python/README.md).
+
+## Claude Code Skills
+
+The repository ships a [Claude Code](https://claude.com/claude-code) plugin. Its skills hold the
+SQL surface of the extension: signatures and parameter order, output columns, settings, and the
+pitfalls (TEMP tables, list versus comma-separated column arguments, network use). With the
+plugin installed, Claude writes the queries for a request in plain language instead of guessing
+at signatures.
+
+Install it in any Claude Code session:
+
+```text
+/plugin marketplace add DataZooDE/anofox-tabular
+/plugin install anofox-tabular@anofox-tabular
+```
+
+| Skill | Covers |
+|-------|--------|
+| `anofox-tabular-data-quality` | The 17 checks, `_events` outputs, `run_checks` suites with a result history, the integration contract |
+| `anofox-tabular-anomaly` | Isolation Forest, DBSCAN and OutlierTree: output modes, `id_column`, explanations, gating a pipeline |
+| `anofox-tabular-pii` | PII detection and masking, table scans and audits, NER and its settings |
+| `anofox-tabular-master-data` | Email, phone, VAT, postal address and money validation and standardisation |
+| `anofox-tabular-diff` | `diff_joindiff`, `diff_hashdiff`, `diff_schema` and migration sign-off |
+| `anofox-tabular-profiling` | `profile_table`, `profile_summary`, `profile_correlations` |
+
+The skills live in [`plugins/anofox-tabular/`](plugins/anofox-tabular/). Every SQL example in
+them runs against the extension in CI (`make check-docs`), like the examples in these docs. To
+try a local change to the skills, start Claude Code with
+`claude --plugin-dir ./plugins/anofox-tabular`.
 
 ## Documentation
 

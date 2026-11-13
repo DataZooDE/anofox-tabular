@@ -210,6 +210,17 @@ LIMIT 5;
 └───────────────────────────┘
 ```
 
+## Let Claude Code write the queries
+
+If you use [Claude Code](https://claude.com/claude-code), install the anofox-tabular plugin. Its
+skills hold the signatures, output columns and pitfalls of every function, so Claude writes
+working SQL for a request such as "mask the emails and phone numbers in customers":
+
+```text
+/plugin marketplace add DataZooDE/anofox-tabular
+/plugin install anofox-tabular@anofox-tabular
+```
+
 ## Next steps
 
 - [Data quality checks](02-data-quality-checks.md): suites of checks, history, time-aware checks

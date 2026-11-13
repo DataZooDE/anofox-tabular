@@ -217,6 +217,8 @@ and how to check v1.5.6 locally.
 | `src/anofox_tabular_extension.cpp` | Extension entry and module registration |
 | `src/anofox_trace.cpp` | Centralized spdlog initialization and management |
 | `test/sql/*.test` | SQLLogicTest format test suite |
+| `plugins/anofox-tabular/` | Claude Code plugin: `plugin.json` and the skills |
+| `scripts/check_doc_snippets.py` | Runs the SQL of README, docs and skills (`make check-docs`) |
 
 ## Common Development Patterns
 
@@ -233,7 +235,7 @@ and how to check v1.5.6 locally.
    RegisterTableFunctionSetWithAlias(loader, func_set, "short_name", {std::move(desc)});
    ```
 4. Add test cases to `test/sql/` following SQLLogicTest format
-5. Update README.md and docs/API_REFERENCE.md if user-facing (see the Documentation Update Workflow below)
+5. Update README.md, the module page in docs/api/ and the matching skill in plugins/anofox-tabular/skills/ if user-facing (see the Documentation Update Workflow below)
 
 ### Adding a Configuration Option
 
@@ -246,13 +248,40 @@ and how to check v1.5.6 locally.
 If you are adding a new feature, try to reuse existing code and concepts from the project. If you are not sure how to do it, ask.
 Also have a look at duckdb source in `./duckdb` and the cpp tests in `./duckdb/test` wether you can find a similar concept or code to reuse.
 
+### Claude Code plugin and skills
+
+`plugins/anofox-tabular/` is an installable Claude Code plugin (`.claude-plugin/marketplace.json`
+makes the repository its marketplace). Its skills are cheat sheets of the SQL surface for users'
+assistants; for in-repo work load them with `claude --plugin-dir ./plugins/anofox-tabular`.
+
+| Skill | Covers | Path |
+|-------|--------|------|
+| `anofox-tabular-data-quality` | Checks, `_events` outputs, `run_checks`, integration contract | `plugins/anofox-tabular/skills/anofox-tabular-data-quality/SKILL.md` |
+| `anofox-tabular-anomaly` | Isolation Forest, DBSCAN, OutlierTree | `plugins/anofox-tabular/skills/anofox-tabular-anomaly/SKILL.md` |
+| `anofox-tabular-pii` | PII detection, masking, table scans, NER | `plugins/anofox-tabular/skills/anofox-tabular-pii/SKILL.md` |
+| `anofox-tabular-master-data` | Email, phone, VAT, postal, money | `plugins/anofox-tabular/skills/anofox-tabular-master-data/SKILL.md` |
+| `anofox-tabular-diff` | `diff_joindiff`, `diff_hashdiff`, `diff_schema` | `plugins/anofox-tabular/skills/anofox-tabular-diff/SKILL.md` |
+| `anofox-tabular-profiling` | `profile_table`, `profile_summary`, `profile_correlations` | `plugins/anofox-tabular/skills/anofox-tabular-profiling/SKILL.md` |
+
+`make check-docs` (after `make release`) runs every ```sql fence of `README.md`, `docs/` and the
+skills against the build and fails on an unknown function name; `make check-plugin` checks the
+manifests and the skill frontmatter without a build. See `docs/dev/testing.md`.
+
+On a release, bump `version` in `plugins/anofox-tabular/.claude-plugin/plugin.json`, in every
+SKILL.md frontmatter and header line, together with `python/pyproject.toml` (the release
+`YYYY.MM.DD`; `check_plugin.py` fails while they differ).
+
 ### Documentation Update Workflow (Mandatory)
 For every change that affects user-visible behavior, SQL function signatures, defaults, return schemas, aliases, or examples:
 
 1. Check `README.md` for impacted sections and update them.
-2. Check `docs/API_REFERENCE.md` for impacted sections and update them.
-3. Add/update tests first (red/green) when behavior changes, then align docs to the final behavior.
-4. Before finishing, explicitly verify docs match implementation (names, types, defaults, output columns, examples).
+2. Check the module page in `docs/api/` (`docs/API_REFERENCE.md` only maps old links) and
+   `docs/reference/configuration.md` for impacted sections and update them.
+3. Check the matching Claude Code skill in `plugins/anofox-tabular/skills/` (see the table
+   above) and update its signatures, gotchas and examples.
+4. Add/update tests first (red/green) when behavior changes, then align docs to the final behavior.
+5. Before finishing, explicitly verify docs match implementation (names, types, defaults, output
+   columns, examples): run `make check-docs` after `make release`.
 
 Do not consider work complete if code changed but these documentation checks were skipped.
 

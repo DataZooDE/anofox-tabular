@@ -1,0 +1,12 @@
+{
+  "name": "anofox-tabular",
+  "description": "SQL-native data quality skills for the anofox_tabular DuckDB extension — check suites and anomaly detection, PII detection and masking, email/phone/VAT/postal/money validation, table diffing, and profiling.",
+  "version": "2026.11.02",
+  "author": {
+    "name": "DataZoo GmbH",
+    "url": "https://github.com/DataZooDE"
+  },
+  "homepage": "https://github.com/DataZooDE/anofox-tabular",
+  "repository": "https://github.com/DataZooDE/anofox-tabular",
+  "license": "BUSL-1.1"
+}
