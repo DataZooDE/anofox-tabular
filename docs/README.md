@@ -45,12 +45,21 @@ One page per module. Each function has its signature, parameters, output columns
 | [Network and privacy](reference/network-and-privacy.md) | What uses the network, telemetry, offline use |
 | [Troubleshooting](reference/troubleshooting.md) | Common errors and fixes |
 
+## AI assistants
+
+The repository is a [Claude Code](https://claude.com/claude-code) plugin with six skills that
+hold the SQL surface of the extension (signatures, output columns, pitfalls). Install it with
+`/plugin marketplace add DataZooDE/anofox-tabular` and
+`/plugin install anofox-tabular@anofox-tabular`. The skills are listed in the
+[README](../README.md#claude-code-skills) and live in
+[`plugins/anofox-tabular/skills/`](../plugins/anofox-tabular/skills/).
+
 ## Development
 
 | Page | Covers |
 |------|--------|
 | [Building](dev/building.md) | Source build with vcpkg and ninja |
-| [Testing](dev/testing.md) | SQL tests, NER tests, the docs coverage test, Python tests |
+| [Testing](dev/testing.md) | SQL tests, NER tests, the docs coverage test, the docs snippet checker, Python tests |
 | [Architecture](dev/architecture.md) | Modules, source files, registration |
 | [Updating DuckDB](dev/updating-duckdb.md) | Supporting DuckDB v1.5.6 and 2.0 from one tree |
 

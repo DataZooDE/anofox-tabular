@@ -553,6 +553,10 @@ Compares two numbers.
 phonenumber_match(phone1 VARCHAR, phone2 VARCHAR, region VARCHAR) -> VARCHAR
 ```
 
+`region` is the region of a number written without a country code; `NULL` uses
+`anofox_tab_phonenumber_default_region` (default `US`), so `'030 1234567'` is an
+`EXACT_MATCH` of `'+49 30 1234567'` only with `'DE'` (`SHORT_NSN_MATCH` with the default `US`).
+
 Returns one of `EXACT_MATCH`, `NSN_MATCH` (same national number), `SHORT_NSN_MATCH`,
 `NO_MATCH` or `NOT_A_NUMBER`. As in libphonenumber, `NOT_A_NUMBER` means that one of the two
 strings cannot be read as a phone number: a blank value, a placeholder such as `-` or `n/a`,

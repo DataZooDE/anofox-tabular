@@ -110,3 +110,18 @@ test_ner_models: release
 	done
 
 .PHONY: test_ner test_ner_models
+
+# Docs and Claude Code skills: every ```sql fence of README.md, docs/ and
+# plugins/anofox-tabular/skills/ runs against the release build, and every
+# function name they mention must be registered (scripts/check_doc_snippets.py).
+# Needs `make release` first. Offline: postal, NER and email dns/smtp blocks are
+# skipped unless POSTAL_AVAILABLE / ANOFOX_NER_AVAILABLE / ANOFOX_DOCS_NETWORK is
+# set. check-plugin needs no build (manifests, skill frontmatter, versions).
+check-docs:
+	python3 scripts/check_doc_snippets.py --self-test
+	python3 scripts/check_doc_snippets.py
+
+check-plugin:
+	python3 scripts/check_plugin.py
+
+.PHONY: check-docs check-plugin

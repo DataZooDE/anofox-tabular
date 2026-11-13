@@ -14,9 +14,9 @@ input row (or per outlier).
 
 These functions read the table through a second connection. Pass a regular table or a view,
 not a TEMP table: a TEMP table fails with
-`TEMP tables are not supported by isolation_forest; use a regular table`. The second connection
-sees only committed data, so inside a transaction with uncommitted changes the functions refuse
-to run; call them after `COMMIT` (see
+`TEMP tables are not supported by isolation_forest; use a regular table (CREATE TABLE ... AS SELECT * FROM <name>)`.
+The second connection sees only committed data, so inside a transaction with uncommitted
+changes the functions refuse to run; call them after `COMMIT` (see
 [Conventions](00-conventions.md#table-and-column-arguments)).
 
 ## Functions
@@ -638,7 +638,7 @@ statistics.
 | `cluster_median` | `DOUBLE` | Median of the group's finite values; the centre of `z_score` and the bounds. `NULL` for categorical columns |
 | `cluster_mad` | `DOUBLE` | The spread `z_score` and the bounds are scaled by: MAD × 1.4826, or the fallback described in [How a numeric value is scored](#how-a-numeric-value-is-scored). `NULL` for categorical columns |
 | `cluster_size` | `BIGINT` | Rows in the group with a finite value |
-| `z_score` | `DOUBLE` | `(value - cluster_median) / cluster_mad`; `NULL` for an infinite value |
+| `z_score` | `DOUBLE` | `(value - cluster_median) / cluster_mad`; `NULL` for an infinite value. For a categorical column `1 / sqrt(p)`, where `p` is the category's share of the group (the `outlier_score`) |
 | `lower_bound` | `DOUBLE` | Lower end of the group's normal range, `cluster_median - z_norm × cluster_mad`. `NULL` for categorical columns |
 | `upper_bound` | `DOUBLE` | Upper end of the group's normal range, `cluster_median + z_norm × cluster_mad`. `NULL` for categorical columns |
 | `conditions` | `VARCHAR` | JSON array of the conditions that define the group |

@@ -12,7 +12,10 @@ fastest way to a fix: [open an issue](https://github.com/DataZooDE/anofox-tabula
 4. Document new or changed functions and settings in `docs/api/` and
    `docs/reference/configuration.md`. The test `test/sql/docs_coverage.test` fails when a
    registered function or setting is missing from the docs.
-5. Run `make test` and open the pull request.
+5. Update the matching Claude Code skill in `plugins/anofox-tabular/skills/` (signatures,
+   pitfalls, examples), so assistants keep writing working SQL.
+6. Run `make test` and `make check-docs` (runs every SQL example of the README, the docs and
+   the skills), then open the pull request.
 
 ## Developer docs
 

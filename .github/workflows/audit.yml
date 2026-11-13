@@ -8,6 +8,10 @@
 # the wrong tree only breaks on developer machines. It checks v1.5.6, not the
 # bundled v2.0.0: 2.0 has every header the sources ever probed for, so only an
 # older tree can find a newer one by mistake.
+#
+# The claude-plugin job checks the Claude Code plugin without a build
+# (scripts/check_plugin.py: manifests, skill frontmatter, versions) and runs the
+# snippet checker's self-test; the snippets themselves run in Next20Tests.yml.
 name: Static audits
 
 on:
@@ -38,3 +42,19 @@ jobs:
 
       - name: Compile anofox_duckdb_vectors.hpp with stray headers on the include path
         run: DUCKDB_INCLUDE="$RUNNER_TEMP/duckdb-v1.5.6/src/include" scripts/check_compat_stray_headers.sh
+
+  claude-plugin:
+    name: Claude Code plugin manifests and skills
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          submodules: false
+
+      - name: Plugin manifests, skill frontmatter and versions
+        run: python3 scripts/check_plugin.py
+
+      - name: Snippet checker self-test
+        run: python3 scripts/check_doc_snippets.py --self-test

@@ -63,7 +63,7 @@ diff_joindiff(
 | `source_table` | `VARCHAR` | required | The old table or view |
 | `target_table` | `VARCHAR` | required | The new table or view |
 | `primary_key` | `VARCHAR` or `VARCHAR[]` | required | One key column, or a list for a compound key. By name: `primary_key := 'id'` or `primary_keys := ['id', 'day']` |
-| `compare_columns` | `VARCHAR[]` | all non-key columns present in both tables | The columns that decide `changed`. `NULL` keeps the default |
+| `compare_columns` | `VARCHAR[]` | all non-key columns present in both tables | The columns that decide `changed`. `NULL` and an empty list `[]` keep the default |
 | `include_all` | `BOOLEAN` | `false` | Also return the `unchanged` rows |
 | `float_tolerance` | `DOUBLE` (by name only) | `0` (exact) | Numeric compare columns whose values differ by at most this much (absolute, inclusive) count as equal. `NULL` keeps the default; a negative, `NaN` or infinite value is an error. See [Floating-point noise](#floating-point-noise) |
 

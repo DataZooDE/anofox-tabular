@@ -494,6 +494,10 @@ FROM (VALUES ('a@b.com, +1 (415) 555-1234, 4111 1111 1111 1111, 123-45-6789, DE8
 └───────────┴───────────────────────┴───────────────────────┴───────────────┴──────────────────────────┘
 ```
 
+With the NER model loaded both names are found. Without it (`anofox_ner_status()` reports
+`NOT_DOWNLOADED`, or a platform without NER) the name dictionary finds only
+`[Angela Merkel]`:
+
 ```sql
 SELECT [m.text FOR m IN pii_detect_names('Angela Merkel met Barack Obama')] AS names;
 ```

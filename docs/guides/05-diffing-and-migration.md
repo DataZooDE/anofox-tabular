@@ -21,13 +21,13 @@ dropped one order, created one that should not exist, rounded one amount and cha
 CREATE TABLE orders_old AS
 SELECT i AS order_id,
        100 + (i % 4) AS customer_id,
-       round(10 + i * 1.25, 2) AS amount,
+       round(10 + i * 1.25, 2)::DECIMAL(10,2) AS amount,
        CASE WHEN i % 3 = 0 THEN 'shipped' ELSE 'open' END AS status
 FROM range(1, 11) t(i);
 
 CREATE TABLE orders_new AS
 SELECT order_id, customer_id,
-       CASE WHEN order_id = 3 THEN round(amount) ELSE amount END AS amount,
+       (CASE WHEN order_id = 3 THEN round(amount) ELSE amount END)::DECIMAL(10,2) AS amount,
        CASE WHEN order_id = 7 THEN 'cancelled' ELSE status END AS status
 FROM orders_old
 WHERE order_id <> 5
@@ -97,7 +97,7 @@ ORDER BY d.order_id;
 ```text
 ┌───────────┬──────────┬───────────────┬───────────────┬────────────┬────────────┐
 │ diff_type │ order_id │  old_amount   │  new_amount   │ old_status │ new_status │
-│  varchar  │  int64   │ decimal(23,2) │ decimal(25,2) │  varchar   │  varchar   │
+│  varchar  │  int64   │ decimal(10,2) │ decimal(10,2) │  varchar   │  varchar   │
 ├───────────┼──────────┼───────────────┼───────────────┼────────────┼────────────┤
 │ changed   │        3 │         13.75 │         14.00 │ shipped    │ shipped    │
 │ removed   │        5 │         16.25 │          NULL │ open       │ NULL       │

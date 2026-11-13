@@ -12,9 +12,9 @@ The profiling functions read the table through a second connection. It resolves 
 like your session does (`SET schema`, `USE`). `TIMESTAMP WITH TIME ZONE` values are shown in UTC
 whatever the session `TimeZone` (see [Values shown as text](#values-shown-as-text)). Pass a
 regular table or a view; a TEMP table is rejected with
-`TEMP tables are not supported by profile_table; use a regular table`. They see only committed
-data, so inside a transaction with uncommitted changes they refuse to run; call them after
-`COMMIT`. An unknown table is `profile_table: table 'ordrs' does not exist`. See
+`TEMP tables are not supported by profile_table; use a regular table (CREATE TABLE ... AS SELECT * FROM <name>)`.
+They see only committed data, so inside a transaction with uncommitted changes they refuse to
+run; call them after `COMMIT`. An unknown table is `profile_table: table 'ordrs' does not exist`. See
 [Conventions](00-conventions.md#table-and-column-arguments).
 
 ## Functions
@@ -304,7 +304,8 @@ Canonical name: `anofox_tab_profile_correlations`. Table function.
 
 Computes the Pearson and Spearman correlation of every pair of numeric columns. Each pair appears
 once. Rows where either value is `NULL`, NaN or `±Inf` are left out of the pair. Only numeric
-columns take part: `INTERVAL`, date and string columns are skipped. Both coefficients are
+columns take part: `BOOLEAN`, `INTERVAL`, date and string columns are skipped. With fewer than
+two numeric columns the result has no rows. Both coefficients are
 clamped to [-1, 1], so floating-point rounding never reports `1.0000000000000002`. A
 coefficient that is undefined is `NULL`: for fewer than two pairs (`n` 0 or 1) and when one of
 the columns is constant over the pairs. Two pairs with varying values give exactly `1.0` or

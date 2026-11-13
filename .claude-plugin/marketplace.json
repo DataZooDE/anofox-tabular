@@ -1,0 +1,24 @@
+{
+  "name": "anofox-tabular",
+  "description": "Claude Code skills for the anofox_tabular DuckDB extension (data quality, PII, validation, diffing, profiling).",
+  "owner": {
+    "name": "DataZoo GmbH",
+    "url": "https://github.com/DataZooDE"
+  },
+  "plugins": [
+    {
+      "name": "anofox-tabular",
+      "source": "./plugins/anofox-tabular",
+      "description": "SQL-native data quality skills for the anofox_tabular DuckDB extension — check suites and anomaly detection, PII detection and masking, email/phone/VAT/postal/money validation, table diffing, and profiling.",
+      "keywords": [
+        "duckdb",
+        "data-quality",
+        "pii",
+        "anomaly-detection",
+        "validation",
+        "sql",
+        "claude-code"
+      ]
+    }
+  ]
+}

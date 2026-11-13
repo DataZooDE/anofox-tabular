@@ -64,6 +64,42 @@ docs:
 The test prints the missing names. When you add a function or a setting, document it on the
 module page and in the configuration reference, and the test passes again.
 
+## Docs snippet checker
+
+`make check-docs` runs `scripts/check_doc_snippets.py` (after `GEN=ninja make release`). It
+executes every ```` ```sql ```` fence of `README.md`, `docs/**/*.md` (except `docs/reviews/`) and
+the Claude Code skills in `plugins/anofox-tabular/skills/`, each in a fresh in-memory database of
+`build/release/duckdb` with the extension loaded from its file, and checks the function names
+they mention:
+
+- A block runs after the earlier blocks of the same page that create the tables it uses, so write
+  each page's examples in order and create the sample data in the page.
+- A block followed by a ```` ```text ```` block whose first line is an error
+  (`Binder Error: ...`) must raise that error.
+- `` `anofox_*` `` code spans and calls such as `email_validate(` must name a registered function
+  or setting. Names that are none (the extension itself, source files) are listed in
+  `scripts/doc_snippets/allowed_names.txt`.
+- The check runs offline: the NER model is not downloaded
+  (`anofox_ner_auto_download = false`), and HOME is a temporary directory. These blocks are
+  skipped unless you set the variable: postal calls (`POSTAL_AVAILABLE=1`, downloads the
+  libpostal data), email validation in the `dns` or `smtp` mode (`ANOFOX_DOCS_NETWORK=1`), and
+  blocks keyed in `scripts/doc_snippets/requires.txt` (`postal`, `ner` with
+  `ANOFOX_NER_AVAILABLE=1`, `network`).
+- ```` ```sql no-run ```` fences (install commands, paths on your machine) are not run.
+  Signatures belong in ```` ```text ```` fences.
+
+`scripts/doc_snippets/` also holds `fixtures.sql` (run before every block), `synopsis.txt` and
+`expected_errors.txt` (blocks keyed by `file<TAB>first SQL line` that are not run, or must fail
+without showing the error). The script writes every block's status to
+`build/doc-snippets.tsv`; pass file names to check only those files, or
+`--changed-since origin/main`. The DuckDB 2.0 workflow (`Next20Tests.yml`) runs it after the SQL
+tests.
+
+`make check-plugin` (`scripts/check_plugin.py`) needs no build and runs in the Static audits
+workflow: it checks that the plugin manifests parse, that each skill's frontmatter has its
+directory name, a description with a "Use when" sentence and the plugin version, that the plugin
+version matches `python/pyproject.toml`, and that README.md and CLAUDE.md list every skill.
+
 ## Python tests
 
 Use uv. Build the extension first, then:
