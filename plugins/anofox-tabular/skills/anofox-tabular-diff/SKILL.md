@@ -56,7 +56,9 @@ LOAD anofox_tabular;
   key or not, compared or not. Diff views that `RENAME` them. A source-only column of that name
   is harmless. `compare_columns` does not help (every target column is in the output).
 - **Output shows target values only.** `removed` rows have `NULL` in every non-key column. Join
-  the source back (`LEFT JOIN source USING (key)`) for old values.
+  the source back for old values with a NULL-safe join, as the diff matches keys:
+  `LEFT JOIN source s ON d.key IS NOT DISTINCT FROM s.key` (one predicate per key column;
+  `USING (key)` finds no old values for a `NULL` key).
 - **Columns in only one table are never compared** (renamed column = one removed + one added
   column); the trace log warns. Run `diff_schema` first; diff a view that renames back.
 - **NULL semantics:** keys match NULL-safely (`IS NOT DISTINCT FROM`); a change from/to `NULL`
@@ -171,7 +173,7 @@ Binder Error: diff_joindiff: pass either primary_key or primary_keys, not both
 SELECT d.diff_type, d.id, s.city AS old_city, d.city AS new_city,
        s.score AS old_score, d.score AS new_score, d.changed_columns
 FROM diff_joindiff('customers_v1', 'customers_v2', 'id') d
-LEFT JOIN customers_v1 s USING (id)
+LEFT JOIN customers_v1 s ON d.id IS NOT DISTINCT FROM s.id
 ORDER BY d.id;
 ```
 

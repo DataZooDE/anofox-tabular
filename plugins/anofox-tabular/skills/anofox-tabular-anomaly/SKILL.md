@@ -5,7 +5,9 @@ description: >
   (`isolation_forest`, `isolation_forest_mv`), DBSCAN noise points (`dbscan`, `dbscan_mv`) and
   explained group outliers (`outlier_tree`) — signatures, output modes, `id_column`, row_id
   numbering, contamination semantics and pass/fail gating. Use when a user wants to find,
-  score, explain or join back unusual rows of a table, or stop a pipeline when outliers appear.
+  score, explain or join back unusual rows of a table, or stop a pipeline when outlier rows
+  appear. Row-level detectors only: for a daily count or metric against its own history use
+  anofox-tabular-data-quality (`rel_count_change`, `metric_anomaly_iqr`).
 version: 2026.11.02
 user-invocable: false
 ---
@@ -62,7 +64,9 @@ LOAD anofox_tabular;
     `isolation_forest_mv` also takes VARCHAR (categorical). `outlier_tree` takes numeric,
     BOOLEAN, VARCHAR, ENUM. DATE/TIMESTAMP → binder error; pass `epoch(ts)` through a view.
 12. **DBSCAN distances are Euclidean on raw values** — scale columns before `dbscan_mv`.
-    `dbscan_mv` is O(n²): sample tables above ~50k rows.
+    `dbscan_mv` is O(n²): sample tables above ~50k rows. `dbscan` (one column) is O(n log n) only
+    while every value is finite: a single NaN/±Inf falls back to the O(n²) all-pairs search (40k
+    rows: 0.05 s → 12 s). Filter them in a view (`WHERE isfinite(x)`); they are NOISE anyway.
 
 ## Sample data (used below)
 
@@ -94,7 +98,9 @@ Staff member 7 is a junior with a senior salary.
 | Unusual *combination* of columns, incl. categorical | `isolation_forest_mv` |
 | Isolated values (noise) with a distance radius; good pass/fail gate | `dbscan` / `dbscan_mv` |
 | Outlier *within a group* (e.g. per segment) + a human-readable reason | `outlier_tree` |
+| Unusual *for a key you name* (per customer, per store) | No detector partitions by a given key: `outlier_tree` picks its own groups (≥ 25 rows each) and may score against the whole table. Use a robust z in SQL: `median`/`mad` per key with `GROUP BY`, `abs(x - median) / (1.4826 * mad) > 3.5` |
 | Fixed-rule single column (z-score / IQR) | `zscore` / `iqr` (data-quality skill) |
+| Daily volume / metric vs. its own history | `rel_count_change` / `metric_anomaly_iqr` (data-quality skill) |
 
 ## `isolation_forest`
 
@@ -242,7 +248,8 @@ dbscan_mv(table_name VARCHAR, column_names VARCHAR
 
 `NULL` keeps the default. Point types: `CORE` (≥ `min_pts` neighbours within `eps`), `BORDER`
 (near a core point), `NOISE` (`cluster_id = -1`, `anomaly_score = 1.0`, `is_anomaly = true`).
-Rows with NULL in a selected column are skipped. Numeric columns only.
+Rows with NULL in a selected column are skipped; NaN and ±Inf are kept and come out as `NOISE`
+(and make `dbscan` quadratic, see gotcha 12). Numeric columns only.
 
 - **summary:** `status VARCHAR` (`'fail'` if any noise), `cluster_count BIGINT, noise_count BIGINT,
   total_count BIGINT, noise_rate DOUBLE, largest_cluster_size BIGINT, eps DOUBLE, min_pts BIGINT,`
@@ -430,12 +437,14 @@ CREATE TABLE order_explanations AS
 SELECT order_id, column_name, outlier_value, explanation
 FROM outlier_tree('orders', 'segment, amount, items', 'outliers', id_column := 'order_id');
 
--- 3. review: flagged orders with their reasons
+-- 3. review IF-flagged orders next to independent OutlierTree findings. OutlierTree explains its
+--    own detections, not the IF scores: a flagged order can have zero or several findings, so
+--    aggregate them to keep one row per order.
 SELECT o.order_id, o.segment, o.amount, o.items, round(s.anomaly_score, 3) AS score,
-       e.explanation
+       (SELECT string_agg(e.column_name || ': ' || e.explanation, '; ' ORDER BY e.column_name)
+        FROM order_explanations e WHERE e.order_id = s.order_id) AS outlier_tree_findings
 FROM order_scores s
 JOIN orders o USING (order_id)
-LEFT JOIN order_explanations e USING (order_id)
 WHERE s.is_anomaly
 ORDER BY s.anomaly_score DESC;
 ```

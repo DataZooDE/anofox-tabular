@@ -382,6 +382,10 @@ SELECT onnx_available, model_status, status_message FROM anofox_ner_status();
   word, or whose letters all lie inside pattern matches, skip the model. Long texts are windowed
   (256 tokens, 64 overlap). For large scans, restrict `anofox_pii_enabled_types` to pattern
   types so no inference runs.
+- **Large tables:** `pii_scan_table` reads every row of every column (no sampling), and
+  `pii_audit_table` is a second full pass; with NER, 1M distinct texts take hours. Scan a sample
+  *view* first (`CREATE VIEW crm_sample AS SELECT * FROM crm USING SAMPLE 10000;` — a view, not a
+  TEMP table, which the scans reject), then audit only the columns the scan flagged.
 - Dictionary fallback (`NAME` without model): capitalised known given name plus up to two
   following capitalised words (`Sabine Weiß`), confidence 0.5; a surname alone is not found.
 

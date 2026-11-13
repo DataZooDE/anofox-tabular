@@ -32,7 +32,8 @@ that executes many checks from a checks table. Load with `LOAD anofox_tabular;` 
 - **Empty input passes for the rate/statistics checks** (`null_rate`, `regex_match`,
   `values_in_set`, `match_rate`, `agg_check`, `occurrence`, time-aware checks, ...), with a
   message such as `Table is empty (0 rows); null rate check passed trivially`. Exceptions:
-  `volume` with `min_rows >= 1` fails on 0 rows, and `freshness` fails
+  `volume` with `min_rows >= 1` and `distinct_count` with `min_distinct >= 1` fail on 0 rows,
+  and `freshness` fails
   (`No timestamp values found ...`). In `run_checks`, `"fail_on_empty": true` makes an empty
   check fail.
 - **Thresholds come back with a fixed type**, whatever literal you passed: `DOUBLE` for rates,
@@ -49,7 +50,9 @@ that executes many checks from a checks table. Load with `LOAD anofox_tabular;` 
   `Invalid named parameter`. Passing `reference_date` both ways is an error.
 - **Time-aware checks evaluate the latest date in the data by default** — a day that never
   arrived is never checked. Anchor a nightly check with `reference_date` (or
-  `"reference_date": "${yesterday}"` in `run_checks`).
+  `"reference_date": "${yesterday}"` in `run_checks`). For a backfill use
+  `start_date := ..., end_date := ...` (one set-based query, one row per date) instead of one call
+  per `reference_date`.
 - **Column-list forms differ**: `schema_check`, `values_in_set`, `rolling_values_in_set` take
   `VARCHAR[]` (`['a', 'b']`); `match_rate` keys are comma-separated strings (`'id, region'`);
   `duplicate_count` takes either.
@@ -310,16 +313,16 @@ Required: `check_name`, `check_type`, `table_name`. Optional (missing = `NULL`,
 | `null_rate` | NULL share | — | yes |
 | `distinct_count` | distinct values | — | yes |
 | `regex_match` | match rate | `pattern` (req.) | yes |
-| `values_in_set` | share in set | `allowed_values` (JSON array) | yes |
+| `values_in_set` | share in set; set `lower_threshold` (e.g. 1.0) | `allowed_values` (JSON array) | yes |
 | `agg` | the aggregate | `agg` (req.): avg/min/max/sum/median/stddev | yes |
 | `duplicate_count` | duplicates | — (key in `column_name`) | yes |
 | `compliance` | compliance rate | `expression` (req.) | yes |
 | `freshness` | age in **seconds** | `reference_time` (default now UTC; accepts tokens) | yes |
 | `occurrence` | extreme frequency | `mode`: `max` (default) / `min` | no |
 | `match_rate` | match rate | `right_table`, `right_keys` (req.), `left_keys` (default `column_name`) | no |
-| `rel_count_change` | relative change | `date_column` (req.), `count_column`, `window_days` (7), `reference_date`, `fill_missing_days` | no |
+| `rel_count_change` | relative change; **set `lower_threshold`/`upper_threshold` (e.g. -0.5/0.5)**, without them the row only monitors and a missing day passes | `date_column` (req.), `count_column`, `window_days` (7), `reference_date`, `fill_missing_days` | no |
 | `metric_anomaly_iqr` | daily metric; IQR bounds fill the threshold columns | `date_column` (req.), `metric_column`, `window_days` (30), `k` (1.5), `reference_date` (no `mode`) | no |
-| `rolling_values_in_set` | share in set | `date_column` (req.), `allowed_values`, `window_days` (7), `reference_date` | no |
+| `rolling_values_in_set` | share in set; set `lower_threshold` (e.g. 1.0) or it never fails | `date_column` (req.), `allowed_values`, `window_days` (7), `reference_date` | no |
 | `schema_check` | missing column count; default `upper_threshold` 0 | `columns` (req.): JSON array or CSV string; no `column_name`/`filter_expr`/`identifier_column` | no |
 
 Unknown `params` keys (typos like `refernce_date`), malformed dates (`reference_date` must be
@@ -399,21 +402,25 @@ SELECT check_name, status, message FROM run_checks('mini_checks');
 
 ## Result history and pipeline gate
 
-Persist every run, then gate on the stored rows of the latest run (a second `run_checks` call
-would re-evaluate at a later `run_ts`). Treat `error` like `fail`:
+Run the suite once into a TEMP table, append it to the history, and gate on that run (a second
+`run_checks` call would re-evaluate at a later `run_ts`). The script is safe to run every night:
+`CREATE TABLE IF NOT EXISTS`, and the gate fails when no check ran (`run_checks` itself raises
+on an empty checks table; the `count(*) = 0` branch catches a run that returned nothing). Treat
+`error` like `fail`:
 
 ```sql
-CREATE TABLE dq_results AS SELECT * FROM run_checks('dq_checks') LIMIT 0;
-INSERT INTO dq_results SELECT * FROM run_checks('dq_checks');
+CREATE OR REPLACE TEMP TABLE dq_run AS SELECT * FROM run_checks('dq_checks');
+CREATE TABLE IF NOT EXISTS dq_results AS SELECT * FROM dq_run LIMIT 0;
+INSERT INTO dq_results SELECT * FROM dq_run;
 
-SELECT CASE WHEN count(*) FILTER (WHERE status IN ('fail', 'error')) > 0
+SELECT CASE WHEN count(*) = 0 THEN error('dq gate failed: no checks ran')
+            WHEN count(*) FILTER (WHERE status IN ('fail', 'error')) > 0
             THEN error('dq gate failed: ' ||
                        string_agg(check_name || coalesce('[' || identifier || ']', '') || '=' || status,
                                   ', ' ORDER BY check_name, identifier)
                            FILTER (WHERE status IN ('fail', 'error')))
             ELSE 'dq gate passed' END AS gate
-FROM dq_results
-WHERE run_ts = (SELECT max(run_ts) FROM dq_results);
+FROM dq_run;
 ```
 
 ```text
@@ -457,12 +464,11 @@ INSERT INTO nightly_checks VALUES
     ('recent_emails', 'null_rate', 'orders', 'email', '{"fail_on_empty": true}',
      NULL, 0.2, false, NULL, 'order_date >= DATE ''2026-01-25''');
 
-CREATE TABLE nightly_results AS SELECT * FROM run_checks('nightly_checks') LIMIT 0;
-INSERT INTO nightly_results SELECT * FROM run_checks('nightly_checks');
+CREATE OR REPLACE TEMP TABLE nightly_run AS SELECT * FROM run_checks('nightly_checks');
+CREATE TABLE IF NOT EXISTS nightly_results AS SELECT * FROM nightly_run LIMIT 0;
+INSERT INTO nightly_results SELECT * FROM nightly_run;
 
-SELECT check_name, value, status, message
-FROM nightly_results
-WHERE run_ts = (SELECT max(run_ts) FROM nightly_results);
+SELECT check_name, value, status, message FROM nightly_run ORDER BY check_name;
 ```
 
 In production replace the fixed dates with tokens so the table needs no daily `UPDATE`:
@@ -477,5 +483,8 @@ In production replace the fixed dates with tokens so the table needs no daily `U
 - **Foreign key with NULL references**: `match_rate` ignores NULL keys; add `null_rate` on the key.
 - **Epoch-second timestamps**: `CREATE VIEW v AS SELECT to_timestamp(epoch_col) AS ts FROM t` before `freshness`.
 - **Checks in version control**: `run_checks('nightly_checks.csv')` reads a CSV with the checks-table columns.
-- **Type drift**: `schema_check` only compares column names, not types — add a `compliance` or `agg` check.
+- **Type drift**: `schema_check` asserts required column names only. To catch retyped, added or
+  removed columns, compare with a reference table or view using `diff_schema` (skill
+  anofox-tabular-diff): `SELECT * FROM diff_schema('orders_expected', 'orders') WHERE drift <> 'same'`;
+  for a gate wrap it in `CASE WHEN count(*) > 0 THEN error(...) END`.
 - **Qualified/quoted names**: `'sales.orders'` (schema or attached DB); a table named with a dot is `'"orders.archive"'`.

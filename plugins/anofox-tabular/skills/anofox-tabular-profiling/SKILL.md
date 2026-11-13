@@ -193,7 +193,8 @@ SET TimeZone = 'UTC';
 profile_summary(table_name VARCHAR) -> TABLE(12 columns, one row)
 ```
 
-Only `table_name` (table or view, not TEMP). Always scans the whole table (no sampling).
+Only `table_name` (table or view, not TEMP). Always scans the whole table (no sampling);
+`duplicate_row_count` groups by every column, the most expensive part on wide or large tables.
 
 | Column | Type | Notes |
 |---|---|---|
@@ -282,8 +283,8 @@ check types, `params` and thresholds: skill `anofox-tabular-data-quality`).
 
 | Profile finding | Check to derive |
 |---|---|
-| `null_rate` (observed) | `null_rate` with `upper_threshold` = observed rate + margin (0 for required columns) |
-| `distinct_count <= 5` on a string column | `values_in_set` with `allowed_values` from `top_values` |
+| `null_rate` (observed) | `null_rate` with `upper_threshold` = observed rate + margin, capped at 1 (`run_checks` rejects rate thresholds outside 0..1); 0 for required columns |
+| `distinct_count` 1 to 5 on a string column | `values_in_set` with `allowed_values` from `top_values` |
 | `is_unique AND null_count = 0` | `duplicate_count` with `upper_threshold` 0 (key candidate) |
 | `negative_count = 0` on a numeric column | `agg` `min` with `lower_threshold` 0 |
 | `min_val` / `max_val` / `p25`, `p75` | `agg` min/max bounds, or the `iqr` / `zscore` functions |
@@ -295,28 +296,34 @@ check types, `params` and thresholds: skill `anofox-tabular-data-quality`).
 -- 1. Overview and per-column profile
 SELECT row_count, total_null_rate, duplicate_row_count FROM profile_summary('customers');
 
--- 2. Generate checks from the profile
+-- 2. Profile once, exactly (no sampling), and keep the result: every check below reads it.
+--    A TEMP table is fine here: it is never passed to a second-connection function.
+CREATE TEMP TABLE customer_profile AS
+SELECT * FROM profile_table('customers', NULL, NULL, true);
+
+-- 3. Generate checks from the profile
 CREATE TABLE dq_checks AS
 SELECT column_name || '_null_rate' AS check_name, 'null_rate' AS check_type,
        'customers' AS table_name, column_name, NULL::VARCHAR AS params,
-       NULL::DOUBLE AS lower_threshold, round(null_rate + 0.02, 2) AS upper_threshold
-FROM profile_table('customers')
+       NULL::DOUBLE AS lower_threshold,
+       least(1.0, round(null_rate + 0.02, 2)) AS upper_threshold  -- rate thresholds must be 0..1
+FROM customer_profile
 UNION ALL
 SELECT column_name || '_in_set', 'values_in_set', 'customers', column_name,
        json_object('allowed_values', list_transform(top_values, lambda x: x.value))::VARCHAR,
        1.0, NULL
-FROM profile_table('customers')
-WHERE column_type = 'VARCHAR' AND distinct_count <= 5
+FROM customer_profile
+WHERE column_type = 'VARCHAR' AND distinct_count BETWEEN 1 AND 5   -- an all-NULL column has no values
 UNION ALL
 SELECT column_name || '_unique', 'duplicate_count', 'customers', column_name, NULL, NULL, 0
-FROM profile_table('customers')
+FROM customer_profile
 WHERE is_unique AND null_count = 0
 UNION ALL
 SELECT column_name || '_non_negative', 'agg', 'customers', column_name, '{"agg": "min"}', 0, NULL
-FROM profile_table('customers')
+FROM customer_profile
 WHERE negative_count IS NOT NULL;               -- every numeric column
 
--- 3. Run them: monthly_fee_non_negative fails (min -5.0), the rest pass
+-- 4. Run them: monthly_fee_non_negative fails (min -5.0), the rest pass
 SELECT check_name, check_type, value, status
 FROM run_checks('dq_checks')
 ORDER BY status, check_name;
@@ -324,7 +331,9 @@ ORDER BY status, check_name;
 
 Thresholds derived from today's data encode today's problems: review the generated rows
 (a non-negative rule that already fails, as here, is a finding, not a bad check) before you
-schedule the suite.
+schedule the suite. Derive rules from an exact profile (fourth argument `true`, as above): a sampled
+profile (the default above `sample_size` rows) can miss rare categories for `allowed_values` and
+duplicates for `is_unique`, so its rules are only candidates.
 
 ## Common patterns
 

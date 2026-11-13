@@ -131,6 +131,27 @@ SELECT count(*) FILTER (WHERE v)         AS valid,
 FROM (SELECT email_is_valid(email, 'dns') AS v FROM customers);
 ```
 
+**On large tables, look up each domain once.** The cache keeps answers, but not timeouts: every
+row with a slow domain waits for the timeout again. Check the syntax offline first, then query
+the distinct domains and join back:
+
+```sql
+WITH syntax AS (
+  SELECT id, email, email_is_valid(email) AS syntax_ok,
+         split_part(lower(trim(email)), '@', 2) AS domain
+  FROM customers
+), domains AS (
+  SELECT domain, email_is_valid('postmaster@' || domain, 'dns') AS domain_ok
+  FROM (SELECT DISTINCT domain FROM syntax WHERE syntax_ok)
+)
+SELECT s.id, s.email, s.syntax_ok, d.domain_ok
+FROM syntax s LEFT JOIN domains d USING (domain)
+ORDER BY s.id;
+```
+
+`smtp` is never cached, can take up to 10 s per address and is `NULL` where port 25 is blocked
+(most cloud hosts): use it only on a small, deduplicated list.
+
 ```sql
 SELECT key, value FROM email_config() WHERE key LIKE 'dns%';
 ```
@@ -185,11 +206,10 @@ handled; `+49 (0)30 ...` drops the `(0)`.
 
 ```sql
 SELECT id, country,
-       (phonenumber_parse(phone, country)).valid     AS valid,
-       (phonenumber_parse(phone, country)).reason    AS reason,
-       (phonenumber_parse(phone, country)).extension AS ext,
-       phonenumber_format(phone, country, 'E164')    AS e164
-FROM customers ORDER BY id;
+       p.valid, p.reason, p.extension AS ext,
+       phonenumber_format(phone, country, 'E164') AS e164
+FROM (SELECT *, phonenumber_parse(phone, country) AS p FROM customers)  -- parse once per row
+ORDER BY id;
 ```
 
 ```text
@@ -481,7 +501,8 @@ WITH checked AS (
 )
 SELECT customer_ref, email_clean, phone_e164, vat_iso, amount_money,
        e.reason AS email_reason, p.reason AS phone_reason, v.reason AS vat_reason,
-       CASE WHEN e.valid IS NULL OR (p.valid IS NULL AND p.reason IS NULL) OR v.valid IS NULL
+       CASE WHEN (e.valid IS NULL AND e.reason IS NULL) OR (p.valid IS NULL AND p.reason IS NULL)
+                 OR v.valid IS NULL
                  OR 'empty' IN (e.reason, p.reason, v.reason) THEN 'missing'
             WHEN e.valid AND p.valid AND v.valid AND amount_money IS NOT NULL THEN 'clean'
             ELSE 'review' END AS route
