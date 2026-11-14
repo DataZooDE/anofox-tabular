@@ -7,13 +7,13 @@ description: >
   Pearson/Spearman correlations with `profile_correlations`. Use when a user asks to profile,
   explore or summarise a table, find null-heavy, constant, unique or correlated columns, or
   derive data-quality checks (thresholds, allowed values) from what the data looks like.
-version: 2026.11.02
+version: 2026.11.13
 user-invocable: false
 ---
 
 # Anofox Tabular — Profiling Cheat Sheet
 
-**Extension:** `anofox_tabular` v2026.11.02 | **DuckDB:** v2.0.0 / v1.5.6 | **Naming:** short alias (`profile_table`) = canonical `anofox_tab_profile_table`
+**Extension:** `anofox_tabular` v2026.11.13 | **DuckDB:** v2.0.0 / v1.5.6 | **Naming:** short alias (`profile_table`) = canonical `anofox_tab_profile_table`
 
 Describe a table before you validate it: one row per column, one row per table, one row per
 numeric column pair. Load with `LOAD anofox_tabular;` (install: `INSTALL anofox_tabular FROM community;`).

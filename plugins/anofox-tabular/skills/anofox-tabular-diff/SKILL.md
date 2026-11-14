@@ -7,13 +7,13 @@ description: >
   `diff_schema` (added / removed / retyped columns), plus migration sign-off with `volume`,
   `match_rate` and `profile_summary`. Use when the user wants to compare two versions of a
   table, validate a data migration or reconcile old and new copies, or list schema drift.
-version: 2026.11.02
+version: 2026.11.13
 user-invocable: false
 ---
 
 # Anofox Tabular — Diffing & Migration Cheat Sheet
 
-**Extension:** `anofox_tabular` v2026.11.02 | **DuckDB:** v2.0.0 / v1.5.6 | **Naming:** short alias (`diff_joindiff`) = canonical `anofox_tab_diff_joindiff`
+**Extension:** `anofox_tabular` v2026.11.13 | **DuckDB:** v2.0.0 / v1.5.6 | **Naming:** short alias (`diff_joindiff`) = canonical `anofox_tab_diff_joindiff`
 
 Compares a source (old) and a target (new) table on a primary key, or their column lists. The
 row diffs are rewritten into one native `FULL OUTER JOIN` query.
