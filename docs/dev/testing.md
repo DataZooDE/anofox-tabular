@@ -100,6 +100,51 @@ workflow: it checks that the plugin manifests parse, that each skill's frontmatt
 directory name, a description with a "Use when" sentence and the plugin version, that the plugin
 version matches `python/pyproject.toml`, and that README.md and CLAUDE.md list every skill.
 
+## Plugin eval suite
+
+`make eval-plugin` (`scripts/run_plugin_evals.py`) tests whether Claude Code loads the right
+skill of the plugin for a request and writes SQL that runs. It needs the
+[`claude plugin eval`](https://code.claude.com/docs/en/plugin-evals) command (Claude Code
+2.1.269 or later), your Claude credentials and a build. Every run is a real model call on your
+account: a full run costs about 2 USD (list price) and takes about 3 minutes.
+
+The cases live in `plugins/anofox-tabular/evals/`, one directory per case:
+
+- `prompt.md`: the request (frontmatter: tags, `max_turns`, `allowed_tools`). A request names the
+  tables and the task, never a function name, and asks for the SQL in `answer.sql`.
+- `graders/skill-invoked.md`: a `tool_used` grader on the `Skill` tool that passes when the
+  expected skill was invoked.
+- `graders/sql-*.md`: `regex` graders on `answer.sql` for the functions the task needs.
+
+Six cases cover one skill each; the five `boundary-*` cases check requests that sit between two
+skills (a daily volume drop is data quality, unusual rows per customer is anomaly detection,
+email validation is master data, email masking is PII, a schema drift gate is data quality or
+diff). No grader calls a judge model.
+
+`claude plugin eval` has no custom-code graders, so the script adds the SQL check. It runs the
+suite with one run per case and no no-plugin baseline (`--ablation none`), keeps the run
+workspaces (`--keep-temp`), and then runs `evals/fixtures/fixture.sql` followed by each run's
+`answer.sql` with the loader of the docs snippet checker. A run passes when the script exits
+without an error and returns at least one row. The kept workspaces are deleted afterwards.
+
+```bash
+make eval-plugin                                    # all cases, build/release
+make eval-plugin PLUGIN_EVAL_ARGS="--case 'boundary-*' --runs 3"
+python3 scripts/run_plugin_evals.py --check-sql my.sql   # one SQL file against the fixture
+```
+
+`ANOFOX_DUCKDB` and `ANOFOX_EXTENSION` select another shell and extension file. The results
+(`aggregate-result.json`, `report.html` and `sql-results.tsv`) go to
+`plugins/anofox-tabular/evals/results/<timestamp>/`, which git ignores. To see why a case failed,
+open `report.html`, or pass `--keep` and read the run's transcript. When the `skill-invoked`
+grader fails, the skill's `description` does not match the request; fix the description, not
+the case.
+
+The Plugin eval workflow (`.github/workflows/plugin-eval.yml`) runs the suite every Monday and on
+demand, with the `ANTHROPIC_API_KEY` secret, the released v2.0.0 linux_amd64 extension and the
+DuckDB 2.0.0 CLI. It does not run on pull requests. Without the secret it prints a notice and
+succeeds.
+
 ## Python tests
 
 Use uv. Build the extension first, then:

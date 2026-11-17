@@ -21,3 +21,6 @@ third_party/
 # Python bytecode
 __pycache__/
 *.pyc
+
+# claude plugin eval results (make eval-plugin)
+plugins/anofox-tabular/evals/results/

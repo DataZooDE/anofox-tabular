@@ -1,0 +1,112 @@
+# Plugin eval: does Claude Code pick the right skill of the Claude Code plugin
+# (plugins/anofox-tabular/) and write SQL that runs?
+#
+# Runs the `claude plugin eval` suite in plugins/anofox-tabular/evals/ through
+# scripts/run_plugin_evals.py (`make eval-plugin`): 11 cases, one run each, no
+# no-plugin baseline, the default model, graders without a judge model. The
+# script then executes each answer.sql against evals/fixtures/fixture.sql with
+# the released v2.0.0 linux_amd64 extension and the DuckDB 2.0.0 CLI (no build).
+#
+# Cost: every case is a real model call on the ANTHROPIC_API_KEY account. A full
+# run measured about 2 USD (list price) and 3 minutes; the job stops starting
+# new runs at --max-cost-usd 5. It therefore runs weekly and on demand, not on
+# pull requests. Without the secret the job prints a notice and succeeds.
+name: Plugin eval
+
+on:
+  workflow_dispatch:
+    inputs:
+      case:
+        description: "Case name glob (empty: all cases)"
+        required: false
+        default: ""
+      runs:
+        description: "Runs per case"
+        required: false
+        default: "1"
+  schedule:
+    - cron: "17 5 * * 1" # Mondays 05:17 UTC
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+env:
+  DUCKDB_VERSION: v2.0.0
+  EXTENSION_URL: https://get.erpl.io/v2.0.0/linux_amd64/anofox_tabular.duckdb_extension.gz
+
+jobs:
+  plugin-eval:
+    name: claude plugin eval (plugins/anofox-tabular)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check for the API key
+        id: key
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          if [ -z "$ANTHROPIC_API_KEY" ]; then
+            echo "::notice title=Plugin eval skipped::The ANTHROPIC_API_KEY secret is not set; nothing was run."
+            echo "present=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/checkout@v4
+        if: steps.key.outputs.present == 'true'
+        with:
+          persist-credentials: false
+          submodules: false
+
+      - uses: actions/setup-node@v4
+        if: steps.key.outputs.present == 'true'
+        with:
+          node-version: "22"
+
+      - name: Install Claude Code
+        if: steps.key.outputs.present == 'true'
+        run: |
+          npm install -g @anthropic-ai/claude-code
+          claude --version
+
+      - name: Download the DuckDB CLI and the released extension
+        if: steps.key.outputs.present == 'true'
+        run: |
+          set -euo pipefail
+          bin="$RUNNER_TEMP/anofox"
+          mkdir -p "$bin"
+          curl -fsSL -o "$bin/duckdb.tar.gz" \
+            "https://github.com/duckdb/duckdb/releases/download/${DUCKDB_VERSION}/duckdb-cli-linux-amd64.tar.gz"
+          tar -xzf "$bin/duckdb.tar.gz" -C "$bin"
+          curl -fsSL -o "$bin/anofox_tabular.duckdb_extension.gz" "$EXTENSION_URL"
+          curl -fsSL -o "$bin/anofox_tabular.duckdb_extension.gz.sha256" "$EXTENSION_URL.sha256"
+          # the sidecar hashes the .gz file
+          (cd "$bin" && sha256sum -c anofox_tabular.duckdb_extension.gz.sha256)
+          gunzip "$bin/anofox_tabular.duckdb_extension.gz"
+          "$bin/duckdb" --version
+          echo "ANOFOX_DUCKDB=$bin/duckdb" >> "$GITHUB_ENV"
+          echo "ANOFOX_EXTENSION=$bin/anofox_tabular.duckdb_extension" >> "$GITHUB_ENV"
+
+      - name: Run the suite
+        if: steps.key.outputs.present == 'true'
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          DATAZOO_DISABLE_TELEMETRY: "1"
+          CASE: ${{ inputs.case }}
+          RUNS: ${{ inputs.runs || '1' }}
+        run: |
+          args=(--runs "$RUNS" --max-cost-usd 5)
+          if [ -n "$CASE" ]; then args+=(--case "$CASE"); fi
+          python3 scripts/run_plugin_evals.py "${args[@]}"
+
+      - name: Upload the results
+        if: always() && steps.key.outputs.present == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: plugin-eval-results
+          path: plugins/anofox-tabular/evals/results/
+          if-no-files-found: ignore

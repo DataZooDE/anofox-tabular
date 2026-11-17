@@ -219,6 +219,7 @@ and how to check v1.5.6 locally.
 | `test/sql/*.test` | SQLLogicTest format test suite |
 | `plugins/anofox-tabular/` | Claude Code plugin: `plugin.json` and the skills |
 | `scripts/check_doc_snippets.py` | Runs the SQL of README, docs and skills (`make check-docs`) |
+| `scripts/run_plugin_evals.py` | Runs the plugin eval suite and its SQL check (`make eval-plugin`) |
 
 ## Common Development Patterns
 
@@ -265,7 +266,10 @@ assistants; for in-repo work load them with `claude --plugin-dir ./plugins/anofo
 
 `make check-docs` (after `make release`) runs every ```sql fence of `README.md`, `docs/` and the
 skills against the build and fails on an unknown function name; `make check-plugin` checks the
-manifests and the skill frontmatter without a build. See `docs/dev/testing.md`.
+manifests and the skill frontmatter without a build. `make eval-plugin` runs the
+`claude plugin eval` suite in `plugins/anofox-tabular/evals/` (does Claude load the right skill,
+and does its SQL run against a fixture?); it costs tokens, so CI runs it weekly
+(`plugin-eval.yml`), not on pull requests. See `docs/dev/testing.md`.
 
 On a release, bump `version` in `plugins/anofox-tabular/.claude-plugin/plugin.json`, in every
 SKILL.md frontmatter and header line, together with `python/pyproject.toml` (the release
