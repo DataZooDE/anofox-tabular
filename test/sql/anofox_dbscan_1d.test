@@ -89,3 +89,52 @@ query TIIII
 SELECT status, cluster_count, noise_count, total_count, largest_cluster_size FROM dbscan('db1d_large', 'v', 0.05, 5, 'summary')
 ----
 fail	1	20	20000	19980
+
+# Issue #140: NaN and +-Inf values no longer switch the call to the all-pairs search. They have no
+# neighbours (their distance to every value is Inf or NaN), as in the all-pairs search. The
+# fingerprints and rows below were captured with the all-pairs implementation.
+statement ok
+CREATE TABLE db1d_nf AS
+SELECT id, CASE WHEN id % 97 = 3 THEN 'inf'::DOUBLE WHEN id % 89 = 5 THEN 'nan'::DOUBLE WHEN id = 211 THEN '-inf'::DOUBLE ELSE v END AS v
+FROM db1d ORDER BY id
+
+query T
+SELECT md5(string_agg(row_id || ':' || value || ':' || cluster_id || ':' || point_type || ':' || neighbor_count || ':' || round(anomaly_score, 12) || ':' || is_anomaly, ',' ORDER BY row_id))
+FROM dbscan('db1d_nf', 'v', 0.2, 6, 'clusters')
+----
+35aef788f744734441dfecefb2ab8ff1
+
+query T
+SELECT md5(string_agg(row_id || ':' || value || ':' || cluster_id || ':' || point_type || ':' || neighbor_count || ':' || round(anomaly_score, 12) || ':' || is_anomaly, ',' ORDER BY row_id))
+FROM dbscan('db1d_nf', 'v', 0.1, 4, 'clusters')
+----
+6eeae20a75d8c0ac80a267f159c3cdda
+
+# min_pts = 1: every point is a core point, so each NaN and Inf is a cluster of its own
+query IRITIRT
+SELECT row_id, value, cluster_id, point_type, neighbor_count, round(anomaly_score, 6), is_anomaly
+FROM dbscan('db1d_special', 'v', 0.1, 1, 'clusters') ORDER BY row_id
+----
+1	1.0	0	CORE	0	0.3	false
+2	1.1	1	CORE	2	0.1	false
+3	1.2	1	CORE	2	0.1	false
+4	nan	2	CORE	0	0.3	false
+5	inf	3	CORE	0	0.3	false
+6	inf	4	CORE	0	0.3	false
+7	-inf	5	CORE	0	0.3	false
+8	1.15	1	CORE	2	0.1	false
+9	5.0	6	CORE	2	0.1	false
+10	5.05	6	CORE	2	0.1	false
+11	5.1	6	CORE	2	0.1	false
+12	nan	7	CORE	0	0.3	false
+
+# One Inf in the large input (the all-pairs search took seconds here; 200k rows would take minutes)
+statement ok
+CREATE TABLE db1d_large_inf AS
+SELECT CASE WHEN i = 12345 THEN 'inf'::DOUBLE ELSE ((i * 7919) % 200000) / 1000.0 + CASE WHEN i % 10000 = 0 THEN 500 ELSE 0 END END AS v
+FROM range(0, 200000) t(i)
+
+query TIIII
+SELECT status, cluster_count, noise_count, total_count, largest_cluster_size FROM dbscan('db1d_large_inf', 'v', 0.05, 5, 'summary')
+----
+fail	1	21	200000	199979

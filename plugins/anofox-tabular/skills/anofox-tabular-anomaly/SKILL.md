@@ -64,9 +64,8 @@ LOAD anofox_tabular;
     `isolation_forest_mv` also takes VARCHAR (categorical). `outlier_tree` takes numeric,
     BOOLEAN, VARCHAR, ENUM. DATE/TIMESTAMP → binder error; pass `epoch(ts)` through a view.
 12. **DBSCAN distances are Euclidean on raw values** — scale columns before `dbscan_mv`.
-    `dbscan_mv` is O(n²): sample tables above ~50k rows. `dbscan` (one column) is O(n log n) only
-    while every value is finite: a single NaN/±Inf falls back to the O(n²) all-pairs search (40k
-    rows: 0.05 s → 12 s). Filter them in a view (`WHERE isfinite(x)`); they are NOISE anyway.
+    `dbscan_mv` is O(n²): sample tables above ~50k rows. `dbscan` (one column) sorts the values and
+    is O(n log n) unless `eps` covers most rows; NaN/±Inf values have no neighbours (NOISE).
 
 ## Sample data (used below)
 
@@ -248,8 +247,8 @@ dbscan_mv(table_name VARCHAR, column_names VARCHAR
 
 `NULL` keeps the default. Point types: `CORE` (≥ `min_pts` neighbours within `eps`), `BORDER`
 (near a core point), `NOISE` (`cluster_id = -1`, `anomaly_score = 1.0`, `is_anomaly = true`).
-Rows with NULL in a selected column are skipped; NaN and ±Inf are kept and come out as `NOISE`
-(and make `dbscan` quadratic, see gotcha 12). Numeric columns only.
+Rows with NULL in a selected column are skipped; NaN and ±Inf are kept and have no neighbours, so
+they come out as `NOISE` (a cluster of their own with `min_pts = 1`). Numeric columns only.
 
 - **summary:** `status VARCHAR` (`'fail'` if any noise), `cluster_count BIGINT, noise_count BIGINT,
   total_count BIGINT, noise_rate DOUBLE, largest_cluster_size BIGINT, eps DOUBLE, min_pts BIGINT,`

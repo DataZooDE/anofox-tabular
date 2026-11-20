@@ -12,6 +12,7 @@
 
 #include "anofox_dbscan.hpp"
 
+#include <limits>
 #include <vector>
 
 using namespace duckdb::anofox;
@@ -82,4 +83,60 @@ TEST_CASE("test/cpp/anofox_dbscan_noise_promoted_to_border", "[anofox]") {
 	// Genuine noise stays noise
 	CHECK(results[4].point_type == PointType::NOISE);
 	CHECK(results[4].cluster_id == -1);
+}
+
+TEST_CASE("test/cpp/anofox_dbscan_1d_non_finite_keeps_sorted_search", "[anofox]") {
+	// Issue #140: one NaN or +-Inf value must not switch a univariate fit to the all-pairs
+	// search. A non-finite value has no neighbours (its distance to every point is Inf or NaN).
+	const double nan = std::numeric_limits<double>::quiet_NaN();
+	const double inf = std::numeric_limits<double>::infinity();
+	std::vector<std::vector<double>> data = {{1.0}, {1.1}, {1.2}, {nan}, {inf}, {-inf}, {1.15}, {5.0}, {5.05}, {5.1}};
+
+	SECTION("min_pts 3: non-finite values are noise") {
+		DBSCAN dbscan(0.1, 3, DistanceMetric::EUCLIDEAN);
+		dbscan.Fit(data);
+		REQUIRE(dbscan.UsesSortedSearch());
+
+		const auto &results = dbscan.GetResults();
+		REQUIRE(results.size() == data.size());
+		for (size_t i : {size_t(3), size_t(4), size_t(5)}) {
+			CHECK(results[i].point_type == PointType::NOISE);
+			CHECK(results[i].cluster_id == -1);
+			CHECK(results[i].neighbor_count == 0);
+		}
+		CHECK(results[0].point_type == PointType::NOISE); // 1.1 - 1.0 > 0.1 in binary
+		for (size_t i : {size_t(1), size_t(2), size_t(6)}) {
+			CHECK(results[i].cluster_id == 0);
+			CHECK(results[i].point_type == PointType::CORE);
+		}
+		for (size_t i : {size_t(7), size_t(8), size_t(9)}) {
+			CHECK(results[i].cluster_id == 1);
+		}
+		CHECK(dbscan.GetClusterCount() == 2);
+		CHECK(dbscan.GetNoiseCount() == 4);
+	}
+
+	SECTION("min_pts 1: each non-finite value is a cluster of its own") {
+		DBSCAN dbscan(0.1, 1, DistanceMetric::EUCLIDEAN);
+		dbscan.Fit(data);
+		REQUIRE(dbscan.UsesSortedSearch());
+
+		const auto &results = dbscan.GetResults();
+		CHECK(results[3].point_type == PointType::CORE);
+		CHECK(results[4].point_type == PointType::CORE);
+		CHECK(results[5].point_type == PointType::CORE);
+		CHECK(results[3].cluster_id != results[4].cluster_id);
+		CHECK(results[4].cluster_id != results[5].cluster_id);
+		CHECK(dbscan.GetNoiseCount() == 0);
+	}
+
+	SECTION("finite 1-D data uses the sorted search, 2-D data does not") {
+		DBSCAN finite(0.1, 3, DistanceMetric::EUCLIDEAN);
+		finite.Fit({{1.0}, {1.05}, {1.1}});
+		CHECK(finite.UsesSortedSearch());
+
+		DBSCAN two_d(0.1, 3, DistanceMetric::EUCLIDEAN);
+		two_d.Fit({{1.0, 0.0}, {1.05, 0.0}, {1.1, 0.0}});
+		CHECK_FALSE(two_d.UsesSortedSearch());
+	}
 }
