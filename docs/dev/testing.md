@@ -98,7 +98,8 @@ tests.
 `make check-plugin` (`scripts/check_plugin.py`) needs no build and runs in the Static audits
 workflow: it checks that the plugin manifests parse, that each skill's frontmatter has its
 directory name, a description with a "Use when" sentence and the plugin version, that the plugin
-version matches `python/pyproject.toml`, and that README.md and CLAUDE.md list every skill.
+version matches `python/pyproject.toml`, that README.md and CLAUDE.md list every skill, and
+that the plugin eval workflow runs on demand only (`workflow_dispatch`).
 
 ## Plugin eval suite
 
@@ -140,10 +141,11 @@ open `report.html`, or pass `--keep` and read the run's transcript. When the `sk
 grader fails, the skill's `description` does not match the request; fix the description, not
 the case.
 
-The Plugin eval workflow (`.github/workflows/plugin-eval.yml`) runs the suite every Monday and on
-demand, with the `ANTHROPIC_API_KEY` secret, the released v2.0.0 linux_amd64 extension and the
-DuckDB 2.0.0 CLI. It does not run on pull requests. Without the secret it prints a notice and
-succeeds.
+The Plugin eval workflow (`.github/workflows/plugin-eval.yml`) runs the suite on demand only
+(Actions → Plugin eval → Run workflow), with the `ANTHROPIC_API_KEY` repository secret, the
+released v2.0.0 linux_amd64 extension and the DuckDB 2.0.0 CLI. Every run costs tokens (about
+2 USD), so it never runs on a schedule or on pull requests; `make check-plugin` fails when the
+workflow gets another trigger. Without the secret it prints a notice and succeeds.
 
 ## Python tests
 

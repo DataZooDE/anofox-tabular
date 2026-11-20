@@ -281,8 +281,8 @@ Install it in any Claude Code session:
 | `anofox-tabular-profiling` | `profile_table`, `profile_summary`, `profile_correlations` |
 
 The skills live in [`plugins/anofox-tabular/`](plugins/anofox-tabular/). Every SQL example in
-them runs against the extension in CI (`make check-docs`), like the examples in these docs. A
-weekly `claude plugin eval` suite (`make eval-plugin`, see
+them runs against the extension in CI (`make check-docs`), like the examples in these docs. An
+on-demand `claude plugin eval` suite (`make eval-plugin`, see
 [docs/dev/testing.md](docs/dev/testing.md)) checks that Claude loads the right skill for a
 request and that the SQL it writes runs. To try a local change to the skills, start Claude Code
 with `claude --plugin-dir ./plugins/anofox-tabular`.
