@@ -187,6 +187,12 @@ public:
 	 * Get min_pts parameter
 	 */
 	size_t GetMinPts() const { return min_pts_; }
+
+	/**
+	 * True when the last Fit used the univariate sorted neighbour search instead of
+	 * comparing every pair of points
+	 */
+	bool UsesSortedSearch() const { return use_sorted_1d_; }
 };
 
 } // namespace anofox
