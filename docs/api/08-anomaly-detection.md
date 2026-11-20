@@ -387,8 +387,7 @@ column is a binder error (`dbscan: column 'segment' must be numeric, got VARCHAR
 The neighbour search sorts the values once and only visits the points within `eps` of each point,
 so the run time grows with the number of rows times the typical neighbourhood size, not with the
 square of the row count. A large `eps` that puts most rows into each other's neighbourhood is
-still quadratic. A column holding `NaN` or infinite values falls back to comparing every pair of
-points.
+still quadratic. `NaN` and infinite values have no neighbours and do not slow the search down.
 
 ```text
 dbscan(table_name VARCHAR, column_name VARCHAR

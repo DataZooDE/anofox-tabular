@@ -55,15 +55,17 @@ private:
 	DistanceMetric metric_;                   // Distance metric to use
 	std::function<void()> interrupt_check_;   // Called before each region query; may throw
 
-	// Univariate fast path: with one feature and only finite values the points are
-	// sorted once, and a region query walks outward from the point's sorted position
-	// until the distance exceeds eps (the distance grows monotonically along the sorted
-	// order), instead of comparing against every point. The neighbour sets are
-	// identical to the all-pairs search; only their order differs, which DBSCAN's
-	// result does not depend on.
+	// Univariate fast path: with one feature the finite values are sorted once, and a
+	// region query walks outward from the point's sorted position until the distance
+	// exceeds eps (the distance grows monotonically along the sorted order), instead of
+	// comparing against every point. NaN and +-Inf values are not sorted and have no
+	// neighbours, as in the all-pairs search (their distance to every point is Inf or
+	// NaN). The neighbour sets are identical to the all-pairs search; only their order
+	// differs, which DBSCAN's result does not depend on.
+	static constexpr size_t NOT_SORTED = std::numeric_limits<size_t>::max();
 	bool use_sorted_1d_ = false;
-	std::vector<size_t> sorted_order_;        // point indices by ascending value
-	std::vector<size_t> sorted_pos_;          // position of each point in sorted_order_
+	std::vector<size_t> sorted_order_;        // finite point indices by ascending value
+	std::vector<size_t> sorted_pos_;          // position in sorted_order_, or NOT_SORTED
 
 	/**
 	 * Compute distance between two points
