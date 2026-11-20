@@ -13,7 +13,9 @@ Fails when:
 - a skill's SKILL.md has no frontmatter, its `name` is not its directory name, its
   `description` is empty or has no "Use when" sentence, or its `version` differs from
   plugin.json;
-- a skill is not listed in README.md, CLAUDE.md and AGENTS.md.
+- a skill is not listed in README.md, CLAUDE.md and AGENTS.md;
+- .github/workflows/plugin-eval.yml triggers on anything but workflow_dispatch: every run
+  of the eval suite bills the ANTHROPIC_API_KEY account, so it runs on demand only.
 
 The SQL inside the skills is checked by scripts/check_doc_snippets.py (needs a build).
 """
@@ -29,6 +31,7 @@ MARKETPLACE = os.path.join(REPO_ROOT, ".claude-plugin", "marketplace.json")
 PLUGIN_JSON = os.path.join(PLUGIN_DIR, ".claude-plugin", "plugin.json")
 PYPROJECT = os.path.join(REPO_ROOT, "python", "pyproject.toml")
 LISTINGS = ["README.md", "CLAUDE.md", "AGENTS.md"]
+EVAL_WORKFLOW = os.path.join(REPO_ROOT, ".github", "workflows", "plugin-eval.yml")
 
 
 def read(path):
@@ -59,6 +62,31 @@ def parse_frontmatter(text):
         elif key is not None and line.startswith((" ", "\t")):
             fields[key].append(line.strip())
     return None
+
+
+def workflow_triggers(text):
+    """Top-level keys of a workflow's `on:` block (plain-text parse, no PyYAML)."""
+    lines = text.splitlines()
+    for i, line in enumerate(lines):
+        m = re.match(r'^(?:on|"on"|\'on\')\s*:\s*(.*?)\s*(?:#.*)?$', line)
+        if not m:
+            continue
+        inline = m.group(1)
+        if inline:  # on: workflow_dispatch  /  on: [push, workflow_dispatch]
+            return [k.strip() for k in inline.strip("[]").split(",") if k.strip()]
+        keys, indent = [], None
+        for sub in lines[i + 1:]:
+            if not sub.strip() or sub.lstrip().startswith("#"):
+                continue
+            width = len(sub) - len(sub.lstrip())
+            if width == 0:
+                break
+            if indent is None:
+                indent = width
+            if width == indent:
+                keys.append(sub.strip().lstrip("- ").split(":")[0].strip())
+        return keys
+    return []
 
 
 def main():
@@ -114,6 +142,13 @@ def main():
         for name, text in listings.items():
             if f"`{skill}`" not in text:
                 errors.append(f"{name} does not list the skill `{skill}`")
+
+    if os.path.exists(EVAL_WORKFLOW):
+        triggers = workflow_triggers(read(EVAL_WORKFLOW))
+        extra = [k for k in triggers if k != "workflow_dispatch"]
+        if extra or not triggers:
+            errors.append("plugin-eval.yml must run on demand only (workflow_dispatch), found: "
+                          + (", ".join(extra) if extra else "no triggers"))
 
     for e in errors:
         print(f"check_plugin: {e}")

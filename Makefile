@@ -125,3 +125,12 @@ check-plugin:
 	python3 scripts/check_plugin.py
 
 .PHONY: check-docs check-plugin
+
+# Claude Code plugin eval suite (plugins/anofox-tabular/evals/): does Claude load the
+# right skill, and does the SQL it writes run against the eval fixture? Needs the
+# `claude` CLI with credentials and `make release`; costs tokens (about 2 USD per
+# full run). Options: PLUGIN_EVAL_ARGS="--case 'boundary-*' --runs 3".
+eval-plugin:
+	python3 scripts/run_plugin_evals.py $(PLUGIN_EVAL_ARGS)
+
+.PHONY: eval-plugin
