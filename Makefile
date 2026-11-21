@@ -82,6 +82,22 @@ test_debug_internal:
 test_reldebug_internal:
 	DATAZOO_DISABLE_TELEMETRY=1 DNNL_MAX_CPU_ISA=AVX2 $(POSTAL_TEST_ENV) ./build/reldebug/test/unittest "test/*"
 
+# extension-ci-tools v1.5-variegata runs test_release through test_release_internal,
+# v2.0-cyanoptera has its own recipe (run_tests.py over test/*) that skips the targets
+# above: no telemetry opt-out, no POSTAL_AVAILABLE, no fresh-process postal tests. Route
+# both lines through the targets above; SKIP_TESTS (set by CI outside Docker) still wins.
+ifeq ($(SKIP_TESTS),1)
+test_release test_debug test_reldebug:
+	@echo "Tests are skipped in this run..."
+else
+test_release: test_release_internal
+	@:
+test_debug: test_debug_internal
+	@:
+test_reldebug: test_reldebug_internal
+	@:
+endif
+
 # The NER sqllogictests guard on OPENVINO_AVAILABLE because they need an
 # OpenVINO build and download the NER model from Hugging Face on first use
 # (bert-multi, ~178 MB, cached in ~/.duckdb/extensions/anofox/ner). The regular test
