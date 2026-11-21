@@ -49,6 +49,7 @@ jobs:
     secrets: inherit
     with:
       duckdb_version: v1.5.6
+      ci_tools_version: v1.5-variegata
       extension_name: anofox_tabular
       exclude_archs: wasm_mvp;wasm_eh;wasm_threads;windows_amd64_mingw;linux_amd64_musl;linux_arm64;osx_amd64
       deploy_latest: ${{ startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/main' }}
@@ -98,6 +99,7 @@ jobs:
     secrets: inherit
     with:
       duckdb_version: v2.0.1
+      ci_tools_version: v2.0-cyanoptera
       extension_name: anofox_tabular
       artifact_postfix: _v2.0
       exclude_archs: wasm_mvp;wasm_eh;wasm_threads;windows_amd64_mingw;linux_amd64_musl;linux_arm64;osx_amd64
