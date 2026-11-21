@@ -12,8 +12,8 @@ EXT_NAME=anofox_tabular
 EXT_CONFIG=${PROJ_DIR}extension_config.cmake
 
 # DuckDB 2.0 takes its version from scripts/ci/release_version.txt instead of
-# git, so a local build of the v2.0.0 tag is stamped as a dev version
-# (v2.0.0-devNNNNN) that released DuckDB clients, e.g. the Python package,
+# git, so a local build of the v2.0.1 tag is stamped as a dev version
+# (v2.0.1-devNNNNN) that released DuckDB clients, e.g. the Python package,
 # refuse to load. When ./duckdb sits exactly on a release tag, stamp that tag.
 # An explicit OVERRIDE_GIT_DESCRIBE (CI) wins.
 OVERRIDE_GIT_DESCRIBE ?= $(shell git -C $(PROJ_DIR)duckdb describe --tags --exact-match 2>/dev/null)

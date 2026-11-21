@@ -15,7 +15,7 @@ user-invocable: false
 
 # Anofox Tabular — Data Quality Checks Cheat Sheet
 
-**Extension:** `anofox_tabular` v2026.11.13 | **DuckDB:** v2.0.0 / v1.5.6 | **Naming:** short alias (`volume`) = canonical `anofox_tab_volume`
+**Extension:** `anofox_tabular` v2026.11.13 | **DuckDB:** v2.0.1 / v1.5.6 | **Naming:** short alias (`volume`) = canonical `anofox_tab_volume`
 
 Table functions that assert properties of a table and return a `status` row, plus a suite runner
 that executes many checks from a checks table. Load with `LOAD anofox_tabular;` (install:

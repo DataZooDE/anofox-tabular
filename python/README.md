@@ -325,7 +325,7 @@ The package resolves the extension in this order:
 5. Download from the DuckDB community registry, then the S3 mirror
    (`https://get.erpl.io`), both laid out as
    `<base>/v<duckdb version>/<platform>/anofox_tabular.duckdb_extension.gz`
-   (`duckdb` 1.5.6 downloads from `v1.5.6/`, `duckdb` 2.0.0 from `v2.0.0/`)
+   (`duckdb` 1.5.6 downloads from `v1.5.6/`, `duckdb` 2.0.1 from `v2.0.1/`)
 
 Step 3 fails when there is no network, no community build for this DuckDB
 version and platform, or the build does not load; then steps 4 and 5 run. A

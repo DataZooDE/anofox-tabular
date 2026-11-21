@@ -3,7 +3,7 @@
 # them: they guard on OPENVINO_AVAILABLE, and they download the NER model from
 # Hugging Face on first use, which the release pipeline must not depend on.
 # Here the extension is built with OpenVINO on linux_amd64 against the
-# submodule's DuckDB (v2.0.0), and the model directory is cached between runs.
+# submodule's DuckDB (v2.0.1), and the model directory is cached between runs.
 #
 name: NER tests (linux_amd64)
 on:
@@ -36,7 +36,7 @@ env:
 
 jobs:
   test:
-    name: linux_amd64, DuckDB v2.0.0, OpenVINO
+    name: linux_amd64, DuckDB v2.0.1, OpenVINO
     runs-on: ubuntu-24.04
     timeout-minutes: 180
     steps:

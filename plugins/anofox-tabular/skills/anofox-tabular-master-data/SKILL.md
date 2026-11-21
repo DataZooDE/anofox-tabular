@@ -14,7 +14,7 @@ user-invocable: false
 
 # Anofox Tabular — Customer Master Data Cheat Sheet
 
-**Extension:** `anofox_tabular` v2026.11.13 | **DuckDB:** v2.0.0 / v1.5.6 | **Naming:** short alias (`email_is_valid`) = canonical `anofox_tab_email_is_valid`
+**Extension:** `anofox_tabular` v2026.11.13 | **DuckDB:** v2.0.1 / v1.5.6 | **Naming:** short alias (`email_is_valid`) = canonical `anofox_tab_email_is_valid`
 
 Scalar functions that validate, parse and format contact and commercial fields row by row, plus
 a few status/config table functions. Load with `LOAD anofox_tabular;` (install once:

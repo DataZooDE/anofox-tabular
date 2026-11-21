@@ -13,7 +13,7 @@ user-invocable: false
 
 # Anofox Tabular — PII Detection and Masking Cheat Sheet
 
-**Extension:** `anofox_tabular` v2026.11.13 | **DuckDB:** v2.0.0 / v1.5.6 | **Naming:** short alias (`pii_mask`) = canonical `anofox_tab_pii_mask` (exception: `anofox_ner_status` has no alias)
+**Extension:** `anofox_tabular` v2026.11.13 | **DuckDB:** v2.0.1 / v1.5.6 | **Naming:** short alias (`pii_mask`) = canonical `anofox_tab_pii_mask` (exception: `anofox_ner_status` has no alias)
 
 Find PII in text values and tables, check identifiers by checksum, and mask PII with a redact,
 partial, asterisk or hash strategy. Pattern types run locally; `NAME`, `ORGANIZATION`,

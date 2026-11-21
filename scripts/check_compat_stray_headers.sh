@@ -15,11 +15,11 @@
 # a system DuckDB on a developer machine. A header that is found there fails the
 # compile.
 #
-# The bundled ./duckdb is v2.0.0, which has every header the sources ever probed,
+# The bundled ./duckdb is v2.0.1, which has every header the sources ever probed,
 # so the check only tests something against a v1.5.6 tree (CI clones one):
 #   DUCKDB_INCLUDE=<duckdb v1.5.6>/src/include scripts/check_compat_stray_headers.sh
 # (CXX and DUCKDB_INCLUDE override; DUCKDB_INCLUDE defaults to ./duckdb/src/include,
-# which is v2.0.0 and plants nothing, so pass a v1.5.6 tree as CI does)
+# which is v2.0.1 and plants nothing, so pass a v1.5.6 tree as CI does)
 set -euo pipefail
 
 root=$(cd "$(dirname "$0")/.." && pwd)

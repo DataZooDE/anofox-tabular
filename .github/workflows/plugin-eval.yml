@@ -5,7 +5,7 @@
 # scripts/run_plugin_evals.py (`make eval-plugin`): 11 cases, one run each, no
 # no-plugin baseline, the default model, graders without a judge model. The
 # script then executes each answer.sql against evals/fixtures/fixture.sql with
-# the released v2.0.0 linux_amd64 extension and the DuckDB 2.0.0 CLI (no build).
+# the released v2.0.1 linux_amd64 extension and the DuckDB 2.0.1 CLI (no build).
 #
 # Cost: every case is a real model call on the ANTHROPIC_API_KEY account. A full
 # run measured about 2 USD (list price) and 3 minutes; the job stops starting
@@ -35,8 +35,8 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  DUCKDB_VERSION: v2.0.0
-  EXTENSION_URL: https://get.erpl.io/v2.0.0/linux_amd64/anofox_tabular.duckdb_extension.gz
+  DUCKDB_VERSION: v2.0.1
+  EXTENSION_URL: https://get.erpl.io/v2.0.1/linux_amd64/anofox_tabular.duckdb_extension.gz
 
 jobs:
   plugin-eval:

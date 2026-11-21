@@ -6,7 +6,7 @@
 # (scripts/check_compat_stray_headers.sh, ported from anofox-forecast#312). CI
 # runners have no system DuckDB, so without it a __has_include probe that finds
 # the wrong tree only breaks on developer machines. It checks v1.5.6, not the
-# bundled v2.0.0: 2.0 has every header the sources ever probed for, so only an
+# bundled v2.0.1: 2.0 has every header the sources ever probed for, so only an
 # older tree can find a newer one by mistake.
 #
 # The claude-plugin job checks the Claude Code plugin without a build
