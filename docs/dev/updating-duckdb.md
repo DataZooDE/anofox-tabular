@@ -5,20 +5,21 @@ releases. One source tree serves two DuckDB lines at the same time:
 
 | Line | DuckDB | extension-ci-tools | Where |
 |------|--------|--------------------|-------|
-| 2.0 (cyanoptera) | `v2.0.0` (commit `d54cbbe3df17e8e5ce68312f483b4155836112aa`), the `./duckdb` submodule pin | `v2.0-cyanoptera` | local builds, `duckdb-next-*` CI jobs (build, smoke test, deploy), `Next20Tests.yml`, `NERTests.yml`, community-extensions `repo.ref` |
+| 2.0 (cyanoptera) | `v2.0.1` (commit `8d78114e90a53823803660bf821f6073ac87da8c`), the `./duckdb` submodule pin | `v2.0-cyanoptera` | local builds, `duckdb-next-*` CI jobs (build, smoke test, deploy), `Next20Tests.yml`, `NERTests.yml`, community-extensions `repo.ref` |
 | v1.5 (variegata) | `v1.5.6` | `v1.5-variegata` | `duckdb-v1_5_6-*` CI jobs, releases, community-extensions `repo.variegata` |
 
 Local development happens on 2.0, the line community-extensions publishes by default. v1.5.6 is
 checked by CI on every pull request; to run it locally, see [Checking v1.5.6
 locally](#checking-v156-locally).
 
-Both lines deploy to `https://get.erpl.io/<duckdb tag>/<platform>/` (`v1.5.6/`, `v2.0.0/`), the
+Both lines deploy to `https://get.erpl.io/<duckdb tag>/<platform>/` (`v1.5.6/`, `v2.0.1/`), the
 fallback of the Python package's loader: the latest build on every push to `main`, the
 versioned path only on release tags. A smoke test installs each artifact into the stock DuckDB
 CLI of its line before the deploy.
 
-duckdb/community-extensions builds `repo.ref` against the 2.0 commit above (`duckdb_commit` in
-its `build.yml`) and `repo.variegata` against v1.5.6, so both have to build from the same commit.
+duckdb/community-extensions builds `repo.ref` against its 2.0 commit (`duckdb_commit` in its
+`build.yml`; v2.0.0 as of 2026-11-21, a patch release behind the pin above, which the same source
+builds) and `repo.variegata` against v1.5.6, so both have to build from the same commit.
 The v1.4 (andium) line is no longer built.
 
 ## The compat-shim approach
@@ -78,10 +79,10 @@ What the 2.0 port changed, and the rule for new code:
 ## Local builds on 2.0
 
 - **Version stamp.** DuckDB 2.0 takes its version from `scripts/ci/release_version.txt`, not from
-  git, so a plain build of the `v2.0.0` tag is stamped `v2.0.0-devNNNNN`, and released clients
+  git, so a plain build of the `v2.0.1` tag is stamped `v2.0.1-devNNNNN`, and released clients
   (the Python package) refuse to load the extension. The `Makefile` sets `OVERRIDE_GIT_DESCRIBE`
   to the tag when `./duckdb` sits exactly on a release tag; check the configure line
-  `-- git hash ..., version v2.0.0`.
+  `-- git hash ..., version v2.0.1`.
 - **Switching an existing checkout.** After `git submodule update` moves `./duckdb` to another
   line, delete `build/release/CMakeCache.txt` (and `build/release/CMakeFiles`) before building:
   the v1.5 cache sets `CMAKE_CXX_STANDARD=11`, which the 2.0 configure step rejects.
@@ -92,7 +93,7 @@ What the 2.0 port changed, and the rule for new code:
 - **Compiler flags.** DuckDB 2.0 compiles with `-march=x86-64-v3`. Fused multiply-add can change
   the last bit of a `DOUBLE` result compared with a v1.5.6 build; tests compare such values
   rounded.
-- **Python.** The dev dependency group pins `duckdb==2.0.0` on Python 3.11 and newer (DuckDB 2.0
+- **Python.** The dev dependency group pins `duckdb==2.0.1` on Python 3.11 and newer (DuckDB 2.0
   needs 3.11) and `duckdb==1.5.6` on Python 3.10.
 
 ## Checking v1.5.6 locally

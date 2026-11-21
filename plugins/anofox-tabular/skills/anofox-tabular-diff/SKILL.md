@@ -13,7 +13,7 @@ user-invocable: false
 
 # Anofox Tabular — Diffing & Migration Cheat Sheet
 
-**Extension:** `anofox_tabular` v2026.11.13 | **DuckDB:** v2.0.0 / v1.5.6 | **Naming:** short alias (`diff_joindiff`) = canonical `anofox_tab_diff_joindiff`
+**Extension:** `anofox_tabular` v2026.11.13 | **DuckDB:** v2.0.1 / v1.5.6 | **Naming:** short alias (`diff_joindiff`) = canonical `anofox_tab_diff_joindiff`
 
 Compares a source (old) and a target (new) table on a primary key, or their column lists. The
 row diffs are rewritten into one native `FULL OUTER JOIN` query.

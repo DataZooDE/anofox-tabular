@@ -14,7 +14,7 @@ user-invocable: false
 
 # Anofox Tabular — Customer Master Data Cheat Sheet
 
-**Extension:** `anofox_tabular` v2026.11.13 | **DuckDB:** v2.0.0 / v1.5.6 | **Naming:** short alias (`email_is_valid`) = canonical `anofox_tab_email_is_valid`
+**Extension:** `anofox_tabular` v2026.11.13 | **DuckDB:** v2.0.1 / v1.5.6 | **Naming:** short alias (`email_is_valid`) = canonical `anofox_tab_email_is_valid`
 
 Scalar functions that validate, parse and format contact and commercial fields row by row, plus
 a few status/config table functions. Load with `LOAD anofox_tabular;` (install once:
@@ -43,8 +43,8 @@ a few status/config table functions. Load with `LOAD anofox_tabular;` (install o
   option (email mode, phone format, VAT style, money style) raises. Exception: **money** — an
   unknown currency code raises `Invalid currency code: XYZ` in `money` and `money_from_cents`;
   wrap in `TRY()` (or pre-check with `is_valid_currency`).
-- **One `TRY(money(...))` per row, reuse the alias.** Two `TRY()`s around the same raising
-  call still fail (DuckDB common-subexpression elimination hoists it out of both `TRY`s).
+- **One `TRY(money(...))` per row, reuse the alias.** On DuckDB v1.5.6 two `TRY()`s around the
+  same raising call still fail (common-subexpression elimination hoists it out of both `TRY`s).
 - **`money('1250.00', 'EUR')` is a binder error** (string fits both overloads) and `TRY()` does
   not catch binder errors: `CAST(x AS DECIMAL(18,3))` / `TRY_CAST` first.
 - **`money_from_cents` divides by the currency's minor unit**: 100 for USD/EUR, 1 for

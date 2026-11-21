@@ -14,7 +14,7 @@ user-invocable: false
 
 # Anofox Tabular — Anomaly Detection Cheat Sheet
 
-**Extension:** `anofox_tabular` v2026.11.13 | **DuckDB:** v2.0.0 / v1.5.6 | **Naming:** short alias (`isolation_forest`) = canonical `anofox_tab_isolation_forest`
+**Extension:** `anofox_tabular` v2026.11.13 | **DuckDB:** v2.0.1 / v1.5.6 | **Naming:** short alias (`isolation_forest`) = canonical `anofox_tab_isolation_forest`
 
 Five table functions that flag unusual rows without labels. Each has a one-row `'summary'` mode
 (`status` = `'pass'`/`'fail'`) and a row-level mode.

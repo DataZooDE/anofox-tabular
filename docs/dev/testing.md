@@ -143,7 +143,7 @@ the case.
 
 The Plugin eval workflow (`.github/workflows/plugin-eval.yml`) runs the suite on demand only
 (Actions → Plugin eval → Run workflow), with the `ANTHROPIC_API_KEY` repository secret, the
-released v2.0.0 linux_amd64 extension and the DuckDB 2.0.0 CLI. Every run costs tokens (about
+released v2.0.1 linux_amd64 extension and the DuckDB 2.0.1 CLI. Every run costs tokens (about
 2 USD), so it never runs on a schedule or on pull requests; `make check-plugin` fails when the
 workflow gets another trigger. Without the secret it prints a notice and succeeds.
 

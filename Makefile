@@ -12,8 +12,8 @@ EXT_NAME=anofox_tabular
 EXT_CONFIG=${PROJ_DIR}extension_config.cmake
 
 # DuckDB 2.0 takes its version from scripts/ci/release_version.txt instead of
-# git, so a local build of the v2.0.0 tag is stamped as a dev version
-# (v2.0.0-devNNNNN) that released DuckDB clients, e.g. the Python package,
+# git, so a local build of the v2.0.1 tag is stamped as a dev version
+# (v2.0.1-devNNNNN) that released DuckDB clients, e.g. the Python package,
 # refuse to load. When ./duckdb sits exactly on a release tag, stamp that tag.
 # An explicit OVERRIDE_GIT_DESCRIBE (CI) wins.
 OVERRIDE_GIT_DESCRIBE ?= $(shell git -C $(PROJ_DIR)duckdb describe --tags --exact-match 2>/dev/null)
@@ -81,6 +81,22 @@ test_debug_internal:
 
 test_reldebug_internal:
 	DATAZOO_DISABLE_TELEMETRY=1 DNNL_MAX_CPU_ISA=AVX2 $(POSTAL_TEST_ENV) ./build/reldebug/test/unittest "test/*"
+
+# extension-ci-tools v1.5-variegata runs test_release through test_release_internal,
+# v2.0-cyanoptera has its own recipe (run_tests.py over test/*) that skips the targets
+# above: no telemetry opt-out, no POSTAL_AVAILABLE, no fresh-process postal tests. Route
+# both lines through the targets above; SKIP_TESTS (set by CI outside Docker) still wins.
+ifeq ($(SKIP_TESTS),1)
+test_release test_debug test_reldebug:
+	@echo "Tests are skipped in this run..."
+else
+test_release: test_release_internal
+	@:
+test_debug: test_debug_internal
+	@:
+test_reldebug: test_reldebug_internal
+	@:
+endif
 
 # The NER sqllogictests guard on OPENVINO_AVAILABLE because they need an
 # OpenVINO build and download the NER model from Hugging Face on first use

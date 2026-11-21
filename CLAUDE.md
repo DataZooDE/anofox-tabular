@@ -198,10 +198,10 @@ libpostal is not a vcpkg port: `scripts/install-deps-ci.sh` builds it, and CMake
 
 ## Updating DuckDB Version
 
-Local development happens on **DuckDB v2.0.0**: the `./duckdb` submodule is pinned to the
-`v2.0.0` tag and `./extension-ci-tools` to `v2.0-cyanoptera`, the line community-extensions
+Local development happens on **DuckDB v2.0.1**: the `./duckdb` submodule is pinned to the
+`v2.0.1` tag and `./extension-ci-tools` to `v2.0-cyanoptera`, the line community-extensions
 publishes by default. The same source tree also builds on v1.5.6, which CI checks on every pull
-request; API differences sit behind duckdb-compat helpers. Python tests use `duckdb==2.0.0`
+request; API differences sit behind duckdb-compat helpers. Python tests use `duckdb==2.0.1`
 (Python 3.11+). See `docs/dev/updating-duckdb.md` for the line table, the rules for new code
 (function names, registration through `anofox_function_alias.hpp`, `SetChildCardinality`,
 `lambda x:` instead of `x ->` in tests), local 2.0 specifics (version stamp, shell, `-march`)

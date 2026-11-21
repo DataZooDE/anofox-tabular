@@ -21,7 +21,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  DUCKDB_COMMIT: d54cbbe3df17e8e5ce68312f483b4155836112aa
+  DUCKDB_COMMIT: 8d78114e90a53823803660bf821f6073ac87da8c
   CI_TOOLS_REF: v2.0-cyanoptera
   # the vcpkg commit extension-ci-tools v2.0-cyanoptera builds with
   VCPKG_COMMIT: cd61e1e26a038e82d6550a3ebbe0fbbfe7da78e3

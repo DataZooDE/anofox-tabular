@@ -74,7 +74,7 @@ A locally built extension is unsigned. Start the DuckDB CLI with `-unsigned`, or
 
 ## DuckDB versions
 
-Local builds use DuckDB v2.0.0, the `duckdb` submodule pin; CI also builds v1.5.6. API
+Local builds use DuckDB v2.0.1, the `duckdb` submodule pin; CI also builds v1.5.6. API
 differences sit behind the duckdb-compat helpers. See [Updating DuckDB](updating-duckdb.md),
 which also shows how to check v1.5.6 locally.
 
