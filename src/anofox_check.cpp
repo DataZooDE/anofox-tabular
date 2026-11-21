@@ -13,6 +13,7 @@
 #include "duckdb/common/error_data.hpp"
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/planner/binder.hpp"
+#include "re2/re2.h"
 #include "duckdb_compat.hpp"
 #include "anofox_tabular_banner.hpp"
 
@@ -104,23 +105,15 @@ string ValidateBooleanExpression(ClientContext &context, const string &expr, con
 }
 
 void ValidateRegexPattern(ClientContext &context, const string &pattern, const string &prefix) {
-	try {
-		auto statements =
-		    ParseWithContextSettings(context, "SELECT regexp_matches('', '" + EscapeSqlStringLiteral(pattern) + "')");
-		auto binder = Binder::CreateBinder(context);
-		binder->Bind(*statements[0]);
-	} catch (const std::exception &ex) {
-		ErrorData error(ex);
-		if (error.Type() == ExceptionType::INTERRUPT || error.Type() == ExceptionType::FATAL ||
-		    error.Type() == ExceptionType::INTERNAL) {
-			throw;
-		}
-		auto cause = error.RawMessage();
-		auto newline = cause.find('\n');
-		if (newline != string::npos) {
-			cause = cause.substr(0, newline);
-		}
-		throw BinderException(prefix + " '" + pattern + "' is not a valid regular expression: " + cause);
+	(void)context;
+	// Compile the pattern with RE2 and the options regexp_matches uses (no option string),
+	// instead of binding a regexp_matches call: DuckDB v2.0.1 no longer rejects an invalid
+	// constant pattern at bind time, only when the query runs.
+	duckdb_re2::RE2::Options options;
+	options.set_log_errors(false);
+	duckdb_re2::RE2 re(duckdb_re2::StringPiece(pattern.data(), pattern.size()), options);
+	if (!re.ok()) {
+		throw BinderException(prefix + " '" + pattern + "' is not a valid regular expression: " + re.error());
 	}
 }
 

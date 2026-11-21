@@ -1,5 +1,5 @@
 # name: test/sql/anofox_money_try.test
-# description: TRY() around money(): an unknown currency code gives NULL in each TRY() alone and in the documented pattern for two uses of one money value (alias or CTE); two TRY()s around one shared money(...) call raise because DuckDB's common subexpression elimination evaluates the shared call outside both TRY()s
+# description: TRY() around money(): an unknown currency code gives NULL in each TRY() alone and in the documented pattern for two uses of one money value (alias or CTE); two TRY()s around one shared money(...) call give NULL with common subexpression elimination disabled (DuckDB v1.5.6 evaluates the shared call outside both TRY()s and raises; v2.0.1 keeps it inside)
 # group: [anofox_tabular]
 
 require anofox_tabular
@@ -51,20 +51,11 @@ A-1002	NULL	NULL
 A-1003	£880.50	true
 A-1004	NULL	NULL
 
-# Two TRY()s around one shared money(...) call: DuckDB evaluates the shared
-# call once, outside both TRY()s, so the bad code raises. DuckDB does the same
-# for any raising expression (a CAST as well, see the query after it).
-statement error
-SELECT TRY(money(amount, currency)), TRY(money_format(money(amount, currency), 'symbol')) FROM order_import;
-----
-Invalid currency code: EURO
-
-statement error
-SELECT TRY(CAST(currency AS INTEGER)), TRY(CAST(currency AS INTEGER) + 1) FROM order_import;
-----
-Could not convert string
-
-# Without common subexpression elimination the same query gives NULL for the bad row
+# Two TRY()s around one shared money(...) call. DuckDB v1.5.6's common
+# subexpression elimination evaluates the shared call once, outside both TRY()s,
+# so the bad code raises there (as any raising expression does, a CAST as well);
+# DuckDB v2.0.1 keeps it inside and gives NULL. Each line gives NULL for the bad
+# row once common subexpression elimination is disabled
 statement ok
 SET disabled_optimizers = 'common_subexpressions';
 
