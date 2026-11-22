@@ -9,13 +9,13 @@ description: >
   contract (`anofox_contract_version`, output tags). Use when asserting row counts, NULL rates,
   value sets, keys, foreign keys, freshness or daily volumes in SQL, building a checks table,
   storing check history, or failing a nightly pipeline on bad data.
-version: 2026.11.13
+version: 2026.11.21
 user-invocable: false
 ---
 
 # Anofox Tabular — Data Quality Checks Cheat Sheet
 
-**Extension:** `anofox_tabular` v2026.11.13 | **DuckDB:** v2.0.1 / v1.5.6 | **Naming:** short alias (`volume`) = canonical `anofox_tab_volume`
+**Extension:** `anofox_tabular` v2026.11.21 | **DuckDB:** v2.0.1 / v1.5.6 | **Naming:** short alias (`volume`) = canonical `anofox_tab_volume`
 
 Table functions that assert properties of a table and return a `status` row, plus a suite runner
 that executes many checks from a checks table. Load with `LOAD anofox_tabular;` (install:
